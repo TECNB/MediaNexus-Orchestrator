@@ -16,7 +16,7 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(BusinessException.class)
     public ResponseEntity<ApiResponse<Void>> handleBusinessException(BusinessException exception) {
         return ResponseEntity
-                .status(HttpStatus.BAD_REQUEST)
+                .status(exception.getHttpStatus())
                 .body(ApiResponse.failed(exception.getCode(), exception.getMessage()));
     }
 

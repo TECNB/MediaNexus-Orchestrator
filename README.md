@@ -6,7 +6,8 @@ MediaNexus remains an upper-layer resource management and orchestration site for
 
 ## Current Scope
 
-This first phase only provides the Spring Boot project skeleton:
+This first phase provides the Spring Boot project skeleton plus the first
+display-only Anime search API:
 
 - Spring Boot 3.x + Java 17 + Maven
 - MySQL 8 configuration example
@@ -18,8 +19,11 @@ This first phase only provides the Spring Boot project skeleton:
 - `GET /api/v1/health`
 - Optional SSH tunnel for connecting to the server-local MySQL container
 - Test-only `test_users` CRUD endpoints for validating MySQL connectivity
+- `GET /api/v1/resources/anime/search` for Mikan search through ani-rss REST
 
-No Anime, Emby, Ani-RSS, OpenList, Sonarr, Radarr, Prowlarr, PikPak, or Python backend replacement logic is implemented in this phase.
+No Anime subscription, download workflow, Emby, OpenList, Sonarr, Radarr,
+Prowlarr, PikPak, or Python backend replacement logic is implemented in this
+phase.
 
 ## Requirements
 
@@ -39,6 +43,9 @@ Useful environment variables:
 MEDIANEXUS_DB_URL='jdbc:mysql://127.0.0.1:3307/medianexus_orchestrator?useUnicode=true&characterEncoding=utf8&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai'
 MEDIANEXUS_DB_USERNAME='TEC'
 MEDIANEXUS_DB_PASSWORD='...'
+MEDIANEXUS_ANI_RSS_BASE_URL='http://example.invalid:7789'
+MEDIANEXUS_ANI_RSS_API_KEY=''
+MEDIANEXUS_ANI_RSS_TIMEOUT='10s'
 ```
 
 The datasource points at a local forwarded port by default. Because the MySQL
@@ -82,7 +89,7 @@ Expected response:
 
 ```json
 {
-  "code": 0,
+  "code": 200,
   "message": "success",
   "data": {
     "status": "UP",
@@ -105,6 +112,35 @@ curl -X PUT http://localhost:8080/api/v1/test-users/1 \
   -d '{"displayName":"TEC Updated","enabled":true}'
 
 curl -X DELETE http://localhost:8080/api/v1/test-users/1
+```
+
+## Anime Mikan Search
+
+```bash
+curl 'http://localhost:8080/api/v1/resources/anime/search?term=anime'
+```
+
+Expected response shape:
+
+```json
+{
+  "code": 200,
+  "message": "success",
+  "data": {
+    "items": [
+      {
+        "id": "mikan:1234",
+        "title": "Anime Title",
+        "cover": "https://...",
+        "source_url": "https://mikanime.tv/Home/Bangumi/1234",
+        "score": 8.1,
+        "exists": false,
+        "week_label": "Search"
+      }
+    ],
+    "total": 1
+  }
+}
 ```
 
 ## API Docs

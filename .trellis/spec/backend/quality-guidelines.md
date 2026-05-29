@@ -17,8 +17,8 @@ they are needed.
 - Do not add PostgreSQL, JPA, Flyway, Actuator, Testcontainers, Spring Cloud,
   message queues, or WebFlux during the bootstrap task.
 - Do not create a multi-module Maven project during the bootstrap task.
-- Do not implement Anime, Emby, Ani-RSS, OpenList, or related integration
-  business logic during the bootstrap task.
+- Do not implement unrelated Anime, Emby, Ani-RSS, OpenList, or related
+  integration business logic outside an explicit task scope.
 
 ---
 
@@ -28,6 +28,8 @@ they are needed.
 - Use Maven as the build tool.
 - Keep API routes versioned under `/api/v1`.
 - Use the unified `ApiResponse<T>` envelope for controller responses.
+- Prefer JDK and existing Spring Boot dependencies for small integrations
+  before adding new client libraries.
 
 ---
 

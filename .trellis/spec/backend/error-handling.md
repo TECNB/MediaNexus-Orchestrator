@@ -37,7 +37,7 @@ Success response:
 
 ```json
 {
-  "code": 0,
+  "code": 200,
   "message": "success",
   "data": {}
 }
@@ -57,7 +57,7 @@ For `GET /api/v1/health`, the success payload is:
 
 ```json
 {
-  "code": 0,
+  "code": 200,
   "message": "success",
   "data": {
     "status": "UP",

@@ -21,7 +21,10 @@ src/main/java/com/medianexus/orchestrator
 │   ├── exception
 │   └── response
 ├── config
-└── controller
+├── controller
+├── dto
+├── integration
+└── service
 
 src/main/resources
 └── application.yml
@@ -35,10 +38,14 @@ src/main/resources
   `/api/v1/health`.
 - Shared API response and exception primitives live under `common`.
 - Framework integration beans live under `config`.
+- External service clients live under `integration/<service-name>`.
+- Business orchestration and response shaping live under `service`.
+- Request/response DTOs live under `dto`, with domain subpackages when needed
+  for non-test features.
 - Do not create a multi-module Maven layout unless a later task explicitly
   requires it.
-- Do not add Anime, Emby, Ani-RSS, OpenList, or other domain packages during
-  the bootstrap task.
+- Keep domain packages narrow and task-scoped; do not add unrelated Emby,
+  OpenList, Sonarr, Radarr, Prowlarr, PikPak, or Python replacement logic.
 
 ---
 

@@ -2,7 +2,7 @@ package com.medianexus.orchestrator.common.exception;
 
 public enum ErrorCode {
 
-    SUCCESS(0, "success"),
+    SUCCESS(200, "success"),
     BAD_REQUEST(400, "bad request"),
     INTERNAL_ERROR(500, "internal server error");
 

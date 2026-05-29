@@ -31,6 +31,10 @@ medianexus:
       remote-port: ${MEDIANEXUS_DB_SSH_REMOTE_PORT:3306}
       strict-host-key-checking: ${MEDIANEXUS_DB_SSH_STRICT_HOST_KEY_CHECKING:false}
       connect-timeout: ${MEDIANEXUS_DB_SSH_CONNECT_TIMEOUT:15s}
+  ani-rss:
+    base-url: ${MEDIANEXUS_ANI_RSS_BASE_URL:http://example.invalid:7789}
+    api-key: ${MEDIANEXUS_ANI_RSS_API_KEY:}
+    timeout: ${MEDIANEXUS_ANI_RSS_TIMEOUT:10s}
 
 mybatis-plus:
   mapper-locations: classpath*:/mapper/**/*.xml

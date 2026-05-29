@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Check API/frontend contract consistency"}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "Check package placement"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Check envelope and error messages"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Check scope and dependency constraints"}
+{"file": ".trellis/tasks/05-29-anime-mikan-search-api/research/anirss-mikan-rest-contract.md", "reason": "Check ani-rss mapping and secret handling"}
