@@ -56,14 +56,14 @@ public class AniRssClient {
     private JsonNode unwrapResult(String responseBody) {
         try {
             JsonNode root = objectMapper.readTree(responseBody);
-            if (root.has("data")) {
-                JsonNode codeNode = root.get("code");
-                if (codeNode != null && codeNode.isNumber()) {
-                    int code = codeNode.asInt();
-                    if (code != 0 && code != 200) {
-                        throw new AniRssClientException("ani-rss returned failure code");
-                    }
+            JsonNode codeNode = root.get("code");
+            if (codeNode != null && codeNode.isNumber()) {
+                int code = codeNode.asInt();
+                if (code != 0 && code != 200) {
+                    throw new AniRssClientException("ani-rss returned failure code");
                 }
+            }
+            if (root.has("data")) {
                 return root.get("data");
             }
             return root;
@@ -78,7 +78,8 @@ public class AniRssClient {
             baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
         }
         String encodedKeyword = URLEncoder.encode(keyword, StandardCharsets.UTF_8);
-        return URI.create(baseUrl + "/mikan?text=" + encodedKeyword);
+        String path = baseUrl.endsWith("/api") ? "/mikan" : "/api/mikan";
+        return URI.create(baseUrl + path + "?text=" + encodedKeyword);
     }
 
     private void validateConfiguration() {

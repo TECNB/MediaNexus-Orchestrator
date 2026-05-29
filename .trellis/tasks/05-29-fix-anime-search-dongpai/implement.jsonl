@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Keep unified response and sanitized business errors"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Keep fix scoped and avoid new dependencies/full validation"}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "Use existing controller/service/integration layout"}
+{"file": ".trellis/tasks/archive/2026-05/05-29-anime-mikan-search-api/research/anirss-mikan-rest-contract.md", "reason": "ani-rss Mikan REST contract and mapping notes"}

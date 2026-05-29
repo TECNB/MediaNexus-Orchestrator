@@ -19,7 +19,7 @@ display-only Anime search API:
 - `GET /api/v1/health`
 - Optional SSH tunnel for connecting to the server-local MySQL container
 - Test-only `test_users` CRUD endpoints for validating MySQL connectivity
-- `GET /api/v1/resources/anime/search` for Mikan search through ani-rss REST
+- `GET /api/v1/resources/anime/search` for Mikan search through ani-rss REST `/api/mikan`
 
 No Anime subscription, download workflow, Emby, OpenList, Sonarr, Radarr,
 Prowlarr, PikPak, or Python backend replacement logic is implemented in this
