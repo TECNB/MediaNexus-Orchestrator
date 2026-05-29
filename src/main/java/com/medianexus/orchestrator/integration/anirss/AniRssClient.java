@@ -30,27 +30,27 @@ public class AniRssClient {
     }
 
     public JsonNode searchMikan(String keyword) {
-        validateConfiguration();
+        return post("mikan", "text=" + encode(keyword), "{}");
+    }
 
-        HttpRequest request = HttpRequest.newBuilder(buildMikanUri(keyword))
-                .timeout(timeout())
-                .header("Content-Type", "application/json")
-                .header("x-api-key", properties.getApiKey().trim())
-                .POST(HttpRequest.BodyPublishers.ofString("{}"))
-                .build();
+    public JsonNode getMikanGroups(String sourceUrl) {
+        return post("mikanGroup", "url=" + encode(sourceUrl), "{}");
+    }
 
-        try {
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                throw new AniRssClientException("ani-rss returned non-success status");
-            }
-            return unwrapResult(response.body());
-        } catch (IOException exception) {
-            throw new AniRssClientException("ani-rss request failed", exception);
-        } catch (InterruptedException exception) {
-            Thread.currentThread().interrupt();
-            throw new AniRssClientException("ani-rss request interrupted", exception);
-        }
+    public JsonNode rssToAni(JsonNode payload) {
+        return post("rssToAni", null, writeJson(payload));
+    }
+
+    public JsonNode previewAni(JsonNode subscription) {
+        return post("previewAni", null, writeJson(subscription));
+    }
+
+    public JsonNode listAni() {
+        return post("listAni", null, "{}");
+    }
+
+    public JsonNode addAni(JsonNode subscription) {
+        return post("addAni", null, writeJson(subscription));
     }
 
     private JsonNode unwrapResult(String responseBody) {
@@ -72,14 +72,50 @@ public class AniRssClient {
         }
     }
 
-    private URI buildMikanUri(String keyword) {
+    private JsonNode post(String endpoint, String query, String body) {
+        validateConfiguration();
+
+        HttpRequest request = HttpRequest.newBuilder(buildApiUri(endpoint, query))
+                .timeout(timeout())
+                .header("Content-Type", "application/json")
+                .header("x-api-key", properties.getApiKey().trim())
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+        try {
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                throw new AniRssClientException("ani-rss returned non-success status");
+            }
+            return unwrapResult(response.body());
+        } catch (IOException exception) {
+            throw new AniRssClientException("ani-rss request failed", exception);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new AniRssClientException("ani-rss request interrupted", exception);
+        }
+    }
+
+    private String writeJson(JsonNode payload) {
+        try {
+            return objectMapper.writeValueAsString(payload);
+        } catch (IOException exception) {
+            throw new AniRssClientException("ani-rss request payload serialization failed", exception);
+        }
+    }
+
+    private URI buildApiUri(String endpoint, String query) {
         String baseUrl = properties.getBaseUrl().trim();
         if (baseUrl.endsWith("/")) {
             baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
         }
-        String encodedKeyword = URLEncoder.encode(keyword, StandardCharsets.UTF_8);
-        String path = baseUrl.endsWith("/api") ? "/mikan" : "/api/mikan";
-        return URI.create(baseUrl + path + "?text=" + encodedKeyword);
+        String path = baseUrl.endsWith("/api") ? "/" + endpoint : "/api/" + endpoint;
+        String suffix = StringUtils.hasText(query) ? "?" + query : "";
+        return URI.create(baseUrl + path + suffix);
+    }
+
+    private String encode(String value) {
+        return URLEncoder.encode(value, StandardCharsets.UTF_8);
     }
 
     private void validateConfiguration() {

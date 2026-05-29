@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "Keep new controller, service, integration, and DTO files in existing backend layout."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Use BusinessException and ApiResponse consistently for expected failures."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Review coding standards and avoid broad refactors."}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Follow local logging expectations for upstream ani-rss failures."}
+{"file": "/Users/tengenchang/Library/Mobile Documents/com~apple~CloudDocs/ani-rss-hermes/ani-rss-hermes-skill/anime-auto/SKILL.md", "reason": "Source of agreed language ranking, preview, duplicate, and add-subscription flow."}
