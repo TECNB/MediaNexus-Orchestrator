@@ -1,0 +1,45 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: medianexus-orchestrator
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: ${MEDIANEXUS_DB_URL:jdbc:mysql://localhost:3306/medianexus_orchestrator?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai}
+    username: ${MEDIANEXUS_DB_USERNAME:root}
+    password: ${MEDIANEXUS_DB_PASSWORD:}
+    hikari:
+      pool-name: MediaNexusHikariPool
+      maximum-pool-size: 10
+      minimum-idle: 1
+      initialization-fail-timeout: -1
+
+mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
+  type-aliases-package: com.medianexus.orchestrator
+  configuration:
+    map-underscore-to-camel-case: true
+  global-config:
+    banner: false
+
+sa-token:
+  token-name: satoken
+  timeout: 2592000
+  active-timeout: -1
+  is-concurrent: true
+  is-share: true
+  token-style: uuid
+  is-log: false
+
+knife4j:
+  enable: true
+  setting:
+    language: zh_cn
+
+springdoc:
+  api-docs:
+    enabled: true
+  swagger-ui:
+    enabled: true
+    path: /swagger-ui.html
