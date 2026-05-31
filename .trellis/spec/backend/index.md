@@ -17,6 +17,7 @@ This directory contains guidelines for backend development. Fill in each file wi
 | [Directory Structure](./directory-structure.md) | Module organization and file layout | Bootstrap |
 | [Database Guidelines](./database-guidelines.md) | ORM patterns, queries, migrations | Bootstrap |
 | [Error Handling](./error-handling.md) | Error types, handling strategies | Bootstrap |
+| [External Integrations](./external-integrations.md) | Upstream service contracts and known pitfalls | Active |
 | [Quality Guidelines](./quality-guidelines.md) | Code standards, forbidden patterns | Bootstrap |
 | [Logging Guidelines](./logging-guidelines.md) | Structured logging, log levels | To fill |
 

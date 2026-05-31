@@ -4,18 +4,34 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.medianexus.orchestrator.config.AniRssProperties;
 import java.io.IOException;
+import java.net.Proxy;
+import java.net.ProxySelector;
 import java.net.URI;
 import java.net.URLEncoder;
+import java.net.SocketAddress;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.List;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
 @Component
 public class AniRssClient {
+
+    private static final ProxySelector DIRECT_PROXY_SELECTOR = new ProxySelector() {
+        @Override
+        public List<Proxy> select(URI uri) {
+            return List.of(Proxy.NO_PROXY);
+        }
+
+        @Override
+        public void connectFailed(URI uri, SocketAddress sa, IOException ioe) {
+            // Direct connections do not maintain proxy failure state.
+        }
+    };
 
     private final AniRssProperties properties;
     private final ObjectMapper objectMapper;
@@ -26,11 +42,16 @@ public class AniRssClient {
         this.objectMapper = objectMapper;
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(timeout())
+                .proxy(DIRECT_PROXY_SELECTOR)
                 .build();
     }
 
     public JsonNode searchMikan(String keyword) {
         return post("mikan", "text=" + encode(keyword), "{}");
+    }
+
+    public JsonNode searchBgm(String keyword) {
+        return post("searchBgm", "name=" + encode(keyword), "{}");
     }
 
     public JsonNode getMikanGroups(String sourceUrl) {
@@ -60,7 +81,7 @@ public class AniRssClient {
             if (codeNode != null && codeNode.isNumber()) {
                 int code = codeNode.asInt();
                 if (code != 0 && code != 200) {
-                    throw new AniRssClientException("ani-rss returned failure code");
+                    throw new AniRssClientException("ani-rss returned failure code " + code);
                 }
             }
             if (root.has("data")) {
@@ -85,14 +106,15 @@ public class AniRssClient {
         try {
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                throw new AniRssClientException("ani-rss returned non-success status");
+                throw new AniRssClientException("ani-rss returned non-success status "
+                        + response.statusCode() + " for endpoint " + endpoint);
             }
             return unwrapResult(response.body());
         } catch (IOException exception) {
-            throw new AniRssClientException("ani-rss request failed", exception);
+            throw new AniRssClientException("ani-rss request failed for endpoint " + endpoint, exception);
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
-            throw new AniRssClientException("ani-rss request interrupted", exception);
+            throw new AniRssClientException("ani-rss request interrupted for endpoint " + endpoint, exception);
         }
     }
 
