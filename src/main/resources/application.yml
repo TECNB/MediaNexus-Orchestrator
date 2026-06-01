@@ -35,6 +35,18 @@ medianexus:
     base-url: ${MEDIANEXUS_ANI_RSS_BASE_URL:http://example.invalid:7789}
     api-key: ${MEDIANEXUS_ANI_RSS_API_KEY:}
     timeout: ${MEDIANEXUS_ANI_RSS_TIMEOUT:10s}
+  openlist:
+    base-url: ${MEDIANEXUS_OPENLIST_BASE_URL:}
+    authorization: ${MEDIANEXUS_OPENLIST_AUTHORIZATION:}
+    offline-tool: ${MEDIANEXUS_OPENLIST_OFFLINE_TOOL:PikPak}
+    delete-policy: ${MEDIANEXUS_OPENLIST_DELETE_POLICY:delete_on_upload_succeed}
+    anime-path-template: ${MEDIANEXUS_ANIME_PATH_TEMPLATE:}
+    anime-rename-template: ${MEDIANEXUS_ANIME_RENAME_TEMPLATE:}
+    anime-exclude-patterns: ${MEDIANEXUS_ANIME_EXCLUDE_PATTERNS:}
+    timeout: ${MEDIANEXUS_OPENLIST_TIMEOUT:120s}
+    poll-interval: ${MEDIANEXUS_OPENLIST_POLL_INTERVAL:30s}
+    offline-timeout: ${MEDIANEXUS_OPENLIST_OFFLINE_TIMEOUT:360m}
+    retry-limit: ${MEDIANEXUS_OPENLIST_RETRY_LIMIT:5}
 
 mybatis-plus:
   mapper-locations: classpath*:/mapper/**/*.xml

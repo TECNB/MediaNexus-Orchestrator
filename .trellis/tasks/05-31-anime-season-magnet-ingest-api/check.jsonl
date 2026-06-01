@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "Check new backend files stay in expected packages."}
+{"file": ".trellis/spec/backend/external-integrations.md", "reason": "Check OpenList and ANI-RSS-adjacent behavior does not leak implementation details."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Check user-facing errors are stable and safe."}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "Check persistent task/log database code follows local conventions."}
+{"file": ".trellis/tasks/05-31-anime-season-magnet-ingest-api/prd.md", "reason": "Verify implementation matches the agreed scope and non-goals."}

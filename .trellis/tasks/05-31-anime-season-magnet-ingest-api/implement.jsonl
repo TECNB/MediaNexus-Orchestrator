@@ -1,0 +1,6 @@
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "Follow Orchestrator package boundaries for controllers, services, integrations, DTOs, and database models."}
+{"file": ".trellis/spec/backend/external-integrations.md", "reason": "Follow existing upstream integration conventions and ANI-RSS route caveats."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Return user-safe BusinessException errors through the existing envelope."}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "Use local MyBatis/database conventions for persistent task and log tables."}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Keep task and upstream failure logging aligned with project style."}
+{"file": ".trellis/tasks/05-31-anime-season-magnet-ingest-api/prd.md", "reason": "Task-specific decisions for Anime season magnet ingest."}

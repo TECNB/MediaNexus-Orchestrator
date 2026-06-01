@@ -34,7 +34,11 @@ public class AnimeMagnetSearchService {
         }
 
         try {
-            List<AnimeMagnetSearchItem> items = mapItems(aniRssClient.searchBgm(term.trim()));
+            JsonNode bgmNode = aniRssClient.searchBgm(term.trim());
+            log.debug("Anime magnet search upstream response shape: array={}, size={}",
+                    bgmNode != null && bgmNode.isArray(),
+                    bgmNode != null && bgmNode.isArray() ? bgmNode.size() : null);
+            List<AnimeMagnetSearchItem> items = mapItems(bgmNode);
             return new AnimeMagnetSearchResponse(items, items.size());
         } catch (AniRssClientException exception) {
             log.warn("Anime magnet search upstream request failed: {}", exception.getMessage(), exception);
