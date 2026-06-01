@@ -14,6 +14,7 @@
 .agents/
 .agent-log
 .session-id
+workspace/codex/
 
 # Task directory runtime files
 .plan-log
