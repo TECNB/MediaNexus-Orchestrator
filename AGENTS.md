@@ -31,3 +31,65 @@ Managed by Trellis. Edits outside this block are preserved; edits inside may be 
   - `chore: 忽略 Codex 工作区记录`
 - Forbidden: English summaries after the prefix, such as `feat: add anime season magnet ingest orchestration` or `chore: ignore codex workspace notes`.
 - If a recent commit violates these rules, fix it before pushing; if it has already been pushed, ask for approval and repair it with `git push --force-with-lease`.
+
+## Before acting
+
+- If the request is ambiguous, state assumptions or ask — don't silently
+  pick one reading and build it.
+
+## When editing existing code
+
+- Change only what the request requires. Don't refactor or restyle working
+  code you weren't asked to touch. Match the existing style.
+
+## Design Rules (strict)
+
+Before changing code, check the rules below. If a change would violate one,
+stop and explain the smaller redesign first.
+
+Do not fix a banned smell by changing its shape: bool → enum/options,
+checks → wrappers, flag/switch → Strategy, pass-through layer → facade/adapter.
+
+1. Names must disambiguate — judge the full name, not the word.
+   Test: does the full name state the thing's role? If not, rename.
+   Red-flag words that usually fail (NOT a banned list — a self-check trigger,
+   not exhaustive): data, info, result, handler, manager, process, utils,
+   helper, service, wrapper, thing, value, tmp, obj — and the XxxManager /
+   XxxHelper shape. `*_impl` / `do_*` usually signal a redundant layer or
+   unnamed responsibility (legitimate only for pimpl).
+   e.g. `ConfigManager` → `ConfigStore` / `loadConfig`.
+
+2. Validate once at edges; trust invariants inside. Do not scatter
+   defensive checks across trusted internal boundaries. No repeated
+   `if x is None: return` / `if (!ptr) return -1;`. If the same check
+   appears 3+ times, redesign the boundary. Only delete an internal check if
+   some edge provably establishes that invariant — removing it without an
+   upstream guarantee introduces a bug.
+
+3. Comments document contracts, invariants, rationale, constraints, and
+   rejected alternatives. Do not narrate code or compensate for bad
+   names/boundaries.
+
+4. No flag that makes one function behave like two. If a bool/enum/
+   string/options arg switches the function between modes, split it into
+   separate operations. A bool that is just a value (`setEnabled(bool)`) is
+   fine; a param object whose fields are always all relevant is fine; a
+   grab-bag that toggles behavior is not. Do not escape by reshaping
+   bool → enum → options → Strategy.
+   e.g. `save(bool publish)` → `saveDraft()` / `publish()`.
+
+5. Right owner, complete operation. Put complexity where the decision,
+   invariant, or external dependency lives. Expose complete operations, not
+   caller-managed steps. Add no API/layer unless it hides caller knowledge,
+   enforces an invariant, or adapts an external dependency. Do not stuff
+   unrelated behavior together just to keep the API small.
+
+## Stop signals (redesign, don't push through)
+
+- One change spreads across many files → wrong owner or duplicated
+  knowledge, not more patches.
+- Naming gets hard, or a comment is explaining around an awkward interface
+  → suspect the abstraction boundary before adding more words.
+
+Scope: these rules govern the code you add or change — neither an excuse to
+skip review nor a license to refactor untouched code.
