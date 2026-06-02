@@ -1,8 +1,8 @@
 package com.medianexus.orchestrator.controller;
 
 import com.medianexus.orchestrator.common.response.ApiResponse;
-import com.medianexus.orchestrator.dto.CreateTestUserRequest;
-import com.medianexus.orchestrator.dto.UpdateTestUserRequest;
+import com.medianexus.orchestrator.dto.testuser.request.CreateTestUserRequest;
+import com.medianexus.orchestrator.dto.testuser.request.UpdateTestUserRequest;
 import com.medianexus.orchestrator.model.TestUser;
 import com.medianexus.orchestrator.service.TestUserService;
 import java.util.List;

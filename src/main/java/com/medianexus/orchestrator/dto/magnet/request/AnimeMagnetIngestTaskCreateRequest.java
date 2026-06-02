@@ -1,4 +1,4 @@
-package com.medianexus.orchestrator.dto.magnet;
+package com.medianexus.orchestrator.dto.magnet.request;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 

@@ -1,4 +1,4 @@
-package com.medianexus.orchestrator.dto.magnet;
+package com.medianexus.orchestrator.dto.magnet.response;
 
 import java.util.List;
 

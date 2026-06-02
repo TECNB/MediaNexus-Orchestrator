@@ -1,11 +1,11 @@
 package com.medianexus.orchestrator.controller;
 
 import com.medianexus.orchestrator.common.response.ApiResponse;
-import com.medianexus.orchestrator.dto.magnet.AnimeMagnetIngestTaskCreateRequest;
-import com.medianexus.orchestrator.dto.magnet.AnimeMagnetIngestTaskListResponse;
-import com.medianexus.orchestrator.dto.magnet.AnimeMagnetIngestTaskLogListResponse;
-import com.medianexus.orchestrator.dto.magnet.AnimeMagnetIngestTaskResponse;
-import com.medianexus.orchestrator.dto.magnet.AnimeMagnetSearchResponse;
+import com.medianexus.orchestrator.dto.magnet.request.AnimeMagnetIngestTaskCreateRequest;
+import com.medianexus.orchestrator.dto.magnet.response.AnimeMagnetIngestTaskListResponse;
+import com.medianexus.orchestrator.dto.magnet.response.AnimeMagnetIngestTaskLogListResponse;
+import com.medianexus.orchestrator.dto.magnet.response.AnimeMagnetIngestTaskResponse;
+import com.medianexus.orchestrator.dto.magnet.response.AnimeMagnetSearchResponse;
 import com.medianexus.orchestrator.service.AnimeMagnetIngestTaskService;
 import com.medianexus.orchestrator.service.AnimeMagnetSearchService;
 import org.springframework.web.bind.annotation.GetMapping;

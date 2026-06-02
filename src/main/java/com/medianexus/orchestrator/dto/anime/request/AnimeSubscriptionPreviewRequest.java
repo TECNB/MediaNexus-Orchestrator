@@ -1,4 +1,4 @@
-package com.medianexus.orchestrator.dto.anime;
+package com.medianexus.orchestrator.dto.anime.request;
 
 import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonProperty;

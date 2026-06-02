@@ -1,4 +1,4 @@
-package com.medianexus.orchestrator.dto.anime;
+package com.medianexus.orchestrator.dto.anime.response;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import java.util.List;

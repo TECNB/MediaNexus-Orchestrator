@@ -1,11 +1,11 @@
 package com.medianexus.orchestrator.controller;
 
 import com.medianexus.orchestrator.common.response.ApiResponse;
-import com.medianexus.orchestrator.dto.anime.AnimeSearchResponse;
-import com.medianexus.orchestrator.dto.anime.AnimeSubtitleGroupsResponse;
-import com.medianexus.orchestrator.dto.anime.AnimeSubscriptionPreviewRequest;
-import com.medianexus.orchestrator.dto.anime.AnimeSubscriptionPreviewResponse;
-import com.medianexus.orchestrator.dto.anime.AnimeSubscriptionResponse;
+import com.medianexus.orchestrator.dto.anime.request.AnimeSubscriptionPreviewRequest;
+import com.medianexus.orchestrator.dto.anime.response.AnimeSearchResponse;
+import com.medianexus.orchestrator.dto.anime.response.AnimeSubtitleGroupsResponse;
+import com.medianexus.orchestrator.dto.anime.response.AnimeSubscriptionPreviewResponse;
+import com.medianexus.orchestrator.dto.anime.response.AnimeSubscriptionResponse;
 import com.medianexus.orchestrator.service.AnimeSearchService;
 import com.medianexus.orchestrator.service.AnimeSubscriptionService;
 import org.springframework.web.bind.annotation.GetMapping;

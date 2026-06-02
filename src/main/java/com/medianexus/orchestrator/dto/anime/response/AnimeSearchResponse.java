@@ -1,4 +1,4 @@
-package com.medianexus.orchestrator.dto.anime;
+package com.medianexus.orchestrator.dto.anime.response;
 
 import java.util.List;
 
