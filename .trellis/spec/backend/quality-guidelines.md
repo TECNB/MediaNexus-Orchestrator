@@ -30,6 +30,24 @@ they are needed.
 - Use the unified `ApiResponse<T>` envelope for controller responses.
 - Prefer JDK and existing Spring Boot dependencies for small integrations
   before adding new client libraries.
+- Keep configuration defaults in `application.yml` / imported environment
+  placeholders, not repeated in `@ConfigurationProperties` fields and again in
+  service/client fallback logic.
+- Use `@ConfigurationProperties` classes for binding and unconditional
+  validation only. For values that are always required once the application
+  starts, prefer `@Validated` with Bean Validation annotations over hand-written
+  getter or setter fallback.
+- Optional integration credentials may stay optional at startup. Validate them
+  at the operation boundary that actually uses the external dependency.
+- For conditionally enabled features, validate required options in the owner
+  operation when the feature is enabled, rather than failing application startup
+  for disabled functionality.
+- Business services should call complete, semantic operations. Do not scatter
+  caller-managed step pairs such as `updateTask(...)` followed by `writeLog(...)`
+  through orchestration flows when a phase method can own the state/log contract.
+- Java 17 is the backend target. Java 9+ APIs such as `Map.of(...)` and
+  `List.of(...)` are acceptable here, but call out the version requirement when
+  discussing Java 8 compatibility.
 
 ## Commit Requirements
 
@@ -52,6 +70,27 @@ they are needed.
 - Add focused tests when business logic or changed behavior is introduced.
 - For the bootstrap task, static review and minimal syntax checks are acceptable
   unless the user explicitly asks for a local Maven build/test run.
+- Do not run full Maven build/test/typecheck commands unless the user explicitly
+  asks or the task is specifically about fixing validation failures. Prefer
+  focused checks such as `git diff --check`, targeted file inspection, or small
+  scoped commands.
+
+## Configuration Ownership
+
+- `application.yml` is the single source for default values that can be
+  overridden by `.env` or environment variables.
+- `@ConfigurationProperties` classes should expose the bound value directly.
+  Avoid `getEffective...()` methods and avoid repeated `null/zero/negative`
+  fallback logic in consumers.
+- Use validation annotations for unconditional invariants such as non-blank
+  tool names, positive `Duration` values, and non-negative retry limits.
+- Use runtime validation at the right owner for conditional invariants. Example:
+  a disabled SSH tunnel should not make the application fail to start because
+  tunnel credentials are blank; the tunnel lifecycle should validate those
+  fields only when it starts the tunnel.
+- If a configuration field feeds a domain template, avoid Spring placeholder
+  syntax in default values. Prefer domain placeholders such as `{title}` over
+  `${title}`.
 
 ## Scenario: API Documentation Contracts
 
