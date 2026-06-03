@@ -70,15 +70,11 @@ public class AnimeEpisodeRenameService {
 
         String episodeFormat = String.format("%02d", (int) episode);
         String seasonFormat = String.format("%02d", seasonNumber);
-        String template = StringUtils.hasText(properties.getAnimeRenameTemplate())
-                ? properties.getAnimeRenameTemplate()
-                : "${title} S${seasonFormat}E${episodeFormat}";
-        String baseName = template
-                .replace("${title}", title)
-                .replace("${seasonFormat}", seasonFormat)
-                .replace("${episodeFormat}", episodeFormat)
-                .replace("${season}", String.valueOf(seasonNumber))
-                .replace("${episode}", String.valueOf((int) episode));
+        String baseName = replaceTemplateValue(properties.getAnimeRenameTemplate(), "title", title);
+        baseName = replaceTemplateValue(baseName, "seasonFormat", seasonFormat);
+        baseName = replaceTemplateValue(baseName, "episodeFormat", episodeFormat);
+        baseName = replaceTemplateValue(baseName, "season", String.valueOf(seasonNumber));
+        baseName = replaceTemplateValue(baseName, "episode", String.valueOf((int) episode));
         baseName = sanitizeFileName(baseName);
 
         if (isSubtitle(sourceName)) {
@@ -106,9 +102,6 @@ public class AnimeEpisodeRenameService {
 
     private boolean isExcluded(String name) {
         String configuredPatterns = properties.getAnimeExcludePatterns();
-        if (!StringUtils.hasText(configuredPatterns)) {
-            configuredPatterns = "特别篇,\\d-\\d,总集";
-        }
         for (String pattern : configuredPatterns.split(",")) {
             String trimmed = pattern.trim();
             if (!trimmed.isEmpty() && Pattern.compile(trimmed).matcher(name).find()) {
@@ -136,6 +129,12 @@ public class AnimeEpisodeRenameService {
     private String sanitizeFileName(String name) {
         String sanitized = INVALID_NAME_CHARS.matcher(name.trim()).replaceAll(" ");
         return sanitized.replaceAll("\\s+", " ").trim();
+    }
+
+    private String replaceTemplateValue(String template, String key, String value) {
+        return template
+                .replace("{" + key + "}", value)
+                .replace("${" + key + "}", value);
     }
 
     public record RenameResult(Integer episodeNumber, String fileName) {

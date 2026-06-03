@@ -1,11 +1,15 @@
 package com.medianexus.orchestrator.config;
 
+import jakarta.validation.constraints.NotNull;
 import java.time.Duration;
+import org.hibernate.validator.constraints.time.DurationMin;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.validation.annotation.Validated;
 
 /**
  * Ani-RSS 上游服务配置。
  */
+@Validated
 @ConfigurationProperties(prefix = "medianexus.ani-rss")
 public class AniRssProperties {
 
@@ -20,9 +24,11 @@ public class AniRssProperties {
     private String apiKey;
 
     /**
-     * 单次 Ani-RSS HTTP 请求超时时间，非正值会在客户端回退到 10 秒。
+     * 单次 Ani-RSS HTTP 请求超时时间。
      */
-    private Duration timeout = Duration.ofSeconds(10);
+    @NotNull
+    @DurationMin(seconds = 1)
+    private Duration timeout;
 
     public String getBaseUrl() {
         return baseUrl;

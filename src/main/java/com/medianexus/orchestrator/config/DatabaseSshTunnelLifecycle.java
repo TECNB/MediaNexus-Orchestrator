@@ -99,11 +99,35 @@ public class DatabaseSshTunnelLifecycle implements SmartLifecycle {
         if (!StringUtils.hasText(properties.getHost())) {
             throw new IllegalStateException("MEDIANEXUS_DB_SSH_HOST is required when SSH tunnel is enabled");
         }
+        if (!isValidPort(properties.getPort())) {
+            throw new IllegalStateException("MEDIANEXUS_DB_SSH_PORT must be between 1 and 65535 when SSH tunnel is enabled");
+        }
         if (!StringUtils.hasText(properties.getUsername())) {
             throw new IllegalStateException("MEDIANEXUS_DB_SSH_USERNAME is required when SSH tunnel is enabled");
         }
         if (!StringUtils.hasText(properties.getPassword())) {
             throw new IllegalStateException("MEDIANEXUS_DB_SSH_PASSWORD is required when SSH tunnel is enabled");
         }
+        if (!StringUtils.hasText(properties.getLocalHost())) {
+            throw new IllegalStateException("MEDIANEXUS_DB_SSH_LOCAL_HOST is required when SSH tunnel is enabled");
+        }
+        if (!isValidPort(properties.getLocalPort())) {
+            throw new IllegalStateException("MEDIANEXUS_DB_LOCAL_PORT must be between 1 and 65535 when SSH tunnel is enabled");
+        }
+        if (!StringUtils.hasText(properties.getRemoteHost())) {
+            throw new IllegalStateException("MEDIANEXUS_DB_SSH_REMOTE_HOST is required when SSH tunnel is enabled");
+        }
+        if (!isValidPort(properties.getRemotePort())) {
+            throw new IllegalStateException("MEDIANEXUS_DB_SSH_REMOTE_PORT must be between 1 and 65535 when SSH tunnel is enabled");
+        }
+        if (properties.getConnectTimeout() == null
+                || properties.getConnectTimeout().isZero()
+                || properties.getConnectTimeout().isNegative()) {
+            throw new IllegalStateException("MEDIANEXUS_DB_SSH_CONNECT_TIMEOUT must be positive when SSH tunnel is enabled");
+        }
+    }
+
+    private boolean isValidPort(int port) {
+        return port > 0 && port <= 65535;
     }
 }

@@ -1,11 +1,17 @@
 package com.medianexus.orchestrator.config;
 
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import java.time.Duration;
+import org.hibernate.validator.constraints.time.DurationMin;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.validation.annotation.Validated;
 
 /**
  * OpenList 上游服务和整季导入路径配置。
  */
+@Validated
 @ConfigurationProperties(prefix = "medianexus.openlist")
 public class OpenListProperties {
 
@@ -22,47 +28,59 @@ public class OpenListProperties {
     /**
      * OpenList 离线下载工具名称，默认使用 PikPak。
      */
-    private String offlineTool = "PikPak";
+    @NotBlank
+    private String offlineTool;
 
     /**
      * OpenList 离线下载任务的删除策略。
      */
-    private String deletePolicy = "delete_on_upload_succeed";
+    @NotBlank
+    private String deletePolicy;
 
     /**
-     * 动漫季度保存路径模板，支持 title、themoviedbName、season、seasonFormat 占位符。
+     * 动漫季度保存路径模板，支持 {title}、{themoviedbName}、{season}、{seasonFormat} 占位符。
      */
-    private String animePathTemplate = "/pikpak/Media/Anime/${themoviedbName}/Season ${season}";
+    @NotBlank
+    private String animePathTemplate;
 
     /**
-     * 整理后文件名模板，支持 title、season、seasonFormat、episode、episodeFormat 占位符。
+     * 整理后文件名模板，支持 {title}、{season}、{seasonFormat}、{episode}、{episodeFormat} 占位符。
      */
-    private String animeRenameTemplate = "${title} S${seasonFormat}E${episodeFormat}";
+    @NotBlank
+    private String animeRenameTemplate;
 
     /**
      * 逗号分隔的排除正则，用于跳过特别篇、总集篇或合集区间等非正片文件。
      */
-    private String animeExcludePatterns = "特别篇,\\d-\\d,总集";
+    @NotBlank
+    private String animeExcludePatterns;
 
     /**
-     * 单次 OpenList HTTP 请求超时时间，非正值会在客户端回退到 30 秒。
+     * 单次 OpenList HTTP 请求超时时间。
      */
-    private Duration timeout = Duration.ofSeconds(120);
+    @NotNull
+    @DurationMin(seconds = 1)
+    private Duration timeout;
 
     /**
-     * 轮询 OpenList 离线下载任务的间隔，非正值会回退到 30 秒。
+     * 轮询 OpenList 离线下载任务的间隔。
      */
-    private Duration pollInterval = Duration.ofSeconds(30);
+    @NotNull
+    @DurationMin(seconds = 1)
+    private Duration pollInterval;
 
     /**
-     * 离线下载任务最长等待时间，非正值会回退到 360 分钟。
+     * 离线下载任务最长等待时间。
      */
-    private Duration offlineTimeout = Duration.ofMinutes(360);
+    @NotNull
+    @DurationMin(seconds = 1)
+    private Duration offlineTimeout;
 
     /**
      * OpenList 离线任务失败后的最大重试次数。
      */
-    private int retryLimit = 5;
+    @Min(0)
+    private int retryLimit;
 
     public String getBaseUrl() {
         return baseUrl;

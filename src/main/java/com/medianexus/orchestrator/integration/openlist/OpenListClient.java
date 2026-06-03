@@ -293,21 +293,15 @@ public class OpenListClient {
     }
 
     private String offlineTool() {
-        String value = cleanConfigValue(properties.getOfflineTool());
-        return StringUtils.hasText(value) ? value : "PikPak";
+        return cleanConfigValue(properties.getOfflineTool());
     }
 
     private String deletePolicy() {
-        String value = cleanConfigValue(properties.getDeletePolicy());
-        return StringUtils.hasText(value) ? value : "delete_on_upload_succeed";
+        return cleanConfigValue(properties.getDeletePolicy());
     }
 
     private Duration timeout() {
-        Duration timeout = properties.getTimeout();
-        if (timeout == null || timeout.isZero() || timeout.isNegative()) {
-            return Duration.ofSeconds(30);
-        }
-        return timeout;
+        return properties.getTimeout();
     }
 
     private String encode(String value) {

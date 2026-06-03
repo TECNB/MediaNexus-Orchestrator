@@ -24,7 +24,7 @@ public class DatabaseSshTunnelProperties {
     /**
      * SSH 端口。
      */
-    private int port = 22;
+    private int port;
 
     /**
      * SSH 用户名。
@@ -39,22 +39,22 @@ public class DatabaseSshTunnelProperties {
     /**
      * 本地监听地址。
      */
-    private String localHost = "127.0.0.1";
+    private String localHost;
 
     /**
-     * 本地监听端口，默认匹配 README 中的 datasource 示例。
+     * 本地监听端口。
      */
-    private int localPort = 3307;
+    private int localPort;
 
     /**
      * 从 SSH 服务器视角访问的远端数据库地址。
      */
-    private String remoteHost = "127.0.0.1";
+    private String remoteHost;
 
     /**
      * 从 SSH 服务器视角访问的远端数据库端口。
      */
-    private int remotePort = 3306;
+    private int remotePort;
 
     /**
      * 是否启用严格主机密钥检查；默认关闭以降低个人开发环境启动成本。
@@ -64,7 +64,7 @@ public class DatabaseSshTunnelProperties {
     /**
      * SSH 连接超时时间。
      */
-    private Duration connectTimeout = Duration.ofSeconds(15);
+    private Duration connectTimeout;
 
     public boolean isEnabled() {
         return enabled;

@@ -189,37 +189,65 @@ public class AnimeMagnetIngestTaskService {
             ensurePathReady(task.getSavePath());
             ensurePathReady(task.getTempPath());
 
-            updateTask(taskId, "SUBMITTED", "submitted", null, null, null);
-            writeLog(taskId, "INFO", "submitted", "正在提交 OpenList 离线下载", task.getTempPath());
+            markSubmitted(task);
             String openListTaskId = openListClient.addOfflineDownload(task.getTempPath(), task.getMagnet());
-            updateTask(taskId, "DOWNLOADING", "downloading", openListTaskId, null, null);
-            writeLog(taskId, "INFO", "downloading", "OpenList 离线任务已创建", openListTaskId);
+            markDownloading(taskId, openListTaskId);
 
             waitForOfflineTask(taskId, openListTaskId, task.getTempPath());
 
-            updateTask(taskId, "ORGANIZING", "organizing", openListTaskId, null, null);
-            writeLog(taskId, "INFO", "organizing", "离线下载完成，开始整理文件", task.getTempPath());
+            markOrganizing(taskId, openListTaskId, task.getTempPath());
             OrganizeResult result = organizeFiles(getExistingTask(taskId));
 
             if (result.organizedCount() < 1) {
-                updateTask(taskId, "FAILED", "failed", openListTaskId, result, "没有识别到可入库的视频文件");
-                writeLog(taskId, "ERROR", "failed", "没有识别到可入库的视频文件", null);
+                markNoOrganizedFiles(taskId, openListTaskId, result);
                 return;
             }
 
             if (result.skippedCount() > 0) {
-                updateTask(taskId, "PARTIAL_SUCCESS", "partial_success", openListTaskId, result, null);
-                writeLog(taskId, "WARN", "partial_success", "任务部分完成，已删除跳过文件", "skipped=" + result.skippedCount());
+                markPartialSuccess(taskId, openListTaskId, result);
                 return;
             }
 
-            updateTask(taskId, "SUCCEEDED", "succeeded", openListTaskId, result, null);
-            writeLog(taskId, "INFO", "succeeded", "任务完成", "organized=" + result.organizedCount());
+            markSucceeded(taskId, openListTaskId, result);
         } catch (Exception exception) {
             log.warn("Anime magnet ingest task failed id={}", taskId, exception);
-            updateTask(taskId, "FAILED", "failed", null, null, safeMessage(exception));
-            writeLog(taskId, "ERROR", "failed", "任务失败", safeMessage(exception));
+            markFailed(taskId, safeMessage(exception));
         }
+    }
+
+    private void markSubmitted(AnimeMagnetIngestTask task) {
+        updateTask(task.getId(), "SUBMITTED", "submitted", null, null, null);
+        writeLog(task.getId(), "INFO", "submitted", "正在提交 OpenList 离线下载", task.getTempPath());
+    }
+
+    private void markDownloading(String taskId, String openListTaskId) {
+        updateTask(taskId, "DOWNLOADING", "downloading", openListTaskId, null, null);
+        writeLog(taskId, "INFO", "downloading", "OpenList 离线任务已创建", openListTaskId);
+    }
+
+    private void markOrganizing(String taskId, String openListTaskId, String tempPath) {
+        updateTask(taskId, "ORGANIZING", "organizing", openListTaskId, null, null);
+        writeLog(taskId, "INFO", "organizing", "离线下载完成，开始整理文件", tempPath);
+    }
+
+    private void markNoOrganizedFiles(String taskId, String openListTaskId, OrganizeResult result) {
+        updateTask(taskId, "FAILED", "failed", openListTaskId, result, "没有识别到可入库的视频文件");
+        writeLog(taskId, "ERROR", "failed", "没有识别到可入库的视频文件", null);
+    }
+
+    private void markPartialSuccess(String taskId, String openListTaskId, OrganizeResult result) {
+        updateTask(taskId, "PARTIAL_SUCCESS", "partial_success", openListTaskId, result, null);
+        writeLog(taskId, "WARN", "partial_success", "任务部分完成，已删除跳过文件", "skipped=" + result.skippedCount());
+    }
+
+    private void markSucceeded(String taskId, String openListTaskId, OrganizeResult result) {
+        updateTask(taskId, "SUCCEEDED", "succeeded", openListTaskId, result, null);
+        writeLog(taskId, "INFO", "succeeded", "任务完成", "organized=" + result.organizedCount());
+    }
+
+    private void markFailed(String taskId, String errorMessage) {
+        updateTask(taskId, "FAILED", "failed", null, null, errorMessage);
+        writeLog(taskId, "ERROR", "failed", "任务失败", errorMessage);
     }
 
     /**
@@ -232,8 +260,8 @@ public class AnimeMagnetIngestTaskService {
     private void waitForOfflineTask(String taskId, String openListTaskId, String tempPath) {
         Instant startedAt = Instant.now();
         int retryCount = 0;
-        Duration timeout = offlineTimeout();
-        Duration pollInterval = pollInterval();
+        Duration timeout = openListProperties.getOfflineTimeout();
+        Duration pollInterval = openListProperties.getPollInterval();
 
         while (Duration.between(startedAt, Instant.now()).compareTo(timeout) < 0) {
             OpenListOfflineTaskInfo taskInfo = openListClient.offlineTaskInfo(openListTaskId);
@@ -540,15 +568,13 @@ public class AnimeMagnetIngestTaskService {
     }
 
     private String renderAnimePath(String title, String themoviedbName, Integer season) {
-        String template = StringUtils.hasText(openListProperties.getAnimePathTemplate())
-                ? openListProperties.getAnimePathTemplate()
-                : "/pikpak/Media/Anime/${themoviedbName}/Season ${season}";
+        String template = openListProperties.getAnimePathTemplate();
         String mediaName = StringUtils.hasText(themoviedbName) ? themoviedbName.trim() : title;
-        return openListClient.normalizePath(template
-                .replace("${themoviedbName}", sanitizePathSegment(mediaName))
-                .replace("${title}", sanitizePathSegment(title))
-                .replace("${season}", String.valueOf(season))
-                .replace("${seasonFormat}", String.format("%02d", season)));
+        String path = replaceTemplateValue(template, "themoviedbName", sanitizePathSegment(mediaName));
+        path = replaceTemplateValue(path, "title", sanitizePathSegment(title));
+        path = replaceTemplateValue(path, "season", String.valueOf(season));
+        path = replaceTemplateValue(path, "seasonFormat", String.format("%02d", season));
+        return openListClient.normalizePath(path);
     }
 
     private String sanitizePathSegment(String value) {
@@ -561,6 +587,12 @@ public class AnimeMagnetIngestTaskService {
         return StringUtils.hasText(value) ? value.trim() : null;
     }
 
+    private String replaceTemplateValue(String template, String key, String value) {
+        return template
+                .replace("{" + key + "}", value)
+                .replace("${" + key + "}", value);
+    }
+
     private String safeMessage(Exception exception) {
         String message = exception.getMessage();
         return StringUtils.hasText(message) ? truncate(message, 1000) : "任务执行失败";
@@ -571,22 +603,6 @@ public class AnimeMagnetIngestTaskService {
             return value;
         }
         return value.substring(0, maxLength);
-    }
-
-    private Duration pollInterval() {
-        Duration interval = openListProperties.getPollInterval();
-        if (interval == null || interval.isZero() || interval.isNegative()) {
-            return Duration.ofSeconds(30);
-        }
-        return interval;
-    }
-
-    private Duration offlineTimeout() {
-        Duration timeout = openListProperties.getOfflineTimeout();
-        if (timeout == null || timeout.isZero() || timeout.isNegative()) {
-            return Duration.ofMinutes(360);
-        }
-        return timeout;
     }
 
     private void sleep(Duration duration) {

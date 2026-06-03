@@ -176,9 +176,6 @@ public class AniRssClient {
     }
 
     private Duration timeout() {
-        if (properties.getTimeout() == null || properties.getTimeout().isNegative() || properties.getTimeout().isZero()) {
-            return Duration.ofSeconds(10);
-        }
         return properties.getTimeout();
     }
 }
