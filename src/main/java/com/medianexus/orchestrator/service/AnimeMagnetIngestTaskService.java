@@ -75,6 +75,12 @@ public class AnimeMagnetIngestTaskService {
         this.executorService = Executors.newSingleThreadExecutor(new WorkerThreadFactory());
     }
 
+    /**
+     * 服务重启后中断未完成任务。
+     *
+     * 当前任务执行器是单进程内存队列，重启后无法恢复已提交到 worker 的控制流；
+     * 因此所有非终态任务必须显式标记为 INTERRUPTED，避免前端长期显示运行中。
+     */
     @EventListener(ApplicationReadyEvent.class)
     public void markUnfinishedTasksInterrupted() {
         LambdaUpdateWrapper<AnimeMagnetIngestTask> updateWrapper = new LambdaUpdateWrapper<AnimeMagnetIngestTask>()
@@ -86,6 +92,12 @@ public class AnimeMagnetIngestTaskService {
         taskMapper.update(updateWrapper);
     }
 
+    /**
+     * 创建整季 magnet 导入任务并异步提交执行。
+     *
+     * 同一 btih hash 在 PENDING/SUBMITTED/DOWNLOADING/ORGANIZING 中只能存在一个活跃任务；
+     * 命中时返回已有任务而不是重复提交 OpenList 离线下载。
+     */
     public AnimeMagnetIngestTaskResponse createTask(AnimeMagnetIngestTaskCreateRequest request) {
         validateCreateRequest(request);
         String magnet = request.magnet().trim();
@@ -135,6 +147,11 @@ public class AnimeMagnetIngestTaskService {
         return toResponse(getExistingTask(taskId));
     }
 
+    /**
+     * 返回最近创建的导入任务列表。
+     *
+     * 当前接口面向工作台概览，固定返回最近 20 条，后续需要分页时再扩大契约。
+     */
     public AnimeMagnetIngestTaskListResponse listTasks() {
         List<AnimeMagnetIngestTaskResponse> items = taskMapper.selectList(new LambdaQueryWrapper<AnimeMagnetIngestTask>()
                         .orderByDesc(AnimeMagnetIngestTask::getCreatedAt)
@@ -145,10 +162,16 @@ public class AnimeMagnetIngestTaskService {
         return new AnimeMagnetIngestTaskListResponse(items, items.size());
     }
 
+    /**
+     * 获取导入任务详情；任务不存在时返回 404 语义的业务错误。
+     */
     public AnimeMagnetIngestTaskResponse getTask(String taskId) {
         return toResponse(getExistingTask(taskId));
     }
 
+    /**
+     * 获取导入任务日志；先校验任务存在，避免无效 id 被解释成空日志。
+     */
     public AnimeMagnetIngestTaskLogListResponse getTaskLogs(String taskId) {
         getExistingTask(taskId);
         List<AnimeMagnetIngestTaskLogResponse> items = taskLogMapper.selectList(new LambdaQueryWrapper<AnimeMagnetIngestTaskLog>()
@@ -199,6 +222,13 @@ public class AnimeMagnetIngestTaskService {
         }
     }
 
+    /**
+     * 等待 OpenList 离线任务进入可整理状态。
+     *
+     * OpenList 的 state=1 有时仍显示保存中但目标目录已经出现视频文件；超过宽限期后以
+     * 文件可见性作为继续整理的信号。state>=5 也同理先检查文件，避免上游状态滞后导致
+     * 已下载内容被误判失败。
+     */
     private void waitForOfflineTask(String taskId, String openListTaskId, String tempPath) {
         Instant startedAt = Instant.now();
         int retryCount = 0;
@@ -240,6 +270,12 @@ public class AnimeMagnetIngestTaskService {
         throw new OpenListClientException("OpenList 离线下载超时");
     }
 
+    /**
+     * 将临时目录中的可识别视频/字幕整理到 Season 目录。
+     *
+     * 目标文件名在一次整理计划内必须唯一；已存在或重复的文件会被跳过并删除，避免
+     * 覆盖媒体库中已经整理好的剧集。
+     */
     private OrganizeResult organizeFiles(AnimeMagnetIngestTask task) {
         List<OpenListFileInfo> files = openListClient.findFiles(task.getTempPath());
         Set<String> targetNames = openListClient.listFiles(task.getSavePath()).stream()
@@ -364,6 +400,7 @@ public class AnimeMagnetIngestTaskService {
         try {
             openListClient.deleteOfflineTask(openListTaskId);
         } catch (RuntimeException exception) {
+            // 离线任务记录清理失败不影响文件整理结果，保留 WARN 日志供人工回收。
             writeLog(taskId, "WARN", "downloading", "删除 OpenList 离线任务记录失败，继续后续整理", null);
         }
     }
@@ -381,6 +418,7 @@ public class AnimeMagnetIngestTaskService {
                 skippedStorageRoot = true;
                 continue;
             }
+            // OpenList 存储根由挂载配置提供，不能通过 mkdir 创建；只补齐根目录以下层级。
             openListClient.mkdir(current);
         }
     }

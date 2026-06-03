@@ -34,6 +34,12 @@ public class AnimeSearchService {
         this.aniRssClient = aniRssClient;
     }
 
+    /**
+     * 搜索用于资源页展示的 Mikan 番剧条目。
+     *
+     * 调用方必须传入非空关键词；上游错误和响应结构变化都会被收敛成统一业务错误，
+     * 避免向前端暴露 Ani-RSS 的内部失败细节。
+     */
     public AnimeSearchResponse search(String term) {
         if (!StringUtils.hasText(term)) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "搜索关键词不能为空");
@@ -88,6 +94,7 @@ public class AnimeSearchService {
                 return "mikan:" + matcher.group(1);
             }
         }
+        // Mikan 搜索结果偶尔缺少标准 URL，前端仍需要一个跨刷新稳定的条目标识。
         return "mikan:" + stableHash(sourceUrl + "|" + title + "|" + weekLabel);
     }
 

@@ -52,6 +52,12 @@ public class AnimeSubscriptionService {
         this.objectMapper = objectMapper;
     }
 
+    /**
+     * 获取指定 Mikan 条目的可订阅字幕组候选。
+     *
+     * 只返回能识别语言且具备 RSS/Bangumi 地址的候选，并按简体优先、条目数更多、
+     * 更新时间更近的顺序排序，保证前端默认选择更可能可用。
+     */
     public AnimeSubtitleGroupsResponse groups(String sourceUrl) {
         if (!StringUtils.hasText(sourceUrl)) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "番剧来源地址不能为空");
@@ -72,6 +78,12 @@ public class AnimeSubscriptionService {
         }
     }
 
+    /**
+     * 预览用户选中字幕组生成的 Ani-RSS 订阅草稿。
+     *
+     * 预览结果必须至少包含一个可用条目，否则返回请求错误；这样创建订阅前就能阻止
+     * 空订阅进入 Ani-RSS。
+     */
     public AnimeSubscriptionPreviewResponse preview(AnimeSubscriptionPreviewRequest request) {
         PreviewResult result = previewSelectedGroup(request, PREVIEW_FAILED_MESSAGE);
         if (result.preview().previewCount() <= 0) {
@@ -80,6 +92,12 @@ public class AnimeSubscriptionService {
         return result.preview();
     }
 
+    /**
+     * 创建 Ani-RSS 订阅。
+     *
+     * 创建前复用预览流程，并以 Ani-RSS 当前列表中的标题和季数作为重复订阅边界。
+     * 命中重复时返回 exists 状态，不再向上游提交 addAni。
+     */
     public AnimeSubscriptionResponse subscribe(AnimeSubscriptionPreviewRequest request) {
         PreviewResult result = previewSelectedGroup(request, SUBSCRIBE_FAILED_MESSAGE);
         AnimeSubscriptionPreviewResponse preview = result.preview();
@@ -151,6 +169,7 @@ public class AnimeSubscriptionService {
 
     private JsonNode ensureEnabled(JsonNode subscription) {
         if (subscription instanceof ObjectNode objectNode) {
+            // rssToAni 可能继承上游默认禁用值，预览和创建路径都要求草稿显式启用。
             objectNode.put("enable", true);
             return objectNode;
         }
@@ -253,6 +272,7 @@ public class AnimeSubscriptionService {
             return tagLanguage;
         }
 
+        // 部分 Mikan 字幕组缺少语言标签，只能从种子标题里的 CHS/CHT/简繁字样兜底推断。
         JsonNode items = group.path("items");
         if (!items.isArray()) {
             return null;

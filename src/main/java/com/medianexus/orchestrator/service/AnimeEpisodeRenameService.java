@@ -29,6 +29,12 @@ public class AnimeEpisodeRenameService {
         this.properties = properties;
     }
 
+    /**
+     * 将字幕组发布文件名转换为媒体库季集命名。
+     *
+     * 只接受视频和字幕文件；特别篇、总集篇、合集区间和半集会被跳过，避免把非正片
+     * 写入 Season 目录。返回的文件名已按 OpenList 模板渲染并清理非法路径字符。
+     */
     public Optional<RenameResult> rename(String sourceName, String title, Integer seasonNumber, int offset) {
         String extension = extension(sourceName);
         if (!isVideo(sourceName) && !isSubtitle(sourceName)) {
@@ -84,10 +90,16 @@ public class AnimeEpisodeRenameService {
         return Optional.of(new RenameResult((int) episode, baseName + "." + extension));
     }
 
+    /**
+     * 判断文件扩展名是否属于当前导入流程会整理的视频类型。
+     */
     public boolean isVideo(String name) {
         return VIDEO_EXTENSIONS.contains(extension(name).toLowerCase(Locale.ROOT));
     }
 
+    /**
+     * 判断文件扩展名是否属于当前导入流程会随剧集整理的字幕类型。
+     */
     public boolean isSubtitle(String name) {
         return SUBTITLE_EXTENSIONS.contains(extension(name).toLowerCase(Locale.ROOT));
     }

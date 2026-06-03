@@ -28,6 +28,12 @@ public class AnimeMagnetSearchService {
         this.aniRssClient = aniRssClient;
     }
 
+    /**
+     * 搜索用于整季 magnet 导入的 Bangumi 条目。
+     *
+     * 此接口和资源页的 Mikan 搜索来源不同：这里返回 Bangumi id、原名、中文名和季信息，
+     * 用于后续渲染 OpenList 保存路径和任务标题。
+     */
     public AnimeMagnetSearchResponse search(String term) {
         if (!StringUtils.hasText(term)) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "搜索关键词不能为空");

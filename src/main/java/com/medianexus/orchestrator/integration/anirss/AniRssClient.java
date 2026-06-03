@@ -18,6 +18,12 @@ import java.util.List;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
+/**
+ * Ani-RSS REST API 客户端。
+ *
+ * Ani-RSS 会在控制器路由前统一添加 {@code /api} 前缀；调用方只传业务 endpoint，
+ * 本客户端负责拼接最终路径、附加 {@code x-api-key}，并把上游响应解包成 data 节点。
+ */
 @Component
 public class AniRssClient {
 
@@ -46,30 +52,51 @@ public class AniRssClient {
                 .build();
     }
 
+    /**
+     * 调用 Ani-RSS Mikan 搜索，返回上游 data 节点。
+     */
     public JsonNode searchMikan(String keyword) {
         return post("mikan", "text=" + encode(keyword), "{}");
     }
 
+    /**
+     * 调用 Ani-RSS Bangumi 搜索，供整季 magnet 导入选择条目使用。
+     */
     public JsonNode searchBgm(String keyword) {
         return post("searchBgm", "name=" + encode(keyword), "{}");
     }
 
+    /**
+     * 按 Mikan 番剧页面地址获取字幕组候选。
+     */
     public JsonNode getMikanGroups(String sourceUrl) {
         return post("mikanGroup", "url=" + encode(sourceUrl), "{}");
     }
 
+    /**
+     * 将 Mikan RSS、Bangumi 地址和字幕组转换为 Ani-RSS 订阅草稿。
+     */
     public JsonNode rssToAni(JsonNode payload) {
         return post("rssToAni", null, writeJson(payload));
     }
 
+    /**
+     * 预览 Ani-RSS 订阅草稿会产生的下载条目和缺集信息。
+     */
     public JsonNode previewAni(JsonNode subscription) {
         return post("previewAni", null, writeJson(subscription));
     }
 
+    /**
+     * 返回 Ani-RSS 当前订阅列表，用于本地重复订阅检查。
+     */
     public JsonNode listAni() {
         return post("listAni", null, "{}");
     }
 
+    /**
+     * 提交 Ani-RSS 订阅草稿。
+     */
     public JsonNode addAni(JsonNode subscription) {
         return post("addAni", null, writeJson(subscription));
     }
@@ -80,6 +107,7 @@ public class AniRssClient {
             JsonNode codeNode = root.get("code");
             if (codeNode != null && codeNode.isNumber()) {
                 int code = codeNode.asInt();
+                // Ani-RSS 新旧接口混用 0 和 200 表示成功，其他 code 都作为上游失败处理。
                 if (code != 0 && code != 200) {
                     throw new AniRssClientException("ani-rss returned failure code " + code);
                 }
@@ -131,6 +159,7 @@ public class AniRssClient {
         if (baseUrl.endsWith("/")) {
             baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
         }
+        // 允许配置值已经包含 /api，避免部署环境切换时生成 /api/api/...。
         String path = baseUrl.endsWith("/api") ? "/" + endpoint : "/api/" + endpoint;
         String suffix = StringUtils.hasText(query) ? "?" + query : "";
         return URI.create(baseUrl + path + suffix);
