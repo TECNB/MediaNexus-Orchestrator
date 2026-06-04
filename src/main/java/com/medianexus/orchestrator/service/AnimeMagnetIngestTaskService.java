@@ -186,8 +186,7 @@ public class AnimeMagnetIngestTaskService {
     private void runTask(String taskId) {
         try {
             AnimeMagnetIngestTask task = getExistingTask(taskId);
-            ensurePathReady(task.getSavePath());
-            ensurePathReady(task.getTempPath());
+            prepareDownloadRoot(task);
 
             markSubmitted(task);
             String openListTaskId = openListClient.addOfflineDownload(task.getTempPath(), task.getMagnet());
@@ -208,6 +207,12 @@ public class AnimeMagnetIngestTaskService {
             log.warn("Anime magnet ingest task failed id={}", taskId, exception);
             markFailed(taskId, safeMessage(exception));
         }
+    }
+
+    private void prepareDownloadRoot(AnimeMagnetIngestTask task) {
+        writeLog(task.getId(), "INFO", "created", "正在准备 OpenList 保存目录", task.getSavePath());
+        ensurePathReady(task.getId(), task.getSavePath());
+        writeLog(task.getId(), "INFO", "created", "OpenList 保存目录准备完成", task.getSavePath());
     }
 
     private void markSubmitted(AnimeMagnetIngestTask task) {
@@ -503,7 +508,7 @@ public class AnimeMagnetIngestTaskService {
         }
     }
 
-    private void ensurePathReady(String path) {
+    private void ensurePathReady(String taskId, String path) {
         String normalized = openListClient.normalizePath(path);
         String current = "";
         boolean skippedStorageRoot = false;
@@ -517,6 +522,7 @@ public class AnimeMagnetIngestTaskService {
                 continue;
             }
             // OpenList 存储根由挂载配置提供，不能通过 mkdir 创建；只补齐根目录以下层级。
+            writeLog(taskId, "INFO", "created", "正在确认 OpenList 目录层级", current);
             openListClient.mkdir(current);
         }
     }
