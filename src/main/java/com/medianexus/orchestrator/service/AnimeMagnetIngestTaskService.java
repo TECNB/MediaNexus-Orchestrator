@@ -295,6 +295,7 @@ public class AnimeMagnetIngestTaskService {
      * 覆盖媒体库中已经整理好的剧集。
      */
     private OrganizeResult organizeFiles(AnimeMagnetIngestTask task) {
+        writeLog(task.getId(), "INFO", "organizing", "正在扫描临时目录并生成整理计划", task.getTempPath());
         List<OpenListFileInfo> files = openListClient.findFiles(task.getTempPath());
         // 目标目录已有文件优先保留，重复导入或补集时不能覆盖媒体库中已整理的剧集。
         Set<String> targetNames = openListClient.listFiles(task.getSavePath()).stream()
@@ -350,26 +351,102 @@ public class AnimeMagnetIngestTaskService {
             organized++;
         }
 
+        int renameCount = countRenameOperations(renameByDir);
+        int moveCount = countFileOperations(moveByDir);
+        int deleteCount = countFileOperations(deleteByDir);
+        writeLog(
+                task.getId(),
+                "INFO",
+                "organizing",
+                "整理计划已生成",
+                "rename=" + renameCount + ", move=" + moveCount + ", delete=" + deleteCount
+                        + ", organized=" + organized + ", skipped=" + skipped
+        );
+
         for (Map.Entry<String, Map<String, String>> entry : renameByDir.entrySet()) {
+            writeLog(
+                    task.getId(),
+                    "INFO",
+                    "organizing",
+                    "正在批量重命名文件",
+                    sourceBatchDetail(entry.getKey(), entry.getValue().size())
+            );
             openListClient.batchRename(entry.getKey(), entry.getValue());
+            writeLog(
+                    task.getId(),
+                    "INFO",
+                    "organizing",
+                    "批量重命名完成",
+                    sourceBatchDetail(entry.getKey(), entry.getValue().size())
+            );
             for (Map.Entry<String, String> renameEntry : entry.getValue().entrySet()) {
                 writeLog(task.getId(), "INFO", "organizing", "重命名文件", renameEntry.getKey() + " ==> " + renameEntry.getValue());
             }
         }
         for (Map.Entry<String, List<String>> entry : moveByDir.entrySet()) {
+            writeLog(
+                    task.getId(),
+                    "INFO",
+                    "organizing",
+                    "正在批量移动文件到 Season 目录",
+                    moveBatchDetail(entry.getKey(), task.getSavePath(), entry.getValue().size())
+            );
             openListClient.move(entry.getKey(), task.getSavePath(), entry.getValue());
+            writeLog(
+                    task.getId(),
+                    "INFO",
+                    "organizing",
+                    "批量移动完成",
+                    moveBatchDetail(entry.getKey(), task.getSavePath(), entry.getValue().size())
+            );
             for (String name : entry.getValue()) {
                 writeLog(task.getId(), "INFO", "organizing", "移动文件到 Season 目录", name);
             }
         }
         for (Map.Entry<String, List<String>> entry : deleteByDir.entrySet()) {
+            writeLog(
+                    task.getId(),
+                    "INFO",
+                    "organizing",
+                    "正在删除跳过文件",
+                    sourceBatchDetail(entry.getKey(), entry.getValue().size())
+            );
             openListClient.remove(entry.getKey(), entry.getValue());
+            writeLog(
+                    task.getId(),
+                    "INFO",
+                    "organizing",
+                    "跳过文件删除完成",
+                    sourceBatchDetail(entry.getKey(), entry.getValue().size())
+            );
             for (String name : entry.getValue()) {
                 writeLog(task.getId(), "INFO", "organizing", "删除跳过文件", entry.getKey() + "/" + name);
             }
         }
+        writeLog(task.getId(), "INFO", "organizing", "正在清理空目录", savePath);
         cleanupEmptyDirectories(task.getId(), savePath, savePath);
+        writeLog(task.getId(), "INFO", "organizing", "空目录清理完成", savePath);
         return new OrganizeResult(organized, skipped);
+    }
+
+    private int countRenameOperations(Map<String, Map<String, String>> renameByDir) {
+        return renameByDir.values().stream()
+                .mapToInt(Map::size)
+                .sum();
+    }
+
+    private int countFileOperations(Map<String, List<String>> namesByDir) {
+        return namesByDir.values().stream()
+                .mapToInt(List::size)
+                .sum();
+    }
+
+    private String sourceBatchDetail(String sourceDir, int count) {
+        return "srcDir=" + sourceDir + ", count=" + count;
+    }
+
+    private String moveBatchDetail(String sourceDir, String destinationDir, int count) {
+        return "srcDir=" + sourceDir + ", dstDir=" + destinationDir + ", count=" + count;
     }
 
     private void cleanupEmptyDirectories(String taskId, String rootPath, String currentPath) {
