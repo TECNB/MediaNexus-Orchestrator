@@ -44,7 +44,7 @@ medianexus:
     anime-rename-template: ${MEDIANEXUS_ANIME_RENAME_TEMPLATE:{title} S{seasonFormat}E{episodeFormat}}
     anime-exclude-patterns: ${MEDIANEXUS_ANIME_EXCLUDE_PATTERNS:特别篇,\d-\d,总集}
     timeout: ${MEDIANEXUS_OPENLIST_TIMEOUT:120s}
-    poll-interval: ${MEDIANEXUS_OPENLIST_POLL_INTERVAL:30s}
+    poll-interval: ${MEDIANEXUS_OPENLIST_POLL_INTERVAL:10s}
     offline-timeout: ${MEDIANEXUS_OPENLIST_OFFLINE_TIMEOUT:10m}
     retry-limit: ${MEDIANEXUS_OPENLIST_RETRY_LIMIT:5}
 

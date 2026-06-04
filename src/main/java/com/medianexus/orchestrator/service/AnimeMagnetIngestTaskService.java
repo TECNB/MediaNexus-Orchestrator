@@ -203,11 +203,6 @@ public class AnimeMagnetIngestTaskService {
                 return;
             }
 
-            if (result.skippedCount() > 0) {
-                markPartialSuccess(taskId, openListTaskId, result);
-                return;
-            }
-
             markSucceeded(taskId, openListTaskId, result);
         } catch (Exception exception) {
             log.warn("Anime magnet ingest task failed id={}", taskId, exception);
@@ -235,14 +230,9 @@ public class AnimeMagnetIngestTaskService {
         writeLog(taskId, "ERROR", "failed", "没有识别到可入库的视频文件", null);
     }
 
-    private void markPartialSuccess(String taskId, String openListTaskId, OrganizeResult result) {
-        updateTask(taskId, "PARTIAL_SUCCESS", "partial_success", openListTaskId, result, null);
-        writeLog(taskId, "WARN", "partial_success", "任务部分完成，已删除跳过文件", "skipped=" + result.skippedCount());
-    }
-
     private void markSucceeded(String taskId, String openListTaskId, OrganizeResult result) {
         updateTask(taskId, "SUCCEEDED", "succeeded", openListTaskId, result, null);
-        writeLog(taskId, "INFO", "succeeded", "任务完成", "organized=" + result.organizedCount());
+        writeLog(taskId, "INFO", "succeeded", "任务完成", "organized=" + result.organizedCount() + ", skipped=" + result.skippedCount());
     }
 
     private void markFailed(String taskId, String errorMessage) {
@@ -306,15 +296,18 @@ public class AnimeMagnetIngestTaskService {
      */
     private OrganizeResult organizeFiles(AnimeMagnetIngestTask task) {
         List<OpenListFileInfo> files = openListClient.findFiles(task.getTempPath());
+        // 目标目录已有文件优先保留，重复导入或补集时不能覆盖媒体库中已整理的剧集。
         Set<String> targetNames = openListClient.listFiles(task.getSavePath()).stream()
                 .map(OpenListFileInfo::name)
                 .collect(HashSet::new, HashSet::add, HashSet::addAll);
 
+        // OpenList 的重命名、移动和删除都依赖父目录参数，整理计划需要保留源目录上下文。
         Map<String, Map<String, String>> renameByDir = new HashMap<>();
         Map<String, List<String>> moveByDir = new HashMap<>();
         Map<String, List<String>> deleteByDir = new HashMap<>();
         int skipped = 0;
         int organized = 0;
+        // 本次整理计划内的目标文件名必须唯一，避免同一批文件识别成同一集后互相覆盖。
         Set<String> plannedTargetNames = new HashSet<>();
         String savePath = openListClient.normalizePath(task.getSavePath());
 
@@ -349,7 +342,6 @@ public class AnimeMagnetIngestTaskService {
 
             if (!file.name().equals(targetName)) {
                 renameByDir.computeIfAbsent(file.path(), ignored -> new HashMap<>()).put(file.name(), targetName);
-                writeLog(task.getId(), "INFO", "organizing", "重命名文件", file.name() + " ==> " + targetName);
             }
             if (!filePath.equals(savePath)) {
                 moveByDir.computeIfAbsent(file.path(), ignored -> new ArrayList<>()).add(targetName);
@@ -359,19 +351,20 @@ public class AnimeMagnetIngestTaskService {
         }
 
         for (Map.Entry<String, Map<String, String>> entry : renameByDir.entrySet()) {
+            openListClient.batchRename(entry.getKey(), entry.getValue());
             for (Map.Entry<String, String> renameEntry : entry.getValue().entrySet()) {
-                openListClient.batchRename(entry.getKey(), Map.of(renameEntry.getKey(), renameEntry.getValue()));
+                writeLog(task.getId(), "INFO", "organizing", "重命名文件", renameEntry.getKey() + " ==> " + renameEntry.getValue());
             }
         }
         for (Map.Entry<String, List<String>> entry : moveByDir.entrySet()) {
+            openListClient.move(entry.getKey(), task.getSavePath(), entry.getValue());
             for (String name : entry.getValue()) {
-                openListClient.move(entry.getKey(), task.getSavePath(), List.of(name));
                 writeLog(task.getId(), "INFO", "organizing", "移动文件到 Season 目录", name);
             }
         }
         for (Map.Entry<String, List<String>> entry : deleteByDir.entrySet()) {
+            openListClient.remove(entry.getKey(), entry.getValue());
             for (String name : entry.getValue()) {
-                openListClient.remove(entry.getKey(), List.of(name));
                 writeLog(task.getId(), "INFO", "organizing", "删除跳过文件", entry.getKey() + "/" + name);
             }
         }
