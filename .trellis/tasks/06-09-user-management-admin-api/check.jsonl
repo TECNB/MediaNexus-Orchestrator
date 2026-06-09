@@ -1,0 +1,4 @@
+{"file":".trellis/spec/backend/index.md","reason":"Backend verification entry point."}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"Verify schema and mapper choices."}
+{"file":".trellis/spec/backend/error-handling.md","reason":"Verify admin and validation errors."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Review scope and quality risks."}

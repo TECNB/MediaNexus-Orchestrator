@@ -89,4 +89,22 @@ public interface UserActionUsageMapper extends BaseMapper<UserActionUsage> {
             @Param("actionType") String actionType,
             @Param("usageDate") LocalDate usageDate
     );
+
+    @Update("""
+            <script>
+            UPDATE user_action_usage
+            SET used_count = 0
+            WHERE user_id = #{userId}
+              AND usage_date = #{usageDate}
+              AND action_type IN
+              <foreach collection="actionTypes" item="actionType" open="(" separator="," close=")">
+                  #{actionType}
+              </foreach>
+            </script>
+            """)
+    void resetUsageCounts(
+            @Param("userId") Long userId,
+            @Param("usageDate") LocalDate usageDate,
+            @Param("actionTypes") List<String> actionTypes
+    );
 }

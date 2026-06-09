@@ -1,0 +1,4 @@
+{"file":".trellis/spec/backend/index.md","reason":"Backend task entry point and required conventions."}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"MyBatis-Plus and database schema conventions."}
+{"file":".trellis/spec/backend/error-handling.md","reason":"BusinessException and API error behavior."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Backend quality and API documentation expectations."}

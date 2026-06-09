@@ -2,7 +2,6 @@ package com.medianexus.orchestrator.service;
 
 import com.medianexus.orchestrator.common.exception.BusinessException;
 import com.medianexus.orchestrator.common.exception.ErrorCode;
-import com.medianexus.orchestrator.config.UserQuotaProperties;
 import com.medianexus.orchestrator.mapper.UserActionUsageMapper;
 import com.medianexus.orchestrator.model.User;
 import com.medianexus.orchestrator.model.UserActionType;
@@ -25,14 +24,14 @@ public class UserActionQuotaService {
     );
 
     private final UserActionUsageMapper usageMapper;
-    private final UserQuotaProperties quotaProperties;
+    private final UserQuotaSettingsService quotaSettingsService;
 
     public UserActionQuotaService(
             UserActionUsageMapper usageMapper,
-            UserQuotaProperties quotaProperties
+            UserQuotaSettingsService quotaSettingsService
     ) {
         this.usageMapper = usageMapper;
-        this.quotaProperties = quotaProperties;
+        this.quotaSettingsService = quotaSettingsService;
     }
 
     @Transactional
@@ -56,7 +55,7 @@ public class UserActionQuotaService {
                 .map(UserActionUsage::getUsedCount)
                 .mapToInt(count -> count == null ? 0 : count)
                 .sum();
-        assertWithinDailyContentCreateLimit(usedCount);
+        assertWithinDailyContentCreateLimit(user, usedCount);
 
         usageMapper.incrementUsageCount(user.getId(), actionType.name(), usageDate);
     }
@@ -72,7 +71,7 @@ public class UserActionQuotaService {
                 usageDate,
                 dailyContentCreateActionNames()
         );
-        assertWithinDailyContentCreateLimit(usedCount == null ? 0 : usedCount);
+        assertWithinDailyContentCreateLimit(user, usedCount == null ? 0 : usedCount);
     }
 
     private List<String> dailyContentCreateActionNames() {
@@ -81,8 +80,8 @@ public class UserActionQuotaService {
                 .toList();
     }
 
-    private void assertWithinDailyContentCreateLimit(int usedCount) {
-        int dailyLimit = Math.max(0, quotaProperties.getDailyContentCreateLimit());
+    private void assertWithinDailyContentCreateLimit(User user, int usedCount) {
+        int dailyLimit = quotaSettingsService.resolveDailyContentCreateLimit(user);
         if (usedCount >= dailyLimit) {
             throw new BusinessException(
                     ErrorCode.TOO_MANY_REQUESTS,

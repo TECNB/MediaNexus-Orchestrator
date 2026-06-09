@@ -1,31 +1,19 @@
-package com.medianexus.orchestrator.model;
+package com.medianexus.orchestrator.mapper.projection;
 
-import com.baomidou.mybatisplus.annotation.IdType;
-import com.baomidou.mybatisplus.annotation.TableField;
-import com.baomidou.mybatisplus.annotation.TableId;
-import com.baomidou.mybatisplus.annotation.TableName;
 import java.time.LocalDateTime;
 
-@TableName("users")
-public class User {
+public class AdminUserUsageRow {
 
-    @TableId(type = IdType.AUTO)
     private Long id;
-
     private String username;
-
     private String email;
-
-    private String passwordHash;
-
-    @TableField("user_role")
     private String role;
-
     private Integer dailyContentCreateLimitOverride;
-
     private LocalDateTime createdAt;
-
     private LocalDateTime updatedAt;
+    private Integer usedCount;
+    private Integer magnetIngestCreateCount;
+    private Integer animeSubscribeCreateCount;
 
     public Long getId() {
         return id;
@@ -49,14 +37,6 @@ public class User {
 
     public void setEmail(String email) {
         this.email = email;
-    }
-
-    public String getPasswordHash() {
-        return passwordHash;
-    }
-
-    public void setPasswordHash(String passwordHash) {
-        this.passwordHash = passwordHash;
     }
 
     public String getRole() {
@@ -89,5 +69,29 @@ public class User {
 
     public void setUpdatedAt(LocalDateTime updatedAt) {
         this.updatedAt = updatedAt;
+    }
+
+    public Integer getUsedCount() {
+        return usedCount;
+    }
+
+    public void setUsedCount(Integer usedCount) {
+        this.usedCount = usedCount;
+    }
+
+    public Integer getMagnetIngestCreateCount() {
+        return magnetIngestCreateCount;
+    }
+
+    public void setMagnetIngestCreateCount(Integer magnetIngestCreateCount) {
+        this.magnetIngestCreateCount = magnetIngestCreateCount;
+    }
+
+    public Integer getAnimeSubscribeCreateCount() {
+        return animeSubscribeCreateCount;
+    }
+
+    public void setAnimeSubscribeCreateCount(Integer animeSubscribeCreateCount) {
+        this.animeSubscribeCreateCount = animeSubscribeCreateCount;
     }
 }

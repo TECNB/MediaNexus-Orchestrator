@@ -28,6 +28,7 @@ public class AuthService {
     private static final int MIN_PASSWORD_LENGTH = 8;
     private static final int MAX_PASSWORD_LENGTH = 32;
     private static final String USER_ROLE = "USER";
+    private static final String ADMIN_ROLE = "ADMIN";
     private static final String LOGIN_FAILED_MESSAGE = "用户名或密码错误";
 
     private final UserMapper userMapper;
@@ -110,6 +111,14 @@ public class AuthService {
         if (user == null) {
             StpUtil.logout();
             throw new BusinessException(ErrorCode.UNAUTHORIZED, "未登录或登录已过期", HttpStatus.UNAUTHORIZED);
+        }
+        return user;
+    }
+
+    public User requireAdminUser() {
+        User user = requireCurrentUser();
+        if (!ADMIN_ROLE.equalsIgnoreCase(user.getRole())) {
+            throw new BusinessException(ErrorCode.FORBIDDEN, "仅管理员可操作", HttpStatus.FORBIDDEN);
         }
         return user;
     }

@@ -2,7 +2,9 @@ package com.medianexus.orchestrator.config;
 
 import com.medianexus.orchestrator.mapper.AnimeMagnetIngestTaskLogMapper;
 import com.medianexus.orchestrator.mapper.AnimeMagnetIngestTaskMapper;
+import com.medianexus.orchestrator.mapper.SystemSettingMapper;
 import com.medianexus.orchestrator.mapper.UserActionUsageMapper;
+import com.medianexus.orchestrator.mapper.UserAdminAuditLogMapper;
 import com.medianexus.orchestrator.mapper.UserMapper;
 import java.time.Duration;
 import org.slf4j.Logger;
@@ -21,6 +23,8 @@ public class DatabaseInitializer implements ApplicationRunner {
     private final DatabaseSshTunnelLifecycle databaseSshTunnelLifecycle;
     private final UserMapper userMapper;
     private final UserActionUsageMapper userActionUsageMapper;
+    private final SystemSettingMapper systemSettingMapper;
+    private final UserAdminAuditLogMapper userAdminAuditLogMapper;
     private final AnimeMagnetIngestTaskMapper animeMagnetIngestTaskMapper;
     private final AnimeMagnetIngestTaskLogMapper animeMagnetIngestTaskLogMapper;
 
@@ -28,12 +32,16 @@ public class DatabaseInitializer implements ApplicationRunner {
             DatabaseSshTunnelLifecycle databaseSshTunnelLifecycle,
             UserMapper userMapper,
             UserActionUsageMapper userActionUsageMapper,
+            SystemSettingMapper systemSettingMapper,
+            UserAdminAuditLogMapper userAdminAuditLogMapper,
             AnimeMagnetIngestTaskMapper animeMagnetIngestTaskMapper,
             AnimeMagnetIngestTaskLogMapper animeMagnetIngestTaskLogMapper
     ) {
         this.databaseSshTunnelLifecycle = databaseSshTunnelLifecycle;
         this.userMapper = userMapper;
         this.userActionUsageMapper = userActionUsageMapper;
+        this.systemSettingMapper = systemSettingMapper;
+        this.userAdminAuditLogMapper = userAdminAuditLogMapper;
         this.animeMagnetIngestTaskMapper = animeMagnetIngestTaskMapper;
         this.animeMagnetIngestTaskLogMapper = animeMagnetIngestTaskLogMapper;
     }
@@ -63,9 +71,19 @@ public class DatabaseInitializer implements ApplicationRunner {
 
     private void createTablesIfNotExists() {
         userMapper.createTableIfNotExists();
+        ensureUserQuotaOverrideColumn();
         userActionUsageMapper.createTableIfNotExists();
+        systemSettingMapper.createTableIfNotExists();
+        userAdminAuditLogMapper.createTableIfNotExists();
         animeMagnetIngestTaskMapper.createTableIfNotExists();
         animeMagnetIngestTaskLogMapper.createTableIfNotExists();
+    }
+
+    private void ensureUserQuotaOverrideColumn() {
+        Integer columnCount = userMapper.countDailyContentCreateLimitOverrideColumn();
+        if (columnCount == null || columnCount == 0) {
+            userMapper.addDailyContentCreateLimitOverrideColumn();
+        }
     }
 
     private void sleep(Duration duration) {
