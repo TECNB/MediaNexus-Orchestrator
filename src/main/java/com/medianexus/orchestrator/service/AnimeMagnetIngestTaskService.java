@@ -2,6 +2,7 @@ package com.medianexus.orchestrator.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.medianexus.orchestrator.common.exception.BusinessException;
 import com.medianexus.orchestrator.common.exception.ErrorCode;
 import com.medianexus.orchestrator.config.OpenListProperties;
@@ -10,6 +11,8 @@ import com.medianexus.orchestrator.dto.magnet.response.AnimeMagnetIngestTaskList
 import com.medianexus.orchestrator.dto.magnet.response.AnimeMagnetIngestTaskLogListResponse;
 import com.medianexus.orchestrator.dto.magnet.response.AnimeMagnetIngestTaskLogResponse;
 import com.medianexus.orchestrator.dto.magnet.response.AnimeMagnetIngestTaskResponse;
+import com.medianexus.orchestrator.integration.anirss.AniRssClient;
+import com.medianexus.orchestrator.integration.anirss.AniRssClientException;
 import com.medianexus.orchestrator.integration.openlist.OpenListClient;
 import com.medianexus.orchestrator.integration.openlist.OpenListClientException;
 import com.medianexus.orchestrator.integration.openlist.OpenListFileInfo;
@@ -54,11 +57,13 @@ public class AnimeMagnetIngestTaskService {
     private static final List<String> UNFINISHED_STATUSES = List.of("PENDING", "SUBMITTED", "DOWNLOADING", "ORGANIZING");
     private static final int DEFAULT_OFFSET = 0;
     private static final Duration SAVING_FILES_VISIBLE_GRACE = Duration.ofMinutes(5);
+    private static final String TMDB_NAME_REQUIRED_MESSAGE = "未解析到 TMDB 标题，无法确定媒体根目录";
 
     private final AnimeMagnetIngestTaskMapper taskMapper;
     private final AnimeMagnetIngestTaskLogMapper taskLogMapper;
     private final OpenListClient openListClient;
     private final OpenListProperties openListProperties;
+    private final AniRssClient aniRssClient;
     private final AnimeEpisodeRenameService renameService;
     private final AuthService authService;
     private final UserActionQuotaService userActionQuotaService;
@@ -69,6 +74,7 @@ public class AnimeMagnetIngestTaskService {
             AnimeMagnetIngestTaskLogMapper taskLogMapper,
             OpenListClient openListClient,
             OpenListProperties openListProperties,
+            AniRssClient aniRssClient,
             AnimeEpisodeRenameService renameService,
             AuthService authService,
             UserActionQuotaService userActionQuotaService
@@ -77,6 +83,7 @@ public class AnimeMagnetIngestTaskService {
         this.taskLogMapper = taskLogMapper;
         this.openListClient = openListClient;
         this.openListProperties = openListProperties;
+        this.aniRssClient = aniRssClient;
         this.renameService = renameService;
         this.authService = authService;
         this.userActionQuotaService = userActionQuotaService;
@@ -121,11 +128,12 @@ public class AnimeMagnetIngestTaskService {
             return toResponse(activeTask);
         }
 
-        userActionQuotaService.consumeDailyContentCreate(user, UserActionType.MAGNET_INGEST_CREATE);
-
         String title = preferredTitle(request);
         Integer season = request.seasonNumber() == null ? 1 : request.seasonNumber();
-        String savePath = renderAnimePath(title, request.themoviedbName(), season);
+        String themoviedbName = resolveThemoviedbName(request);
+        userActionQuotaService.consumeDailyContentCreate(user, UserActionType.MAGNET_INGEST_CREATE);
+
+        String savePath = renderAnimePath(title, themoviedbName, season);
         String taskId = UUID.randomUUID().toString();
         String tempPath = savePath;
 
@@ -150,8 +158,8 @@ public class AnimeMagnetIngestTaskService {
         taskMapper.insert(task);
 
         writeLog(taskId, "INFO", "created", "已创建动漫整季磁力任务", "savePath=" + savePath);
-        if (!StringUtils.hasText(request.themoviedbName())) {
-            writeLog(taskId, "WARN", "created", "未解析到 TMDB 标题，使用 Bangumi 标题渲染路径", title);
+        if (!StringUtils.hasText(request.themoviedbName()) && StringUtils.hasText(themoviedbName)) {
+            writeLog(taskId, "INFO", "created", "已通过 Ani-RSS 解析 TMDB 标题", themoviedbName);
         }
 
         executorService.submit(() -> runTask(taskId));
@@ -654,10 +662,46 @@ public class AnimeMagnetIngestTaskService {
         return StringUtils.hasText(request.name()) ? request.name().trim() : "";
     }
 
+    private String resolveThemoviedbName(AnimeMagnetIngestTaskCreateRequest request) {
+        if (StringUtils.hasText(request.themoviedbName())) {
+            return request.themoviedbName().trim();
+        }
+        if (!requiresThemoviedbName(openListProperties.getAnimePathTemplate())) {
+            return "";
+        }
+
+        try {
+            JsonNode ani = aniRssClient.getAniBySubjectId(request.bgmId().trim());
+            String themoviedbName = ani == null ? null : trimToNull(ani.path("themoviedbName").asText(""));
+            if (StringUtils.hasText(themoviedbName)) {
+                return themoviedbName;
+            }
+            log.warn("Ani-RSS did not resolve TMDB title for bgmId={}", request.bgmId());
+        } catch (AniRssClientException exception) {
+            log.warn("Ani-RSS TMDB title resolve failed for bgmId={}: {}",
+                    request.bgmId(), exception.getMessage(), exception);
+            throw new BusinessException(
+                    ErrorCode.INTERNAL_ERROR,
+                    TMDB_NAME_REQUIRED_MESSAGE,
+                    HttpStatus.INTERNAL_SERVER_ERROR
+            );
+        }
+
+        throw new BusinessException(
+                ErrorCode.INTERNAL_ERROR,
+                TMDB_NAME_REQUIRED_MESSAGE,
+                HttpStatus.INTERNAL_SERVER_ERROR
+        );
+    }
+
+    private boolean requiresThemoviedbName(String template) {
+        return StringUtils.hasText(template)
+                && (template.contains("{themoviedbName}") || template.contains("${themoviedbName}"));
+    }
+
     private String renderAnimePath(String title, String themoviedbName, Integer season) {
         String template = openListProperties.getAnimePathTemplate();
-        String mediaName = StringUtils.hasText(themoviedbName) ? themoviedbName.trim() : title;
-        String path = replaceTemplateValue(template, "themoviedbName", sanitizePathSegment(mediaName));
+        String path = replaceTemplateValue(template, "themoviedbName", sanitizePathSegment(themoviedbName));
         path = replaceTemplateValue(path, "title", sanitizePathSegment(title));
         path = replaceTemplateValue(path, "season", String.valueOf(season));
         path = replaceTemplateValue(path, "seasonFormat", String.format("%02d", season));
@@ -665,7 +709,11 @@ public class AnimeMagnetIngestTaskService {
     }
 
     private String sanitizePathSegment(String value) {
-        return value.replaceAll("[\\\\/:*?\"<>|]+", " ")
+        String trimmed = trimToNull(value);
+        if (!StringUtils.hasText(trimmed)) {
+            return "";
+        }
+        return trimmed.replaceAll("[\\\\/:*?\"<>|]+", " ")
                 .replaceAll("\\s+", " ")
                 .trim();
     }

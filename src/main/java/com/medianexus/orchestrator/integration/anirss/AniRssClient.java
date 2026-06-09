@@ -67,6 +67,13 @@ public class AniRssClient {
     }
 
     /**
+     * 按 Bangumi subject id 获取 Ani-RSS 订阅草稿，包含 Ani-RSS 解析出的 TMDB 标题。
+     */
+    public JsonNode getAniBySubjectId(String bgmId) {
+        return post("getAniBySubjectId", "id=" + encode(bgmId), "{}");
+    }
+
+    /**
      * 按 Mikan 番剧页面地址获取字幕组候选。
      */
     public JsonNode getMikanGroups(String sourceUrl) {
