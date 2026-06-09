@@ -12,6 +12,8 @@ import com.medianexus.orchestrator.dto.anime.response.AnimeSubscriptionPreviewRe
 import com.medianexus.orchestrator.dto.anime.response.AnimeSubscriptionResponse;
 import com.medianexus.orchestrator.integration.anirss.AniRssClient;
 import com.medianexus.orchestrator.integration.anirss.AniRssClientException;
+import com.medianexus.orchestrator.model.User;
+import com.medianexus.orchestrator.model.UserActionType;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -46,10 +48,19 @@ public class AnimeSubscriptionService {
 
     private final AniRssClient aniRssClient;
     private final ObjectMapper objectMapper;
+    private final AuthService authService;
+    private final UserActionQuotaService userActionQuotaService;
 
-    public AnimeSubscriptionService(AniRssClient aniRssClient, ObjectMapper objectMapper) {
+    public AnimeSubscriptionService(
+            AniRssClient aniRssClient,
+            ObjectMapper objectMapper,
+            AuthService authService,
+            UserActionQuotaService userActionQuotaService
+    ) {
         this.aniRssClient = aniRssClient;
         this.objectMapper = objectMapper;
+        this.authService = authService;
+        this.userActionQuotaService = userActionQuotaService;
     }
 
     /**
@@ -99,6 +110,10 @@ public class AnimeSubscriptionService {
      * 命中重复时返回 exists 状态，不再向上游提交 addAni。
      */
     public AnimeSubscriptionResponse subscribe(AnimeSubscriptionPreviewRequest request) {
+        User user = authService.requireCurrentUser();
+        validateGroupRequest(request);
+        userActionQuotaService.assertDailyContentCreateAvailable(user);
+
         PreviewResult result = previewSelectedGroup(request, SUBSCRIBE_FAILED_MESSAGE);
         AnimeSubscriptionPreviewResponse preview = result.preview();
         if (preview.previewCount() <= 0) {
@@ -116,6 +131,7 @@ public class AnimeSubscriptionService {
                 );
             }
 
+            userActionQuotaService.consumeDailyContentCreate(user, UserActionType.ANIME_SUBSCRIBE_CREATE);
             aniRssClient.addAni(result.subscription());
             return new AnimeSubscriptionResponse(
                     "added",
@@ -124,6 +140,8 @@ public class AnimeSubscriptionService {
                     "已触发下载",
                     preview
             );
+        } catch (BusinessException exception) {
+            throw exception;
         } catch (AniRssClientException exception) {
             log.warn("Anime subscribe upstream request failed");
             throw new BusinessException(ErrorCode.INTERNAL_ERROR, SUBSCRIBE_FAILED_MESSAGE, HttpStatus.INTERNAL_SERVER_ERROR);

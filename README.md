@@ -16,18 +16,20 @@ APIs, and the first authentication endpoints for MediaNexus:
 - BCrypt password storage
 - Knife4j/OpenAPI dependency and base configuration
 - Unified API response wrapper
-- Global exception handling skeleton
+- Global exception handling
 - `GET /api/v1/health`
 - Optional SSH tunnel for connecting to the server-local MySQL container
 - `POST /api/v1/auth/register` for registration-code signup
 - `POST /api/v1/auth/login` for username/email login
 - `POST /api/v1/auth/logout`
 - `GET /api/v1/auth/me`
+- Daily usage quota for ordinary users:
+  `MAGNET_INGEST_CREATE` and `ANIME_SUBSCRIBE_CREATE` share one daily limit
 - `GET /api/v1/resources/anime/search` for Mikan search through ani-rss REST `/api/mikan`
 
-Authentication is intentionally only the first batch. Business API login
-guards, daily usage quota, task ownership isolation, and administrator
-management endpoints are not implemented yet.
+Authentication and daily usage quota are intentionally still small in scope.
+Task ownership isolation, administrator management endpoints, user disabling,
+and approval workflows are not implemented yet.
 
 ## Requirements
 
@@ -50,7 +52,8 @@ MEDIANEXUS_DB_PASSWORD='...'
 MEDIANEXUS_ANI_RSS_BASE_URL='http://example.invalid:7789'
 MEDIANEXUS_ANI_RSS_API_KEY=''
 MEDIANEXUS_ANI_RSS_TIMEOUT='10s'
-MEDIANEXUS_AUTH_REGISTRATION_CODE='your-registration-code'
+MEDIANEXUS_AUTH_REGISTRATION_CODE=your-registration-code
+MEDIANEXUS_DAILY_CONTENT_CREATE_LIMIT=3
 ```
 
 The datasource points at a local forwarded port by default. Because the MySQL
@@ -155,6 +158,28 @@ Then insert the administrator user with the generated hash:
 ```sql
 INSERT INTO users (username, email, password_hash, user_role)
 VALUES ('admin', 'admin@example.com', '<BCrypt hash from htpasswd>', 'ADMIN');
+```
+
+## Daily Usage Quota
+
+Ordinary users must log in before creating Ani-RSS subscriptions or anime
+magnet ingest tasks. The following two actions share one daily limit:
+
+- `MAGNET_INGEST_CREATE`
+- `ANIME_SUBSCRIBE_CREATE`
+
+The default limit is 3 total creates per user per day. Change it with
+`MEDIANEXUS_DAILY_CONTENT_CREATE_LIMIT`. Administrators are not limited and do
+not consume quota.
+
+When an ordinary user reaches the limit, the API returns HTTP 429:
+
+```json
+{
+  "code": 429,
+  "message": "今日创建次数已达上限，请明天再试",
+  "data": null
+}
 ```
 
 ## Anime Mikan Search

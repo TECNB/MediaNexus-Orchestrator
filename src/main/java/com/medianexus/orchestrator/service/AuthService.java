@@ -96,7 +96,7 @@ public class AuthService {
     }
 
     public AuthUserResponse me() {
-        return toUserResponse(getCurrentUser());
+        return toUserResponse(requireCurrentUser());
     }
 
     private AuthSessionResponse loginUser(User user) {
@@ -104,7 +104,7 @@ public class AuthService {
         return new AuthSessionResponse(StpUtil.getTokenValue(), toUserResponse(user));
     }
 
-    private User getCurrentUser() {
+    public User requireCurrentUser() {
         Long userId = StpUtil.getLoginIdAsLong();
         User user = userMapper.selectById(userId);
         if (user == null) {
@@ -126,12 +126,26 @@ public class AuthService {
         if (!StringUtils.hasText(registrationCode)) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "注册码不能为空");
         }
-        if (!StringUtils.hasText(authProperties.getRegistrationCode())) {
+        String expectedRegistrationCode = cleanConfigValue(authProperties.getRegistrationCode());
+        if (!StringUtils.hasText(expectedRegistrationCode)) {
             throw new BusinessException(ErrorCode.FORBIDDEN, "注册暂未开放", HttpStatus.FORBIDDEN);
         }
-        if (!registrationCode.trim().equals(authProperties.getRegistrationCode().trim())) {
+        if (!registrationCode.trim().equals(expectedRegistrationCode)) {
             throw new BusinessException(ErrorCode.FORBIDDEN, "注册码无效", HttpStatus.FORBIDDEN);
         }
+    }
+
+    private String cleanConfigValue(String value) {
+        if (!StringUtils.hasText(value)) {
+            return value;
+        }
+        String trimmed = value.trim();
+        if (trimmed.length() >= 2
+                && ((trimmed.startsWith("'") && trimmed.endsWith("'"))
+                || (trimmed.startsWith("\"") && trimmed.endsWith("\"")))) {
+            return trimmed.substring(1, trimmed.length() - 1).trim();
+        }
+        return trimmed;
     }
 
     private String normalizeUsername(String username) {

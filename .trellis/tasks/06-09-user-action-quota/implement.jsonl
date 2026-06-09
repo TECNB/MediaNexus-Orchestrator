@@ -1,0 +1,9 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend guideline entry point."}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "Mapper, model, config, and service placement."}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "MyBatis-Plus persistence constraints."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "BusinessException and 429 response handling."}
+{"file": "src/main/java/com/medianexus/orchestrator/model/UserActionUsage.java", "reason": "Added persisted daily usage model."}
+{"file": "src/main/java/com/medianexus/orchestrator/mapper/UserActionUsageMapper.java", "reason": "Added usage table creation and locked daily usage row queries."}
+{"file": "src/main/java/com/medianexus/orchestrator/service/UserActionQuotaService.java", "reason": "Added shared daily content create quota consumption."}
+{"file": "src/main/java/com/medianexus/orchestrator/service/AnimeMagnetIngestTaskService.java", "reason": "Require login and consume quota before new magnet task creation."}
+{"file": "src/main/java/com/medianexus/orchestrator/service/AnimeSubscriptionService.java", "reason": "Require login and consume quota before new Ani-RSS subscription creation."}

@@ -18,6 +18,8 @@ import com.medianexus.orchestrator.mapper.AnimeMagnetIngestTaskLogMapper;
 import com.medianexus.orchestrator.mapper.AnimeMagnetIngestTaskMapper;
 import com.medianexus.orchestrator.model.AnimeMagnetIngestTask;
 import com.medianexus.orchestrator.model.AnimeMagnetIngestTaskLog;
+import com.medianexus.orchestrator.model.User;
+import com.medianexus.orchestrator.model.UserActionType;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -58,6 +60,8 @@ public class AnimeMagnetIngestTaskService {
     private final OpenListClient openListClient;
     private final OpenListProperties openListProperties;
     private final AnimeEpisodeRenameService renameService;
+    private final AuthService authService;
+    private final UserActionQuotaService userActionQuotaService;
     private final ExecutorService executorService;
 
     public AnimeMagnetIngestTaskService(
@@ -65,13 +69,17 @@ public class AnimeMagnetIngestTaskService {
             AnimeMagnetIngestTaskLogMapper taskLogMapper,
             OpenListClient openListClient,
             OpenListProperties openListProperties,
-            AnimeEpisodeRenameService renameService
+            AnimeEpisodeRenameService renameService,
+            AuthService authService,
+            UserActionQuotaService userActionQuotaService
     ) {
         this.taskMapper = taskMapper;
         this.taskLogMapper = taskLogMapper;
         this.openListClient = openListClient;
         this.openListProperties = openListProperties;
         this.renameService = renameService;
+        this.authService = authService;
+        this.userActionQuotaService = userActionQuotaService;
         this.executorService = Executors.newSingleThreadExecutor(new WorkerThreadFactory());
     }
 
@@ -99,6 +107,7 @@ public class AnimeMagnetIngestTaskService {
      * 命中时返回已有任务而不是重复提交 OpenList 离线下载。
      */
     public AnimeMagnetIngestTaskResponse createTask(AnimeMagnetIngestTaskCreateRequest request) {
+        User user = authService.requireCurrentUser();
         validateCreateRequest(request);
         String magnet = request.magnet().trim();
         String magnetHash = extractMagnetHash(magnet);
@@ -111,6 +120,8 @@ public class AnimeMagnetIngestTaskService {
             writeLog(activeTask.getId(), "INFO", activeTask.getStage(), "发现相同 magnet 正在处理，返回已有任务", null);
             return toResponse(activeTask);
         }
+
+        userActionQuotaService.consumeDailyContentCreate(user, UserActionType.MAGNET_INGEST_CREATE);
 
         String title = preferredTitle(request);
         Integer season = request.seasonNumber() == null ? 1 : request.seasonNumber();

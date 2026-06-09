@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Verification scope and code standards."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Review quota failure response shape."}
+{"command": "git diff --check", "result": "passed", "reason": "Whitespace/conflict marker check for current implementation diff."}
+{"command": "mvn -q -DskipTests compile", "result": "not run", "reason": "Repository instructions forbid full-project validation unless explicitly requested."}
