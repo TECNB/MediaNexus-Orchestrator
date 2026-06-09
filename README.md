@@ -6,24 +6,28 @@ MediaNexus remains an upper-layer resource management and orchestration site for
 
 ## Current Scope
 
-This first phase provides the Spring Boot project skeleton plus the first
-display-only Anime search API:
+The backend currently provides the Spring Boot foundation, Anime orchestration
+APIs, and the first authentication endpoints for MediaNexus:
 
 - Spring Boot 3.x + Java 17 + Maven
 - MySQL 8 configuration example
 - MyBatis-Plus dependency and base configuration
-- Sa-Token dependency and base configuration
+- Sa-Token authentication with `Authorization: Bearer <token>`
+- BCrypt password storage
 - Knife4j/OpenAPI dependency and base configuration
 - Unified API response wrapper
 - Global exception handling skeleton
 - `GET /api/v1/health`
 - Optional SSH tunnel for connecting to the server-local MySQL container
-- Test-only `test_users` CRUD endpoints for validating MySQL connectivity
+- `POST /api/v1/auth/register` for registration-code signup
+- `POST /api/v1/auth/login` for username/email login
+- `POST /api/v1/auth/logout`
+- `GET /api/v1/auth/me`
 - `GET /api/v1/resources/anime/search` for Mikan search through ani-rss REST `/api/mikan`
 
-No Anime subscription, download workflow, Emby, OpenList, Sonarr, Radarr,
-Prowlarr, PikPak, or Python backend replacement logic is implemented in this
-phase.
+Authentication is intentionally only the first batch. Business API login
+guards, daily usage quota, task ownership isolation, and administrator
+management endpoints are not implemented yet.
 
 ## Requirements
 
@@ -46,6 +50,7 @@ MEDIANEXUS_DB_PASSWORD='...'
 MEDIANEXUS_ANI_RSS_BASE_URL='http://example.invalid:7789'
 MEDIANEXUS_ANI_RSS_API_KEY=''
 MEDIANEXUS_ANI_RSS_TIMEOUT='10s'
+MEDIANEXUS_AUTH_REGISTRATION_CODE='your-registration-code'
 ```
 
 The datasource points at a local forwarded port by default. Because the MySQL
@@ -65,11 +70,8 @@ MEDIANEXUS_DB_SSH_USERNAME=root
 MEDIANEXUS_DB_SSH_PASSWORD=...
 ```
 
-If the deployment uses a different `MYSQL_DATABASE`, update
-`MEDIANEXUS_DB_NAME` and the database name inside `MEDIANEXUS_DB_URL`.
-
-The app creates a lightweight `test_users` table on startup so database
-connectivity can be tested through CRUD endpoints.
+If the deployment uses a different `MYSQL_DATABASE`, update the database name
+inside `MEDIANEXUS_DB_URL`.
 
 ## Local Startup
 
@@ -98,20 +100,61 @@ Expected response:
 }
 ```
 
-## Test User CRUD
+## Auth API
 
 ```bash
-curl http://localhost:8080/api/v1/test-users
-
-curl -X POST http://localhost:8080/api/v1/test-users \
+curl -X POST http://localhost:8080/api/v1/auth/register \
   -H 'Content-Type: application/json' \
-  -d '{"username":"tec","email":"tec@example.com","displayName":"TEC"}'
+  -d '{
+    "username": "tengen",
+    "email": "tengen@example.com",
+    "password": "ChangeMe123",
+    "confirm_password": "ChangeMe123",
+    "registration_code": "your-registration-code"
+  }'
 
-curl -X PUT http://localhost:8080/api/v1/test-users/1 \
+curl -X POST http://localhost:8080/api/v1/auth/login \
   -H 'Content-Type: application/json' \
-  -d '{"displayName":"TEC Updated","enabled":true}'
+  -d '{"account":"tengen","password":"ChangeMe123"}'
 
-curl -X DELETE http://localhost:8080/api/v1/test-users/1
+curl http://localhost:8080/api/v1/auth/me \
+  -H 'Authorization: Bearer YOUR_TOKEN'
+
+curl -X POST http://localhost:8080/api/v1/auth/logout \
+  -H 'Authorization: Bearer YOUR_TOKEN'
+```
+
+Register and login return:
+
+```json
+{
+  "code": 200,
+  "message": "success",
+  "data": {
+    "token": "YOUR_TOKEN",
+    "user": {
+      "id": 1,
+      "username": "tengen",
+      "email": "tengen@example.com",
+      "role": "USER",
+      "created_at": "2026-06-09T12:00:00"
+    }
+  }
+}
+```
+
+Passwords are stored as BCrypt hashes. To prepare an administrator account
+manually, generate a BCrypt hash locally:
+
+```bash
+htpasswd -bnBC 10 "" 'ChangeMe123' | tr -d ':\n'
+```
+
+Then insert the administrator user with the generated hash:
+
+```sql
+INSERT INTO users (username, email, password_hash, user_role)
+VALUES ('admin', 'admin@example.com', '<BCrypt hash from htpasswd>', 'ADMIN');
 ```
 
 ## Anime Mikan Search

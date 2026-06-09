@@ -1,12 +1,13 @@
 package com.medianexus.orchestrator.model;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import java.time.LocalDateTime;
 
-@TableName("test_users")
-public class TestUser {
+@TableName("users")
+public class User {
 
     @TableId(type = IdType.AUTO)
     private Long id;
@@ -15,9 +16,10 @@ public class TestUser {
 
     private String email;
 
-    private String displayName;
+    private String passwordHash;
 
-    private Boolean enabled;
+    @TableField("user_role")
+    private String role;
 
     private LocalDateTime createdAt;
 
@@ -47,20 +49,20 @@ public class TestUser {
         this.email = email;
     }
 
-    public String getDisplayName() {
-        return displayName;
+    public String getPasswordHash() {
+        return passwordHash;
     }
 
-    public void setDisplayName(String displayName) {
-        this.displayName = displayName;
+    public void setPasswordHash(String passwordHash) {
+        this.passwordHash = passwordHash;
     }
 
-    public Boolean getEnabled() {
-        return enabled;
+    public String getRole() {
+        return role;
     }
 
-    public void setEnabled(Boolean enabled) {
-        this.enabled = enabled;
+    public void setRole(String role) {
+        this.role = role;
     }
 
     public LocalDateTime getCreatedAt() {
@@ -79,3 +81,4 @@ public class TestUser {
         this.updatedAt = updatedAt;
     }
 }
+

@@ -20,6 +20,15 @@ Managed by Trellis. Edits outside this block are preserved; edits inside may be 
 
 <!-- TRELLIS:END -->
 
+## Backend Logs
+
+User owns backend start/stop. For errors, read `logs/dev-run.log` first, usually with `tail -n 200`.
+
+```bash
+mkdir -p logs
+mvn spring-boot:run 2>&1 | tee logs/dev-run.log
+```
+
 ## Commit Rules
 
 - This is a hard requirement, not a preference: every commit in this repository must use `TECNB <3489044730@qq.com>`.

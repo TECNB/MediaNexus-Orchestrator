@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend guideline entry point and project context."}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "Package placement and endpoint naming conventions."}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "MyBatis-Plus persistence conventions and migration constraints."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Unified API response and business exception patterns."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Backend quality and verification expectations."}

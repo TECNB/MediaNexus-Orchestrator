@@ -15,7 +15,8 @@ spring:
       pool-name: MediaNexusHikariPool
       maximum-pool-size: 10
       minimum-idle: 1
-      initialization-fail-timeout: -1
+      connection-timeout: ${MEDIANEXUS_DB_CONNECTION_TIMEOUT:5000}
+      initialization-fail-timeout: ${MEDIANEXUS_DB_INITIALIZATION_FAIL_TIMEOUT:10000}
 
 medianexus:
   datasource:
@@ -47,6 +48,8 @@ medianexus:
     poll-interval: ${MEDIANEXUS_OPENLIST_POLL_INTERVAL:10s}
     offline-timeout: ${MEDIANEXUS_OPENLIST_OFFLINE_TIMEOUT:10m}
     retry-limit: ${MEDIANEXUS_OPENLIST_RETRY_LIMIT:5}
+  auth:
+    registration-code: ${MEDIANEXUS_AUTH_REGISTRATION_CODE:}
 
 mybatis-plus:
   mapper-locations: classpath*:/mapper/**/*.xml
@@ -57,11 +60,15 @@ mybatis-plus:
     banner: false
 
 sa-token:
-  token-name: satoken
+  token-name: Authorization
+  token-prefix: Bearer
   timeout: 2592000
   active-timeout: -1
   is-concurrent: true
   is-share: true
+  is-read-body: false
+  is-read-header: true
+  is-read-cookie: false
   token-style: uuid
   is-log: false
 

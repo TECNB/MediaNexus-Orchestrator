@@ -1,5 +1,6 @@
 package com.medianexus.orchestrator;
 
+import com.medianexus.orchestrator.config.AuthProperties;
 import com.medianexus.orchestrator.config.AniRssProperties;
 import com.medianexus.orchestrator.config.DatabaseSshTunnelProperties;
 import com.medianexus.orchestrator.config.OpenListProperties;
@@ -9,7 +10,12 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 
 @MapperScan("com.medianexus.orchestrator")
-@EnableConfigurationProperties({AniRssProperties.class, DatabaseSshTunnelProperties.class, OpenListProperties.class})
+@EnableConfigurationProperties({
+        AniRssProperties.class,
+        AuthProperties.class,
+        DatabaseSshTunnelProperties.class,
+        OpenListProperties.class
+})
 @SpringBootApplication
 public class MediaNexusOrchestratorApplication {
 

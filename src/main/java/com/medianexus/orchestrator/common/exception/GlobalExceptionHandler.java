@@ -1,5 +1,6 @@
 package com.medianexus.orchestrator.common.exception;
 
+import cn.dev33.satoken.exception.NotLoginException;
 import com.medianexus.orchestrator.common.response.ApiResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -18,6 +19,13 @@ public class GlobalExceptionHandler {
         return ResponseEntity
                 .status(exception.getHttpStatus())
                 .body(ApiResponse.failed(exception.getCode(), exception.getMessage()));
+    }
+
+    @ExceptionHandler(NotLoginException.class)
+    public ResponseEntity<ApiResponse<Void>> handleNotLoginException(NotLoginException exception) {
+        return ResponseEntity
+                .status(HttpStatus.UNAUTHORIZED)
+                .body(ApiResponse.failed(ErrorCode.UNAUTHORIZED.getCode(), "未登录或登录已过期"));
     }
 
     @ExceptionHandler(IllegalArgumentException.class)
