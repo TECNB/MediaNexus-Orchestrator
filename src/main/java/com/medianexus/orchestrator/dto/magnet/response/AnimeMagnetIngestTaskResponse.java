@@ -8,6 +8,9 @@ import java.time.LocalDateTime;
 public record AnimeMagnetIngestTaskResponse(
         @Schema(description = "导入任务 id")
         String id,
+        @Schema(description = "创建任务的用户 id；历史无归属任务可能为 null", nullable = true)
+        @JsonProperty("created_by_user_id")
+        Long createdByUserId,
         @Schema(description = "任务状态：PENDING、SUBMITTED、DOWNLOADING、ORGANIZING、SUCCEEDED、PARTIAL_SUCCESS、FAILED 或 INTERRUPTED")
         String status,
         @Schema(description = "前端展示阶段，例如 created、submitted、downloading、organizing、succeeded、failed")

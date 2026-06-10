@@ -57,6 +57,7 @@ public class AnimeMagnetIngestTaskService {
     private static final List<String> UNFINISHED_STATUSES = List.of("PENDING", "SUBMITTED", "DOWNLOADING", "ORGANIZING");
     private static final int DEFAULT_OFFSET = 0;
     private static final Duration SAVING_FILES_VISIBLE_GRACE = Duration.ofMinutes(5);
+    private static final String ADMIN_ROLE = "ADMIN";
     private static final String TMDB_NAME_REQUIRED_MESSAGE = "未解析到 TMDB 标题，无法确定媒体根目录";
 
     private final AnimeMagnetIngestTaskMapper taskMapper;
@@ -124,8 +125,11 @@ public class AnimeMagnetIngestTaskService {
                 .in(AnimeMagnetIngestTask::getStatus, ACTIVE_STATUSES)
                 .last("LIMIT 1"));
         if (activeTask != null) {
-            writeLog(activeTask.getId(), "INFO", activeTask.getStage(), "发现相同 magnet 正在处理，返回已有任务", null);
-            return toResponse(activeTask);
+            if (canAccessTask(user, activeTask)) {
+                writeLog(activeTask.getId(), "INFO", activeTask.getStage(), "发现相同 magnet 正在处理，返回已有任务", null);
+                return toResponse(activeTask);
+            }
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "相同 magnet 正在处理中，请稍后再试");
         }
 
         String title = preferredTitle(request);
@@ -151,6 +155,7 @@ public class AnimeMagnetIngestTaskService {
         task.setSeasonNumber(season);
         task.setSavePath(savePath);
         task.setTempPath(tempPath);
+        task.setCreatedByUserId(user.getId());
         task.setOrganizedCount(0);
         task.setSkippedCount(0);
         task.setCreatedAt(LocalDateTime.now());
@@ -172,9 +177,15 @@ public class AnimeMagnetIngestTaskService {
      * 当前接口面向工作台概览，固定返回最近 20 条，后续需要分页时再扩大契约。
      */
     public AnimeMagnetIngestTaskListResponse listTasks() {
-        List<AnimeMagnetIngestTaskResponse> items = taskMapper.selectList(new LambdaQueryWrapper<AnimeMagnetIngestTask>()
-                        .orderByDesc(AnimeMagnetIngestTask::getCreatedAt)
-                        .last("LIMIT 20"))
+        User user = authService.requireCurrentUser();
+        LambdaQueryWrapper<AnimeMagnetIngestTask> queryWrapper = new LambdaQueryWrapper<AnimeMagnetIngestTask>()
+                .orderByDesc(AnimeMagnetIngestTask::getCreatedAt)
+                .last("LIMIT 20");
+        if (!isAdmin(user)) {
+            queryWrapper.eq(AnimeMagnetIngestTask::getCreatedByUserId, user.getId());
+        }
+
+        List<AnimeMagnetIngestTaskResponse> items = taskMapper.selectList(queryWrapper)
                 .stream()
                 .map(this::toResponse)
                 .toList();
@@ -185,14 +196,16 @@ public class AnimeMagnetIngestTaskService {
      * 获取导入任务详情；任务不存在时返回 404 语义的业务错误。
      */
     public AnimeMagnetIngestTaskResponse getTask(String taskId) {
-        return toResponse(getExistingTask(taskId));
+        User user = authService.requireCurrentUser();
+        return toResponse(getAccessibleTask(taskId, user));
     }
 
     /**
      * 获取导入任务日志；先校验任务存在，避免无效 id 被解释成空日志。
      */
     public AnimeMagnetIngestTaskLogListResponse getTaskLogs(String taskId) {
-        getExistingTask(taskId);
+        User user = authService.requireCurrentUser();
+        getAccessibleTask(taskId, user);
         List<AnimeMagnetIngestTaskLogResponse> items = taskLogMapper.selectList(new LambdaQueryWrapper<AnimeMagnetIngestTaskLog>()
                         .eq(AnimeMagnetIngestTaskLog::getTaskId, taskId)
                         .orderByAsc(AnimeMagnetIngestTaskLog::getId))
@@ -554,6 +567,25 @@ public class AnimeMagnetIngestTaskService {
         return task;
     }
 
+    private AnimeMagnetIngestTask getAccessibleTask(String taskId, User user) {
+        AnimeMagnetIngestTask task = getExistingTask(taskId);
+        if (!canAccessTask(user, task)) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "任务不存在", HttpStatus.NOT_FOUND);
+        }
+        return task;
+    }
+
+    private boolean canAccessTask(User user, AnimeMagnetIngestTask task) {
+        if (isAdmin(user)) {
+            return true;
+        }
+        return task.getCreatedByUserId() != null && task.getCreatedByUserId().equals(user.getId());
+    }
+
+    private boolean isAdmin(User user) {
+        return user != null && ADMIN_ROLE.equalsIgnoreCase(user.getRole());
+    }
+
     private void updateTask(
             String taskId,
             String status,
@@ -596,6 +628,7 @@ public class AnimeMagnetIngestTaskService {
     private AnimeMagnetIngestTaskResponse toResponse(AnimeMagnetIngestTask task) {
         return new AnimeMagnetIngestTaskResponse(
                 task.getId(),
+                task.getCreatedByUserId(),
                 task.getStatus(),
                 task.getStage(),
                 task.getBgmId(),

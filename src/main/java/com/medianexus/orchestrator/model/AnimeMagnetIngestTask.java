@@ -37,6 +37,8 @@ public class AnimeMagnetIngestTask {
 
     private String openlistTaskId;
 
+    private Long createdByUserId;
+
     private Integer organizedCount;
 
     private Integer skippedCount;
@@ -159,6 +161,14 @@ public class AnimeMagnetIngestTask {
 
     public void setOpenlistTaskId(String openlistTaskId) {
         this.openlistTaskId = openlistTaskId;
+    }
+
+    public Long getCreatedByUserId() {
+        return createdByUserId;
+    }
+
+    public void setCreatedByUserId(Long createdByUserId) {
+        this.createdByUserId = createdByUserId;
     }
 
     public Integer getOrganizedCount() {

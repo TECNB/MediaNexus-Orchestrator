@@ -76,6 +76,7 @@ public class DatabaseInitializer implements ApplicationRunner {
         systemSettingMapper.createTableIfNotExists();
         userAdminAuditLogMapper.createTableIfNotExists();
         animeMagnetIngestTaskMapper.createTableIfNotExists();
+        ensureAnimeMagnetTaskOwnerColumn();
         animeMagnetIngestTaskLogMapper.createTableIfNotExists();
     }
 
@@ -83,6 +84,17 @@ public class DatabaseInitializer implements ApplicationRunner {
         Integer columnCount = userMapper.countDailyContentCreateLimitOverrideColumn();
         if (columnCount == null || columnCount == 0) {
             userMapper.addDailyContentCreateLimitOverrideColumn();
+        }
+    }
+
+    private void ensureAnimeMagnetTaskOwnerColumn() {
+        Integer columnCount = animeMagnetIngestTaskMapper.countCreatedByUserIdColumn();
+        if (columnCount == null || columnCount == 0) {
+            animeMagnetIngestTaskMapper.addCreatedByUserIdColumn();
+        }
+        Integer indexCount = animeMagnetIngestTaskMapper.countOwnerCreatedAtIndex();
+        if (indexCount == null || indexCount == 0) {
+            animeMagnetIngestTaskMapper.addOwnerCreatedAtIndex();
         }
     }
 
