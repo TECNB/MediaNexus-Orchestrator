@@ -1,13 +1,17 @@
 package com.medianexus.orchestrator.config;
 
-import com.jcraft.jsch.JSch;
-import com.jcraft.jsch.JSchException;
-import com.jcraft.jsch.Session;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.time.Duration;
-import java.util.Properties;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.SmartLifecycle;
@@ -22,10 +26,12 @@ public class DatabaseSshTunnelLifecycle implements SmartLifecycle {
     private static final Duration LOCAL_PORT_QUICK_CHECK_TIMEOUT = Duration.ofSeconds(1);
     private static final int SSH_SERVER_ALIVE_INTERVAL_MILLIS = 30_000;
     private static final int SSH_SERVER_ALIVE_COUNT_MAX = 3;
+    private static final Duration SSH_PROCESS_STOP_TIMEOUT = Duration.ofSeconds(5);
 
     private final DatabaseSshTunnelProperties properties;
 
-    private Session session;
+    private Process sshProcess;
+    private Path askpassScript;
 
     private volatile boolean running;
 
@@ -46,53 +52,23 @@ public class DatabaseSshTunnelLifecycle implements SmartLifecycle {
         validateProperties();
 
         try {
-            stopSession();
-            JSch jsch = new JSch();
-            session = jsch.getSession(properties.getUsername(), properties.getHost(), properties.getPort());
-            session.setPassword(properties.getPassword());
-            session.setConfig(createSessionConfig());
-            session.setTimeout((int) properties.getConnectTimeout().toMillis());
-            session.setServerAliveInterval(SSH_SERVER_ALIVE_INTERVAL_MILLIS);
-            session.setServerAliveCountMax(SSH_SERVER_ALIVE_COUNT_MAX);
-            session.connect((int) properties.getConnectTimeout().toMillis());
-
-            int assignedPort = session.setPortForwardingL(
-                    properties.getLocalHost(),
-                    properties.getLocalPort(),
-                    properties.getRemoteHost(),
-                    properties.getRemotePort()
-            );
-            waitForLocalPort();
-            running = true;
-            log.info(
-                    "Database SSH tunnel started: {}:{} -> {}:{} through {}@{}:{}",
-                    properties.getLocalHost(),
-                    assignedPort,
-                    properties.getRemoteHost(),
-                    properties.getRemotePort(),
-                    properties.getUsername(),
-                    properties.getHost(),
-                    properties.getPort()
-            );
-        } catch (JSchException exception) {
-            stopSession();
-            throw new IllegalStateException("Failed to start database SSH tunnel", exception);
+            startOpenSshTunnel();
         } catch (RuntimeException exception) {
-            stopSession();
+            stopSshProcess();
             throw exception;
         }
     }
 
     @Override
     public synchronized void stop() {
-        stopSession();
+        stopSshProcess();
         running = false;
         log.info("Database SSH tunnel stopped");
     }
 
     @Override
     public boolean isRunning() {
-        return running && session != null && session.isConnected();
+        return running && isTunnelHealthy();
     }
 
     @Override
@@ -117,19 +93,12 @@ public class DatabaseSshTunnelLifecycle implements SmartLifecycle {
         start();
     }
 
-    private Properties createSessionConfig() {
-        Properties config = new Properties();
-        config.put(
-                "StrictHostKeyChecking",
-                properties.isStrictHostKeyChecking() ? "yes" : "no"
-        );
-        return config;
+    private boolean isTunnelHealthy() {
+        return isOpenSshProcessRunning() && isLocalPortOpen(LOCAL_PORT_QUICK_CHECK_TIMEOUT);
     }
 
-    private boolean isTunnelHealthy() {
-        return session != null
-                && session.isConnected()
-                && isLocalPortOpen(LOCAL_PORT_QUICK_CHECK_TIMEOUT);
+    private boolean isOpenSshProcessRunning() {
+        return sshProcess != null && sshProcess.isAlive();
     }
 
     private void waitForLocalPort() {
@@ -158,12 +127,111 @@ public class DatabaseSshTunnelLifecycle implements SmartLifecycle {
         }
     }
 
-    private void stopSession() {
-        if (session != null && session.isConnected()) {
-            session.disconnect();
+    private void startOpenSshTunnel() {
+        try {
+            stopSshProcess();
+            askpassScript = createAskpassScript();
+            ProcessBuilder processBuilder = new ProcessBuilder(createOpenSshCommand());
+            processBuilder.redirectOutput(ProcessBuilder.Redirect.DISCARD);
+            processBuilder.redirectError(ProcessBuilder.Redirect.DISCARD);
+            processBuilder.environment().put("SSH_ASKPASS", askpassScript.toString());
+            processBuilder.environment().put("SSH_ASKPASS_REQUIRE", "force");
+            processBuilder.environment().put("DISPLAY", "medianexus");
+            processBuilder.environment().put("MEDIANEXUS_DB_SSH_PASSWORD", properties.getPassword());
+            sshProcess = processBuilder.start();
+
+            waitForLocalPort();
+            if (!sshProcess.isAlive()) {
+                throw new IllegalStateException("OpenSSH tunnel process exited before local port became reachable");
+            }
+            running = true;
+            log.info(
+                    "Database SSH tunnel started with OpenSSH: {}:{} -> {}:{} through {}@{}:{}",
+                    properties.getLocalHost(),
+                    properties.getLocalPort(),
+                    properties.getRemoteHost(),
+                    properties.getRemotePort(),
+                    properties.getUsername(),
+                    properties.getHost(),
+                    properties.getPort()
+            );
+        } catch (IOException | RuntimeException exception) {
+            stopSshProcess();
+            throw new IllegalStateException("Failed to start database SSH tunnel", exception);
         }
-        session = null;
-        running = false;
+    }
+
+    private List<String> createOpenSshCommand() {
+        return List.of(
+                "ssh",
+                "-o", "ExitOnForwardFailure=yes",
+                "-o", "BatchMode=no",
+                "-o", "PreferredAuthentications=password",
+                "-o", "PubkeyAuthentication=no",
+                "-o", "NumberOfPasswordPrompts=1",
+                "-o", "StrictHostKeyChecking=" + (properties.isStrictHostKeyChecking() ? "yes" : "no"),
+                "-o", "ServerAliveInterval=" + (SSH_SERVER_ALIVE_INTERVAL_MILLIS / 1000),
+                "-o", "ServerAliveCountMax=" + SSH_SERVER_ALIVE_COUNT_MAX,
+                "-N",
+                "-L", createOpenSshForwardSpec(),
+                "-p", Integer.toString(properties.getPort()),
+                properties.getUsername() + "@" + properties.getHost()
+        );
+    }
+
+    private String createOpenSshForwardSpec() {
+        return properties.getLocalHost()
+                + ":" + properties.getLocalPort()
+                + ":" + properties.getRemoteHost()
+                + ":" + properties.getRemotePort();
+    }
+
+    private Path createAskpassScript() throws IOException {
+        Path script = Files.createTempFile("medianexus-ssh-askpass-", ".sh");
+        Files.writeString(
+                script,
+                "#!/bin/sh\nprintf '%s\\n' \"$MEDIANEXUS_DB_SSH_PASSWORD\"\n",
+                StandardCharsets.UTF_8
+        );
+        setOwnerOnlyExecutable(script);
+        return script;
+    }
+
+    private void setOwnerOnlyExecutable(Path script) throws IOException {
+        try {
+            Set<PosixFilePermission> permissions = PosixFilePermissions.fromString("rwx------");
+            Files.setPosixFilePermissions(script, permissions);
+        } catch (UnsupportedOperationException exception) {
+            script.toFile().setReadable(false, false);
+            script.toFile().setWritable(false, false);
+            script.toFile().setExecutable(false, false);
+            script.toFile().setReadable(true, true);
+            script.toFile().setWritable(true, true);
+            script.toFile().setExecutable(true, true);
+        }
+    }
+
+    private void stopSshProcess() {
+        if (sshProcess != null) {
+            sshProcess.destroy();
+            try {
+                if (!sshProcess.waitFor(SSH_PROCESS_STOP_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)) {
+                    sshProcess.destroyForcibly();
+                }
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                sshProcess.destroyForcibly();
+            }
+            sshProcess = null;
+        }
+        if (askpassScript != null) {
+            try {
+                Files.deleteIfExists(askpassScript);
+            } catch (IOException exception) {
+                log.warn("Failed to delete temporary SSH askpass helper: {}", askpassScript);
+            }
+            askpassScript = null;
+        }
     }
 
     private void sleep(Duration duration) {

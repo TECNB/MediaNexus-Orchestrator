@@ -44,3 +44,10 @@
   fields only when the feature is enabled and the lifecycle starts.
 - Do not add unconditional Bean Validation annotations to disabled-by-default
   integration credentials if that would block unrelated application startup.
+- For the development database SSH tunnel, use the system OpenSSH client rather
+  than an in-process SSH library. The tunnel is a local-development convenience;
+  deployments that run beside the database should disable it and connect to the
+  server-local MySQL port directly. The OpenSSH path may use an askpass helper
+  that reads the password from the child process environment, but the helper
+  file must not contain the raw password and logs must never print passwords or
+  raw credential values.

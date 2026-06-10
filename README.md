@@ -64,13 +64,22 @@ either start an SSH tunnel before the app starts:
 ssh -L 3307:127.0.0.1:3306 root@YOUR_SERVER_HOST
 ```
 
-Or enable the built-in Java tunnel in `.env`:
+Or enable the built-in OpenSSH tunnel in `.env`. This uses the local `ssh`
+executable, so OpenSSH must be available in `PATH`:
 
 ```bash
 MEDIANEXUS_DB_SSH_TUNNEL_ENABLED=true
 MEDIANEXUS_DB_SSH_HOST=YOUR_SERVER_HOST
 MEDIANEXUS_DB_SSH_USERNAME=root
 MEDIANEXUS_DB_SSH_PASSWORD=...
+```
+
+For deployment on the same server as MySQL, keep the tunnel disabled and point
+the datasource at the server-local MySQL port instead:
+
+```bash
+MEDIANEXUS_DB_SSH_TUNNEL_ENABLED=false
+MEDIANEXUS_DB_URL='jdbc:mysql://127.0.0.1:3306/medianexus_orchestrator?useUnicode=true&characterEncoding=utf8&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai'
 ```
 
 If the deployment uses a different `MYSQL_DATABASE`, update the database name
