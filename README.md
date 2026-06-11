@@ -43,6 +43,12 @@ The default configuration lives in `src/main/resources/application.yml`.
 Local secrets can be stored in `.env`; Spring Boot imports it automatically and
 `.gitignore` keeps it out of git.
 
+Use `SPRING_PROFILES_ACTIVE=prod` for public deployment. The production profile
+disables Knife4j/OpenAPI endpoints and enables a startup guard that fails fast
+when dangerous datasource or SSH tunnel defaults are still present. A datasource
+pointing at the configured local tunnel endpoint is allowed when the built-in SSH
+tunnel is enabled. See `.env.production.example` for the expected variables.
+
 Useful environment variables:
 
 ```bash
@@ -74,12 +80,21 @@ MEDIANEXUS_DB_SSH_USERNAME=root
 MEDIANEXUS_DB_SSH_PASSWORD=...
 ```
 
-For deployment on the same server as MySQL, keep the tunnel disabled and point
-the datasource at the server-local MySQL port instead:
+For deployment with Docker-internal networking, keep the tunnel disabled and
+point the datasource at the MySQL service name instead:
 
 ```bash
 MEDIANEXUS_DB_SSH_TUNNEL_ENABLED=false
-MEDIANEXUS_DB_URL='jdbc:mysql://127.0.0.1:3306/medianexus_orchestrator?useUnicode=true&characterEncoding=utf8&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai'
+MEDIANEXUS_DB_URL='jdbc:mysql://mysql:3306/medianexus_orchestrator?useUnicode=true&characterEncoding=utf8&sslMode=REQUIRED&serverTimezone=Asia/Shanghai'
+```
+
+For deployment where MySQL is only reachable from the server loopback address,
+enable the built-in SSH tunnel and point the datasource at its local endpoint:
+
+```bash
+MEDIANEXUS_DB_SSH_TUNNEL_ENABLED=true
+MEDIANEXUS_DB_SSH_STRICT_HOST_KEY_CHECKING=true
+MEDIANEXUS_DB_URL='jdbc:mysql://127.0.0.1:3307/medianexus_orchestrator?useUnicode=true&characterEncoding=utf8&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai'
 ```
 
 If the deployment uses a different `MYSQL_DATABASE`, update the database name
@@ -113,6 +128,10 @@ Expected response:
 ```
 
 ## Auth API
+
+All `/api/**` endpoints require `Authorization: Bearer YOUR_TOKEN` except
+`POST /api/v1/auth/register`, `POST /api/v1/auth/login`, and
+`GET /api/v1/health`. `OPTIONS` requests are allowed for browser preflight.
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/auth/register \
@@ -169,6 +188,19 @@ INSERT INTO users (username, email, password_hash, user_role)
 VALUES ('admin', 'admin@example.com', '<BCrypt hash from htpasswd>', 'ADMIN');
 ```
 
+## Input Boundaries
+
+Public API requests keep only lightweight business-shape validation in Java:
+
+- Request DTOs declare required body fields with `@NotBlank`.
+- Numeric quota fields use `@Min(0)` / `@Max(9)`, and user quota overrides may
+  remain `null` to restore the default quota.
+- Magnet task `season_number` uses `@Min(0)`.
+- Services still keep business checks such as extracting the `btih` hash,
+  requiring a final anime title, and returning existing business errors.
+- URL host/scheme checks and global request size/query limits are intentionally
+  left to the frontend and deployment layer, such as Nginx.
+
 ## Daily Usage Quota
 
 Ordinary users must log in before creating Ani-RSS subscriptions or anime
@@ -222,10 +254,19 @@ Expected response shape:
 
 ## API Docs
 
-Knife4j/OpenAPI is enabled for the skeleton. After startup, try:
+Knife4j/OpenAPI is enabled for local development. After startup, try:
 
 - `http://localhost:8080/doc.html`
 - `http://localhost:8080/swagger-ui.html`
+
+After calling `POST /api/v1/auth/login`, copy the returned `token` value into
+the docs page's `Authorize` / `BearerAuth` dialog. Enter the raw token only; the
+docs UI sends it as `Authorization: Bearer <token>`.
+Protected operations also expose an `Authorization` request header field in the
+debug panel; when using that field, enter the full value: `Bearer <token>`.
+
+Under the `prod` or `production` profile, API docs are disabled by default and
+the application refuses to start if they are re-enabled.
 
 ## Excluded From This Phase
 

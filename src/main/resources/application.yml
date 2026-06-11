@@ -85,3 +85,18 @@ springdoc:
   swagger-ui:
     enabled: true
     path: /swagger-ui.html
+
+---
+spring:
+  config:
+    activate:
+      on-profile: prod | production
+
+knife4j:
+  enable: false
+
+springdoc:
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false

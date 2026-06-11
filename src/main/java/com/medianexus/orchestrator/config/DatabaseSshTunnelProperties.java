@@ -4,9 +4,7 @@ import java.time.Duration;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
- * 开发环境数据库 SSH 隧道配置。
- *
- * 该隧道只用于把本机端口转发到服务器本地 MySQL，不替代生产环境网络配置。
+ * 数据库 SSH 隧道配置，可用于开发或数据库仅暴露在服务器本机回环地址的部署方式。
  */
 @ConfigurationProperties(prefix = "medianexus.datasource.ssh-tunnel")
 public class DatabaseSshTunnelProperties {
