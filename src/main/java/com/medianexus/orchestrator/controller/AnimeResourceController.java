@@ -11,6 +11,7 @@ import com.medianexus.orchestrator.service.AnimeSubscriptionService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -66,13 +67,13 @@ public class AnimeResourceController {
 
     @PostMapping("/preview")
     @Operation(summary = "预览 Ani-RSS 订阅", description = "将用户选择的字幕组转换为 Ani-RSS 订阅草稿，并返回预览集数和缺集信息。")
-    public ApiResponse<AnimeSubscriptionPreviewResponse> preview(@RequestBody AnimeSubscriptionPreviewRequest request) {
+    public ApiResponse<AnimeSubscriptionPreviewResponse> preview(@Valid @RequestBody AnimeSubscriptionPreviewRequest request) {
         return ApiResponse.success(animeSubscriptionService.preview(request));
     }
 
     @PostMapping("/subscribe")
     @Operation(summary = "创建 Ani-RSS 订阅", description = "提交前会先预览并检查同名同季订阅，重复时返回 exists 而不是重复创建。")
-    public ApiResponse<AnimeSubscriptionResponse> subscribe(@RequestBody AnimeSubscriptionPreviewRequest request) {
+    public ApiResponse<AnimeSubscriptionResponse> subscribe(@Valid @RequestBody AnimeSubscriptionPreviewRequest request) {
         return ApiResponse.success(animeSubscriptionService.subscribe(request));
     }
 }

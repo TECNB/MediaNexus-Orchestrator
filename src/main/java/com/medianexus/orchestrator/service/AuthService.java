@@ -132,9 +132,6 @@ public class AuthService {
     }
 
     private void validateRegistrationCode(String registrationCode) {
-        if (!StringUtils.hasText(registrationCode)) {
-            throw new BusinessException(ErrorCode.BAD_REQUEST, "注册码不能为空");
-        }
         String expectedRegistrationCode = cleanConfigValue(authProperties.getRegistrationCode());
         if (!StringUtils.hasText(expectedRegistrationCode)) {
             throw new BusinessException(ErrorCode.FORBIDDEN, "注册暂未开放", HttpStatus.FORBIDDEN);
@@ -158,9 +155,6 @@ public class AuthService {
     }
 
     private String normalizeUsername(String username) {
-        if (!StringUtils.hasText(username)) {
-            throw new BusinessException(ErrorCode.BAD_REQUEST, "用户名不能为空");
-        }
         String normalized = username.trim().toLowerCase(Locale.ROOT);
         if (!USERNAME_PATTERN.matcher(normalized).matches()) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "用户名需为 3-32 位小写字母、数字、下划线或短横线");
@@ -169,9 +163,6 @@ public class AuthService {
     }
 
     private String normalizeEmail(String email) {
-        if (!StringUtils.hasText(email)) {
-            throw new BusinessException(ErrorCode.BAD_REQUEST, "邮箱不能为空");
-        }
         String normalized = email.trim().toLowerCase(Locale.ROOT);
         if (normalized.length() > MAX_EMAIL_LENGTH || !EMAIL_PATTERN.matcher(normalized).matches()) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "邮箱格式无效");
@@ -202,9 +193,6 @@ public class AuthService {
     }
 
     private String normalizeAccount(String account) {
-        if (!StringUtils.hasText(account)) {
-            throw new BusinessException(ErrorCode.BAD_REQUEST, "账号不能为空");
-        }
         return account.trim().toLowerCase(Locale.ROOT);
     }
 

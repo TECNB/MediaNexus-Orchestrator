@@ -96,6 +96,7 @@ public class AnimeSubscriptionService {
      * 空订阅进入 Ani-RSS。
      */
     public AnimeSubscriptionPreviewResponse preview(AnimeSubscriptionPreviewRequest request) {
+        requireGroupRequest(request);
         PreviewResult result = previewSelectedGroup(request, PREVIEW_FAILED_MESSAGE);
         if (result.preview().previewCount() <= 0) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "字幕组预览没有可用条目");
@@ -111,7 +112,7 @@ public class AnimeSubscriptionService {
      */
     public AnimeSubscriptionResponse subscribe(AnimeSubscriptionPreviewRequest request) {
         User user = authService.requireCurrentUser();
-        validateGroupRequest(request);
+        requireGroupRequest(request);
         userActionQuotaService.assertDailyContentCreateAvailable(user);
 
         PreviewResult result = previewSelectedGroup(request, SUBSCRIBE_FAILED_MESSAGE);
@@ -152,8 +153,6 @@ public class AnimeSubscriptionService {
     }
 
     private PreviewResult previewSelectedGroup(AnimeSubscriptionPreviewRequest request, String failureMessage) {
-        validateGroupRequest(request);
-
         ObjectNode payload = objectMapper.createObjectNode();
         payload.put("type", "mikan");
         payload.put("url", request.rss().trim());
@@ -222,12 +221,9 @@ public class AnimeSubscriptionService {
                 && String.valueOf(itemSeason).equals(String.valueOf(season));
     }
 
-    private void validateGroupRequest(AnimeSubscriptionPreviewRequest request) {
-        if (request == null
-                || !StringUtils.hasText(request.rss())
-                || !StringUtils.hasText(request.bgmUrl())
-                || !StringUtils.hasText(request.subgroup())) {
-            throw new BusinessException(ErrorCode.BAD_REQUEST, "字幕组参数不完整");
+    private void requireGroupRequest(AnimeSubscriptionPreviewRequest request) {
+        if (request == null) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "请求不能为空");
         }
     }
 

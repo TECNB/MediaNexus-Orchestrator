@@ -8,6 +8,7 @@ import com.medianexus.orchestrator.dto.auth.response.AuthUserResponse;
 import com.medianexus.orchestrator.service.AuthService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -27,18 +28,18 @@ public class AuthController {
 
     @PostMapping("/register")
     @Operation(summary = "注册码注册", description = "使用配置的注册码创建普通用户，注册成功后自动登录并返回访问 token。")
-    public ApiResponse<AuthSessionResponse> register(@RequestBody AuthRegisterRequest request) {
+    public ApiResponse<AuthSessionResponse> register(@Valid @RequestBody AuthRegisterRequest request) {
         return ApiResponse.success(authService.register(request));
     }
 
     @PostMapping("/login")
     @Operation(summary = "登录", description = "使用用户名或邮箱作为账号登录，成功后返回用于 Authorization: Bearer 的 token。")
-    public ApiResponse<AuthSessionResponse> login(@RequestBody AuthLoginRequest request) {
+    public ApiResponse<AuthSessionResponse> login(@Valid @RequestBody AuthLoginRequest request) {
         return ApiResponse.success(authService.login(request));
     }
 
     @PostMapping("/logout")
-    @Operation(summary = "登出", description = "清理当前 Bearer token 对应的登录状态；未登录时保持幂等成功。")
+    @Operation(summary = "登出", description = "清理当前 Bearer token 对应的登录状态。")
     public ApiResponse<Void> logout() {
         authService.logout();
         return ApiResponse.success();
@@ -50,4 +51,3 @@ public class AuthController {
         return ApiResponse.success(authService.me());
     }
 }
-

@@ -13,6 +13,7 @@ import com.medianexus.orchestrator.service.UserQuotaSettingsService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -70,7 +71,7 @@ public class AdminUserController {
     @PutMapping("/quota/default")
     @Operation(summary = "更新全局默认额度", description = "管理员把全局默认每日共享创建额度更新为 0-9 的整数。")
     public ApiResponse<AdminDefaultQuotaResponse> updateDefaultQuota(
-            @RequestBody AdminDefaultQuotaUpdateRequest request
+            @Valid @RequestBody AdminDefaultQuotaUpdateRequest request
     ) {
         return ApiResponse.success(quotaSettingsService.updateDefaultQuota(
                 request == null ? null : request.dailyContentCreateLimit()
@@ -82,7 +83,7 @@ public class AdminUserController {
     public ApiResponse<AdminUserQuotaResponse> updateUserQuota(
             @Parameter(description = "目标用户 id")
             @PathVariable Long userId,
-            @RequestBody AdminUserQuotaUpdateRequest request
+            @Valid @RequestBody AdminUserQuotaUpdateRequest request
     ) {
         return ApiResponse.success(adminUserManagementService.updateUserQuota(userId, request));
     }

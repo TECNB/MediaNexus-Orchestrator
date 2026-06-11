@@ -11,6 +11,7 @@ import com.medianexus.orchestrator.service.AnimeMagnetSearchService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -47,7 +48,7 @@ public class MagnetIngestAnimeController {
     @PostMapping("/tasks")
     @Operation(summary = "创建整季 magnet 导入任务", description = "同一 btih hash 存在未完成任务时返回已有任务，避免重复提交 OpenList 离线下载。")
     public ApiResponse<AnimeMagnetIngestTaskResponse> createTask(
-            @RequestBody AnimeMagnetIngestTaskCreateRequest request
+            @Valid @RequestBody AnimeMagnetIngestTaskCreateRequest request
     ) {
         return ApiResponse.success(animeMagnetIngestTaskService.createTask(request));
     }

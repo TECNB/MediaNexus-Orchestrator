@@ -662,18 +662,12 @@ public class AnimeMagnetIngestTaskService {
         if (request == null) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "请求不能为空");
         }
-        if (!StringUtils.hasText(request.magnet()) || !request.magnet().trim().toLowerCase(Locale.ROOT).startsWith("magnet:?")) {
+        if (!request.magnet().trim().toLowerCase(Locale.ROOT).startsWith("magnet:?")) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "请输入有效 magnet 链接");
         }
         extractMagnetHash(request.magnet());
-        if (!StringUtils.hasText(request.bgmId())) {
-            throw new BusinessException(ErrorCode.BAD_REQUEST, "Bangumi 条目不能为空");
-        }
         if (!StringUtils.hasText(preferredTitle(request))) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "动漫标题不能为空");
-        }
-        if (request.seasonNumber() != null && request.seasonNumber() < 0) {
-            throw new BusinessException(ErrorCode.BAD_REQUEST, "季数无效");
         }
     }
 

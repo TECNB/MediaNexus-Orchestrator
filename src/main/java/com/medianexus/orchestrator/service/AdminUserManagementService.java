@@ -119,9 +119,6 @@ public class AdminUserManagementService {
         User user = requireEditableNormalUser(userId);
         Integer previousOverride = user.getDailyContentCreateLimitOverride();
         Integer nextOverride = request.dailyContentCreateLimitOverride();
-        if (nextOverride != null) {
-            nextOverride = quotaSettingsService.validateManagedQuota(nextOverride);
-        }
         user.setDailyContentCreateLimitOverride(nextOverride);
         userMapper.updateDailyContentCreateLimitOverride(user.getId(), nextOverride);
         int effectiveLimit = quotaSettingsService.resolveDailyContentCreateLimit(user);
