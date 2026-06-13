@@ -94,14 +94,15 @@ public class ProductionConfigurationGuard implements InitializingBean {
         String normalizedUrl = datasourceUrl.toLowerCase(Locale.ROOT);
         boolean usesTunnelEndpoint = usesConfiguredLocalTunnelEndpoint(normalizedUrl);
         boolean usesManagedTunnelEndpoint = sshTunnelProperties.isEnabled() && usesTunnelEndpoint;
+        boolean usesDockerNetworkMysql = usesDockerNetworkMysql(normalizedUrl);
 
         if (usesTunnelEndpoint && !sshTunnelProperties.isEnabled()) {
             violations.add("spring.datasource.url points at the local SSH tunnel endpoint but MEDIANEXUS_DB_SSH_TUNNEL_ENABLED is false");
         }
-        if (!usesManagedTunnelEndpoint && containsJdbcOption(normalizedUrl, "usessl", "false")) {
+        if (!usesManagedTunnelEndpoint && !usesDockerNetworkMysql && containsJdbcOption(normalizedUrl, "usessl", "false")) {
             violations.add("spring.datasource.url must not set useSSL=false in production");
         }
-        if (!usesManagedTunnelEndpoint && containsJdbcOption(normalizedUrl, "sslmode", "disabled")) {
+        if (!usesManagedTunnelEndpoint && !usesDockerNetworkMysql && containsJdbcOption(normalizedUrl, "sslmode", "disabled")) {
             violations.add("spring.datasource.url must not set sslMode=DISABLED in production");
         }
         if (!usesManagedTunnelEndpoint && containsJdbcOption(normalizedUrl, "allowpublickeyretrieval", "true")) {
@@ -119,6 +120,10 @@ public class ProductionConfigurationGuard implements InitializingBean {
 
     private boolean containsJdbcOption(String normalizedUrl, String optionName, String expectedValue) {
         return normalizedUrl.contains(optionName + "=" + expectedValue);
+    }
+
+    private boolean usesDockerNetworkMysql(String normalizedUrl) {
+        return normalizedUrl.contains("//medianexus_mysql:3306/");
     }
 
     private boolean usesConfiguredLocalTunnelEndpoint(String normalizedUrl) {
