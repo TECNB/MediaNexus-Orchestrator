@@ -11,8 +11,14 @@ import com.medianexus.orchestrator.dto.auth.response.AuthSessionResponse;
 import com.medianexus.orchestrator.dto.auth.response.AuthUserResponse;
 import com.medianexus.orchestrator.mapper.UserMapper;
 import com.medianexus.orchestrator.model.User;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.util.Locale;
 import java.util.regex.Pattern;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -22,6 +28,7 @@ import org.springframework.util.StringUtils;
 @Service
 public class AuthService {
 
+    private static final Logger log = LoggerFactory.getLogger(AuthService.class);
     private static final Pattern USERNAME_PATTERN = Pattern.compile("[a-z0-9_-]{3,32}");
     private static final Pattern EMAIL_PATTERN = Pattern.compile("^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$");
     private static final int MAX_EMAIL_LENGTH = 128;
@@ -46,53 +53,81 @@ public class AuthService {
     }
 
     public AuthSessionResponse register(AuthRegisterRequest request) {
-        if (request == null) {
-            throw new BusinessException(ErrorCode.BAD_REQUEST, "请求不能为空");
-        }
-        validateRegistrationCode(request.registrationCode());
-        String username = normalizeUsername(request.username());
-        String email = normalizeEmail(request.email());
-        String password = normalizePassword(request.password());
-        String confirmPassword = normalizePassword(request.confirmPassword());
-        if (!password.equals(confirmPassword)) {
-            throw new BusinessException(ErrorCode.BAD_REQUEST, "两次输入的密码不一致");
-        }
-        ensureUsernameAvailable(username);
-        ensureEmailAvailable(email);
-
-        User user = new User();
-        user.setUsername(username);
-        user.setEmail(email);
-        user.setPasswordHash(passwordEncoder.encode(password));
-        user.setRole(USER_ROLE);
         try {
-            userMapper.insert(user);
-        } catch (DuplicateKeyException exception) {
-            throw duplicateAccountException(username, email);
+            if (request == null) {
+                throw new BusinessException(ErrorCode.BAD_REQUEST, "请求不能为空");
+            }
+            validateRegistrationCode(request.registrationCode());
+            String username = normalizeUsername(request.username());
+            String email = normalizeEmail(request.email());
+            String password = normalizePassword(request.password());
+            String confirmPassword = normalizePassword(request.confirmPassword());
+            if (!password.equals(confirmPassword)) {
+                throw new BusinessException(ErrorCode.BAD_REQUEST, "两次输入的密码不一致");
+            }
+            ensureUsernameAvailable(username);
+            ensureEmailAvailable(email);
+
+            User user = new User();
+            user.setUsername(username);
+            user.setEmail(email);
+            user.setPasswordHash(passwordEncoder.encode(password));
+            user.setRole(USER_ROLE);
+            try {
+                userMapper.insert(user);
+            } catch (DuplicateKeyException exception) {
+                throw duplicateAccountException(username, email);
+            }
+            AuthSessionResponse response = loginUser(getExistingUser(user.getId()));
+            log.info("User registered userId={} username={}", user.getId(), username);
+            return response;
+        } catch (BusinessException exception) {
+            log.warn(
+                    "User registration failed username={} emailKey={} status={} reason={}",
+                    request == null ? null : logValue(request.username()),
+                    request == null ? null : accountKey(request.email()),
+                    exception.getHttpStatus().value(),
+                    exception.getMessage()
+            );
+            throw exception;
         }
-        return loginUser(getExistingUser(user.getId()));
     }
 
     public AuthSessionResponse login(AuthLoginRequest request) {
-        if (request == null) {
-            throw new BusinessException(ErrorCode.BAD_REQUEST, "请求不能为空");
+        String accountKey = request == null ? null : accountKey(request.account());
+        try {
+            if (request == null) {
+                throw new BusinessException(ErrorCode.BAD_REQUEST, "请求不能为空");
+            }
+            String account = normalizeAccount(request.account());
+            String password = normalizeLoginPassword(request.password());
+            User user = userMapper.selectOne(new LambdaQueryWrapper<User>()
+                    .eq(User::getUsername, account)
+                    .or()
+                    .eq(User::getEmail, account)
+                    .last("LIMIT 1"));
+            if (user == null || !passwordEncoder.matches(password, user.getPasswordHash())) {
+                throw new BusinessException(ErrorCode.UNAUTHORIZED, LOGIN_FAILED_MESSAGE, HttpStatus.UNAUTHORIZED);
+            }
+            AuthSessionResponse response = loginUser(user);
+            log.info("User login succeeded userId={} accountKey={}", user.getId(), accountKey);
+            return response;
+        } catch (BusinessException exception) {
+            log.warn(
+                    "User login failed accountKey={} status={} reason={}",
+                    accountKey,
+                    exception.getHttpStatus().value(),
+                    exception.getMessage()
+            );
+            throw exception;
         }
-        String account = normalizeAccount(request.account());
-        String password = normalizeLoginPassword(request.password());
-        User user = userMapper.selectOne(new LambdaQueryWrapper<User>()
-                .eq(User::getUsername, account)
-                .or()
-                .eq(User::getEmail, account)
-                .last("LIMIT 1"));
-        if (user == null || !passwordEncoder.matches(password, user.getPasswordHash())) {
-            throw new BusinessException(ErrorCode.UNAUTHORIZED, LOGIN_FAILED_MESSAGE, HttpStatus.UNAUTHORIZED);
-        }
-        return loginUser(user);
     }
 
     public void logout() {
         if (StpUtil.isLogin()) {
+            Long userId = StpUtil.getLoginIdAsLong();
             StpUtil.logout();
+            log.info("User logout succeeded userId={}", userId);
         }
     }
 
@@ -194,6 +229,27 @@ public class AuthService {
 
     private String normalizeAccount(String account) {
         return account.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private String accountKey(String value) {
+        if (!StringUtils.hasText(value)) {
+            return "blank";
+        }
+        try {
+            byte[] hash = MessageDigest.getInstance("SHA-256")
+                    .digest(value.trim().toLowerCase(Locale.ROOT).getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(hash, 0, 6);
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 is not available", exception);
+        }
+    }
+
+    private String logValue(String value) {
+        if (!StringUtils.hasText(value)) {
+            return "blank";
+        }
+        String normalized = value.trim().toLowerCase(Locale.ROOT).replaceAll("[\\r\\n\\t]+", " ");
+        return normalized.length() <= 64 ? normalized : normalized.substring(0, 64);
     }
 
     private void ensureUsernameAvailable(String username) {

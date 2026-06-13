@@ -74,17 +74,28 @@ public class AnimeSubscriptionService {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "番剧来源地址不能为空");
         }
 
+        String normalizedSourceUrl = sourceUrl.trim();
         try {
-            List<GroupCandidate> candidates = rankGroups(aniRssClient.getMikanGroups(sourceUrl.trim()));
+            List<GroupCandidate> candidates = rankGroups(aniRssClient.getMikanGroups(normalizedSourceUrl));
             List<AnimeSubtitleGroup> groups = candidates.stream()
                     .map(GroupCandidate::toResponse)
                     .toList();
             return new AnimeSubtitleGroupsResponse(groups, groups.size());
         } catch (AniRssClientException exception) {
-            log.warn("Anime subtitle group upstream request failed");
+            log.warn(
+                    "Anime subtitle group upstream request failed sourceUrl={} reason={}",
+                    logValue(normalizedSourceUrl),
+                    exception.getMessage(),
+                    exception
+            );
             throw new BusinessException(ErrorCode.INTERNAL_ERROR, GROUPS_FAILED_MESSAGE, HttpStatus.INTERNAL_SERVER_ERROR);
         } catch (RuntimeException exception) {
-            log.warn("Anime subtitle group response mapping failed");
+            log.warn(
+                    "Anime subtitle group response mapping failed sourceUrl={} reason={}",
+                    logValue(normalizedSourceUrl),
+                    exception.getMessage(),
+                    exception
+            );
             throw new BusinessException(ErrorCode.INTERNAL_ERROR, GROUPS_FAILED_MESSAGE, HttpStatus.INTERNAL_SERVER_ERROR);
         }
     }
@@ -123,6 +134,13 @@ public class AnimeSubscriptionService {
 
         try {
             if (hasDuplicateSubscription(preview.title(), preview.season())) {
+                log.info(
+                        "Anime subscription already exists userId={} title={} season={} subgroup={}",
+                        user.getId(),
+                        logValue(preview.title()),
+                        preview.season(),
+                        logValue(preview.subgroup())
+                );
                 return new AnimeSubscriptionResponse(
                         "exists",
                         false,
@@ -134,6 +152,14 @@ public class AnimeSubscriptionService {
 
             userActionQuotaService.consumeDailyContentCreate(user, UserActionType.ANIME_SUBSCRIBE_CREATE);
             aniRssClient.addAni(result.subscription());
+            log.info(
+                    "Anime subscription created userId={} title={} season={} subgroup={} previewCount={}",
+                    user.getId(),
+                    logValue(preview.title()),
+                    preview.season(),
+                    logValue(preview.subgroup()),
+                    preview.previewCount()
+            );
             return new AnimeSubscriptionResponse(
                     "added",
                     true,
@@ -144,10 +170,24 @@ public class AnimeSubscriptionService {
         } catch (BusinessException exception) {
             throw exception;
         } catch (AniRssClientException exception) {
-            log.warn("Anime subscribe upstream request failed");
+            log.warn(
+                    "Anime subscribe upstream request failed userId={} title={} season={} reason={}",
+                    user.getId(),
+                    logValue(preview.title()),
+                    preview.season(),
+                    exception.getMessage(),
+                    exception
+            );
             throw new BusinessException(ErrorCode.INTERNAL_ERROR, SUBSCRIBE_FAILED_MESSAGE, HttpStatus.INTERNAL_SERVER_ERROR);
         } catch (RuntimeException exception) {
-            log.warn("Anime subscribe response mapping failed");
+            log.warn(
+                    "Anime subscribe response mapping failed userId={} title={} season={} reason={}",
+                    user.getId(),
+                    logValue(preview.title()),
+                    preview.season(),
+                    exception.getMessage(),
+                    exception
+            );
             throw new BusinessException(ErrorCode.INTERNAL_ERROR, SUBSCRIBE_FAILED_MESSAGE, HttpStatus.INTERNAL_SERVER_ERROR);
         }
     }
@@ -176,12 +216,32 @@ public class AnimeSubscriptionService {
             );
             return new PreviewResult(subscription, response);
         } catch (AniRssClientException exception) {
-            log.warn("Anime preview upstream request failed");
+            log.warn(
+                    "Anime preview upstream request failed bgmUrl={} subgroup={} reason={}",
+                    logValue(request.bgmUrl()),
+                    logValue(request.subgroup()),
+                    exception.getMessage(),
+                    exception
+            );
             throw new BusinessException(ErrorCode.INTERNAL_ERROR, failureMessage, HttpStatus.INTERNAL_SERVER_ERROR);
         } catch (RuntimeException exception) {
-            log.warn("Anime preview response mapping failed");
+            log.warn(
+                    "Anime preview response mapping failed bgmUrl={} subgroup={} reason={}",
+                    logValue(request.bgmUrl()),
+                    logValue(request.subgroup()),
+                    exception.getMessage(),
+                    exception
+            );
             throw new BusinessException(ErrorCode.INTERNAL_ERROR, failureMessage, HttpStatus.INTERNAL_SERVER_ERROR);
         }
+    }
+
+    private String logValue(String value) {
+        if (!StringUtils.hasText(value)) {
+            return "blank";
+        }
+        String trimmed = value.trim().replaceAll("[\\r\\n\\t]+", " ");
+        return trimmed.length() <= 80 ? trimmed : trimmed.substring(0, 80);
     }
 
     private JsonNode ensureEnabled(JsonNode subscription) {

@@ -108,7 +108,7 @@ public class AniRssClient {
         return post("addAni", null, writeJson(subscription));
     }
 
-    private JsonNode unwrapResult(String responseBody) {
+    private JsonNode unwrapResult(String endpoint, String responseBody) {
         try {
             JsonNode root = objectMapper.readTree(responseBody);
             JsonNode codeNode = root.get("code");
@@ -116,7 +116,8 @@ public class AniRssClient {
                 int code = codeNode.asInt();
                 // Ani-RSS 新旧接口混用 0 和 200 表示成功，其他 code 都作为上游失败处理。
                 if (code != 0 && code != 200) {
-                    throw new AniRssClientException("ani-rss returned failure code " + code);
+                    throw new AniRssClientException("ani-rss returned failure code "
+                            + code + " for endpoint " + endpoint);
                 }
             }
             if (root.has("data")) {
@@ -124,7 +125,7 @@ public class AniRssClient {
             }
             return root;
         } catch (IOException exception) {
-            throw new AniRssClientException("ani-rss response parse failed", exception);
+            throw new AniRssClientException("ani-rss response parse failed for endpoint " + endpoint, exception);
         }
     }
 
@@ -144,7 +145,7 @@ public class AniRssClient {
                 throw new AniRssClientException("ani-rss returned non-success status "
                         + response.statusCode() + " for endpoint " + endpoint);
             }
-            return unwrapResult(response.body());
+            return unwrapResult(endpoint, response.body());
         } catch (IOException exception) {
             throw new AniRssClientException("ani-rss request failed for endpoint " + endpoint, exception);
         } catch (InterruptedException exception) {

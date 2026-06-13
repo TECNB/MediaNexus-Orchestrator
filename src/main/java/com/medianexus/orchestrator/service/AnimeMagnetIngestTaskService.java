@@ -105,7 +105,10 @@ public class AnimeMagnetIngestTaskService {
                 .set(AnimeMagnetIngestTask::getStage, "interrupted")
                 .set(AnimeMagnetIngestTask::getErrorMessage, "服务重启，任务已中断")
                 .set(AnimeMagnetIngestTask::getFinishedAt, LocalDateTime.now());
-        taskMapper.update(updateWrapper);
+        int interruptedCount = taskMapper.update(updateWrapper);
+        if (interruptedCount > 0) {
+            log.info("Marked unfinished anime magnet ingest tasks interrupted count={}", interruptedCount);
+        }
     }
 
     /**
@@ -127,8 +130,20 @@ public class AnimeMagnetIngestTaskService {
         if (activeTask != null) {
             if (canAccessTask(user, activeTask)) {
                 writeLog(activeTask.getId(), "INFO", activeTask.getStage(), "发现相同 magnet 正在处理，返回已有任务", null);
+                log.info(
+                        "Returned active anime magnet ingest task taskId={} userId={} magnetHash={}",
+                        activeTask.getId(),
+                        user.getId(),
+                        magnetHash
+                );
                 return toResponse(activeTask);
             }
+            log.warn(
+                    "Rejected duplicate anime magnet ingest task userId={} magnetHash={} activeTaskId={}",
+                    user.getId(),
+                    magnetHash,
+                    activeTask.getId()
+            );
             throw new BusinessException(ErrorCode.BAD_REQUEST, "相同 magnet 正在处理中，请稍后再试");
         }
 
@@ -163,6 +178,14 @@ public class AnimeMagnetIngestTaskService {
         taskMapper.insert(task);
 
         writeLog(taskId, "INFO", "created", "已创建动漫整季磁力任务", "savePath=" + savePath);
+        log.info(
+                "Created anime magnet ingest task taskId={} userId={} bgmId={} magnetHash={} savePath={}",
+                taskId,
+                user.getId(),
+                task.getBgmId(),
+                magnetHash,
+                savePath
+        );
         if (!StringUtils.hasText(request.themoviedbName()) && StringUtils.hasText(themoviedbName)) {
             writeLog(taskId, "INFO", "created", "已通过 Ani-RSS 解析 TMDB 标题", themoviedbName);
         }
@@ -270,6 +293,13 @@ public class AnimeMagnetIngestTaskService {
     private void markSucceeded(String taskId, String openListTaskId, OrganizeResult result) {
         updateTask(taskId, "SUCCEEDED", "succeeded", openListTaskId, result, null);
         writeLog(taskId, "INFO", "succeeded", "任务完成", "organized=" + result.organizedCount() + ", skipped=" + result.skippedCount());
+        log.info(
+                "Anime magnet ingest task succeeded taskId={} openListTaskId={} organized={} skipped={}",
+                taskId,
+                openListTaskId,
+                result.organizedCount(),
+                result.skippedCount()
+        );
     }
 
     private void markFailed(String taskId, String errorMessage) {

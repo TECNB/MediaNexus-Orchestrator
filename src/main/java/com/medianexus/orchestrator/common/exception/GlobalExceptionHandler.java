@@ -2,6 +2,7 @@ package com.medianexus.orchestrator.common.exception;
 
 import cn.dev33.satoken.exception.NotLoginException;
 import com.medianexus.orchestrator.common.response.ApiResponse;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ConstraintViolationException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -91,8 +92,8 @@ public class GlobalExceptionHandler {
     }
 
     @ExceptionHandler(Exception.class)
-    public ResponseEntity<ApiResponse<Void>> handleException(Exception exception) {
-        log.error("Unhandled exception", exception);
+    public ResponseEntity<ApiResponse<Void>> handleException(Exception exception, HttpServletRequest request) {
+        log.error("Unhandled exception method={} path={}", request.getMethod(), request.getRequestURI(), exception);
         return ResponseEntity
                 .status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(ApiResponse.failed(ErrorCode.INTERNAL_ERROR));

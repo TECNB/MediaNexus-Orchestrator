@@ -16,6 +16,8 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
@@ -28,6 +30,9 @@ import org.springframework.util.StringUtils;
  */
 @Component
 public class OpenListClient {
+
+    private static final Logger log = LoggerFactory.getLogger(OpenListClient.class);
+    private static final int MAX_LOG_BODY_LENGTH = 500;
 
     private final OpenListProperties properties;
     private final ObjectMapper objectMapper;
@@ -218,6 +223,12 @@ public class OpenListClient {
     private JsonNode post(String action, Object body) {
         JsonNode root = postRoot(action, body);
         if (!isSuccess(root)) {
+            log.warn(
+                    "OpenList returned non-success payload action={} code={} message={}",
+                    action,
+                    root == null ? null : root.path("code").asInt(-1),
+                    message(root)
+            );
             throw new OpenListClientException("OpenList returned non-success payload");
         }
         JsonNode data = root.get("data");
@@ -241,6 +252,12 @@ public class OpenListClient {
                 .build();
         JsonNode root = send(request, action);
         if (!isSuccess(root)) {
+            log.warn(
+                    "OpenList returned non-success payload action={} code={} message={}",
+                    action,
+                    root == null ? null : root.path("code").asInt(-1),
+                    message(root)
+            );
             throw new OpenListClientException("OpenList returned non-success payload");
         }
         return root.path("data");
@@ -258,6 +275,12 @@ public class OpenListClient {
         try {
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                log.warn(
+                        "OpenList request returned non-success status action={} status={} body={}",
+                        action,
+                        response.statusCode(),
+                        truncateForLog(response.body())
+                );
                 throw new OpenListClientException("OpenList returned non-success status for " + action);
             }
             return objectMapper.readTree(response.body());
@@ -283,6 +306,16 @@ public class OpenListClient {
 
     private String message(JsonNode root) {
         return root == null ? "" : root.path("message").asText("");
+    }
+
+    private String truncateForLog(String value) {
+        if (value == null) {
+            return value;
+        }
+        String normalized = value.replaceAll("[\\r\\n\\t]+", " ");
+        return normalized.length() <= MAX_LOG_BODY_LENGTH
+                ? normalized
+                : normalized.substring(0, MAX_LOG_BODY_LENGTH);
     }
 
     private void validateConfiguration() {

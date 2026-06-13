@@ -39,20 +39,40 @@ public class AnimeMagnetSearchService {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "搜索关键词不能为空");
         }
 
+        String normalizedTerm = term.trim();
         try {
-            JsonNode bgmNode = aniRssClient.searchBgm(term.trim());
-            log.debug("Anime magnet search upstream response shape: array={}, size={}",
+            JsonNode bgmNode = aniRssClient.searchBgm(normalizedTerm);
+            log.debug("Anime magnet search upstream response shape: term={}, array={}, size={}",
+                    logValue(normalizedTerm),
                     bgmNode != null && bgmNode.isArray(),
                     bgmNode != null && bgmNode.isArray() ? bgmNode.size() : null);
             List<AnimeMagnetSearchItem> items = mapItems(bgmNode);
             return new AnimeMagnetSearchResponse(items, items.size());
         } catch (AniRssClientException exception) {
-            log.warn("Anime magnet search upstream request failed: {}", exception.getMessage(), exception);
+            log.warn(
+                    "Anime magnet search upstream request failed term={} reason={}",
+                    logValue(normalizedTerm),
+                    exception.getMessage(),
+                    exception
+            );
             throw new BusinessException(ErrorCode.INTERNAL_ERROR, SEARCH_FAILED_MESSAGE, HttpStatus.INTERNAL_SERVER_ERROR);
         } catch (RuntimeException exception) {
-            log.warn("Anime magnet search response mapping failed: {}", exception.getMessage(), exception);
+            log.warn(
+                    "Anime magnet search response mapping failed term={} reason={}",
+                    logValue(normalizedTerm),
+                    exception.getMessage(),
+                    exception
+            );
             throw new BusinessException(ErrorCode.INTERNAL_ERROR, SEARCH_FAILED_MESSAGE, HttpStatus.INTERNAL_SERVER_ERROR);
         }
+    }
+
+    private String logValue(String value) {
+        if (!StringUtils.hasText(value)) {
+            return "blank";
+        }
+        String trimmed = value.trim().replaceAll("[\\r\\n\\t]+", " ");
+        return trimmed.length() <= 80 ? trimmed : trimmed.substring(0, 80);
     }
 
     private List<AnimeMagnetSearchItem> mapItems(JsonNode bgmNode) {

@@ -45,16 +45,35 @@ public class AnimeSearchService {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "搜索关键词不能为空");
         }
 
+        String normalizedTerm = term.trim();
         try {
-            List<AnimeSearchItem> items = flatten(aniRssClient.searchMikan(term.trim()));
+            List<AnimeSearchItem> items = flatten(aniRssClient.searchMikan(normalizedTerm));
             return new AnimeSearchResponse(items, items.size());
         } catch (AniRssClientException exception) {
-            log.warn("Anime search upstream request failed");
+            log.warn(
+                    "Anime search upstream request failed term={} reason={}",
+                    logValue(normalizedTerm),
+                    exception.getMessage(),
+                    exception
+            );
             throw new BusinessException(ErrorCode.INTERNAL_ERROR, SEARCH_FAILED_MESSAGE, HttpStatus.INTERNAL_SERVER_ERROR);
         } catch (RuntimeException exception) {
-            log.warn("Anime search response mapping failed");
+            log.warn(
+                    "Anime search response mapping failed term={} reason={}",
+                    logValue(normalizedTerm),
+                    exception.getMessage(),
+                    exception
+            );
             throw new BusinessException(ErrorCode.INTERNAL_ERROR, SEARCH_FAILED_MESSAGE, HttpStatus.INTERNAL_SERVER_ERROR);
         }
+    }
+
+    private String logValue(String value) {
+        if (!StringUtils.hasText(value)) {
+            return "blank";
+        }
+        String trimmed = value.trim().replaceAll("[\\r\\n\\t]+", " ");
+        return trimmed.length() <= 80 ? trimmed : trimmed.substring(0, 80);
     }
 
     private List<AnimeSearchItem> flatten(JsonNode mikanNode) {
