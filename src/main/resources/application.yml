@@ -36,6 +36,8 @@ medianexus:
     base-url: ${MEDIANEXUS_ANI_RSS_BASE_URL:http://example.invalid:7789}
     api-key: ${MEDIANEXUS_ANI_RSS_API_KEY:}
     timeout: ${MEDIANEXUS_ANI_RSS_TIMEOUT:10s}
+  emby:
+    webhook-secret: ${MEDIANEXUS_EMBY_WEBHOOK_SECRET:}
   openlist:
     base-url: ${MEDIANEXUS_OPENLIST_BASE_URL:}
     authorization: ${MEDIANEXUS_OPENLIST_AUTHORIZATION:}

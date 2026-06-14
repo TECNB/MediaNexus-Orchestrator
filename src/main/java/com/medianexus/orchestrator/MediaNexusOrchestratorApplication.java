@@ -3,6 +3,7 @@ package com.medianexus.orchestrator;
 import com.medianexus.orchestrator.config.AuthProperties;
 import com.medianexus.orchestrator.config.AniRssProperties;
 import com.medianexus.orchestrator.config.DatabaseSshTunnelProperties;
+import com.medianexus.orchestrator.config.EmbyProperties;
 import com.medianexus.orchestrator.config.OpenListProperties;
 import com.medianexus.orchestrator.config.UserQuotaProperties;
 import org.mybatis.spring.annotation.MapperScan;
@@ -15,6 +16,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
         AniRssProperties.class,
         AuthProperties.class,
         DatabaseSshTunnelProperties.class,
+        EmbyProperties.class,
         OpenListProperties.class,
         UserQuotaProperties.class
 })
