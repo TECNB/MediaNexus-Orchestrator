@@ -30,8 +30,8 @@ public interface EmbyWatchSessionMapper extends BaseMapper<EmbyWatchSession> {
                 runtime_ticks BIGINT NULL,
                 start_time DATETIME NOT NULL,
                 stop_time DATETIME NOT NULL,
-                start_position_ticks BIGINT NOT NULL,
-                stop_position_ticks BIGINT NOT NULL,
+                start_position_ticks BIGINT NULL,
+                stop_position_ticks BIGINT NULL,
                 watch_seconds INT NOT NULL,
                 watch_date DATE NOT NULL,
                 device_name VARCHAR(255) NULL,
@@ -46,6 +46,38 @@ public interface EmbyWatchSessionMapper extends BaseMapper<EmbyWatchSession> {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
             """)
     void createTableIfNotExists();
+
+    @Select("""
+            SELECT COUNT(*)
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'emby_watch_sessions'
+              AND COLUMN_NAME = 'start_position_ticks'
+              AND IS_NULLABLE = 'NO'
+            """)
+    Integer countRequiredStartPositionTicksColumn();
+
+    @Select("""
+            SELECT COUNT(*)
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'emby_watch_sessions'
+              AND COLUMN_NAME = 'stop_position_ticks'
+              AND IS_NULLABLE = 'NO'
+            """)
+    Integer countRequiredStopPositionTicksColumn();
+
+    @Update("""
+            ALTER TABLE emby_watch_sessions
+            MODIFY start_position_ticks BIGINT NULL
+            """)
+    void makeStartPositionTicksNullable();
+
+    @Update("""
+            ALTER TABLE emby_watch_sessions
+            MODIFY stop_position_ticks BIGINT NULL
+            """)
+    void makeStopPositionTicksNullable();
 
     @Insert("""
             INSERT INTO emby_watch_sessions (

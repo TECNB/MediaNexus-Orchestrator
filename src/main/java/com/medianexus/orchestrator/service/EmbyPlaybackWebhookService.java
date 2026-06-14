@@ -11,12 +11,15 @@ import com.medianexus.orchestrator.mapper.EmbyActivePlaybackSessionMapper;
 import com.medianexus.orchestrator.mapper.EmbyWatchSessionMapper;
 import com.medianexus.orchestrator.model.EmbyActivePlaybackSession;
 import com.medianexus.orchestrator.model.EmbyWatchSession;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeParseException;
+import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import org.slf4j.Logger;
@@ -62,31 +65,63 @@ public class EmbyPlaybackWebhookService {
     @Transactional
     public void receivePlaybackEvent(String secret, String body) {
         validateSecret(secret);
-        EmbyPlaybackWebhookRequest request = parsePlaybackRequest(body);
-        if (request == null) {
+        ParsedPlaybackWebhookRequest parsedRequest = parsePlaybackRequest(body);
+        if (parsedRequest == null) {
             log.warn("Emby webhook ignored because payload is empty or invalid");
             return;
         }
 
+        EmbyPlaybackWebhookRequest request = parsedRequest.request();
         String event = normalizeEvent(request.event());
         if (!EVENT_PLAYBACK_START.equals(event) && !EVENT_PLAYBACK_STOP.equals(event)) {
+            log.debug("Emby webhook ignored because event is unsupported event={} rootFields={}",
+                    event,
+                    parsedRequest.rootFields()
+            );
             return;
         }
 
         String itemType = normalizeItemType(request.itemType());
         if (itemType == null) {
+            log.info("Emby {} ignored because itemType is unsupported itemType={} itemName={} rootFields={}",
+                    event,
+                    displayLogText(request.itemType()),
+                    displayLogText(request.itemName()),
+                    parsedRequest.rootFields()
+            );
             return;
         }
 
-        String embySessionId = requiredText(request.sessionId(), "sessionId", event);
-        String itemId = requiredText(request.itemId(), "itemId", event);
-        String embyUserId = requiredText(request.userId(), "userId", event);
-        Long positionTicks = requiredTicks(request.positionTicks(), "positionTicks", event);
-        if (embySessionId == null || itemId == null || embyUserId == null || positionTicks == null) {
+        String embySessionId = shortText(request.sessionId(), TEXT_LIMIT_SHORT);
+        String itemId = shortText(request.itemId(), TEXT_LIMIT_SHORT);
+        String embyUserId = shortText(request.userId(), TEXT_LIMIT_SHORT);
+        Long positionTicks = optionalTicks(request.positionTicks());
+        List<String> missingFields = missingRequiredFields(embySessionId, itemId, embyUserId);
+        if (!missingFields.isEmpty()) {
+            log.warn("Emby {} ignored because required fields are missing fields={} itemType={} itemName={} rootFields={}",
+                    event,
+                    missingFields,
+                    itemType,
+                    displayLogText(request.itemName()),
+                    parsedRequest.rootFields()
+            );
             return;
         }
 
         LocalDateTime eventTime = parseEventTime(request.date());
+        log.info("Emby webhook accepted event={} itemType={} sessionId={} itemId={} userId={} userName={} itemName={} hasPositionTicks={} hasRuntimeTicks={} eventTime={}",
+                event,
+                itemType,
+                embySessionId,
+                itemId,
+                embyUserId,
+                displayLogText(request.userName()),
+                displayLogText(request.itemName()),
+                positionTicks != null,
+                optionalTicks(request.runtimeTicks()) != null,
+                eventTime
+        );
+
         if (EVENT_PLAYBACK_START.equals(event)) {
             recordStart(request, itemType, embySessionId, embyUserId, itemId, positionTicks, eventTime);
             return;
@@ -95,7 +130,7 @@ public class EmbyPlaybackWebhookService {
         settleStop(request, itemType, embySessionId, embyUserId, itemId, positionTicks, eventTime);
     }
 
-    private EmbyPlaybackWebhookRequest parsePlaybackRequest(String body) {
+    private ParsedPlaybackWebhookRequest parsePlaybackRequest(String body) {
         String payload = clean(body);
         if (!StringUtils.hasText(payload)) {
             return null;
@@ -103,27 +138,30 @@ public class EmbyPlaybackWebhookService {
 
         try {
             JsonNode root = objectMapper.readTree(payload);
-            return new EmbyPlaybackWebhookRequest(
-                    textAt(root, "event", "Event", "Title"),
-                    textAt(root, "date", "Date", "TimeStamp", "Timestamp"),
-                    textAt(root, "userId", "UserId", "UserID", "User.Id", "User.UserId", "Session.UserId"),
-                    textAt(root, "userName", "UserName", "User.Name", "User.Username", "Session.UserName"),
-                    textAt(root, "sessionId", "SessionId", "SessionID", "Session.Id", "PlaySessionId",
-                            "Session.PlaySessionId", "Session.PlayState.PlaySessionId"),
-                    textAt(root, "itemId", "ItemId", "ItemID", "Item.Id", "Item.ItemId"),
-                    textAt(root, "itemType", "ItemType", "Item.Type"),
-                    textAt(root, "itemName", "ItemName", "Item.Name"),
-                    textAt(root, "seriesId", "SeriesId", "SeriesID", "Item.SeriesId", "Item.SeriesID"),
-                    textAt(root, "seriesName", "SeriesName", "Item.SeriesName", "Item.ShowName",
-                            "ItemNameGrandparent", "Item.GrandparentName"),
-                    textAt(root, "runtimeTicks", "RuntimeTicks", "RunTimeTicks", "ItemRunTimeTicks",
-                            "Item.RuntimeTicks", "Item.RunTimeTicks"),
-                    textAt(root, "positionTicks", "PositionTicks", "PlaybackPositionTicks",
-                            "SessionPlaybackPositionTicks", "Session.PositionTicks",
-                            "Session.PlaybackPositionTicks", "Session.PlayState.PositionTicks",
-                            "PlayState.PositionTicks"),
-                    textAt(root, "deviceName", "DeviceName", "Session.DeviceName", "Device.Name"),
-                    textAt(root, "clientName", "ClientName", "AppName", "Session.Client", "Session.AppName")
+            return new ParsedPlaybackWebhookRequest(
+                    new EmbyPlaybackWebhookRequest(
+                            textAt(root, "event", "Event", "Title"),
+                            textAt(root, "date", "Date", "TimeStamp", "Timestamp"),
+                            textAt(root, "userId", "UserId", "UserID", "User.Id", "User.UserId", "Session.UserId"),
+                            textAt(root, "userName", "UserName", "User.Name", "User.Username", "Session.UserName"),
+                            textAt(root, "sessionId", "SessionId", "SessionID", "Session.Id", "PlaySessionId",
+                                    "Session.PlaySessionId", "Session.PlayState.PlaySessionId"),
+                            textAt(root, "itemId", "ItemId", "ItemID", "Item.Id", "Item.ItemId"),
+                            textAt(root, "itemType", "ItemType", "Item.Type"),
+                            textAt(root, "itemName", "ItemName", "Item.Name"),
+                            textAt(root, "seriesId", "SeriesId", "SeriesID", "Item.SeriesId", "Item.SeriesID"),
+                            textAt(root, "seriesName", "SeriesName", "Item.SeriesName", "Item.ShowName",
+                                    "ItemNameGrandparent", "Item.GrandparentName"),
+                            textAt(root, "runtimeTicks", "RuntimeTicks", "RunTimeTicks", "ItemRunTimeTicks",
+                                    "Item.RuntimeTicks", "Item.RunTimeTicks"),
+                            textAt(root, "positionTicks", "PositionTicks", "PlaybackPositionTicks",
+                                    "SessionPlaybackPositionTicks", "Session.PositionTicks",
+                                    "Session.PlaybackPositionTicks", "Session.PlayState.PositionTicks",
+                                    "PlayState.PositionTicks"),
+                            textAt(root, "deviceName", "DeviceName", "Session.DeviceName", "Device.Name"),
+                            textAt(root, "clientName", "ClientName", "AppName", "Session.Client", "Session.AppName")
+                    ),
+                    describeRootFields(root)
             );
         } catch (JsonProcessingException exception) {
             log.warn("Emby webhook payload is not valid JSON");
@@ -191,7 +229,7 @@ public class EmbyPlaybackWebhookService {
             String embySessionId,
             String embyUserId,
             String itemId,
-            Long positionTicks,
+            Long startPositionTicks,
             LocalDateTime eventTime
     ) {
         EmbyActivePlaybackSession session = new EmbyActivePlaybackSession();
@@ -204,11 +242,18 @@ public class EmbyPlaybackWebhookService {
         session.setSeriesId(shortText(request.seriesId(), TEXT_LIMIT_SHORT));
         session.setSeriesName(shortText(request.seriesName(), TEXT_LIMIT_TITLE));
         session.setRuntimeTicks(optionalTicks(request.runtimeTicks()));
-        session.setStartPositionTicks(positionTicks);
+        session.setStartPositionTicks(startPositionTicks);
         session.setStartTime(eventTime);
         session.setDeviceName(shortText(request.deviceName(), TEXT_LIMIT_NAME));
         session.setClientName(shortText(request.clientName(), TEXT_LIMIT_NAME));
         activeSessionMapper.upsertActiveSession(session);
+        log.info("Emby playback.start recorded sessionId={} itemId={} itemType={} startTime={} hasStartPositionTicks={}",
+                embySessionId,
+                itemId,
+                itemType,
+                eventTime,
+                startPositionTicks != null
+        );
     }
 
     private void settleStop(
@@ -222,20 +267,33 @@ public class EmbyPlaybackWebhookService {
     ) {
         EmbyActivePlaybackSession activeSession = activeSessionMapper.selectActiveSessionForUpdate(embySessionId, itemId);
         if (activeSession == null) {
-            log.debug("Emby playback.stop ignored because active session is missing sessionId={} itemId={}",
+            log.info("Emby playback.stop ignored because active session is missing sessionId={} itemId={} userId={} itemName={}",
                     embySessionId,
-                    itemId
+                    itemId,
+                    embyUserId,
+                    displayLogText(request.itemName())
             );
             return;
         }
 
-        Integer watchSeconds = calculateWatchSeconds(
+        WatchDurationResult durationResult = calculateWatchSeconds(
                 activeSession.getStartPositionTicks(),
                 stopPositionTicks,
+                activeSession.getStartTime(),
+                stopTime,
                 firstPositiveTick(optionalTicks(request.runtimeTicks()), activeSession.getRuntimeTicks())
         );
         activeSessionMapper.deleteActiveSession(embySessionId, itemId);
-        if (watchSeconds == null) {
+        if (durationResult.watchSeconds() == null) {
+            log.info("Emby playback.stop ignored because watch duration is invalid sessionId={} itemId={} reason={} startTime={} stopTime={} hasStartPositionTicks={} hasStopPositionTicks={}",
+                    embySessionId,
+                    itemId,
+                    durationResult.reason(),
+                    activeSession.getStartTime(),
+                    stopTime,
+                    activeSession.getStartPositionTicks() != null,
+                    stopPositionTicks != null
+            );
             return;
         }
 
@@ -253,46 +311,57 @@ public class EmbyPlaybackWebhookService {
         watchSession.setStopTime(stopTime);
         watchSession.setStartPositionTicks(activeSession.getStartPositionTicks());
         watchSession.setStopPositionTicks(stopPositionTicks);
-        watchSession.setWatchSeconds(watchSeconds);
+        watchSession.setWatchSeconds(durationResult.watchSeconds());
         watchSession.setWatchDate(stopTime.toLocalDate());
         watchSession.setDeviceName(firstText(request.deviceName(), activeSession.getDeviceName(), TEXT_LIMIT_NAME));
         watchSession.setClientName(firstText(request.clientName(), activeSession.getClientName(), TEXT_LIMIT_NAME));
         watchSessionMapper.insertWatchSessionIfAbsent(watchSession);
+        log.info("Emby playback.stop settled sessionId={} itemId={} itemType={} userId={} watchSeconds={} durationSource={} stopTime={}",
+                embySessionId,
+                itemId,
+                itemType,
+                embyUserId,
+                durationResult.watchSeconds(),
+                durationResult.source(),
+                stopTime
+        );
     }
 
-    private Integer calculateWatchSeconds(Long startPositionTicks, long stopPositionTicks, Long runtimeTicks) {
-        if (startPositionTicks == null) {
-            return null;
+    private WatchDurationResult calculateWatchSeconds(
+            Long startPositionTicks,
+            Long stopPositionTicks,
+            LocalDateTime startTime,
+            LocalDateTime stopTime,
+            Long runtimeTicks
+    ) {
+        Long rawSeconds = null;
+        String source = null;
+
+        if (startPositionTicks != null && stopPositionTicks != null) {
+            rawSeconds = (stopPositionTicks - startPositionTicks) / TICKS_PER_SECOND;
+            source = "position_ticks";
         }
-        long rawSeconds = (stopPositionTicks - startPositionTicks) / TICKS_PER_SECOND;
+        if ((rawSeconds == null || rawSeconds <= 0) && startTime != null && stopTime != null) {
+            rawSeconds = Duration.between(startTime, stopTime).getSeconds();
+            source = "event_time";
+        }
+        if (rawSeconds == null) {
+            return WatchDurationResult.invalid("missing_position_ticks_and_event_time");
+        }
+        if (rawSeconds <= 0) {
+            return WatchDurationResult.invalid("non_positive_duration");
+        }
         if (rawSeconds < MIN_WATCH_SECONDS) {
-            return null;
+            return WatchDurationResult.invalid("duration_less_than_10_seconds");
         }
         long maxSeconds = runtimeTicks != null && runtimeTicks > 0
                 ? runtimeTicks / TICKS_PER_SECOND
                 : FALLBACK_MAX_WATCH_SECONDS;
         long watchSeconds = Math.min(rawSeconds, maxSeconds);
         if (watchSeconds < MIN_WATCH_SECONDS) {
-            return null;
+            return WatchDurationResult.invalid("clamped_duration_less_than_10_seconds");
         }
-        return (int) Math.min(watchSeconds, Integer.MAX_VALUE);
-    }
-
-    private String requiredText(String value, String field, String event) {
-        String cleaned = clean(value);
-        if (!StringUtils.hasText(cleaned)) {
-            log.warn("Emby {} ignored because {} is blank", event, field);
-            return null;
-        }
-        return shortText(cleaned, TEXT_LIMIT_SHORT);
-    }
-
-    private Long requiredTicks(String value, String field, String event) {
-        Long parsed = optionalTicks(value);
-        if (parsed == null) {
-            log.warn("Emby {} ignored because {} is invalid", event, field);
-        }
-        return parsed;
+        return WatchDurationResult.valid((int) Math.min(watchSeconds, Integer.MAX_VALUE), source);
     }
 
     private Long optionalTicks(String value) {
@@ -307,6 +376,20 @@ public class EmbyPlaybackWebhookService {
         }
     }
 
+    private List<String> missingRequiredFields(String embySessionId, String itemId, String embyUserId) {
+        List<String> fields = new ArrayList<>();
+        if (!StringUtils.hasText(embySessionId)) {
+            fields.add("sessionId");
+        }
+        if (!StringUtils.hasText(itemId)) {
+            fields.add("itemId");
+        }
+        if (!StringUtils.hasText(embyUserId)) {
+            fields.add("userId");
+        }
+        return fields;
+    }
+
     private Long firstPositiveTick(Long first, Long second) {
         if (first != null && first > 0) {
             return first;
@@ -315,6 +398,18 @@ public class EmbyPlaybackWebhookService {
             return second;
         }
         return null;
+    }
+
+    private String describeRootFields(JsonNode root) {
+        if (root == null || !root.isObject()) {
+            return "-";
+        }
+        List<String> fields = new ArrayList<>();
+        Iterator<String> fieldNames = root.fieldNames();
+        while (fieldNames.hasNext() && fields.size() < 20) {
+            fields.add(fieldNames.next());
+        }
+        return String.join(",", fields);
     }
 
     private String normalizeEvent(String event) {
@@ -368,6 +463,11 @@ public class EmbyPlaybackWebhookService {
         return shortText(second, limit);
     }
 
+    private String displayLogText(String value) {
+        String shortened = shortText(value, 80);
+        return shortened == null ? "-" : shortened;
+    }
+
     private String shortText(String value, int limit) {
         String cleaned = clean(value);
         if (!StringUtils.hasText(cleaned)) {
@@ -390,5 +490,26 @@ public class EmbyPlaybackWebhookService {
             cleaned = cleaned.substring(1, cleaned.length() - 1).trim();
         }
         return cleaned;
+    }
+
+    private record ParsedPlaybackWebhookRequest(
+            EmbyPlaybackWebhookRequest request,
+            String rootFields
+    ) {
+    }
+
+    private record WatchDurationResult(
+            Integer watchSeconds,
+            String source,
+            String reason
+    ) {
+
+        private static WatchDurationResult valid(int watchSeconds, String source) {
+            return new WatchDurationResult(watchSeconds, source, null);
+        }
+
+        private static WatchDurationResult invalid(String reason) {
+            return new WatchDurationResult(null, null, reason);
+        }
     }
 }

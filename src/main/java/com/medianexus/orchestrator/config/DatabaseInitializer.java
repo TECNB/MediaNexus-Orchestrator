@@ -87,7 +87,9 @@ public class DatabaseInitializer implements ApplicationRunner {
         ensureAnimeMagnetTaskOwnerColumn();
         animeMagnetIngestTaskLogMapper.createTableIfNotExists();
         embyActivePlaybackSessionMapper.createTableIfNotExists();
+        ensureEmbyActivePlaybackSessionColumns();
         embyWatchSessionMapper.createTableIfNotExists();
+        ensureEmbyWatchSessionColumns();
     }
 
     private void ensureUserQuotaOverrideColumn() {
@@ -105,6 +107,28 @@ public class DatabaseInitializer implements ApplicationRunner {
         Integer indexCount = animeMagnetIngestTaskMapper.countOwnerCreatedAtIndex();
         if (indexCount == null || indexCount == 0) {
             animeMagnetIngestTaskMapper.addOwnerCreatedAtIndex();
+        }
+    }
+
+    private void ensureEmbyActivePlaybackSessionColumns() {
+        Integer requiredStartPositionTicksColumnCount =
+                embyActivePlaybackSessionMapper.countRequiredStartPositionTicksColumn();
+        if (requiredStartPositionTicksColumnCount != null && requiredStartPositionTicksColumnCount > 0) {
+            embyActivePlaybackSessionMapper.makeStartPositionTicksNullable();
+        }
+    }
+
+    private void ensureEmbyWatchSessionColumns() {
+        Integer requiredStartPositionTicksColumnCount =
+                embyWatchSessionMapper.countRequiredStartPositionTicksColumn();
+        if (requiredStartPositionTicksColumnCount != null && requiredStartPositionTicksColumnCount > 0) {
+            embyWatchSessionMapper.makeStartPositionTicksNullable();
+        }
+
+        Integer requiredStopPositionTicksColumnCount =
+                embyWatchSessionMapper.countRequiredStopPositionTicksColumn();
+        if (requiredStopPositionTicksColumnCount != null && requiredStopPositionTicksColumnCount > 0) {
+            embyWatchSessionMapper.makeStopPositionTicksNullable();
         }
     }
 

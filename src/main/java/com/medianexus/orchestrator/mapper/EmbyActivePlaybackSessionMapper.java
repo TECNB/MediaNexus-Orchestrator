@@ -24,7 +24,7 @@ public interface EmbyActivePlaybackSessionMapper extends BaseMapper<EmbyActivePl
                 series_id VARCHAR(128) NULL,
                 series_name VARCHAR(512) NULL,
                 runtime_ticks BIGINT NULL,
-                start_position_ticks BIGINT NOT NULL,
+                start_position_ticks BIGINT NULL,
                 start_time DATETIME NOT NULL,
                 device_name VARCHAR(255) NULL,
                 client_name VARCHAR(255) NULL,
@@ -37,6 +37,22 @@ public interface EmbyActivePlaybackSessionMapper extends BaseMapper<EmbyActivePl
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
             """)
     void createTableIfNotExists();
+
+    @Select("""
+            SELECT COUNT(*)
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'emby_active_playback_sessions'
+              AND COLUMN_NAME = 'start_position_ticks'
+              AND IS_NULLABLE = 'NO'
+            """)
+    Integer countRequiredStartPositionTicksColumn();
+
+    @Update("""
+            ALTER TABLE emby_active_playback_sessions
+            MODIFY start_position_ticks BIGINT NULL
+            """)
+    void makeStartPositionTicksNullable();
 
     @Insert("""
             INSERT INTO emby_active_playback_sessions (

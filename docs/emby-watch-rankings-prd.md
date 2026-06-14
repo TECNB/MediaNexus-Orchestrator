@@ -38,7 +38,7 @@
 ## 4. 已确认产品决策
 
 - 数据从功能上线后开始记录，历史数据不管。
-- 观看时长按媒体进度差计算，即 `stopPositionTicks - startPositionTicks`。
+- 观看时长优先按媒体进度差计算；Emby 原生 payload 未提供 position ticks 时，按 `playback.start` 与 `playback.stop` 的事件时间差计算。
 - 一期只处理 `playback.start` 和 `playback.stop`。
 - 只有收到 `playback.stop` 并成功结算的会话才进入统计。
 - 没有 stop 的异常会话不计入统计。
@@ -100,7 +100,7 @@ Emby Webhooks 新增通知时：
 `playback.start`：
 
 - 校验 secret。
-- 校验必要字段：`event`、`userId`、`sessionId`、`itemId`、`itemType`、`positionTicks`。
+- 校验必要字段：`event`、`userId`、`sessionId`、`itemId`、`itemType`。
 - 仅处理 `itemType = Movie` 或 `itemType = Episode`。
 - 将未结束会话写入 `emby_active_playback_sessions`。
 - 如果同一 `sessionId + itemId` 已存在 active 记录，以最新 start 覆盖旧记录。
@@ -123,10 +123,16 @@ Emby ticks 换算：
 10,000,000 ticks = 1 second
 ```
 
-基础计算：
+优先计算：
 
 ```text
 rawWatchSeconds = floor((stopPositionTicks - startPositionTicks) / 10_000_000)
+```
+
+当 Emby 原生 payload 未提供 position ticks 时，使用事件时间差兜底：
+
+```text
+rawWatchSeconds = floor(playback.stop.eventTime - playback.start.eventTime)
 ```
 
 无效条件：
