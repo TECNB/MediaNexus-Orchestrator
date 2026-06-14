@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "Place the new MagnetIngestController/MagnetIngestService/DTOs in the right packages and keep OpenList edits in integration/config."}
+{"file": ".trellis/spec/backend/external-integrations.md", "reason": "OpenList defaults belong in application.yml; validate root paths in the service, not via fallback logic in client/properties."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Return ApiResponse<T> and throw BusinessException with Core-parity Chinese messages; let validation/unknown errors hit GlobalExceptionHandler."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Reuse OpenListClient primitives; add ensureDirectoryReady on the client rather than duplicating the anime service's path-prep."}
+{"file": ".trellis/tasks/06-14-movie-series-magnet-ingest-api/prd.md", "reason": "Converged decisions: fire-and-forget, auth+quota, strict Core path parity, quota-on-success."}
