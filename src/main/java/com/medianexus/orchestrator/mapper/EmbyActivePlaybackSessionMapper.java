@@ -2,6 +2,7 @@ package com.medianexus.orchestrator.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.medianexus.orchestrator.model.EmbyActivePlaybackSession;
+import java.time.LocalDateTime;
 import java.util.List;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
@@ -119,6 +120,33 @@ public interface EmbyActivePlaybackSessionMapper extends BaseMapper<EmbyActivePl
                    updated_at
             FROM emby_active_playback_sessions
             WHERE emby_session_id = #{embySessionId}
+              AND emby_user_id = #{embyUserId}
+            FOR UPDATE
+            """)
+    List<EmbyActivePlaybackSession> selectActiveSessionsForContextForUpdate(
+            @Param("embySessionId") String embySessionId,
+            @Param("embyUserId") String embyUserId
+    );
+
+    @Select("""
+            SELECT id,
+                   emby_session_id,
+                   emby_user_id,
+                   emby_user_name,
+                   item_id,
+                   item_type,
+                   item_name,
+                   series_id,
+                   series_name,
+                   runtime_ticks,
+                   start_position_ticks,
+                   start_time,
+                   device_name,
+                   client_name,
+                   created_at,
+                   updated_at
+            FROM emby_active_playback_sessions
+            WHERE emby_session_id = #{embySessionId}
               AND item_id = #{itemId}
             FOR UPDATE
             """)
@@ -136,6 +164,12 @@ public interface EmbyActivePlaybackSessionMapper extends BaseMapper<EmbyActivePl
             @Param("embySessionId") String embySessionId,
             @Param("itemId") String itemId
     );
+
+    @Update("""
+            DELETE FROM emby_active_playback_sessions
+            WHERE updated_at < #{cutoff}
+            """)
+    int deleteSessionsUpdatedBefore(@Param("cutoff") LocalDateTime cutoff);
 
     @Select("""
             SELECT COUNT(*)

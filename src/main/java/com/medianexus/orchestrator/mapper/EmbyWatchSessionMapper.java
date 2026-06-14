@@ -6,6 +6,7 @@ import com.medianexus.orchestrator.mapper.projection.EmbyUserWatchRankingRow;
 import com.medianexus.orchestrator.mapper.projection.EmbyWatchSummaryRow;
 import com.medianexus.orchestrator.model.EmbyWatchSession;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
@@ -121,6 +122,60 @@ public interface EmbyWatchSessionMapper extends BaseMapper<EmbyWatchSession> {
             ON DUPLICATE KEY UPDATE id = id
             """)
     void insertWatchSessionIfAbsent(@Param("session") EmbyWatchSession session);
+
+    @Select("""
+            SELECT id,
+                   emby_session_id,
+                   emby_user_id,
+                   emby_user_name,
+                   item_id,
+                   item_type,
+                   item_name,
+                   series_id,
+                   series_name,
+                   runtime_ticks,
+                   start_time,
+                   stop_time,
+                   start_position_ticks,
+                   stop_position_ticks,
+                   watch_seconds,
+                   watch_date,
+                   device_name,
+                   client_name,
+                   created_at
+            FROM emby_watch_sessions
+            WHERE emby_session_id = #{embySessionId}
+              AND item_id = #{itemId}
+              AND start_time = #{startTime}
+            ORDER BY id DESC
+            LIMIT 1
+            FOR UPDATE
+            """)
+    EmbyWatchSession selectWatchSessionByStartForUpdate(
+            @Param("embySessionId") String embySessionId,
+            @Param("itemId") String itemId,
+            @Param("startTime") LocalDateTime startTime
+    );
+
+    @Update("""
+            UPDATE emby_watch_sessions
+            SET emby_user_id = #{session.embyUserId},
+                emby_user_name = #{session.embyUserName},
+                item_type = #{session.itemType},
+                item_name = #{session.itemName},
+                series_id = #{session.seriesId},
+                series_name = #{session.seriesName},
+                runtime_ticks = #{session.runtimeTicks},
+                stop_time = #{session.stopTime},
+                start_position_ticks = #{session.startPositionTicks},
+                stop_position_ticks = #{session.stopPositionTicks},
+                watch_seconds = #{session.watchSeconds},
+                watch_date = #{session.watchDate},
+                device_name = #{session.deviceName},
+                client_name = #{session.clientName}
+            WHERE id = #{session.id}
+            """)
+    int updateWatchSessionById(@Param("session") EmbyWatchSession session);
 
     @Select("""
             SELECT COUNT(DISTINCT emby_user_id) AS active_user_count,

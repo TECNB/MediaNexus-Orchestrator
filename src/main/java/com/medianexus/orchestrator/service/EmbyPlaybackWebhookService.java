@@ -108,6 +108,8 @@ public class EmbyPlaybackWebhookService {
             return;
         }
 
+        cleanupExpiredTrackedSessions();
+
         LocalDateTime eventTime = parseEventTime(request.date());
         log.info("Emby webhook accepted event={} itemType={} sessionId={} itemId={} userId={} userName={} itemName={} hasPositionTicks={} hasRuntimeTicks={} eventTime={}",
                 event,
@@ -232,6 +234,8 @@ public class EmbyPlaybackWebhookService {
             Long startPositionTicks,
             LocalDateTime eventTime
     ) {
+        closeSupersededActiveSessions(request, embySessionId, embyUserId, itemId, eventTime);
+
         EmbyActivePlaybackSession session = new EmbyActivePlaybackSession();
         session.setEmbySessionId(embySessionId);
         session.setEmbyUserId(embyUserId);
@@ -267,7 +271,7 @@ public class EmbyPlaybackWebhookService {
     ) {
         EmbyActivePlaybackSession activeSession = activeSessionMapper.selectActiveSessionForUpdate(embySessionId, itemId);
         if (activeSession == null) {
-            log.info("Emby playback.stop ignored because active session is missing sessionId={} itemId={} userId={} itemName={}",
+            log.info("Emby playback.stop ignored because tracked session is missing sessionId={} itemId={} userId={} itemName={}",
                     embySessionId,
                     itemId,
                     embyUserId,
@@ -276,14 +280,14 @@ public class EmbyPlaybackWebhookService {
             return;
         }
 
+        Long runtimeTicks = firstPositiveTick(optionalTicks(request.runtimeTicks()), activeSession.getRuntimeTicks());
         WatchDurationResult durationResult = calculateWatchSeconds(
                 activeSession.getStartPositionTicks(),
                 stopPositionTicks,
                 activeSession.getStartTime(),
                 stopTime,
-                firstPositiveTick(optionalTicks(request.runtimeTicks()), activeSession.getRuntimeTicks())
+                runtimeTicks
         );
-        activeSessionMapper.deleteActiveSession(embySessionId, itemId);
         if (durationResult.watchSeconds() == null) {
             log.info("Emby playback.stop ignored because watch duration is invalid sessionId={} itemId={} reason={} startTime={} stopTime={} hasStartPositionTicks={} hasStopPositionTicks={}",
                     embySessionId,
@@ -297,34 +301,194 @@ public class EmbyPlaybackWebhookService {
             return;
         }
 
-        EmbyWatchSession watchSession = new EmbyWatchSession();
-        watchSession.setEmbySessionId(embySessionId);
-        watchSession.setEmbyUserId(embyUserId);
-        watchSession.setEmbyUserName(firstText(request.userName(), activeSession.getEmbyUserName(), TEXT_LIMIT_NAME));
-        watchSession.setItemId(itemId);
-        watchSession.setItemType(itemType);
-        watchSession.setItemName(firstText(request.itemName(), activeSession.getItemName(), TEXT_LIMIT_TITLE));
-        watchSession.setSeriesId(firstText(request.seriesId(), activeSession.getSeriesId(), TEXT_LIMIT_SHORT));
-        watchSession.setSeriesName(firstText(request.seriesName(), activeSession.getSeriesName(), TEXT_LIMIT_TITLE));
-        watchSession.setRuntimeTicks(firstPositiveTick(optionalTicks(request.runtimeTicks()), activeSession.getRuntimeTicks()));
-        watchSession.setStartTime(activeSession.getStartTime());
-        watchSession.setStopTime(stopTime);
-        watchSession.setStartPositionTicks(activeSession.getStartPositionTicks());
-        watchSession.setStopPositionTicks(stopPositionTicks);
-        watchSession.setWatchSeconds(durationResult.watchSeconds());
-        watchSession.setWatchDate(stopTime.toLocalDate());
-        watchSession.setDeviceName(firstText(request.deviceName(), activeSession.getDeviceName(), TEXT_LIMIT_NAME));
-        watchSession.setClientName(firstText(request.clientName(), activeSession.getClientName(), TEXT_LIMIT_NAME));
-        watchSessionMapper.insertWatchSessionIfAbsent(watchSession);
-        log.info("Emby playback.stop settled sessionId={} itemId={} itemType={} userId={} watchSeconds={} durationSource={} stopTime={}",
+        EmbyWatchSession watchSession = buildWatchSession(
+                activeSession,
+                embyUserId,
+                request.userName(),
+                itemType,
+                request.itemName(),
+                request.seriesId(),
+                request.seriesName(),
+                runtimeTicks,
+                stopPositionTicks,
+                stopTime,
+                durationResult.watchSeconds(),
+                request.deviceName(),
+                request.clientName()
+        );
+        WatchSessionWriteResult writeResult = upsertWatchSession(watchSession);
+        boolean reachedRuntimeLimit = hasReachedRuntimeLimit(durationResult.watchSeconds(), runtimeTicks);
+        if (reachedRuntimeLimit) {
+            activeSessionMapper.deleteActiveSession(embySessionId, itemId);
+        }
+        log.info("Emby playback.stop settled sessionId={} itemId={} itemType={} userId={} watchSeconds={} durationSource={} stopTime={} writeResult={} trackedClosed={}",
                 embySessionId,
                 itemId,
                 itemType,
                 embyUserId,
                 durationResult.watchSeconds(),
                 durationResult.source(),
-                stopTime
+                stopTime,
+                writeResult,
+                reachedRuntimeLimit
         );
+    }
+
+    private void closeSupersededActiveSessions(
+            EmbyPlaybackWebhookRequest request,
+            String embySessionId,
+            String embyUserId,
+            String currentItemId,
+            LocalDateTime stopTime
+    ) {
+        List<EmbyActivePlaybackSession> activeSessions =
+                activeSessionMapper.selectActiveSessionsForContextForUpdate(embySessionId, embyUserId);
+        for (EmbyActivePlaybackSession activeSession : activeSessions) {
+            if (currentItemId.equals(activeSession.getItemId())
+                    || hasConflictingPlaybackContext(request, activeSession)) {
+                continue;
+            }
+            closeSupersededActiveSession(activeSession, stopTime);
+        }
+    }
+
+    private void closeSupersededActiveSession(
+            EmbyActivePlaybackSession activeSession,
+            LocalDateTime stopTime
+    ) {
+        Long runtimeTicks = activeSession.getRuntimeTicks();
+        WatchDurationResult durationResult = calculateWatchSeconds(
+                activeSession.getStartPositionTicks(),
+                null,
+                activeSession.getStartTime(),
+                stopTime,
+                runtimeTicks
+        );
+        activeSessionMapper.deleteActiveSession(activeSession.getEmbySessionId(), activeSession.getItemId());
+        if (durationResult.watchSeconds() == null) {
+            log.info("Emby tracked session closed without settlement sessionId={} itemId={} reason={} startTime={} stopTime={}",
+                    activeSession.getEmbySessionId(),
+                    activeSession.getItemId(),
+                    durationResult.reason(),
+                    activeSession.getStartTime(),
+                    stopTime
+            );
+            return;
+        }
+
+        EmbyWatchSession watchSession = buildWatchSession(
+                activeSession,
+                activeSession.getEmbyUserId(),
+                activeSession.getEmbyUserName(),
+                activeSession.getItemType(),
+                activeSession.getItemName(),
+                activeSession.getSeriesId(),
+                activeSession.getSeriesName(),
+                runtimeTicks,
+                null,
+                stopTime,
+                durationResult.watchSeconds(),
+                activeSession.getDeviceName(),
+                activeSession.getClientName()
+        );
+        WatchSessionWriteResult writeResult = upsertWatchSession(watchSession);
+        log.info("Emby tracked session closed by new playback.start sessionId={} itemId={} watchSeconds={} durationSource={} stopTime={} writeResult={}",
+                activeSession.getEmbySessionId(),
+                activeSession.getItemId(),
+                durationResult.watchSeconds(),
+                durationResult.source(),
+                stopTime,
+                writeResult
+        );
+    }
+
+    private boolean hasConflictingPlaybackContext(
+            EmbyPlaybackWebhookRequest request,
+            EmbyActivePlaybackSession activeSession
+    ) {
+        return hasConflictingText(request.deviceName(), activeSession.getDeviceName())
+                || hasConflictingText(request.clientName(), activeSession.getClientName());
+    }
+
+    private boolean hasConflictingText(String first, String second) {
+        String cleanedFirst = clean(first);
+        String cleanedSecond = clean(second);
+        return StringUtils.hasText(cleanedFirst)
+                && StringUtils.hasText(cleanedSecond)
+                && !cleanedFirst.equals(cleanedSecond);
+    }
+
+    private EmbyWatchSession buildWatchSession(
+            EmbyActivePlaybackSession activeSession,
+            String embyUserId,
+            String embyUserName,
+            String itemType,
+            String itemName,
+            String seriesId,
+            String seriesName,
+            Long runtimeTicks,
+            Long stopPositionTicks,
+            LocalDateTime stopTime,
+            Integer watchSeconds,
+            String deviceName,
+            String clientName
+    ) {
+        EmbyWatchSession watchSession = new EmbyWatchSession();
+        watchSession.setEmbySessionId(activeSession.getEmbySessionId());
+        watchSession.setEmbyUserId(embyUserId);
+        watchSession.setEmbyUserName(firstText(embyUserName, activeSession.getEmbyUserName(), TEXT_LIMIT_NAME));
+        watchSession.setItemId(activeSession.getItemId());
+        watchSession.setItemType(firstText(itemType, activeSession.getItemType(), TEXT_LIMIT_SHORT));
+        watchSession.setItemName(firstText(itemName, activeSession.getItemName(), TEXT_LIMIT_TITLE));
+        watchSession.setSeriesId(firstText(seriesId, activeSession.getSeriesId(), TEXT_LIMIT_SHORT));
+        watchSession.setSeriesName(firstText(seriesName, activeSession.getSeriesName(), TEXT_LIMIT_TITLE));
+        watchSession.setRuntimeTicks(runtimeTicks);
+        watchSession.setStartTime(activeSession.getStartTime());
+        watchSession.setStopTime(stopTime);
+        watchSession.setStartPositionTicks(activeSession.getStartPositionTicks());
+        watchSession.setStopPositionTicks(stopPositionTicks);
+        watchSession.setWatchSeconds(watchSeconds);
+        watchSession.setWatchDate(stopTime.toLocalDate());
+        watchSession.setDeviceName(firstText(deviceName, activeSession.getDeviceName(), TEXT_LIMIT_NAME));
+        watchSession.setClientName(firstText(clientName, activeSession.getClientName(), TEXT_LIMIT_NAME));
+        return watchSession;
+    }
+
+    private WatchSessionWriteResult upsertWatchSession(EmbyWatchSession watchSession) {
+        EmbyWatchSession existingSession = watchSessionMapper.selectWatchSessionByStartForUpdate(
+                watchSession.getEmbySessionId(),
+                watchSession.getItemId(),
+                watchSession.getStartTime()
+        );
+        if (existingSession == null) {
+            watchSessionMapper.insertWatchSessionIfAbsent(watchSession);
+            return WatchSessionWriteResult.INSERTED;
+        }
+        if (!watchSession.getStopTime().isAfter(existingSession.getStopTime())) {
+            return WatchSessionWriteResult.UNCHANGED;
+        }
+        watchSession.setId(existingSession.getId());
+        watchSessionMapper.updateWatchSessionById(watchSession);
+        return WatchSessionWriteResult.UPDATED;
+    }
+
+    private boolean hasReachedRuntimeLimit(Integer watchSeconds, Long runtimeTicks) {
+        if (watchSeconds == null || runtimeTicks == null || runtimeTicks <= 0) {
+            return false;
+        }
+        long runtimeSeconds = runtimeTicks / TICKS_PER_SECOND;
+        return runtimeSeconds > 0 && watchSeconds >= runtimeSeconds;
+    }
+
+    private void cleanupExpiredTrackedSessions() {
+        LocalDateTime cutoff = LocalDateTime.now(WATCH_ZONE).minusHours(24);
+        int deletedCount = activeSessionMapper.deleteSessionsUpdatedBefore(cutoff);
+        if (deletedCount > 0) {
+            log.info("Emby tracked playback sessions cleanup deletedCount={} cutoff={}",
+                    deletedCount,
+                    cutoff
+            );
+        }
     }
 
     private WatchDurationResult calculateWatchSeconds(
@@ -511,5 +675,11 @@ public class EmbyPlaybackWebhookService {
         private static WatchDurationResult invalid(String reason) {
             return new WatchDurationResult(null, null, reason);
         }
+    }
+
+    private enum WatchSessionWriteResult {
+        INSERTED,
+        UPDATED,
+        UNCHANGED
     }
 }
