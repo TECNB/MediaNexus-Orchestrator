@@ -7,6 +7,7 @@ public enum ErrorCode {
     UNAUTHORIZED(401, "unauthorized"),
     FORBIDDEN(403, "forbidden"),
     TOO_MANY_REQUESTS(429, "too many requests"),
+    SERVICE_UNAVAILABLE(503, "service unavailable"),
     INTERNAL_ERROR(500, "internal server error");
 
     private final Integer code;

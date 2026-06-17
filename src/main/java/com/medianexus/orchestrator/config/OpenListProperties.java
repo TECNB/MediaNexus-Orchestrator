@@ -44,6 +44,16 @@ public class OpenListProperties {
     private String animePathTemplate;
 
     /**
+     * 电影离线提交基础保存路径；为空时仅禁用电影提交能力，不影响应用启动。
+     */
+    private String movieRootPath;
+
+    /**
+     * 剧集离线提交基础保存路径；为空时仅禁用剧集提交能力，不影响应用启动。
+     */
+    private String tvRootPath;
+
+    /**
      * 整理后文件名模板，支持 {title}、{season}、{seasonFormat}、{episode}、{episodeFormat} 占位符。
      */
     @NotBlank
@@ -120,6 +130,22 @@ public class OpenListProperties {
 
     public void setAnimePathTemplate(String animePathTemplate) {
         this.animePathTemplate = animePathTemplate;
+    }
+
+    public String getMovieRootPath() {
+        return movieRootPath;
+    }
+
+    public void setMovieRootPath(String movieRootPath) {
+        this.movieRootPath = movieRootPath;
+    }
+
+    public String getTvRootPath() {
+        return tvRootPath;
+    }
+
+    public void setTvRootPath(String tvRootPath) {
+        this.tvRootPath = tvRootPath;
     }
 
     public String getAnimeRenameTemplate() {

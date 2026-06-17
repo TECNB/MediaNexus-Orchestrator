@@ -44,6 +44,8 @@ medianexus:
     offline-tool: ${MEDIANEXUS_OPENLIST_OFFLINE_TOOL:PikPak}
     delete-policy: ${MEDIANEXUS_OPENLIST_DELETE_POLICY:delete_on_upload_succeed}
     anime-path-template: ${MEDIANEXUS_ANIME_PATH_TEMPLATE:/pikpak/Media/Anime/{themoviedbName}/Season {season}}
+    movie-root-path: ${MEDIANEXUS_OPENLIST_MOVIE_ROOT_PATH:}
+    tv-root-path: ${MEDIANEXUS_OPENLIST_TV_ROOT_PATH:}
     anime-rename-template: ${MEDIANEXUS_ANIME_RENAME_TEMPLATE:{title} S{seasonFormat}E{episodeFormat}}
     anime-exclude-patterns: ${MEDIANEXUS_ANIME_EXCLUDE_PATTERNS:特别篇,\d-\d,总集}
     timeout: ${MEDIANEXUS_OPENLIST_TIMEOUT:120s}

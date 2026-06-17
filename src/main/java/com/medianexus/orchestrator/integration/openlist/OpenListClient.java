@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.medianexus.orchestrator.config.OpenListProperties;
+import com.medianexus.orchestrator.integration.openlist.OpenListDirectoryPrepareException.Reason;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URLEncoder;
@@ -24,7 +25,7 @@ import org.springframework.util.StringUtils;
 /**
  * OpenList API 客户端。
  *
- * 本客户端只暴露整季 magnet 导入所需的完整操作：离线下载任务、文件枚举、
+ * 本客户端暴露 magnet 导入所需的完整 OpenList 操作：离线下载任务、文件枚举、
  * 批量重命名、移动、删除和目录创建。所有路径在请求前都会规范化为 OpenList
  * 使用的绝对路径格式。
  */
@@ -33,6 +34,14 @@ public class OpenListClient {
 
     private static final Logger log = LoggerFactory.getLogger(OpenListClient.class);
     private static final int MAX_LOG_BODY_LENGTH = 500;
+    private static final List<String> NOT_FOUND_KEYWORDS = List.of(
+            "not found",
+            "does not exist",
+            "object not found",
+            "file not found",
+            "目录不存在",
+            "路径不存在"
+    );
 
     private final OpenListProperties properties;
     private final ObjectMapper objectMapper;
@@ -141,6 +150,87 @@ public class OpenListClient {
     }
 
     /**
+     * 确认 OpenList 目录可用：根路径必须已经存在，根以下层级按需创建。
+     */
+    public void ensureDirectoryReady(String fullPath, String rootPath) {
+        String normalizedFullPath = normalizePath(fullPath);
+        String normalizedRootPath = normalizePath(rootPath);
+
+        if (!pathExists(normalizedRootPath)) {
+            throw new OpenListDirectoryPrepareException(
+                    Reason.ROOT_NOT_FOUND,
+                    "OpenList root path does not exist: " + normalizedRootPath
+            );
+        }
+        if (normalizedFullPath.equals(normalizedRootPath)) {
+            return;
+        }
+
+        String rootPrefix = normalizedRootPath.endsWith("/")
+                ? normalizedRootPath
+                : normalizedRootPath + "/";
+        if (!normalizedFullPath.startsWith(rootPrefix)) {
+            throw new OpenListDirectoryPrepareException(
+                    Reason.PATH_OUTSIDE_ROOT,
+                    "OpenList target path is outside root path"
+            );
+        }
+        if (pathExists(normalizedFullPath)) {
+            return;
+        }
+
+        String currentPath = normalizedRootPath;
+        String relativePath = normalizedFullPath.substring(rootPrefix.length());
+        for (String segment : relativePath.split("/")) {
+            if (!StringUtils.hasText(segment)) {
+                continue;
+            }
+            currentPath = joinPath(currentPath, segment);
+            if (pathExists(currentPath)) {
+                continue;
+            }
+            try {
+                mkdir(currentPath);
+                refreshPath(parentPath(currentPath));
+                if (waitUntilPathExists(currentPath)) {
+                    continue;
+                }
+                throw new OpenListDirectoryPrepareException(
+                        Reason.TARGET_CREATE_FAILED,
+                        "OpenList target directory did not become visible: " + currentPath
+                );
+            } catch (OpenListDirectoryPrepareException exception) {
+                throw exception;
+            } catch (OpenListClientException exception) {
+                throw new OpenListDirectoryPrepareException(
+                        Reason.TARGET_CREATE_FAILED,
+                        "OpenList target directory create failed: " + currentPath,
+                        exception
+                );
+            }
+        }
+    }
+
+    /**
+     * 判断路径是否存在。OpenList 以非 200 业务码表示不存在时返回 false。
+     */
+    public boolean pathExists(String path) {
+        JsonNode root = postRoot("fs/get", Map.of("path", normalizePath(path)));
+        if (isSuccess(root)) {
+            return true;
+        }
+        if (isNotFound(root)) {
+            return false;
+        }
+        log.warn(
+                "OpenList path check returned non-success code={} message={}",
+                root == null ? null : root.path("code").asInt(-1),
+                message(root)
+        );
+        throw new OpenListClientException("OpenList path check failed: " + message(root));
+    }
+
+    /**
      * 创建目录；OpenList 返回“已存在”时视为成功，保证路径准备操作幂等。
      */
     public void mkdir(String path) {
@@ -235,6 +325,22 @@ public class OpenListClient {
         return data == null || data.isNull() ? objectMapper.createObjectNode() : data;
     }
 
+    private void refreshPath(String path) {
+        try {
+            JsonNode root = postRoot("fs/list", Map.of(
+                    "path", normalizePath(path),
+                    "page", 1,
+                    "per_page", 1,
+                    "refresh", true
+            ));
+            if (!isSuccess(root)) {
+                log.warn("OpenList refresh path returned non-success path={} message={}", path, message(root));
+            }
+        } catch (OpenListClientException exception) {
+            log.warn("OpenList refresh path failed path={}", path, exception);
+        }
+    }
+
     private JsonNode postRoot(String action, Object body) {
         validateConfiguration();
         HttpRequest request = requestBuilder(action)
@@ -304,8 +410,45 @@ public class OpenListClient {
         return root != null && root.path("code").asInt(-1) == 200;
     }
 
+    private boolean isNotFound(JsonNode root) {
+        String normalizedMessage = message(root).toLowerCase();
+        return NOT_FOUND_KEYWORDS.stream().anyMatch(normalizedMessage::contains);
+    }
+
     private String message(JsonNode root) {
         return root == null ? "" : root.path("message").asText("");
+    }
+
+    private boolean waitUntilPathExists(String path) {
+        int attempts = 3;
+        for (int index = 0; index < attempts; index++) {
+            if (pathExists(path)) {
+                return true;
+            }
+            if (index < attempts - 1) {
+                sleep(Duration.ofMillis(300));
+            }
+        }
+        return false;
+    }
+
+    private String parentPath(String path) {
+        String normalized = normalizePath(path);
+        int index = normalized.lastIndexOf('/');
+        return index <= 0 ? "/" : normalized.substring(0, index);
+    }
+
+    private void sleep(Duration duration) {
+        try {
+            Thread.sleep(duration.toMillis());
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new OpenListDirectoryPrepareException(
+                    Reason.TARGET_CREATE_FAILED,
+                    "OpenList directory prepare interrupted",
+                    exception
+            );
+        }
     }
 
     private String truncateForLog(String value) {
