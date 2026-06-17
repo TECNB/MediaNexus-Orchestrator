@@ -5,6 +5,8 @@ import com.medianexus.orchestrator.config.AniRssProperties;
 import com.medianexus.orchestrator.config.DatabaseSshTunnelProperties;
 import com.medianexus.orchestrator.config.EmbyProperties;
 import com.medianexus.orchestrator.config.OpenListProperties;
+import com.medianexus.orchestrator.config.RadarrProperties;
+import com.medianexus.orchestrator.config.SonarrProperties;
 import com.medianexus.orchestrator.config.UserQuotaProperties;
 import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.boot.SpringApplication;
@@ -18,6 +20,8 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
         DatabaseSshTunnelProperties.class,
         EmbyProperties.class,
         OpenListProperties.class,
+        RadarrProperties.class,
+        SonarrProperties.class,
         UserQuotaProperties.class
 })
 @SpringBootApplication

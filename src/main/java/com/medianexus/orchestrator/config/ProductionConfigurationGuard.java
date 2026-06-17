@@ -20,6 +20,8 @@ public class ProductionConfigurationGuard implements InitializingBean {
     private final AuthProperties authProperties;
     private final AniRssProperties aniRssProperties;
     private final OpenListProperties openListProperties;
+    private final RadarrProperties radarrProperties;
+    private final SonarrProperties sonarrProperties;
     private final String datasourceUrl;
     private final String datasourceUsername;
     private final String datasourcePassword;
@@ -30,6 +32,8 @@ public class ProductionConfigurationGuard implements InitializingBean {
             AuthProperties authProperties,
             AniRssProperties aniRssProperties,
             OpenListProperties openListProperties,
+            RadarrProperties radarrProperties,
+            SonarrProperties sonarrProperties,
             @Value("${spring.datasource.url:}") String datasourceUrl,
             @Value("${spring.datasource.username:}") String datasourceUsername,
             @Value("${spring.datasource.password:}") String datasourcePassword
@@ -39,6 +43,8 @@ public class ProductionConfigurationGuard implements InitializingBean {
         this.authProperties = authProperties;
         this.aniRssProperties = aniRssProperties;
         this.openListProperties = openListProperties;
+        this.radarrProperties = radarrProperties;
+        this.sonarrProperties = sonarrProperties;
         this.datasourceUrl = datasourceUrl;
         this.datasourceUsername = datasourceUsername;
         this.datasourcePassword = datasourcePassword;
@@ -148,6 +154,8 @@ public class ProductionConfigurationGuard implements InitializingBean {
         rejectPlaceholder("medianexus.auth.registration-code", authProperties.getRegistrationCode(), violations);
         rejectPlaceholder("medianexus.ani-rss.api-key", aniRssProperties.getApiKey(), violations);
         rejectPlaceholder("medianexus.openlist.authorization", openListProperties.getAuthorization(), violations);
+        rejectPlaceholder("medianexus.radarr.api-key", radarrProperties.getApiKey(), violations);
+        rejectPlaceholder("medianexus.sonarr.api-key", sonarrProperties.getApiKey(), violations);
     }
 
     private void rejectPlaceholder(String propertyName, String value, List<String> violations) {

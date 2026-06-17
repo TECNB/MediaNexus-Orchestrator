@@ -52,6 +52,18 @@ medianexus:
     poll-interval: ${MEDIANEXUS_OPENLIST_POLL_INTERVAL:10s}
     offline-timeout: ${MEDIANEXUS_OPENLIST_OFFLINE_TIMEOUT:10m}
     retry-limit: ${MEDIANEXUS_OPENLIST_RETRY_LIMIT:5}
+  radarr:
+    scheme: ${MEDIANEXUS_RADARR_SCHEME:http}
+    host: ${MEDIANEXUS_RADARR_HOST:}
+    port: ${MEDIANEXUS_RADARR_PORT:0}
+    api-key: ${MEDIANEXUS_RADARR_API_KEY:}
+    timeout: ${MEDIANEXUS_RADARR_TIMEOUT:10s}
+  sonarr:
+    scheme: ${MEDIANEXUS_SONARR_SCHEME:http}
+    host: ${MEDIANEXUS_SONARR_HOST:}
+    port: ${MEDIANEXUS_SONARR_PORT:0}
+    api-key: ${MEDIANEXUS_SONARR_API_KEY:}
+    timeout: ${MEDIANEXUS_SONARR_TIMEOUT:10s}
   auth:
     registration-code: ${MEDIANEXUS_AUTH_REGISTRATION_CODE:}
   quota:

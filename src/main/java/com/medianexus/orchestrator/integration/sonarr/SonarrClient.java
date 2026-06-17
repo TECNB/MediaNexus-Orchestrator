@@ -1,0 +1,143 @@
+package com.medianexus.orchestrator.integration.sonarr;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.medianexus.orchestrator.config.SonarrProperties;
+import com.medianexus.orchestrator.integration.sonarr.SonarrClientException.Reason;
+import java.io.IOException;
+import java.net.URI;
+import java.net.URLEncoder;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.Locale;
+import org.springframework.stereotype.Component;
+import org.springframework.util.StringUtils;
+
+@Component
+public class SonarrClient {
+
+    private final SonarrProperties properties;
+    private final ObjectMapper objectMapper;
+    private final HttpClient httpClient;
+
+    public SonarrClient(SonarrProperties properties, ObjectMapper objectMapper) {
+        this.properties = properties;
+        this.objectMapper = objectMapper;
+        this.httpClient = HttpClient.newBuilder()
+                .connectTimeout(timeout())
+                .build();
+    }
+
+    public JsonNode searchSeries(String term) {
+        return lookupSeries(term);
+    }
+
+    public JsonNode getSeriesByTvdbId(Integer tvdbId) {
+        JsonNode items = lookupSeries("tvdb:" + tvdbId);
+        for (JsonNode item : items) {
+            Integer itemTvdbId = integerOrNull(item.get("tvdbId"));
+            if (itemTvdbId != null && itemTvdbId.equals(tvdbId)) {
+                return item;
+            }
+        }
+        return null;
+    }
+
+    private JsonNode lookupSeries(String term) {
+        JsonNode payload = get(
+                "/api/v3/series/lookup",
+                "term=" + encode(term),
+                "series lookup"
+        );
+        if (!payload.isArray()) {
+            throw new SonarrClientException(Reason.INVALID_RESPONSE, "Sonarr series lookup response is not an array");
+        }
+        return payload;
+    }
+
+    private JsonNode get(String path, String query, String operation) {
+        validateConfiguration();
+        HttpRequest request = HttpRequest.newBuilder(buildUri(path, query))
+                .timeout(timeout())
+                .header("X-Api-Key", cleanConfigValue(properties.getApiKey()))
+                .GET()
+                .build();
+
+        try {
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                throw new SonarrClientException(
+                        Reason.UPSTREAM,
+                        "Sonarr returned non-success status for " + operation
+                );
+            }
+            return objectMapper.readTree(response.body());
+        } catch (IOException exception) {
+            throw new SonarrClientException(Reason.UPSTREAM, "Sonarr request failed for " + operation, exception);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new SonarrClientException(Reason.UPSTREAM, "Sonarr request interrupted for " + operation, exception);
+        }
+    }
+
+    private URI buildUri(String path, String query) {
+        String baseUrl = baseUrl();
+        String suffix = StringUtils.hasText(query) ? "?" + query : "";
+        return URI.create(baseUrl + path + suffix);
+    }
+
+    private String baseUrl() {
+        String scheme = cleanConfigValue(properties.getScheme()).toLowerCase(Locale.ROOT);
+        if (!scheme.equals("http") && !scheme.equals("https")) {
+            throw new SonarrClientException(Reason.CONFIGURATION, "Sonarr scheme must be http or https");
+        }
+
+        String host = cleanConfigValue(properties.getHost()).replaceAll("/+$", "");
+        if (!StringUtils.hasText(host) || !StringUtils.hasText(cleanConfigValue(properties.getApiKey()))) {
+            throw new SonarrClientException(Reason.CONFIGURATION, "Sonarr configuration is incomplete");
+        }
+        String baseUrl = host.startsWith("http://") || host.startsWith("https://")
+                ? host
+                : scheme + "://" + host;
+        Integer port = properties.getPort();
+        if (port != null && port > 0 && !baseUrl.matches("^https?://[^/:]+:\\d+.*$")) {
+            baseUrl = baseUrl + ":" + port;
+        }
+        return baseUrl;
+    }
+
+    private void validateConfiguration() {
+        baseUrl();
+    }
+
+    private Integer integerOrNull(JsonNode node) {
+        if (node == null || node.isNull() || !node.isNumber()) {
+            return null;
+        }
+        return node.asInt();
+    }
+
+    private String encode(String value) {
+        return URLEncoder.encode(value, StandardCharsets.UTF_8);
+    }
+
+    private Duration timeout() {
+        return properties.getTimeout();
+    }
+
+    private String cleanConfigValue(String value) {
+        if (value == null) {
+            return "";
+        }
+        String cleaned = value.trim();
+        if (cleaned.length() >= 2
+                && ((cleaned.startsWith("'") && cleaned.endsWith("'"))
+                || (cleaned.startsWith("\"") && cleaned.endsWith("\"")))) {
+            cleaned = cleaned.substring(1, cleaned.length() - 1).trim();
+        }
+        return cleaned;
+    }
+}
