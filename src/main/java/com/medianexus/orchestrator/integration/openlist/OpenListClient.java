@@ -79,15 +79,11 @@ public class OpenListClient {
     /**
      * 查询 OpenList 离线下载任务状态。
      *
-     * state 的业务解释留给任务编排层处理，本方法只负责保留上游原始状态码和错误文本。
+     * state 的业务解释和进度打印留给任务编排层处理，本方法只保留上游原始任务快照。
      */
     public OpenListOfflineTaskInfo offlineTaskInfo(String taskId) {
         JsonNode data = post("task/offline_download/info?tid=" + encode(taskId), Map.of());
-        return new OpenListOfflineTaskInfo(
-                data.path("id").asText(taskId),
-                data.path("state").isInt() ? data.path("state").asInt() : null,
-                data.path("error").asText("")
-        );
+        return objectMapper.convertValue(data, OpenListOfflineTaskInfo.class);
     }
 
     /**

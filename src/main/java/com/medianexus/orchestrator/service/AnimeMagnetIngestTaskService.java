@@ -349,10 +349,51 @@ public class AnimeMagnetIngestTaskService {
                 retryCount++;
                 writeLog(taskId, "WARN", "downloading", "OpenList 离线任务失败，正在重试", "retry=" + retryCount + ", error=" + taskInfo.error());
                 openListClient.retryOfflineTask(openListTaskId);
+            } else {
+                writeOfflineProgressLog(taskId, openListTaskId, taskInfo);
             }
             sleep(pollInterval);
         }
         throw new OpenListClientException("OpenList 离线下载超时");
+    }
+
+    private void writeOfflineProgressLog(String taskId, String openListTaskId, OpenListOfflineTaskInfo taskInfo) {
+        writeLog(
+                taskId,
+                "INFO",
+                "downloading",
+                offlineProgressMessage(taskInfo.progress()),
+                offlineProgressDetail(openListTaskId, taskInfo)
+        );
+        refreshTaskUpdatedAt(taskId);
+    }
+
+    private String offlineProgressMessage(Integer progress) {
+        if (progress == null) {
+            return "OpenList 离线下载进行中";
+        }
+        return "OpenList 离线下载进度 " + progress + "%";
+    }
+
+    private String offlineProgressDetail(String openListTaskId, OpenListOfflineTaskInfo taskInfo) {
+        List<String> details = new ArrayList<>();
+        if (taskInfo.progress() != null) {
+            details.add("progress=" + taskInfo.progress());
+        }
+        if (StringUtils.hasText(taskInfo.status())) {
+            details.add("status=" + taskInfo.status().trim());
+        }
+        if (taskInfo.totalBytes() != null && taskInfo.totalBytes() > 0) {
+            details.add("totalBytes=" + taskInfo.totalBytes());
+        }
+        if (taskInfo.state() != null) {
+            details.add("state=" + taskInfo.state());
+        }
+        if (StringUtils.hasText(taskInfo.error())) {
+            details.add("error=" + taskInfo.error().trim());
+        }
+        details.add("openListTaskId=" + openListTaskId);
+        return String.join(", ", details);
     }
 
     /**
@@ -653,6 +694,13 @@ public class AnimeMagnetIngestTaskService {
         taskLog.setMessage(message);
         taskLog.setDetail(detail);
         taskLogMapper.insert(taskLog);
+    }
+
+    private void refreshTaskUpdatedAt(String taskId) {
+        LambdaUpdateWrapper<AnimeMagnetIngestTask> updateWrapper = new LambdaUpdateWrapper<AnimeMagnetIngestTask>()
+                .eq(AnimeMagnetIngestTask::getId, taskId)
+                .set(AnimeMagnetIngestTask::getUpdatedAt, LocalDateTime.now());
+        taskMapper.update(updateWrapper);
     }
 
     private AnimeMagnetIngestTaskResponse toResponse(AnimeMagnetIngestTask task) {
