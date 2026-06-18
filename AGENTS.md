@@ -51,6 +51,13 @@ mvn spring-boot:run 2>&1 | tee logs/dev-run.log
 - Change only what the request requires. Don't refactor or restyle working
   code you weren't asked to touch. Match the existing style.
 
+## Value Contracts
+
+- Express simple value bounds with validation annotations such as `@Min`,
+  `@Max`, or `@PositiveOrZero`. Do not add local defensive normalization
+  helpers inside orchestration services unless the upstream contract is actually
+  unreliable and the fallback behavior is part of the domain decision.
+
 ## Design Rules (strict)
 
 Before changing code, check the rules below. If a change would violate one,
