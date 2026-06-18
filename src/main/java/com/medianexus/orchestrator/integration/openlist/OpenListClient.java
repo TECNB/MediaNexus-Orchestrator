@@ -11,6 +11,7 @@ import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -386,8 +387,18 @@ public class OpenListClient {
                 throw new OpenListClientException("OpenList returned non-success status for " + action);
             }
             return objectMapper.readTree(response.body());
+        } catch (HttpTimeoutException exception) {
+            throw new OpenListClientException(
+                    "OpenList 请求超时: " + action + " 超过 " + timeoutHint()
+                            + "；长耗时的 PikPak/OpenList 操作可能已被客户端取消，请检查目录是否已部分完成后再重试",
+                    exception
+            );
         } catch (IOException exception) {
-            throw new OpenListClientException("OpenList request failed for " + action, exception);
+            throw new OpenListClientException(
+                    "OpenList request failed for " + action + " ("
+                            + exception.getClass().getSimpleName() + ": " + exception.getMessage() + ")",
+                    exception
+            );
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             throw new OpenListClientException("OpenList request interrupted for " + action, exception);
@@ -474,6 +485,15 @@ public class OpenListClient {
 
     private Duration timeout() {
         return properties.getTimeout();
+    }
+
+    private String timeoutHint() {
+        Duration configuredTimeout = timeout();
+        long millis = configuredTimeout.toMillis();
+        String value = millis % 1000 == 0
+                ? configuredTimeout.toSeconds() + "s"
+                : millis + "ms";
+        return "MEDIANEXUS_OPENLIST_TIMEOUT=" + value;
     }
 
     private String encode(String value) {
