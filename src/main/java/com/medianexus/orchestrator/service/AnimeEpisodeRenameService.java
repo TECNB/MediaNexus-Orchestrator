@@ -12,7 +12,7 @@ import org.springframework.util.StringUtils;
 @Service
 public class AnimeEpisodeRenameService {
 
-    private static final Pattern EPISODE_PATTERN = Pattern.compile("(.*|\\[.*])(( - |Vol |[Ee][Pp]?)\\d+(\\.5)?( ?\\(\\d+\\))?|【\\d+(\\.5)?】|\\[\\d+(\\.5)?( ?\\(\\d+\\))?( ?[vV]\\d)?( ?END)?( ?完)?( ?FIN)?]|第\\d+(\\.5)?[话話集]( - END)?|^\\[TOC].* \\d+|^六四位元字幕组.*★\\d+(\\.5)?★)");
+    private static final Pattern EPISODE_PATTERN = Pattern.compile("(.*|\\[.*])(( - |Vol |[Ee][Pp]?)\\d+(\\.5)?( ?\\(\\d+\\))?|【\\d+(\\.5)?】|\\[\\d+(\\.5)?( ?\\(\\d+\\))?([ _-]?[vV]\\d)?( ?END)?( ?完)?( ?FIN)?]|第\\d+(\\.5)?[话話集]( - END)?|^\\[TOC].* \\d+|^六四位元字幕组.*★\\d+(\\.5)?★)");
     private static final Pattern EPISODE_NUMBER_PATTERN = Pattern.compile("\\d+(\\.5)?");
     private static final Pattern HASH_SUFFIX_PATTERN = Pattern.compile("\\[([A-Z]|\\d){8}]$");
     private static final Pattern INVALID_NAME_CHARS = Pattern.compile("[\\\\/:*?\"<>|]+");
