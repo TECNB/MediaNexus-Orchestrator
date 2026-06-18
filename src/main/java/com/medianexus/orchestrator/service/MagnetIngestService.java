@@ -1,22 +1,57 @@
 package com.medianexus.orchestrator.service;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.medianexus.orchestrator.common.exception.BusinessException;
 import com.medianexus.orchestrator.common.exception.ErrorCode;
 import com.medianexus.orchestrator.config.OpenListProperties;
 import com.medianexus.orchestrator.dto.magnet.request.MovieMagnetIngestRequest;
 import com.medianexus.orchestrator.dto.magnet.request.SeriesMagnetIngestRequest;
-import com.medianexus.orchestrator.dto.magnet.response.MovieMagnetIngestResponse;
-import com.medianexus.orchestrator.dto.magnet.response.SeriesMagnetIngestResponse;
+import com.medianexus.orchestrator.dto.magnet.response.MovieMagnetIngestTaskListResponse;
+import com.medianexus.orchestrator.dto.magnet.response.MovieMagnetIngestTaskLogListResponse;
+import com.medianexus.orchestrator.dto.magnet.response.MovieMagnetIngestTaskLogResponse;
+import com.medianexus.orchestrator.dto.magnet.response.MovieMagnetIngestTaskResponse;
+import com.medianexus.orchestrator.dto.magnet.response.SeriesMagnetIngestTaskListResponse;
+import com.medianexus.orchestrator.dto.magnet.response.SeriesMagnetIngestTaskLogListResponse;
+import com.medianexus.orchestrator.dto.magnet.response.SeriesMagnetIngestTaskLogResponse;
+import com.medianexus.orchestrator.dto.magnet.response.SeriesMagnetIngestTaskResponse;
 import com.medianexus.orchestrator.integration.openlist.OpenListClient;
 import com.medianexus.orchestrator.integration.openlist.OpenListClientException;
 import com.medianexus.orchestrator.integration.openlist.OpenListDirectoryPrepareException;
+import com.medianexus.orchestrator.integration.openlist.OpenListFileInfo;
+import com.medianexus.orchestrator.integration.openlist.OpenListOfflineTaskInfo;
+import com.medianexus.orchestrator.mapper.MovieMagnetIngestTaskLogMapper;
+import com.medianexus.orchestrator.mapper.MovieMagnetIngestTaskMapper;
+import com.medianexus.orchestrator.mapper.SeriesMagnetIngestTaskLogMapper;
+import com.medianexus.orchestrator.mapper.SeriesMagnetIngestTaskMapper;
+import com.medianexus.orchestrator.model.MovieMagnetIngestTask;
+import com.medianexus.orchestrator.model.MovieMagnetIngestTaskLog;
+import com.medianexus.orchestrator.model.SeriesMagnetIngestTask;
+import com.medianexus.orchestrator.model.SeriesMagnetIngestTaskLog;
 import com.medianexus.orchestrator.model.User;
 import com.medianexus.orchestrator.model.UserActionType;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.LocalDateTime;
 import java.time.Year;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -25,150 +60,790 @@ import org.springframework.util.StringUtils;
 public class MagnetIngestService {
 
     private static final Logger log = LoggerFactory.getLogger(MagnetIngestService.class);
-    private static final Pattern INVALID_PATH_CHAR_PATTERN = Pattern.compile("[\\\\/:*?\"<>|]+");
-    private static final Pattern MULTIPLE_SPACE_PATTERN = Pattern.compile("\\s+");
+    private static final Pattern MAGNET_HASH_PATTERN =
+            Pattern.compile("xt=urn:btih:([a-zA-Z0-9]+)", Pattern.CASE_INSENSITIVE);
+    private static final List<String> ACTIVE_STATUSES = List.of("PENDING", "SUBMITTED", "DOWNLOADING", "ORGANIZING");
+    private static final List<String> UNFINISHED_STATUSES = List.of("PENDING", "SUBMITTED", "DOWNLOADING", "ORGANIZING");
+    private static final List<String> TERMINAL_STATUSES = List.of("SUCCEEDED", "PARTIAL_SUCCESS", "FAILED", "INTERRUPTED");
+    private static final Duration SAVING_FILES_VISIBLE_GRACE = Duration.ofMinutes(5);
     private static final int FIRST_MOVIE_YEAR = 1888;
+    private static final String ADMIN_ROLE = "ADMIN";
 
+    private final MovieMagnetIngestTaskMapper movieTaskMapper;
+    private final MovieMagnetIngestTaskLogMapper movieTaskLogMapper;
+    private final SeriesMagnetIngestTaskMapper seriesTaskMapper;
+    private final SeriesMagnetIngestTaskLogMapper seriesTaskLogMapper;
     private final OpenListClient openListClient;
     private final OpenListProperties openListProperties;
+    private final MovieSeriesFileRenameService renameService;
     private final AuthService authService;
     private final UserActionQuotaService userActionQuotaService;
+    private final ExecutorService executorService;
 
     public MagnetIngestService(
+            MovieMagnetIngestTaskMapper movieTaskMapper,
+            MovieMagnetIngestTaskLogMapper movieTaskLogMapper,
+            SeriesMagnetIngestTaskMapper seriesTaskMapper,
+            SeriesMagnetIngestTaskLogMapper seriesTaskLogMapper,
             OpenListClient openListClient,
             OpenListProperties openListProperties,
+            MovieSeriesFileRenameService renameService,
             AuthService authService,
             UserActionQuotaService userActionQuotaService
     ) {
+        this.movieTaskMapper = movieTaskMapper;
+        this.movieTaskLogMapper = movieTaskLogMapper;
+        this.seriesTaskMapper = seriesTaskMapper;
+        this.seriesTaskLogMapper = seriesTaskLogMapper;
         this.openListClient = openListClient;
         this.openListProperties = openListProperties;
+        this.renameService = renameService;
         this.authService = authService;
         this.userActionQuotaService = userActionQuotaService;
+        this.executorService = Executors.newSingleThreadExecutor(new WorkerThreadFactory());
     }
 
-    public MovieMagnetIngestResponse ingestMovie(MovieMagnetIngestRequest request) {
-        User user = authService.requireCurrentUser();
-        MovieIngestPlan plan = buildMoviePlan(request);
-        userActionQuotaService.assertDailyContentCreateAvailable(user);
-
-        String openListTaskId = null;
-        try {
-            openListClient.ensureDirectoryReady(plan.savePath(), plan.rootPath());
-            openListTaskId = openListClient.addOfflineDownload(plan.savePath(), plan.magnet());
-            userActionQuotaService.consumeDailyContentCreate(user, UserActionType.MAGNET_INGEST_CREATE);
+    @EventListener(ApplicationReadyEvent.class)
+    public void markUnfinishedTasksInterrupted() {
+        int movieInterruptedCount = movieTaskMapper.update(new LambdaUpdateWrapper<MovieMagnetIngestTask>()
+                .in(MovieMagnetIngestTask::getStatus, UNFINISHED_STATUSES)
+                .set(MovieMagnetIngestTask::getStatus, "INTERRUPTED")
+                .set(MovieMagnetIngestTask::getStage, "interrupted")
+                .set(MovieMagnetIngestTask::getErrorMessage, "服务重启，任务已中断")
+                .set(MovieMagnetIngestTask::getFinishedAt, LocalDateTime.now()));
+        int seriesInterruptedCount = seriesTaskMapper.update(new LambdaUpdateWrapper<SeriesMagnetIngestTask>()
+                .in(SeriesMagnetIngestTask::getStatus, UNFINISHED_STATUSES)
+                .set(SeriesMagnetIngestTask::getStatus, "INTERRUPTED")
+                .set(SeriesMagnetIngestTask::getStage, "interrupted")
+                .set(SeriesMagnetIngestTask::getErrorMessage, "服务重启，任务已中断")
+                .set(SeriesMagnetIngestTask::getFinishedAt, LocalDateTime.now()));
+        if (movieInterruptedCount > 0 || seriesInterruptedCount > 0) {
             log.info(
-                    "Movie magnet ingest submitted userId={} openListTaskId={} savePath={}",
-                    user.getId(),
-                    openListTaskId,
-                    plan.savePath()
+                    "Marked unfinished movie/series magnet ingest tasks interrupted movieCount={} seriesCount={}",
+                    movieInterruptedCount,
+                    seriesInterruptedCount
             );
-            return new MovieMagnetIngestResponse(plan.savePath());
-        } catch (BusinessException exception) {
-            if (StringUtils.hasText(openListTaskId)) {
-                log.warn(
-                        "Movie magnet ingest submitted but post-submit business step failed userId={} openListTaskId={} savePath={}",
-                        user.getId(),
-                        openListTaskId,
-                        plan.savePath(),
-                        exception
-                );
+        }
+    }
+
+    public MovieMagnetIngestTaskResponse createMovieTask(MovieMagnetIngestRequest request) {
+        User user = authService.requireCurrentUser();
+        MovieTaskPlan plan = buildMoviePlan(request);
+
+        MovieMagnetIngestTask activeTask = movieTaskMapper.selectOne(new LambdaQueryWrapper<MovieMagnetIngestTask>()
+                .eq(MovieMagnetIngestTask::getMagnetHash, plan.magnetHash())
+                .in(MovieMagnetIngestTask::getStatus, ACTIVE_STATUSES)
+                .last("LIMIT 1"));
+        if (activeTask != null) {
+            if (canAccessMovieTask(user, activeTask)) {
+                writeMovieLog(activeTask.getId(), "INFO", activeTask.getStage(), "发现相同 magnet 正在处理，返回已有任务", null);
+                return toMovieResponse(activeTask);
             }
-            throw exception;
+            throw badRequest("相同 magnet 正在处理中，请稍后再试");
+        }
+
+        userActionQuotaService.consumeDailyContentCreate(user, UserActionType.MAGNET_INGEST_CREATE);
+        String taskId = UUID.randomUUID().toString();
+        LocalDateTime now = LocalDateTime.now();
+
+        MovieMagnetIngestTask task = new MovieMagnetIngestTask();
+        task.setId(taskId);
+        task.setStatus("PENDING");
+        task.setStage("created");
+        task.setMagnet(plan.magnet());
+        task.setMagnetHash(plan.magnetHash());
+        task.setTitle(plan.title());
+        task.setOriginalTitle(plan.originalTitle());
+        task.setYear(plan.year());
+        task.setSavePath(plan.savePath());
+        task.setTempPath(plan.savePath());
+        task.setCreatedByUserId(user.getId());
+        task.setOrganizedCount(0);
+        task.setSkippedCount(0);
+        task.setCreatedAt(now);
+        task.setUpdatedAt(now);
+        movieTaskMapper.insert(task);
+
+        writeMovieLog(taskId, "INFO", "created", "已创建电影磁力任务", "savePath=" + plan.savePath());
+        log.info(
+                "Created movie magnet ingest task taskId={} userId={} magnetHash={} savePath={}",
+                taskId,
+                user.getId(),
+                plan.magnetHash(),
+                plan.savePath()
+        );
+        executorService.submit(() -> runMovieTask(taskId));
+        return toMovieResponse(getExistingMovieTask(taskId));
+    }
+
+    public SeriesMagnetIngestTaskResponse createSeriesTask(SeriesMagnetIngestRequest request) {
+        User user = authService.requireCurrentUser();
+        SeriesTaskPlan plan = buildSeriesPlan(request);
+
+        SeriesMagnetIngestTask activeTask = seriesTaskMapper.selectOne(new LambdaQueryWrapper<SeriesMagnetIngestTask>()
+                .eq(SeriesMagnetIngestTask::getMagnetHash, plan.magnetHash())
+                .in(SeriesMagnetIngestTask::getStatus, ACTIVE_STATUSES)
+                .last("LIMIT 1"));
+        if (activeTask != null) {
+            if (canAccessSeriesTask(user, activeTask)) {
+                writeSeriesLog(activeTask.getId(), "INFO", activeTask.getStage(), "发现相同 magnet 正在处理，返回已有任务", null);
+                return toSeriesResponse(activeTask);
+            }
+            throw badRequest("相同 magnet 正在处理中，请稍后再试");
+        }
+
+        userActionQuotaService.consumeDailyContentCreate(user, UserActionType.MAGNET_INGEST_CREATE);
+        String taskId = UUID.randomUUID().toString();
+        LocalDateTime now = LocalDateTime.now();
+
+        SeriesMagnetIngestTask task = new SeriesMagnetIngestTask();
+        task.setId(taskId);
+        task.setStatus("PENDING");
+        task.setStage("created");
+        task.setMagnet(plan.magnet());
+        task.setMagnetHash(plan.magnetHash());
+        task.setTitle(plan.title());
+        task.setOriginalTitle(plan.originalTitle());
+        task.setSeasonNumber(plan.seasonNumber());
+        task.setSeriesName(plan.seriesName());
+        task.setSeasonFolder(plan.seasonFolder());
+        task.setSavePath(plan.savePath());
+        task.setTempPath(plan.savePath());
+        task.setCreatedByUserId(user.getId());
+        task.setOrganizedCount(0);
+        task.setSkippedCount(0);
+        task.setCreatedAt(now);
+        task.setUpdatedAt(now);
+        seriesTaskMapper.insert(task);
+
+        writeSeriesLog(taskId, "INFO", "created", "已创建剧集磁力任务", "savePath=" + plan.savePath());
+        log.info(
+                "Created series magnet ingest task taskId={} userId={} magnetHash={} savePath={}",
+                taskId,
+                user.getId(),
+                plan.magnetHash(),
+                plan.savePath()
+        );
+        executorService.submit(() -> runSeriesTask(taskId));
+        return toSeriesResponse(getExistingSeriesTask(taskId));
+    }
+
+    public MovieMagnetIngestTaskListResponse listMovieTasks() {
+        User user = authService.requireCurrentUser();
+        LambdaQueryWrapper<MovieMagnetIngestTask> queryWrapper = new LambdaQueryWrapper<MovieMagnetIngestTask>()
+                .orderByDesc(MovieMagnetIngestTask::getCreatedAt)
+                .last("LIMIT 20");
+        if (!isAdmin(user)) {
+            queryWrapper.eq(MovieMagnetIngestTask::getCreatedByUserId, user.getId());
+        }
+        List<MovieMagnetIngestTaskResponse> items = movieTaskMapper.selectList(queryWrapper).stream()
+                .map(this::toMovieResponse)
+                .toList();
+        return new MovieMagnetIngestTaskListResponse(items, items.size());
+    }
+
+    public SeriesMagnetIngestTaskListResponse listSeriesTasks() {
+        User user = authService.requireCurrentUser();
+        LambdaQueryWrapper<SeriesMagnetIngestTask> queryWrapper = new LambdaQueryWrapper<SeriesMagnetIngestTask>()
+                .orderByDesc(SeriesMagnetIngestTask::getCreatedAt)
+                .last("LIMIT 20");
+        if (!isAdmin(user)) {
+            queryWrapper.eq(SeriesMagnetIngestTask::getCreatedByUserId, user.getId());
+        }
+        List<SeriesMagnetIngestTaskResponse> items = seriesTaskMapper.selectList(queryWrapper).stream()
+                .map(this::toSeriesResponse)
+                .toList();
+        return new SeriesMagnetIngestTaskListResponse(items, items.size());
+    }
+
+    public MovieMagnetIngestTaskResponse getMovieTask(String taskId) {
+        User user = authService.requireCurrentUser();
+        return toMovieResponse(getAccessibleMovieTask(taskId, user));
+    }
+
+    public SeriesMagnetIngestTaskResponse getSeriesTask(String taskId) {
+        User user = authService.requireCurrentUser();
+        return toSeriesResponse(getAccessibleSeriesTask(taskId, user));
+    }
+
+    public MovieMagnetIngestTaskLogListResponse getMovieTaskLogs(String taskId) {
+        User user = authService.requireCurrentUser();
+        getAccessibleMovieTask(taskId, user);
+        List<MovieMagnetIngestTaskLogResponse> items = movieTaskLogMapper.selectList(new LambdaQueryWrapper<MovieMagnetIngestTaskLog>()
+                        .eq(MovieMagnetIngestTaskLog::getTaskId, taskId)
+                        .orderByAsc(MovieMagnetIngestTaskLog::getId))
+                .stream()
+                .map(this::toMovieLogResponse)
+                .toList();
+        return new MovieMagnetIngestTaskLogListResponse(items, items.size());
+    }
+
+    public SeriesMagnetIngestTaskLogListResponse getSeriesTaskLogs(String taskId) {
+        User user = authService.requireCurrentUser();
+        getAccessibleSeriesTask(taskId, user);
+        List<SeriesMagnetIngestTaskLogResponse> items = seriesTaskLogMapper.selectList(new LambdaQueryWrapper<SeriesMagnetIngestTaskLog>()
+                        .eq(SeriesMagnetIngestTaskLog::getTaskId, taskId)
+                        .orderByAsc(SeriesMagnetIngestTaskLog::getId))
+                .stream()
+                .map(this::toSeriesLogResponse)
+                .toList();
+        return new SeriesMagnetIngestTaskLogListResponse(items, items.size());
+    }
+
+    private void runMovieTask(String taskId) {
+        try {
+            MovieMagnetIngestTask task = getExistingMovieTask(taskId);
+            prepareMovieDownloadRoot(task);
+
+            markMovieSubmitted(task);
+            String openListTaskId = openListClient.addOfflineDownload(task.getTempPath(), task.getMagnet());
+            markMovieDownloading(taskId, openListTaskId);
+
+            waitForOfflineTask(
+                    taskId,
+                    openListTaskId,
+                    task.getTempPath(),
+                    (level, stage, message, detail) -> writeMovieLog(taskId, level, stage, message, detail),
+                    () -> refreshMovieTaskUpdatedAt(taskId)
+            );
+
+            markMovieOrganizing(taskId, openListTaskId, task.getTempPath());
+            OrganizeResult result = organizeMovieFiles(getExistingMovieTask(taskId));
+            if (result.videoCount() < 1) {
+                markMovieNoOrganizedFiles(taskId, openListTaskId, result);
+                return;
+            }
+
+            markMovieSucceeded(taskId, openListTaskId, result);
+        } catch (Exception exception) {
+            log.warn("Movie magnet ingest task failed id={}", taskId, exception);
+            markMovieFailed(taskId, safeMessage(exception));
+        }
+    }
+
+    private void runSeriesTask(String taskId) {
+        try {
+            SeriesMagnetIngestTask task = getExistingSeriesTask(taskId);
+            prepareSeriesDownloadRoot(task);
+
+            markSeriesSubmitted(task);
+            String openListTaskId = openListClient.addOfflineDownload(task.getTempPath(), task.getMagnet());
+            markSeriesDownloading(taskId, openListTaskId);
+
+            waitForOfflineTask(
+                    taskId,
+                    openListTaskId,
+                    task.getTempPath(),
+                    (level, stage, message, detail) -> writeSeriesLog(taskId, level, stage, message, detail),
+                    () -> refreshSeriesTaskUpdatedAt(taskId)
+            );
+
+            markSeriesOrganizing(taskId, openListTaskId, task.getTempPath());
+            OrganizeResult result = organizeSeriesFiles(getExistingSeriesTask(taskId));
+            if (result.videoCount() < 1) {
+                markSeriesNoOrganizedFiles(taskId, openListTaskId, result);
+                return;
+            }
+
+            markSeriesSucceeded(taskId, openListTaskId, result);
+        } catch (Exception exception) {
+            log.warn("Series magnet ingest task failed id={}", taskId, exception);
+            markSeriesFailed(taskId, safeMessage(exception));
+        }
+    }
+
+    private void prepareMovieDownloadRoot(MovieMagnetIngestTask task) {
+        writeMovieLog(task.getId(), "INFO", "created", "正在准备 OpenList 保存目录", task.getSavePath());
+        try {
+            openListClient.ensureDirectoryReady(task.getSavePath(), configuredRootPath(
+                    openListProperties.getMovieRootPath(),
+                    "OpenList 电影基础路径尚未配置"
+            ));
         } catch (OpenListDirectoryPrepareException exception) {
             throw mapDirectoryPrepareException(exception, "OpenList 电影基础路径不存在");
-        } catch (OpenListClientException exception) {
-            log.warn("Movie magnet ingest OpenList submit failed savePath={}", plan.savePath(), exception);
-            throw internalError("创建离线下载任务失败");
         }
+        writeMovieLog(task.getId(), "INFO", "created", "OpenList 保存目录准备完成", task.getSavePath());
     }
 
-    public SeriesMagnetIngestResponse ingestSeries(SeriesMagnetIngestRequest request) {
-        User user = authService.requireCurrentUser();
-        SeriesIngestPlan plan = buildSeriesPlan(request);
-        userActionQuotaService.assertDailyContentCreateAvailable(user);
-
-        String openListTaskId = null;
+    private void prepareSeriesDownloadRoot(SeriesMagnetIngestTask task) {
+        writeSeriesLog(task.getId(), "INFO", "created", "正在准备 OpenList 保存目录", task.getSavePath());
         try {
-            openListClient.ensureDirectoryReady(plan.savePath(), plan.rootPath());
-            openListTaskId = openListClient.addOfflineDownload(plan.savePath(), plan.magnet());
-            userActionQuotaService.consumeDailyContentCreate(user, UserActionType.MAGNET_INGEST_CREATE);
-            log.info(
-                    "Series magnet ingest submitted userId={} openListTaskId={} savePath={}",
-                    user.getId(),
-                    openListTaskId,
-                    plan.savePath()
-            );
-            return new SeriesMagnetIngestResponse(
-                    plan.savePath(),
-                    plan.seriesName(),
-                    plan.seasonFolder()
-            );
-        } catch (BusinessException exception) {
-            if (StringUtils.hasText(openListTaskId)) {
-                log.warn(
-                        "Series magnet ingest submitted but post-submit business step failed userId={} openListTaskId={} savePath={}",
-                        user.getId(),
-                        openListTaskId,
-                        plan.savePath(),
-                        exception
-                );
-            }
-            throw exception;
+            openListClient.ensureDirectoryReady(task.getSavePath(), configuredRootPath(
+                    openListProperties.getTvRootPath(),
+                    "OpenList 剧集基础路径尚未配置"
+            ));
         } catch (OpenListDirectoryPrepareException exception) {
             throw mapDirectoryPrepareException(exception, "OpenList 剧集基础路径不存在");
-        } catch (OpenListClientException exception) {
-            log.warn("Series magnet ingest OpenList submit failed savePath={}", plan.savePath(), exception);
-            throw internalError("创建剧集离线下载任务失败");
+        }
+        writeSeriesLog(task.getId(), "INFO", "created", "OpenList 保存目录准备完成", task.getSavePath());
+    }
+
+    private void markMovieSubmitted(MovieMagnetIngestTask task) {
+        updateMovieTask(task.getId(), "SUBMITTED", "submitted", null, null, null);
+        writeMovieLog(task.getId(), "INFO", "submitted", "正在提交 OpenList 离线下载", task.getTempPath());
+    }
+
+    private void markSeriesSubmitted(SeriesMagnetIngestTask task) {
+        updateSeriesTask(task.getId(), "SUBMITTED", "submitted", null, null, null);
+        writeSeriesLog(task.getId(), "INFO", "submitted", "正在提交 OpenList 离线下载", task.getTempPath());
+    }
+
+    private void markMovieDownloading(String taskId, String openListTaskId) {
+        updateMovieTask(taskId, "DOWNLOADING", "downloading", openListTaskId, null, null);
+        writeMovieLog(taskId, "INFO", "downloading", "OpenList 离线任务已创建", openListTaskId);
+    }
+
+    private void markSeriesDownloading(String taskId, String openListTaskId) {
+        updateSeriesTask(taskId, "DOWNLOADING", "downloading", openListTaskId, null, null);
+        writeSeriesLog(taskId, "INFO", "downloading", "OpenList 离线任务已创建", openListTaskId);
+    }
+
+    private void markMovieOrganizing(String taskId, String openListTaskId, String tempPath) {
+        updateMovieTask(taskId, "ORGANIZING", "organizing", openListTaskId, null, null);
+        writeMovieLog(taskId, "INFO", "organizing", "离线下载完成，开始整理文件", tempPath);
+    }
+
+    private void markSeriesOrganizing(String taskId, String openListTaskId, String tempPath) {
+        updateSeriesTask(taskId, "ORGANIZING", "organizing", openListTaskId, null, null);
+        writeSeriesLog(taskId, "INFO", "organizing", "离线下载完成，开始整理文件", tempPath);
+    }
+
+    private void markMovieNoOrganizedFiles(String taskId, String openListTaskId, OrganizeResult result) {
+        updateMovieTask(taskId, "FAILED", "failed", openListTaskId, result, "没有识别到可入库的视频文件");
+        writeMovieLog(taskId, "ERROR", "failed", "没有识别到可入库的视频文件", null);
+    }
+
+    private void markSeriesNoOrganizedFiles(String taskId, String openListTaskId, OrganizeResult result) {
+        updateSeriesTask(taskId, "FAILED", "failed", openListTaskId, result, "没有识别到可入库的视频文件");
+        writeSeriesLog(taskId, "ERROR", "failed", "没有识别到可入库的视频文件", null);
+    }
+
+    private void markMovieSucceeded(String taskId, String openListTaskId, OrganizeResult result) {
+        updateMovieTask(taskId, "SUCCEEDED", "succeeded", openListTaskId, result, null);
+        writeMovieLog(
+                taskId,
+                "INFO",
+                "succeeded",
+                "任务完成",
+                "organized=" + result.organizedCount() + ", skipped=" + result.skippedCount()
+        );
+        log.info("Movie magnet ingest task succeeded taskId={} openListTaskId={} organized={} skipped={}",
+                taskId, openListTaskId, result.organizedCount(), result.skippedCount());
+    }
+
+    private void markSeriesSucceeded(String taskId, String openListTaskId, OrganizeResult result) {
+        updateSeriesTask(taskId, "SUCCEEDED", "succeeded", openListTaskId, result, null);
+        writeSeriesLog(
+                taskId,
+                "INFO",
+                "succeeded",
+                "任务完成",
+                "organized=" + result.organizedCount() + ", skipped=" + result.skippedCount()
+        );
+        log.info("Series magnet ingest task succeeded taskId={} openListTaskId={} organized={} skipped={}",
+                taskId, openListTaskId, result.organizedCount(), result.skippedCount());
+    }
+
+    private void markMovieFailed(String taskId, String errorMessage) {
+        updateMovieTask(taskId, "FAILED", "failed", null, null, errorMessage);
+        writeMovieLog(taskId, "ERROR", "failed", "任务失败", errorMessage);
+    }
+
+    private void markSeriesFailed(String taskId, String errorMessage) {
+        updateSeriesTask(taskId, "FAILED", "failed", null, null, errorMessage);
+        writeSeriesLog(taskId, "ERROR", "failed", "任务失败", errorMessage);
+    }
+
+    private void waitForOfflineTask(
+            String taskId,
+            String openListTaskId,
+            String tempPath,
+            TaskLogWriter taskLogWriter,
+            Runnable refreshTaskUpdatedAt
+    ) {
+        Instant startedAt = Instant.now();
+        int retryCount = 0;
+        Duration timeout = openListProperties.getOfflineTimeout();
+        Duration pollInterval = openListProperties.getPollInterval();
+
+        while (Duration.between(startedAt, Instant.now()).compareTo(timeout) < 0) {
+            OpenListOfflineTaskInfo taskInfo = openListClient.offlineTaskInfo(openListTaskId);
+            Integer state = taskInfo.state();
+            if (state != null && state == 2) {
+                taskLogWriter.write("INFO", "downloading", "OpenList 离线下载完成", openListTaskId);
+                safeDeleteOpenListTask(taskLogWriter, openListTaskId);
+                return;
+            }
+            if (state != null && state == 1
+                    && Duration.between(startedAt, Instant.now()).compareTo(SAVING_FILES_VISIBLE_GRACE) >= 0
+                    && hasVideoFiles(tempPath)) {
+                taskLogWriter.write("WARN", "downloading", "OpenList 仍显示保存中但临时目录已有视频文件，尝试继续整理", openListTaskId);
+                return;
+            }
+            if (state != null && List.of(3, 4).contains(state)) {
+                throw new OpenListClientException("OpenList 离线任务已取消");
+            }
+            if (state != null && state >= 5) {
+                if (hasVideoFiles(tempPath)) {
+                    taskLogWriter.write("WARN", "downloading", "OpenList 状态异常但发现视频文件，尝试继续整理", taskInfo.error());
+                    safeDeleteOpenListTask(taskLogWriter, openListTaskId);
+                    return;
+                }
+                if (retryCount >= Math.max(0, openListProperties.getRetryLimit())) {
+                    throw new OpenListClientException("OpenList 离线任务失败: " + taskInfo.error());
+                }
+                retryCount++;
+                taskLogWriter.write(
+                        "WARN",
+                        "downloading",
+                        "OpenList 离线任务失败，正在重试",
+                        "retry=" + retryCount + ", error=" + taskInfo.error()
+                );
+                openListClient.retryOfflineTask(openListTaskId);
+            } else {
+                taskLogWriter.write(
+                        "INFO",
+                        "downloading",
+                        offlineProgressMessage(taskInfo.progress()),
+                        offlineProgressDetail(openListTaskId, taskInfo)
+                );
+                refreshTaskUpdatedAt.run();
+            }
+            sleep(pollInterval);
+        }
+        throw new OpenListClientException("OpenList 离线下载超时");
+    }
+
+    private OrganizeResult organizeMovieFiles(MovieMagnetIngestTask task) {
+        TaskLogWriter taskLogWriter = (level, stage, message, detail) ->
+                writeMovieLog(task.getId(), level, stage, message, detail);
+        taskLogWriter.write("INFO", "organizing", "正在扫描临时目录并生成整理计划", task.getTempPath());
+        List<OpenListFileInfo> files = openListClient.findFiles(task.getTempPath());
+        Set<String> targetNames = targetNames(task.getSavePath());
+        OrganizationPlan plan = new OrganizationPlan();
+        Map<String, String> videoQualityByBaseName = new HashMap<>();
+        String mainVideoQuality = "";
+        int organized = 0;
+        int skipped = 0;
+        int videoCount = 0;
+
+        for (OpenListFileInfo file : files) {
+            if (!renameService.isVideo(file.name())) {
+                continue;
+            }
+            MovieSeriesFileRenameService.RenameResult rename = renameService.movieVideo(
+                    file.name(),
+                    task.getTitle(),
+                    task.getYear()
+            );
+            boolean accepted = planFile(taskLogWriter, task.getSavePath(), targetNames, plan, file, rename.fileName());
+            if (accepted) {
+                organized++;
+                videoCount++;
+                if (videoCount == 1) {
+                    mainVideoQuality = rename.quality();
+                }
+                videoQualityByBaseName.put(rename.quality(), rename.baseName());
+            } else {
+                skipped++;
+            }
+        }
+
+        for (OpenListFileInfo file : files) {
+            if (renameService.isVideo(file.name())) {
+                continue;
+            }
+            if (!renameService.isSubtitle(file.name())) {
+                skipped++;
+                skipFile(taskLogWriter, plan, file, "跳过无法识别的文件");
+                continue;
+            }
+            if (videoCount < 1) {
+                skipped++;
+                skipFile(taskLogWriter, plan, file, "跳过无法匹配视频的字幕");
+                continue;
+            }
+
+            String sourceQuality = renameService.qualityFull(file.name());
+            String matchedQuality = videoQualityByBaseName.containsKey(sourceQuality) ? sourceQuality : mainVideoQuality;
+            Optional<MovieSeriesFileRenameService.RenameResult> rename = renameService.movieSubtitle(
+                    file.name(),
+                    task.getTitle(),
+                    task.getYear(),
+                    matchedQuality
+            );
+            if (rename.isEmpty()) {
+                skipped++;
+                skipFile(taskLogWriter, plan, file, "跳过无法识别的字幕");
+                continue;
+            }
+            if (planFile(taskLogWriter, task.getSavePath(), targetNames, plan, file, rename.get().fileName())) {
+                organized++;
+            } else {
+                skipped++;
+            }
+        }
+
+        executeOrganizationPlan(taskLogWriter, task.getSavePath(), plan, organized, skipped);
+        return new OrganizeResult(organized, skipped, videoCount);
+    }
+
+    private OrganizeResult organizeSeriesFiles(SeriesMagnetIngestTask task) {
+        TaskLogWriter taskLogWriter = (level, stage, message, detail) ->
+                writeSeriesLog(task.getId(), level, stage, message, detail);
+        taskLogWriter.write("INFO", "organizing", "正在扫描临时目录并生成整理计划", task.getTempPath());
+        List<OpenListFileInfo> files = openListClient.findFiles(task.getTempPath());
+        Set<String> targetNames = targetNames(task.getSavePath());
+        OrganizationPlan plan = new OrganizationPlan();
+        Set<String> episodeQualityKeys = new HashSet<>();
+        Map<Integer, String> mainQualityByEpisode = new HashMap<>();
+        int organized = 0;
+        int skipped = 0;
+        int videoCount = 0;
+
+        for (OpenListFileInfo file : files) {
+            if (!renameService.isVideo(file.name())) {
+                continue;
+            }
+            Optional<MovieSeriesFileRenameService.RenameResult> rename = renameService.seriesVideo(
+                    file.name(),
+                    task.getTitle(),
+                    task.getSeasonNumber()
+            );
+            if (rename.isEmpty()) {
+                skipped++;
+                skipFile(taskLogWriter, plan, file, "跳过无法识别集数的视频");
+                continue;
+            }
+            MovieSeriesFileRenameService.RenameResult result = rename.get();
+            if (planFile(taskLogWriter, task.getSavePath(), targetNames, plan, file, result.fileName())) {
+                organized++;
+                videoCount++;
+                episodeQualityKeys.add(episodeQualityKey(result.episodeNumber(), result.quality()));
+                mainQualityByEpisode.putIfAbsent(result.episodeNumber(), result.quality());
+            } else {
+                skipped++;
+            }
+        }
+
+        for (OpenListFileInfo file : files) {
+            if (renameService.isVideo(file.name())) {
+                continue;
+            }
+            if (!renameService.isSubtitle(file.name())) {
+                skipped++;
+                skipFile(taskLogWriter, plan, file, "跳过无法识别的文件");
+                continue;
+            }
+            String sourceQuality = renameService.qualityFull(file.name());
+            Optional<MovieSeriesFileRenameService.RenameResult> detected = renameService.seriesSubtitle(
+                    file.name(),
+                    task.getTitle(),
+                    task.getSeasonNumber(),
+                    sourceQuality
+            );
+            if (detected.isEmpty()) {
+                skipped++;
+                skipFile(taskLogWriter, plan, file, "跳过无法识别集数的字幕");
+                continue;
+            }
+            Integer episodeNumber = detected.get().episodeNumber();
+            String matchedQuality = episodeQualityKeys.contains(episodeQualityKey(episodeNumber, sourceQuality))
+                    ? sourceQuality
+                    : mainQualityByEpisode.get(episodeNumber);
+            if (matchedQuality == null) {
+                skipped++;
+                skipFile(taskLogWriter, plan, file, "跳过无法匹配视频的字幕");
+                continue;
+            }
+            MovieSeriesFileRenameService.RenameResult result = renameService.seriesSubtitle(
+                    file.name(),
+                    task.getTitle(),
+                    task.getSeasonNumber(),
+                    matchedQuality
+            ).orElseThrow();
+            if (planFile(taskLogWriter, task.getSavePath(), targetNames, plan, file, result.fileName())) {
+                organized++;
+            } else {
+                skipped++;
+            }
+        }
+
+        executeOrganizationPlan(taskLogWriter, task.getSavePath(), plan, organized, skipped);
+        return new OrganizeResult(organized, skipped, videoCount);
+    }
+
+    private boolean planFile(
+            TaskLogWriter taskLogWriter,
+            String savePath,
+            Set<String> targetNames,
+            OrganizationPlan plan,
+            OpenListFileInfo file,
+            String targetName
+    ) {
+        String filePath = openListClient.normalizePath(file.path());
+        String normalizedSavePath = openListClient.normalizePath(savePath);
+        if (filePath.equals(normalizedSavePath) && file.name().equals(targetName)) {
+            plan.plannedTargetNames().add(targetName);
+            return true;
+        }
+
+        if (targetNames.contains(targetName) || plan.plannedTargetNames().contains(targetName)) {
+            taskLogWriter.write("WARN", "organizing", "目标文件已存在或重复，删除当前文件", file.path() + "/" + file.name());
+            plan.deleteByDir().computeIfAbsent(file.path(), ignored -> new ArrayList<>()).add(file.name());
+            return false;
+        }
+
+        if (!file.name().equals(targetName)) {
+            plan.renameByDir().computeIfAbsent(file.path(), ignored -> new HashMap<>()).put(file.name(), targetName);
+        }
+        if (!filePath.equals(normalizedSavePath)) {
+            plan.moveByDir().computeIfAbsent(file.path(), ignored -> new ArrayList<>()).add(targetName);
+        }
+        plan.plannedTargetNames().add(targetName);
+        return true;
+    }
+
+    private void skipFile(
+            TaskLogWriter taskLogWriter,
+            OrganizationPlan plan,
+            OpenListFileInfo file,
+            String message
+    ) {
+        taskLogWriter.write("WARN", "organizing", message, file.path() + "/" + file.name());
+        plan.deleteByDir().computeIfAbsent(file.path(), ignored -> new ArrayList<>()).add(file.name());
+    }
+
+    private void executeOrganizationPlan(
+            TaskLogWriter taskLogWriter,
+            String savePath,
+            OrganizationPlan plan,
+            int organized,
+            int skipped
+    ) {
+        int renameCount = countRenameOperations(plan.renameByDir());
+        int moveCount = countFileOperations(plan.moveByDir());
+        int deleteCount = countFileOperations(plan.deleteByDir());
+        taskLogWriter.write(
+                "INFO",
+                "organizing",
+                "整理计划已生成",
+                "rename=" + renameCount + ", move=" + moveCount + ", delete=" + deleteCount
+                        + ", organized=" + organized + ", skipped=" + skipped
+        );
+
+        for (Map.Entry<String, Map<String, String>> entry : plan.renameByDir().entrySet()) {
+            taskLogWriter.write("INFO", "organizing", "正在批量重命名文件", sourceBatchDetail(entry.getKey(), entry.getValue().size()));
+            openListClient.batchRename(entry.getKey(), entry.getValue());
+            taskLogWriter.write("INFO", "organizing", "批量重命名完成", sourceBatchDetail(entry.getKey(), entry.getValue().size()));
+            for (Map.Entry<String, String> renameEntry : entry.getValue().entrySet()) {
+                taskLogWriter.write("INFO", "organizing", "重命名文件", renameEntry.getKey() + " ==> " + renameEntry.getValue());
+            }
+        }
+        for (Map.Entry<String, List<String>> entry : plan.moveByDir().entrySet()) {
+            taskLogWriter.write("INFO", "organizing", "正在批量移动文件到目标目录", moveBatchDetail(entry.getKey(), savePath, entry.getValue().size()));
+            openListClient.move(entry.getKey(), savePath, entry.getValue());
+            taskLogWriter.write("INFO", "organizing", "批量移动完成", moveBatchDetail(entry.getKey(), savePath, entry.getValue().size()));
+            for (String name : entry.getValue()) {
+                taskLogWriter.write("INFO", "organizing", "移动文件到目标目录", name);
+            }
+        }
+        for (Map.Entry<String, List<String>> entry : plan.deleteByDir().entrySet()) {
+            taskLogWriter.write("INFO", "organizing", "正在删除跳过文件", sourceBatchDetail(entry.getKey(), entry.getValue().size()));
+            openListClient.remove(entry.getKey(), entry.getValue());
+            taskLogWriter.write("INFO", "organizing", "跳过文件删除完成", sourceBatchDetail(entry.getKey(), entry.getValue().size()));
+            for (String name : entry.getValue()) {
+                taskLogWriter.write("INFO", "organizing", "删除跳过文件", entry.getKey() + "/" + name);
+            }
+        }
+        String normalizedSavePath = openListClient.normalizePath(savePath);
+        taskLogWriter.write("INFO", "organizing", "正在清理空目录", normalizedSavePath);
+        cleanupEmptyDirectories(taskLogWriter, normalizedSavePath, normalizedSavePath);
+        taskLogWriter.write("INFO", "organizing", "空目录清理完成", normalizedSavePath);
+    }
+
+    private void cleanupEmptyDirectories(TaskLogWriter taskLogWriter, String rootPath, String currentPath) {
+        List<OpenListFileInfo> children;
+        try {
+            children = openListClient.listFiles(currentPath);
+        } catch (RuntimeException exception) {
+            taskLogWriter.write("WARN", "organizing", "扫描空目录失败，跳过清理", currentPath);
+            return;
+        }
+
+        for (OpenListFileInfo child : children) {
+            if (Boolean.TRUE.equals(child.isDir())) {
+                cleanupEmptyDirectories(taskLogWriter, rootPath, openListClient.joinPath(currentPath, child.name()));
+            }
+        }
+
+        if (openListClient.normalizePath(currentPath).equals(openListClient.normalizePath(rootPath))) {
+            return;
+        }
+
+        try {
+            if (openListClient.listFiles(currentPath).isEmpty()) {
+                openListClient.remove(parentPath(currentPath), List.of(pathName(currentPath)));
+                taskLogWriter.write("INFO", "organizing", "删除空目录", currentPath);
+            }
+        } catch (RuntimeException exception) {
+            taskLogWriter.write("WARN", "organizing", "删除空目录失败", currentPath);
         }
     }
 
-    private MovieIngestPlan buildMoviePlan(MovieMagnetIngestRequest request) {
+    private MovieTaskPlan buildMoviePlan(MovieMagnetIngestRequest request) {
         if (request == null) {
             throw badRequest("请求不能为空");
         }
         String magnet = normalizeMagnet(request.magnet());
+        String magnetHash = extractMagnetHash(magnet);
         int year = validateMovieYear(request.year());
-        String cleanTitle = sanitizeTitle(preferredTitle(request.title(), request.originalTitle()));
-        if (!StringUtils.hasText(cleanTitle)) {
-            throw badRequest("电影标题不能为空");
-        }
-        String rootPath = configuredRootPath(
-                openListProperties.getMovieRootPath(),
-                "OpenList 电影基础路径尚未配置"
-        );
-        String folderName = cleanTitle + " (" + year + ")";
-        return new MovieIngestPlan(
-                magnet,
-                rootPath,
-                openListClient.joinPath(rootPath, folderName)
-        );
+        String title = preferredTitle(request.title(), request.originalTitle(), "电影标题不能为空");
+        String rootPath = configuredRootPath(openListProperties.getMovieRootPath(), "OpenList 电影基础路径尚未配置");
+        String folderName = renameService.movieFolderName(title, year);
+        String savePath = openListClient.joinPath(rootPath, folderName);
+        return new MovieTaskPlan(magnet, magnetHash, title, trimToNull(request.originalTitle()), year, rootPath, savePath);
     }
 
-    private SeriesIngestPlan buildSeriesPlan(SeriesMagnetIngestRequest request) {
+    private SeriesTaskPlan buildSeriesPlan(SeriesMagnetIngestRequest request) {
         if (request == null) {
             throw badRequest("请求不能为空");
         }
         String magnet = normalizeMagnet(request.magnet());
+        String magnetHash = extractMagnetHash(magnet);
         int seasonNumber = validateSeasonNumber(request.seasonNumber());
-        String seriesName = sanitizeTitle(preferredTitle(request.title(), request.originalTitle()));
-        if (!StringUtils.hasText(seriesName)) {
-            throw badRequest("剧集标题不能为空");
-        }
-        String rootPath = configuredRootPath(
-                openListProperties.getTvRootPath(),
-                "OpenList 剧集基础路径尚未配置"
-        );
-        String seasonFolder = "Season " + String.format(Locale.ROOT, "%02d", seasonNumber);
+        String title = preferredTitle(request.title(), request.originalTitle(), "剧集标题不能为空");
+        String rootPath = configuredRootPath(openListProperties.getTvRootPath(), "OpenList 剧集基础路径尚未配置");
+        String seriesName = renameService.seriesFolderName(title);
+        String seasonFolder = renameService.seasonFolderName(seasonNumber);
         String savePath = openListClient.joinPath(openListClient.joinPath(rootPath, seriesName), seasonFolder);
-        return new SeriesIngestPlan(magnet, rootPath, savePath, seriesName, seasonFolder);
+        return new SeriesTaskPlan(
+                magnet,
+                magnetHash,
+                title,
+                trimToNull(request.originalTitle()),
+                seasonNumber,
+                seriesName,
+                seasonFolder,
+                rootPath,
+                savePath
+        );
     }
 
     private String normalizeMagnet(String magnet) {
         String normalized = magnet == null ? "" : magnet.trim();
-        if (!normalized.startsWith("magnet:?")) {
+        if (!normalized.toLowerCase(Locale.ROOT).startsWith("magnet:?")) {
             throw badRequest("magnet 链接需以 magnet:? 开头");
         }
         return normalized;
+    }
+
+    private String extractMagnetHash(String magnet) {
+        Matcher matcher = MAGNET_HASH_PATTERN.matcher(magnet);
+        if (!matcher.find()) {
+            throw badRequest("magnet 缺少 btih hash");
+        }
+        return matcher.group(1).toLowerCase(Locale.ROOT);
     }
 
     private int validateMovieYear(Integer year) {
@@ -186,35 +861,16 @@ public class MagnetIngestService {
         return seasonNumber;
     }
 
-    private String preferredTitle(String title, String originalTitle) {
-        String normalizedOriginalTitle = normalizeOptionalText(originalTitle);
+    private String preferredTitle(String title, String originalTitle, String missingMessage) {
+        String normalizedOriginalTitle = trimToNull(originalTitle);
         if (StringUtils.hasText(normalizedOriginalTitle)) {
             return normalizedOriginalTitle;
         }
-        String normalizedTitle = normalizeOptionalText(title);
-        return StringUtils.hasText(normalizedTitle) ? normalizedTitle : "";
-    }
-
-    private String sanitizeTitle(String title) {
-        String cleanedTitle = INVALID_PATH_CHAR_PATTERN.matcher(title.trim()).replaceAll(" ");
-        cleanedTitle = MULTIPLE_SPACE_PATTERN.matcher(cleanedTitle).replaceAll(" ");
-        return stripSpacesAndDots(cleanedTitle);
-    }
-
-    private String stripSpacesAndDots(String value) {
-        int start = 0;
-        int end = value.length();
-        while (start < end && isSpaceOrDot(value.charAt(start))) {
-            start++;
+        String normalizedTitle = trimToNull(title);
+        if (StringUtils.hasText(normalizedTitle)) {
+            return normalizedTitle;
         }
-        while (end > start && isSpaceOrDot(value.charAt(end - 1))) {
-            end--;
-        }
-        return value.substring(start, end);
-    }
-
-    private boolean isSpaceOrDot(char value) {
-        return value == ' ' || value == '.';
+        throw badRequest(missingMessage);
     }
 
     private String configuredRootPath(String configuredPath, String missingMessage) {
@@ -223,14 +879,6 @@ public class MagnetIngestService {
             throw serviceUnavailable(missingMessage);
         }
         return openListClient.normalizePath(cleanedPath);
-    }
-
-    private String normalizeOptionalText(String value) {
-        if (value == null) {
-            return null;
-        }
-        String normalized = value.trim();
-        return StringUtils.hasText(normalized) ? normalized : null;
     }
 
     private String cleanConfigValue(String value) {
@@ -244,6 +892,290 @@ public class MagnetIngestService {
             cleaned = cleaned.substring(1, cleaned.length() - 1).trim();
         }
         return cleaned;
+    }
+
+    private Set<String> targetNames(String savePath) {
+        return openListClient.listFiles(savePath).stream()
+                .map(OpenListFileInfo::name)
+                .collect(HashSet::new, HashSet::add, HashSet::addAll);
+    }
+
+    private String offlineProgressMessage(Integer progress) {
+        if (progress == null) {
+            return "OpenList 离线下载进行中";
+        }
+        return "OpenList 离线下载进度 " + progress + "%";
+    }
+
+    private String offlineProgressDetail(String openListTaskId, OpenListOfflineTaskInfo taskInfo) {
+        List<String> details = new ArrayList<>();
+        if (taskInfo.progress() != null) {
+            details.add("progress=" + taskInfo.progress());
+        }
+        if (StringUtils.hasText(taskInfo.status())) {
+            details.add("status=" + taskInfo.status().trim());
+        }
+        if (taskInfo.totalBytes() != null && taskInfo.totalBytes() > 0) {
+            details.add("totalBytes=" + taskInfo.totalBytes());
+        }
+        if (taskInfo.state() != null) {
+            details.add("state=" + taskInfo.state());
+        }
+        if (StringUtils.hasText(taskInfo.error())) {
+            details.add("error=" + taskInfo.error().trim());
+        }
+        details.add("openListTaskId=" + openListTaskId);
+        return String.join(", ", details);
+    }
+
+    private boolean hasVideoFiles(String path) {
+        return openListClient.findFiles(path).stream().anyMatch(file -> renameService.isVideo(file.name()));
+    }
+
+    private void safeDeleteOpenListTask(TaskLogWriter taskLogWriter, String openListTaskId) {
+        try {
+            openListClient.deleteOfflineTask(openListTaskId);
+        } catch (RuntimeException exception) {
+            taskLogWriter.write("WARN", "downloading", "删除 OpenList 离线任务记录失败，继续后续整理", null);
+        }
+    }
+
+    private int countRenameOperations(Map<String, Map<String, String>> renameByDir) {
+        return renameByDir.values().stream()
+                .mapToInt(Map::size)
+                .sum();
+    }
+
+    private int countFileOperations(Map<String, List<String>> namesByDir) {
+        return namesByDir.values().stream()
+                .mapToInt(List::size)
+                .sum();
+    }
+
+    private String sourceBatchDetail(String sourceDir, int count) {
+        return "srcDir=" + sourceDir + ", count=" + count;
+    }
+
+    private String moveBatchDetail(String sourceDir, String destinationDir, int count) {
+        return "srcDir=" + sourceDir + ", dstDir=" + destinationDir + ", count=" + count;
+    }
+
+    private String parentPath(String path) {
+        String normalized = openListClient.normalizePath(path);
+        int index = normalized.lastIndexOf('/');
+        return index <= 0 ? "/" : normalized.substring(0, index);
+    }
+
+    private String pathName(String path) {
+        String normalized = openListClient.normalizePath(path);
+        int index = normalized.lastIndexOf('/');
+        return index < 0 ? normalized : normalized.substring(index + 1);
+    }
+
+    private String episodeQualityKey(Integer episodeNumber, String quality) {
+        return episodeNumber + "|" + (quality == null ? "" : quality);
+    }
+
+    private void updateMovieTask(
+            String taskId,
+            String status,
+            String stage,
+            String openListTaskId,
+            OrganizeResult result,
+            String errorMessage
+    ) {
+        LambdaUpdateWrapper<MovieMagnetIngestTask> updateWrapper = new LambdaUpdateWrapper<MovieMagnetIngestTask>()
+                .eq(MovieMagnetIngestTask::getId, taskId)
+                .set(MovieMagnetIngestTask::getStatus, status)
+                .set(MovieMagnetIngestTask::getStage, stage);
+        if (openListTaskId != null) {
+            updateWrapper.set(MovieMagnetIngestTask::getOpenlistTaskId, openListTaskId);
+        }
+        if (result != null) {
+            updateWrapper
+                    .set(MovieMagnetIngestTask::getOrganizedCount, result.organizedCount())
+                    .set(MovieMagnetIngestTask::getSkippedCount, result.skippedCount());
+        }
+        if (errorMessage != null) {
+            updateWrapper.set(MovieMagnetIngestTask::getErrorMessage, truncate(errorMessage, 1000));
+        }
+        if (TERMINAL_STATUSES.contains(status)) {
+            updateWrapper.set(MovieMagnetIngestTask::getFinishedAt, LocalDateTime.now());
+        }
+        movieTaskMapper.update(updateWrapper);
+    }
+
+    private void updateSeriesTask(
+            String taskId,
+            String status,
+            String stage,
+            String openListTaskId,
+            OrganizeResult result,
+            String errorMessage
+    ) {
+        LambdaUpdateWrapper<SeriesMagnetIngestTask> updateWrapper = new LambdaUpdateWrapper<SeriesMagnetIngestTask>()
+                .eq(SeriesMagnetIngestTask::getId, taskId)
+                .set(SeriesMagnetIngestTask::getStatus, status)
+                .set(SeriesMagnetIngestTask::getStage, stage);
+        if (openListTaskId != null) {
+            updateWrapper.set(SeriesMagnetIngestTask::getOpenlistTaskId, openListTaskId);
+        }
+        if (result != null) {
+            updateWrapper
+                    .set(SeriesMagnetIngestTask::getOrganizedCount, result.organizedCount())
+                    .set(SeriesMagnetIngestTask::getSkippedCount, result.skippedCount());
+        }
+        if (errorMessage != null) {
+            updateWrapper.set(SeriesMagnetIngestTask::getErrorMessage, truncate(errorMessage, 1000));
+        }
+        if (TERMINAL_STATUSES.contains(status)) {
+            updateWrapper.set(SeriesMagnetIngestTask::getFinishedAt, LocalDateTime.now());
+        }
+        seriesTaskMapper.update(updateWrapper);
+    }
+
+    private void writeMovieLog(String taskId, String level, String stage, String message, String detail) {
+        MovieMagnetIngestTaskLog taskLog = new MovieMagnetIngestTaskLog();
+        taskLog.setTaskId(taskId);
+        taskLog.setLevel(level);
+        taskLog.setStage(stage);
+        taskLog.setMessage(message);
+        taskLog.setDetail(detail);
+        movieTaskLogMapper.insert(taskLog);
+    }
+
+    private void writeSeriesLog(String taskId, String level, String stage, String message, String detail) {
+        SeriesMagnetIngestTaskLog taskLog = new SeriesMagnetIngestTaskLog();
+        taskLog.setTaskId(taskId);
+        taskLog.setLevel(level);
+        taskLog.setStage(stage);
+        taskLog.setMessage(message);
+        taskLog.setDetail(detail);
+        seriesTaskLogMapper.insert(taskLog);
+    }
+
+    private void refreshMovieTaskUpdatedAt(String taskId) {
+        movieTaskMapper.update(new LambdaUpdateWrapper<MovieMagnetIngestTask>()
+                .eq(MovieMagnetIngestTask::getId, taskId)
+                .set(MovieMagnetIngestTask::getUpdatedAt, LocalDateTime.now()));
+    }
+
+    private void refreshSeriesTaskUpdatedAt(String taskId) {
+        seriesTaskMapper.update(new LambdaUpdateWrapper<SeriesMagnetIngestTask>()
+                .eq(SeriesMagnetIngestTask::getId, taskId)
+                .set(SeriesMagnetIngestTask::getUpdatedAt, LocalDateTime.now()));
+    }
+
+    private MovieMagnetIngestTask getExistingMovieTask(String taskId) {
+        MovieMagnetIngestTask task = movieTaskMapper.selectById(taskId);
+        if (task == null) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "任务不存在", HttpStatus.NOT_FOUND);
+        }
+        return task;
+    }
+
+    private SeriesMagnetIngestTask getExistingSeriesTask(String taskId) {
+        SeriesMagnetIngestTask task = seriesTaskMapper.selectById(taskId);
+        if (task == null) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "任务不存在", HttpStatus.NOT_FOUND);
+        }
+        return task;
+    }
+
+    private MovieMagnetIngestTask getAccessibleMovieTask(String taskId, User user) {
+        MovieMagnetIngestTask task = getExistingMovieTask(taskId);
+        if (!canAccessMovieTask(user, task)) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "任务不存在", HttpStatus.NOT_FOUND);
+        }
+        return task;
+    }
+
+    private SeriesMagnetIngestTask getAccessibleSeriesTask(String taskId, User user) {
+        SeriesMagnetIngestTask task = getExistingSeriesTask(taskId);
+        if (!canAccessSeriesTask(user, task)) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "任务不存在", HttpStatus.NOT_FOUND);
+        }
+        return task;
+    }
+
+    private boolean canAccessMovieTask(User user, MovieMagnetIngestTask task) {
+        return isAdmin(user) || (task.getCreatedByUserId() != null && task.getCreatedByUserId().equals(user.getId()));
+    }
+
+    private boolean canAccessSeriesTask(User user, SeriesMagnetIngestTask task) {
+        return isAdmin(user) || (task.getCreatedByUserId() != null && task.getCreatedByUserId().equals(user.getId()));
+    }
+
+    private boolean isAdmin(User user) {
+        return user != null && ADMIN_ROLE.equalsIgnoreCase(user.getRole());
+    }
+
+    private MovieMagnetIngestTaskResponse toMovieResponse(MovieMagnetIngestTask task) {
+        return new MovieMagnetIngestTaskResponse(
+                task.getId(),
+                task.getCreatedByUserId(),
+                task.getStatus(),
+                task.getStage(),
+                task.getTitle(),
+                task.getOriginalTitle(),
+                task.getYear(),
+                task.getMagnetHash(),
+                task.getSavePath(),
+                task.getTempPath(),
+                task.getOrganizedCount(),
+                task.getSkippedCount(),
+                task.getErrorMessage(),
+                task.getCreatedAt(),
+                task.getUpdatedAt(),
+                task.getFinishedAt()
+        );
+    }
+
+    private SeriesMagnetIngestTaskResponse toSeriesResponse(SeriesMagnetIngestTask task) {
+        return new SeriesMagnetIngestTaskResponse(
+                task.getId(),
+                task.getCreatedByUserId(),
+                task.getStatus(),
+                task.getStage(),
+                task.getTitle(),
+                task.getOriginalTitle(),
+                task.getSeasonNumber(),
+                task.getSeriesName(),
+                task.getSeasonFolder(),
+                task.getMagnetHash(),
+                task.getSavePath(),
+                task.getTempPath(),
+                task.getOrganizedCount(),
+                task.getSkippedCount(),
+                task.getErrorMessage(),
+                task.getCreatedAt(),
+                task.getUpdatedAt(),
+                task.getFinishedAt()
+        );
+    }
+
+    private MovieMagnetIngestTaskLogResponse toMovieLogResponse(MovieMagnetIngestTaskLog taskLog) {
+        return new MovieMagnetIngestTaskLogResponse(
+                taskLog.getId(),
+                taskLog.getTaskId(),
+                taskLog.getLevel(),
+                taskLog.getStage(),
+                taskLog.getMessage(),
+                taskLog.getDetail(),
+                taskLog.getCreatedAt()
+        );
+    }
+
+    private SeriesMagnetIngestTaskLogResponse toSeriesLogResponse(SeriesMagnetIngestTaskLog taskLog) {
+        return new SeriesMagnetIngestTaskLogResponse(
+                taskLog.getId(),
+                taskLog.getTaskId(),
+                taskLog.getLevel(),
+                taskLog.getStage(),
+                taskLog.getMessage(),
+                taskLog.getDetail(),
+                taskLog.getCreatedAt()
+        );
     }
 
     private BusinessException mapDirectoryPrepareException(
@@ -275,15 +1207,81 @@ public class MagnetIngestService {
         return new BusinessException(ErrorCode.INTERNAL_ERROR, message, HttpStatus.INTERNAL_SERVER_ERROR);
     }
 
-    private record MovieIngestPlan(String magnet, String rootPath, String savePath) {
+    private String trimToNull(String value) {
+        return StringUtils.hasText(value) ? value.trim() : null;
     }
 
-    private record SeriesIngestPlan(
+    private String safeMessage(Exception exception) {
+        String message = exception.getMessage();
+        return StringUtils.hasText(message) ? truncate(message, 1000) : "任务执行失败";
+    }
+
+    private String truncate(String value, int maxLength) {
+        if (value == null || value.length() <= maxLength) {
+            return value;
+        }
+        return value.substring(0, maxLength);
+    }
+
+    private void sleep(Duration duration) {
+        try {
+            Thread.sleep(duration.toMillis());
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new OpenListClientException("任务线程被中断", exception);
+        }
+    }
+
+    @FunctionalInterface
+    private interface TaskLogWriter {
+        void write(String level, String stage, String message, String detail);
+    }
+
+    private record MovieTaskPlan(
             String magnet,
+            String magnetHash,
+            String title,
+            String originalTitle,
+            Integer year,
             String rootPath,
-            String savePath,
-            String seriesName,
-            String seasonFolder
+            String savePath
     ) {
+    }
+
+    private record SeriesTaskPlan(
+            String magnet,
+            String magnetHash,
+            String title,
+            String originalTitle,
+            Integer seasonNumber,
+            String seriesName,
+            String seasonFolder,
+            String rootPath,
+            String savePath
+    ) {
+    }
+
+    private record OrganizationPlan(
+            Map<String, Map<String, String>> renameByDir,
+            Map<String, List<String>> moveByDir,
+            Map<String, List<String>> deleteByDir,
+            Set<String> plannedTargetNames
+    ) {
+        private OrganizationPlan() {
+            this(new HashMap<>(), new HashMap<>(), new HashMap<>(), new HashSet<>());
+        }
+    }
+
+    private record OrganizeResult(int organizedCount, int skippedCount, int videoCount) {
+    }
+
+    private static class WorkerThreadFactory implements ThreadFactory {
+        @Override
+        public Thread newThread(Runnable runnable) {
+            Thread thread = new Thread(runnable);
+            thread.setName("movie-series-magnet-ingest-worker");
+            thread.setDaemon(true);
+            return thread;
+        }
     }
 }

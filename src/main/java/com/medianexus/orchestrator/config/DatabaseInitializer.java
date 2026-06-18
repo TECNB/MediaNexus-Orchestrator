@@ -4,6 +4,10 @@ import com.medianexus.orchestrator.mapper.AnimeMagnetIngestTaskLogMapper;
 import com.medianexus.orchestrator.mapper.AnimeMagnetIngestTaskMapper;
 import com.medianexus.orchestrator.mapper.EmbyActivePlaybackSessionMapper;
 import com.medianexus.orchestrator.mapper.EmbyWatchSessionMapper;
+import com.medianexus.orchestrator.mapper.MovieMagnetIngestTaskLogMapper;
+import com.medianexus.orchestrator.mapper.MovieMagnetIngestTaskMapper;
+import com.medianexus.orchestrator.mapper.SeriesMagnetIngestTaskLogMapper;
+import com.medianexus.orchestrator.mapper.SeriesMagnetIngestTaskMapper;
 import com.medianexus.orchestrator.mapper.SystemSettingMapper;
 import com.medianexus.orchestrator.mapper.UserActionUsageMapper;
 import com.medianexus.orchestrator.mapper.UserAdminAuditLogMapper;
@@ -29,6 +33,10 @@ public class DatabaseInitializer implements ApplicationRunner {
     private final UserAdminAuditLogMapper userAdminAuditLogMapper;
     private final AnimeMagnetIngestTaskMapper animeMagnetIngestTaskMapper;
     private final AnimeMagnetIngestTaskLogMapper animeMagnetIngestTaskLogMapper;
+    private final MovieMagnetIngestTaskMapper movieMagnetIngestTaskMapper;
+    private final MovieMagnetIngestTaskLogMapper movieMagnetIngestTaskLogMapper;
+    private final SeriesMagnetIngestTaskMapper seriesMagnetIngestTaskMapper;
+    private final SeriesMagnetIngestTaskLogMapper seriesMagnetIngestTaskLogMapper;
     private final EmbyActivePlaybackSessionMapper embyActivePlaybackSessionMapper;
     private final EmbyWatchSessionMapper embyWatchSessionMapper;
 
@@ -40,6 +48,10 @@ public class DatabaseInitializer implements ApplicationRunner {
             UserAdminAuditLogMapper userAdminAuditLogMapper,
             AnimeMagnetIngestTaskMapper animeMagnetIngestTaskMapper,
             AnimeMagnetIngestTaskLogMapper animeMagnetIngestTaskLogMapper,
+            MovieMagnetIngestTaskMapper movieMagnetIngestTaskMapper,
+            MovieMagnetIngestTaskLogMapper movieMagnetIngestTaskLogMapper,
+            SeriesMagnetIngestTaskMapper seriesMagnetIngestTaskMapper,
+            SeriesMagnetIngestTaskLogMapper seriesMagnetIngestTaskLogMapper,
             EmbyActivePlaybackSessionMapper embyActivePlaybackSessionMapper,
             EmbyWatchSessionMapper embyWatchSessionMapper
     ) {
@@ -50,6 +62,10 @@ public class DatabaseInitializer implements ApplicationRunner {
         this.userAdminAuditLogMapper = userAdminAuditLogMapper;
         this.animeMagnetIngestTaskMapper = animeMagnetIngestTaskMapper;
         this.animeMagnetIngestTaskLogMapper = animeMagnetIngestTaskLogMapper;
+        this.movieMagnetIngestTaskMapper = movieMagnetIngestTaskMapper;
+        this.movieMagnetIngestTaskLogMapper = movieMagnetIngestTaskLogMapper;
+        this.seriesMagnetIngestTaskMapper = seriesMagnetIngestTaskMapper;
+        this.seriesMagnetIngestTaskLogMapper = seriesMagnetIngestTaskLogMapper;
         this.embyActivePlaybackSessionMapper = embyActivePlaybackSessionMapper;
         this.embyWatchSessionMapper = embyWatchSessionMapper;
     }
@@ -86,6 +102,10 @@ public class DatabaseInitializer implements ApplicationRunner {
         animeMagnetIngestTaskMapper.createTableIfNotExists();
         ensureAnimeMagnetTaskOwnerColumn();
         animeMagnetIngestTaskLogMapper.createTableIfNotExists();
+        movieMagnetIngestTaskMapper.createTableIfNotExists();
+        movieMagnetIngestTaskLogMapper.createTableIfNotExists();
+        seriesMagnetIngestTaskMapper.createTableIfNotExists();
+        seriesMagnetIngestTaskLogMapper.createTableIfNotExists();
         embyActivePlaybackSessionMapper.createTableIfNotExists();
         ensureEmbyActivePlaybackSessionColumns();
         embyWatchSessionMapper.createTableIfNotExists();

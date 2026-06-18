@@ -6,7 +6,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import io.swagger.v3.oas.annotations.media.Schema;
 
 @JsonIgnoreProperties(ignoreUnknown = false)
-@Schema(description = "剧集 magnet 离线提交请求")
+@Schema(description = "剧集 magnet 导入任务创建请求")
 public record SeriesMagnetIngestRequest(
         @Schema(description = "单条 magnet 链接，必须以 magnet:? 开头")
         String magnet,
