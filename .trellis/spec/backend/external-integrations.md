@@ -36,6 +36,18 @@
 - OpenList offline task wait defaults should be short enough to fail visibly
   for broken magnet jobs. The current default is `10m`; callers may override it
   through `MEDIANEXUS_OPENLIST_OFFLINE_TIMEOUT`.
+- Reuse the established media organization lifecycle after files land under the
+  final save path: build the complete plan first, rename files in their current
+  parent directories, move files from nested directories into the final target
+  directory, delete rejected files, and finally remove empty directories.
+  Movie, series, and anime ingestion already follow this ordering.
+- Do not create application-owned hidden, staging, transaction, or temporary
+  directories in OpenList for direct-upload workflows. Upload files directly
+  under the resolved target media directory, perform all collision checks
+  before writing, then use the existing OpenList rename/move/remove operations
+  only when the actual source layout requires them. Local process temporary
+  directories used for bounded archive inspection and extraction are allowed;
+  they must not be mirrored into OpenList.
 
 ## Conditional Integrations
 
