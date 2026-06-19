@@ -52,6 +52,10 @@ medianexus:
     poll-interval: ${MEDIANEXUS_OPENLIST_POLL_INTERVAL:10s}
     offline-timeout: ${MEDIANEXUS_OPENLIST_OFFLINE_TIMEOUT:10m}
     retry-limit: ${MEDIANEXUS_OPENLIST_RETRY_LIMIT:5}
+  prowlarr:
+    base-url: ${MEDIANEXUS_PROWLARR_BASE_URL:}
+    api-key: ${MEDIANEXUS_PROWLARR_API_KEY:}
+    timeout: ${MEDIANEXUS_PROWLARR_TIMEOUT:30s}
   radarr:
     scheme: ${MEDIANEXUS_RADARR_SCHEME:http}
     host: ${MEDIANEXUS_RADARR_HOST:}

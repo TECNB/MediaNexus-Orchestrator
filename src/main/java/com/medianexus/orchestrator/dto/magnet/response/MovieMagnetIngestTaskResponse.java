@@ -3,6 +3,7 @@ package com.medianexus.orchestrator.dto.magnet.response;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.swagger.v3.oas.annotations.media.Schema;
 import java.time.LocalDateTime;
+import java.util.List;
 
 @Schema(description = "电影 magnet 导入任务详情")
 public record MovieMagnetIngestTaskResponse(
@@ -22,6 +23,22 @@ public record MovieMagnetIngestTaskResponse(
         String originalTitle,
         @Schema(description = "电影年份")
         Integer year,
+        @JsonProperty("source_type")
+        String sourceType,
+        @JsonProperty("release_title")
+        String releaseTitle,
+        @JsonProperty("release_indexer")
+        String releaseIndexer,
+        @JsonProperty("release_size")
+        Long releaseSize,
+        @JsonProperty("resolution_tags")
+        List<String> resolutionTags,
+        @Schema(description = "资源页选择的分辨率标签；手动 magnet 任务可能为 null", nullable = true)
+        @JsonProperty("quality_tag")
+        String qualityTag,
+        @Schema(description = "从发布标题解析出的动态范围标签；没有解析到时为空数组")
+        @JsonProperty("dynamic_range_tags")
+        List<String> dynamicRangeTags,
         @Schema(description = "magnet btih hash，统一小写")
         @JsonProperty("magnet_hash")
         String magnetHash,

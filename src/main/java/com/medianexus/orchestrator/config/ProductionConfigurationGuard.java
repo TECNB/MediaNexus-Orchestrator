@@ -20,6 +20,7 @@ public class ProductionConfigurationGuard implements InitializingBean {
     private final AuthProperties authProperties;
     private final AniRssProperties aniRssProperties;
     private final OpenListProperties openListProperties;
+    private final ProwlarrProperties prowlarrProperties;
     private final RadarrProperties radarrProperties;
     private final SonarrProperties sonarrProperties;
     private final String datasourceUrl;
@@ -32,6 +33,7 @@ public class ProductionConfigurationGuard implements InitializingBean {
             AuthProperties authProperties,
             AniRssProperties aniRssProperties,
             OpenListProperties openListProperties,
+            ProwlarrProperties prowlarrProperties,
             RadarrProperties radarrProperties,
             SonarrProperties sonarrProperties,
             @Value("${spring.datasource.url:}") String datasourceUrl,
@@ -43,6 +45,7 @@ public class ProductionConfigurationGuard implements InitializingBean {
         this.authProperties = authProperties;
         this.aniRssProperties = aniRssProperties;
         this.openListProperties = openListProperties;
+        this.prowlarrProperties = prowlarrProperties;
         this.radarrProperties = radarrProperties;
         this.sonarrProperties = sonarrProperties;
         this.datasourceUrl = datasourceUrl;
@@ -154,6 +157,7 @@ public class ProductionConfigurationGuard implements InitializingBean {
         rejectPlaceholder("medianexus.auth.registration-code", authProperties.getRegistrationCode(), violations);
         rejectPlaceholder("medianexus.ani-rss.api-key", aniRssProperties.getApiKey(), violations);
         rejectPlaceholder("medianexus.openlist.authorization", openListProperties.getAuthorization(), violations);
+        rejectPlaceholder("medianexus.prowlarr.api-key", prowlarrProperties.getApiKey(), violations);
         rejectPlaceholder("medianexus.radarr.api-key", radarrProperties.getApiKey(), violations);
         rejectPlaceholder("medianexus.sonarr.api-key", sonarrProperties.getApiKey(), violations);
     }

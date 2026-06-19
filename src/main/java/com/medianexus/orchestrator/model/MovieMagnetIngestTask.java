@@ -25,6 +25,24 @@ public class MovieMagnetIngestTask {
 
     private Integer year;
 
+    private String sourceType;
+
+    private String releaseTitle;
+
+    private String releaseIndexer;
+
+    private Long releaseSize;
+
+    private Integer releaseIndexerId;
+
+    private String releaseGuid;
+
+    private String resolutionTags;
+
+    private String qualityTag;
+
+    private String dynamicRangeTags;
+
     private String savePath;
 
     private String tempPath;
@@ -107,6 +125,78 @@ public class MovieMagnetIngestTask {
 
     public void setYear(Integer year) {
         this.year = year;
+    }
+
+    public String getSourceType() {
+        return sourceType;
+    }
+
+    public void setSourceType(String sourceType) {
+        this.sourceType = sourceType;
+    }
+
+    public String getReleaseTitle() {
+        return releaseTitle;
+    }
+
+    public void setReleaseTitle(String releaseTitle) {
+        this.releaseTitle = releaseTitle;
+    }
+
+    public String getReleaseIndexer() {
+        return releaseIndexer;
+    }
+
+    public void setReleaseIndexer(String releaseIndexer) {
+        this.releaseIndexer = releaseIndexer;
+    }
+
+    public Long getReleaseSize() {
+        return releaseSize;
+    }
+
+    public void setReleaseSize(Long releaseSize) {
+        this.releaseSize = releaseSize;
+    }
+
+    public Integer getReleaseIndexerId() {
+        return releaseIndexerId;
+    }
+
+    public void setReleaseIndexerId(Integer releaseIndexerId) {
+        this.releaseIndexerId = releaseIndexerId;
+    }
+
+    public String getReleaseGuid() {
+        return releaseGuid;
+    }
+
+    public void setReleaseGuid(String releaseGuid) {
+        this.releaseGuid = releaseGuid;
+    }
+
+    public String getResolutionTags() {
+        return resolutionTags;
+    }
+
+    public void setResolutionTags(String resolutionTags) {
+        this.resolutionTags = resolutionTags;
+    }
+
+    public String getQualityTag() {
+        return qualityTag;
+    }
+
+    public void setQualityTag(String qualityTag) {
+        this.qualityTag = qualityTag;
+    }
+
+    public String getDynamicRangeTags() {
+        return dynamicRangeTags;
+    }
+
+    public void setDynamicRangeTags(String dynamicRangeTags) {
+        this.dynamicRangeTags = dynamicRangeTags;
     }
 
     public String getSavePath() {

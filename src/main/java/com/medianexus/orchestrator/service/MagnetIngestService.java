@@ -35,6 +35,7 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.Year;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -127,8 +128,16 @@ public class MagnetIngestService {
     }
 
     public MovieMagnetIngestTaskResponse createMovieTask(MovieMagnetIngestRequest request) {
+        return createMovieTask(request, ReleaseIngestMetadata.manual());
+    }
+
+    public MovieMagnetIngestTaskResponse createMovieTask(
+            MovieMagnetIngestRequest request,
+            ReleaseIngestMetadata metadata
+    ) {
         User user = authService.requireCurrentUser();
         MovieTaskPlan plan = buildMoviePlan(request);
+        ReleaseIngestMetadata releaseMetadata = metadata == null ? ReleaseIngestMetadata.manual() : metadata;
 
         MovieMagnetIngestTask activeTask = movieTaskMapper.selectOne(new LambdaQueryWrapper<MovieMagnetIngestTask>()
                 .eq(MovieMagnetIngestTask::getMagnetHash, plan.magnetHash())
@@ -155,6 +164,7 @@ public class MagnetIngestService {
         task.setTitle(plan.title());
         task.setOriginalTitle(plan.originalTitle());
         task.setYear(plan.year());
+        applyReleaseMetadata(task, releaseMetadata);
         task.setSavePath(plan.savePath());
         task.setTempPath(plan.savePath());
         task.setCreatedByUserId(user.getId());
@@ -177,8 +187,16 @@ public class MagnetIngestService {
     }
 
     public SeriesMagnetIngestTaskResponse createSeriesTask(SeriesMagnetIngestRequest request) {
+        return createSeriesTask(request, ReleaseIngestMetadata.manual());
+    }
+
+    public SeriesMagnetIngestTaskResponse createSeriesTask(
+            SeriesMagnetIngestRequest request,
+            ReleaseIngestMetadata metadata
+    ) {
         User user = authService.requireCurrentUser();
         SeriesTaskPlan plan = buildSeriesPlan(request);
+        ReleaseIngestMetadata releaseMetadata = metadata == null ? ReleaseIngestMetadata.manual() : metadata;
 
         SeriesMagnetIngestTask activeTask = seriesTaskMapper.selectOne(new LambdaQueryWrapper<SeriesMagnetIngestTask>()
                 .eq(SeriesMagnetIngestTask::getMagnetHash, plan.magnetHash())
@@ -205,6 +223,7 @@ public class MagnetIngestService {
         task.setTitle(plan.title());
         task.setOriginalTitle(plan.originalTitle());
         task.setSeasonNumber(plan.seasonNumber());
+        applyReleaseMetadata(task, releaseMetadata);
         task.setSeriesName(plan.seriesName());
         task.setSeasonFolder(plan.seasonFolder());
         task.setSavePath(plan.savePath());
@@ -1111,6 +1130,7 @@ public class MagnetIngestService {
     }
 
     private MovieMagnetIngestTaskResponse toMovieResponse(MovieMagnetIngestTask task) {
+        List<String> resolutionTags = deserializeTags(task.getResolutionTags());
         return new MovieMagnetIngestTaskResponse(
                 task.getId(),
                 task.getCreatedByUserId(),
@@ -1119,6 +1139,15 @@ public class MagnetIngestService {
                 task.getTitle(),
                 task.getOriginalTitle(),
                 task.getYear(),
+                task.getSourceType() == null ? "MANUAL_MAGNET" : task.getSourceType(),
+                task.getReleaseTitle(),
+                task.getReleaseIndexer(),
+                task.getReleaseSize(),
+                resolutionTags,
+                task.getQualityTag() != null
+                        ? task.getQualityTag()
+                        : resolutionTags.stream().findFirst().orElse(null),
+                deserializeTags(task.getDynamicRangeTags()),
                 task.getMagnetHash(),
                 task.getSavePath(),
                 task.getTempPath(),
@@ -1132,6 +1161,7 @@ public class MagnetIngestService {
     }
 
     private SeriesMagnetIngestTaskResponse toSeriesResponse(SeriesMagnetIngestTask task) {
+        List<String> resolutionTags = deserializeTags(task.getResolutionTags());
         return new SeriesMagnetIngestTaskResponse(
                 task.getId(),
                 task.getCreatedByUserId(),
@@ -1140,6 +1170,15 @@ public class MagnetIngestService {
                 task.getTitle(),
                 task.getOriginalTitle(),
                 task.getSeasonNumber(),
+                task.getSourceType() == null ? "MANUAL_MAGNET" : task.getSourceType(),
+                task.getReleaseTitle(),
+                task.getReleaseIndexer(),
+                task.getReleaseSize(),
+                resolutionTags,
+                task.getQualityTag() != null
+                        ? task.getQualityTag()
+                        : resolutionTags.stream().findFirst().orElse(null),
+                deserializeTags(task.getDynamicRangeTags()),
                 task.getSeriesName(),
                 task.getSeasonFolder(),
                 task.getMagnetHash(),
@@ -1209,6 +1248,54 @@ public class MagnetIngestService {
 
     private String trimToNull(String value) {
         return StringUtils.hasText(value) ? value.trim() : null;
+    }
+
+    private void applyReleaseMetadata(MovieMagnetIngestTask task, ReleaseIngestMetadata metadata) {
+        List<String> resolutionTags = metadata.resolutionTags() == null ? List.of() : metadata.resolutionTags();
+        task.setSourceType(trimToNull(metadata.sourceType()));
+        task.setReleaseTitle(trimToNull(metadata.releaseTitle()));
+        task.setReleaseIndexer(trimToNull(metadata.releaseIndexer()));
+        task.setReleaseSize(metadata.releaseSize());
+        task.setReleaseIndexerId(metadata.releaseIndexerId());
+        task.setReleaseGuid(trimToNull(metadata.releaseGuid()));
+        task.setResolutionTags(serializeTags(resolutionTags));
+        task.setQualityTag(resolutionTags.stream().findFirst().map(this::trimToNull).orElse(null));
+        task.setDynamicRangeTags(serializeTags(metadata.dynamicRangeTags()));
+    }
+
+    private void applyReleaseMetadata(SeriesMagnetIngestTask task, ReleaseIngestMetadata metadata) {
+        List<String> resolutionTags = metadata.resolutionTags() == null ? List.of() : metadata.resolutionTags();
+        task.setSourceType(trimToNull(metadata.sourceType()));
+        task.setReleaseTitle(trimToNull(metadata.releaseTitle()));
+        task.setReleaseIndexer(trimToNull(metadata.releaseIndexer()));
+        task.setReleaseSize(metadata.releaseSize());
+        task.setReleaseIndexerId(metadata.releaseIndexerId());
+        task.setReleaseGuid(trimToNull(metadata.releaseGuid()));
+        task.setResolutionTags(serializeTags(resolutionTags));
+        task.setQualityTag(resolutionTags.stream().findFirst().map(this::trimToNull).orElse(null));
+        task.setDynamicRangeTags(serializeTags(metadata.dynamicRangeTags()));
+    }
+
+    private String serializeTags(List<String> tags) {
+        if (tags == null || tags.isEmpty()) {
+            return null;
+        }
+        List<String> cleanedTags = tags.stream()
+                .map(this::trimToNull)
+                .filter(tag -> StringUtils.hasText(tag))
+                .distinct()
+                .toList();
+        return cleanedTags.isEmpty() ? null : String.join(",", cleanedTags);
+    }
+
+    private List<String> deserializeTags(String value) {
+        if (!StringUtils.hasText(value)) {
+            return List.of();
+        }
+        return Arrays.stream(value.split(","))
+                .map(this::trimToNull)
+                .filter(tag -> StringUtils.hasText(tag))
+                .toList();
     }
 
     private String safeMessage(Exception exception) {

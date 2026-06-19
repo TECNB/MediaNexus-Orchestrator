@@ -103,8 +103,10 @@ public class DatabaseInitializer implements ApplicationRunner {
         ensureAnimeMagnetTaskOwnerColumn();
         animeMagnetIngestTaskLogMapper.createTableIfNotExists();
         movieMagnetIngestTaskMapper.createTableIfNotExists();
+        ensureMovieMagnetTaskTagColumns();
         movieMagnetIngestTaskLogMapper.createTableIfNotExists();
         seriesMagnetIngestTaskMapper.createTableIfNotExists();
+        ensureSeriesMagnetTaskTagColumns();
         seriesMagnetIngestTaskLogMapper.createTableIfNotExists();
         embyActivePlaybackSessionMapper.createTableIfNotExists();
         ensureEmbyActivePlaybackSessionColumns();
@@ -127,6 +129,36 @@ public class DatabaseInitializer implements ApplicationRunner {
         Integer indexCount = animeMagnetIngestTaskMapper.countOwnerCreatedAtIndex();
         if (indexCount == null || indexCount == 0) {
             animeMagnetIngestTaskMapper.addOwnerCreatedAtIndex();
+        }
+    }
+
+    private void ensureMovieMagnetTaskTagColumns() {
+        Integer sourceTypeColumnCount = movieMagnetIngestTaskMapper.countSourceTypeColumn();
+        if (sourceTypeColumnCount == null || sourceTypeColumnCount == 0) {
+            movieMagnetIngestTaskMapper.addReleaseMetadataColumns();
+        }
+        Integer qualityTagColumnCount = movieMagnetIngestTaskMapper.countQualityTagColumn();
+        if (qualityTagColumnCount == null || qualityTagColumnCount == 0) {
+            movieMagnetIngestTaskMapper.addQualityTagColumn();
+        }
+        Integer dynamicRangeTagsColumnCount = movieMagnetIngestTaskMapper.countDynamicRangeTagsColumn();
+        if (dynamicRangeTagsColumnCount == null || dynamicRangeTagsColumnCount == 0) {
+            movieMagnetIngestTaskMapper.addDynamicRangeTagsColumn();
+        }
+    }
+
+    private void ensureSeriesMagnetTaskTagColumns() {
+        Integer sourceTypeColumnCount = seriesMagnetIngestTaskMapper.countSourceTypeColumn();
+        if (sourceTypeColumnCount == null || sourceTypeColumnCount == 0) {
+            seriesMagnetIngestTaskMapper.addReleaseMetadataColumns();
+        }
+        Integer qualityTagColumnCount = seriesMagnetIngestTaskMapper.countQualityTagColumn();
+        if (qualityTagColumnCount == null || qualityTagColumnCount == 0) {
+            seriesMagnetIngestTaskMapper.addQualityTagColumn();
+        }
+        Integer dynamicRangeTagsColumnCount = seriesMagnetIngestTaskMapper.countDynamicRangeTagsColumn();
+        if (dynamicRangeTagsColumnCount == null || dynamicRangeTagsColumnCount == 0) {
+            seriesMagnetIngestTaskMapper.addDynamicRangeTagsColumn();
         }
     }
 
