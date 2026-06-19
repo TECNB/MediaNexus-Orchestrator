@@ -1,0 +1,8 @@
+{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend entry point for required Orchestrator conventions"}
+{"file": ".trellis/spec/backend/external-integrations.md", "reason": "Prowlarr and OpenList are external integrations"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Use existing BusinessException and API error conventions"}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "Task tag fields require database/model changes"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Keep implementation scoped and avoid defensive overbuild"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Feature spans backend contracts and frontend handoff"}
+{"file": ".trellis/tasks/06-19-prowlarr-resource-openlist-ingest/research/prowlarr-torrra-notes.md", "reason": "torrra-custom Prowlarr behavior and magnet resolution notes"}

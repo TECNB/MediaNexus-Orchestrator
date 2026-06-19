@@ -1,0 +1,6 @@
+{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend check entry point"}
+{"file": ".trellis/spec/backend/external-integrations.md", "reason": "Check Prowlarr/OpenList boundary handling"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Check user-facing error behavior"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Check scope and simplicity constraints"}
+{"file": ".trellis/tasks/06-19-prowlarr-resource-openlist-ingest/research/prowlarr-torrra-notes.md", "reason": "Check implementation against torrra-derived behavior"}
