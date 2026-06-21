@@ -8,6 +8,7 @@ import com.medianexus.orchestrator.config.OpenListProperties;
 import com.medianexus.orchestrator.config.ProwlarrProperties;
 import com.medianexus.orchestrator.config.RadarrProperties;
 import com.medianexus.orchestrator.config.SonarrProperties;
+import com.medianexus.orchestrator.config.SubtitleUploadProperties;
 import com.medianexus.orchestrator.config.UserQuotaProperties;
 import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.boot.SpringApplication;
@@ -24,6 +25,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
         ProwlarrProperties.class,
         RadarrProperties.class,
         SonarrProperties.class,
+        SubtitleUploadProperties.class,
         UserQuotaProperties.class
 })
 @SpringBootApplication

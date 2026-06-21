@@ -12,6 +12,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
+import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -35,6 +36,7 @@ public class OpenListClient {
 
     private static final Logger log = LoggerFactory.getLogger(OpenListClient.class);
     private static final int MAX_LOG_BODY_LENGTH = 500;
+    private static final int MAX_UPLOAD_DNS_ATTEMPTS = 3;
     private static final List<String> NOT_FOUND_KEYWORDS = List.of(
             "not found",
             "does not exist",
@@ -281,6 +283,50 @@ public class OpenListClient {
     }
 
     /**
+     * 通过 OpenList 文件上传 API 将本地文件写入指定远端路径。
+     */
+    public void uploadFile(Path localFile, String remotePath, boolean overwrite) {
+        validateConfiguration();
+        String normalizedRemotePath = normalizePath(remotePath);
+        for (int attempt = 1; attempt <= MAX_UPLOAD_DNS_ATTEMPTS; attempt++) {
+            try {
+                HttpRequest request = requestBuilder("fs/put")
+                        .header("Content-Type", "application/octet-stream")
+                        .header("File-Path", encodeHeaderValue(normalizedRemotePath))
+                        .header("Overwrite", Boolean.toString(overwrite))
+                        .PUT(HttpRequest.BodyPublishers.ofFile(localFile))
+                        .build();
+                JsonNode root = send(request, "fs/put");
+                if (isSuccess(root)) {
+                    return;
+                }
+                String upstreamMessage = message(root);
+                if (isRetryableUploadDnsFailure(upstreamMessage) && attempt < MAX_UPLOAD_DNS_ATTEMPTS) {
+                    log.warn(
+                            "OpenList upload DNS failure; retrying path={} attempt={}/{} message={}",
+                            normalizedRemotePath,
+                            attempt,
+                            MAX_UPLOAD_DNS_ATTEMPTS,
+                            upstreamMessage
+                    );
+                    sleepUploadRetry(Duration.ofSeconds(attempt));
+                    continue;
+                }
+                log.warn(
+                        "OpenList returned non-success payload action=fs/put path={} code={} message={}",
+                        normalizedRemotePath,
+                        root == null ? null : root.path("code").asInt(-1),
+                        upstreamMessage
+                );
+                throw new OpenListClientException("OpenList upload failed: " + upstreamMessage);
+            } catch (IOException exception) {
+                throw new OpenListClientException("OpenList upload body prepare failed: " + localFile, exception);
+            }
+        }
+        throw new OpenListClientException("OpenList upload failed after DNS retries");
+    }
+
+    /**
      * 拼接 OpenList 路径片段，并保持结果为规范化绝对路径。
      */
     public String joinPath(String base, String segment) {
@@ -458,6 +504,21 @@ public class OpenListClient {
         }
     }
 
+    private boolean isRetryableUploadDnsFailure(String upstreamMessage) {
+        String normalizedMessage = upstreamMessage == null ? "" : upstreamMessage.toLowerCase();
+        return normalizedMessage.contains("no such host")
+                || normalizedMessage.contains("temporary failure in name resolution");
+    }
+
+    private void sleepUploadRetry(Duration duration) {
+        try {
+            Thread.sleep(duration.toMillis());
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new OpenListClientException("OpenList upload retry interrupted", exception);
+        }
+    }
+
     private String truncateForLog(String value) {
         if (value == null) {
             return value;
@@ -498,6 +559,10 @@ public class OpenListClient {
 
     private String encode(String value) {
         return URLEncoder.encode(value, StandardCharsets.UTF_8);
+    }
+
+    private String encodeHeaderValue(String value) {
+        return URLEncoder.encode(value, StandardCharsets.UTF_8).replace("+", "%20");
     }
 
     private String cleanConfigValue(String value) {

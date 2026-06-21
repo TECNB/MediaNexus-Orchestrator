@@ -8,6 +8,8 @@ import com.medianexus.orchestrator.mapper.MovieMagnetIngestTaskLogMapper;
 import com.medianexus.orchestrator.mapper.MovieMagnetIngestTaskMapper;
 import com.medianexus.orchestrator.mapper.SeriesMagnetIngestTaskLogMapper;
 import com.medianexus.orchestrator.mapper.SeriesMagnetIngestTaskMapper;
+import com.medianexus.orchestrator.mapper.SubtitleUploadLogMapper;
+import com.medianexus.orchestrator.mapper.SubtitleUploadMapper;
 import com.medianexus.orchestrator.mapper.SystemSettingMapper;
 import com.medianexus.orchestrator.mapper.UserActionUsageMapper;
 import com.medianexus.orchestrator.mapper.UserAdminAuditLogMapper;
@@ -37,6 +39,8 @@ public class DatabaseInitializer implements ApplicationRunner {
     private final MovieMagnetIngestTaskLogMapper movieMagnetIngestTaskLogMapper;
     private final SeriesMagnetIngestTaskMapper seriesMagnetIngestTaskMapper;
     private final SeriesMagnetIngestTaskLogMapper seriesMagnetIngestTaskLogMapper;
+    private final SubtitleUploadMapper subtitleUploadMapper;
+    private final SubtitleUploadLogMapper subtitleUploadLogMapper;
     private final EmbyActivePlaybackSessionMapper embyActivePlaybackSessionMapper;
     private final EmbyWatchSessionMapper embyWatchSessionMapper;
 
@@ -52,6 +56,8 @@ public class DatabaseInitializer implements ApplicationRunner {
             MovieMagnetIngestTaskLogMapper movieMagnetIngestTaskLogMapper,
             SeriesMagnetIngestTaskMapper seriesMagnetIngestTaskMapper,
             SeriesMagnetIngestTaskLogMapper seriesMagnetIngestTaskLogMapper,
+            SubtitleUploadMapper subtitleUploadMapper,
+            SubtitleUploadLogMapper subtitleUploadLogMapper,
             EmbyActivePlaybackSessionMapper embyActivePlaybackSessionMapper,
             EmbyWatchSessionMapper embyWatchSessionMapper
     ) {
@@ -66,6 +72,8 @@ public class DatabaseInitializer implements ApplicationRunner {
         this.movieMagnetIngestTaskLogMapper = movieMagnetIngestTaskLogMapper;
         this.seriesMagnetIngestTaskMapper = seriesMagnetIngestTaskMapper;
         this.seriesMagnetIngestTaskLogMapper = seriesMagnetIngestTaskLogMapper;
+        this.subtitleUploadMapper = subtitleUploadMapper;
+        this.subtitleUploadLogMapper = subtitleUploadLogMapper;
         this.embyActivePlaybackSessionMapper = embyActivePlaybackSessionMapper;
         this.embyWatchSessionMapper = embyWatchSessionMapper;
     }
@@ -108,6 +116,9 @@ public class DatabaseInitializer implements ApplicationRunner {
         seriesMagnetIngestTaskMapper.createTableIfNotExists();
         ensureSeriesMagnetTaskTagColumns();
         seriesMagnetIngestTaskLogMapper.createTableIfNotExists();
+        subtitleUploadMapper.createTableIfNotExists();
+        ensureSubtitleUploadColumns();
+        subtitleUploadLogMapper.createTableIfNotExists();
         embyActivePlaybackSessionMapper.createTableIfNotExists();
         ensureEmbyActivePlaybackSessionColumns();
         embyWatchSessionMapper.createTableIfNotExists();
@@ -159,6 +170,17 @@ public class DatabaseInitializer implements ApplicationRunner {
         Integer dynamicRangeTagsColumnCount = seriesMagnetIngestTaskMapper.countDynamicRangeTagsColumn();
         if (dynamicRangeTagsColumnCount == null || dynamicRangeTagsColumnCount == 0) {
             seriesMagnetIngestTaskMapper.addDynamicRangeTagsColumn();
+        }
+    }
+
+    private void ensureSubtitleUploadColumns() {
+        Integer seasonNumberColumnCount = subtitleUploadMapper.countSeasonNumberColumn();
+        if (seasonNumberColumnCount == null || seasonNumberColumnCount == 0) {
+            subtitleUploadMapper.addSeasonNumberColumn();
+        }
+        Integer requiredYearColumnCount = subtitleUploadMapper.countRequiredYearColumn();
+        if (requiredYearColumnCount != null && requiredYearColumnCount > 0) {
+            subtitleUploadMapper.makeYearNullable();
         }
     }
 

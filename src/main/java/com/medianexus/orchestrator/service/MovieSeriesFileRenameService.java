@@ -194,7 +194,7 @@ public class MovieSeriesFileRenameService {
         };
     }
 
-    private Optional<Integer> episodeNumber(String sourceName, Integer selectedSeasonNumber) {
+    public Optional<Integer> episodeNumber(String sourceName, Integer selectedSeasonNumber) {
         Optional<EpisodeMatch> sxxExx = matchSeasonEpisode(SXX_EXX_PATTERN, sourceName);
         if (sxxExx.isPresent()) {
             EpisodeMatch match = sxxExx.get();
