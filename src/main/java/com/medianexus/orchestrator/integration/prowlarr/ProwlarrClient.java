@@ -83,6 +83,9 @@ public class ProwlarrClient {
         if (indexerId == null || indexerId < 1 || !StringUtils.hasText(downloadRef)) {
             throw new ProwlarrClientException(Reason.MAGNET_RESOLUTION, "Prowlarr release reference is invalid");
         }
+        if (isMagnet(downloadRef)) {
+            return resolveMagnet(downloadRef, releaseTitle);
+        }
         return resolveMagnet(buildDownloadUri(indexerId, downloadRef, releaseTitle).toString(), releaseTitle);
     }
 
@@ -168,10 +171,7 @@ public class ProwlarrClient {
         }
         String title = textOrNull(item.get("title"));
         Integer indexerId = integerOrNull(item.get("indexerId"));
-        String downloadRef = queryParameter(textOrNull(item.get("magnetUrl")), "link");
-        if (!StringUtils.hasText(downloadRef)) {
-            downloadRef = queryParameter(textOrNull(item.get("downloadUrl")), "link");
-        }
+        String downloadRef = downloadRef(item);
         if (!StringUtils.hasText(title) || indexerId == null || indexerId < 1 || !StringUtils.hasText(downloadRef)) {
             return null;
         }
@@ -187,6 +187,30 @@ public class ProwlarrClient {
                 textOrNull(item.get("guid")),
                 downloadRef
         );
+    }
+
+    private String downloadRef(JsonNode item) {
+        String downloadRef = queryParameter(textOrNull(item.get("magnetUrl")), "link");
+        if (!StringUtils.hasText(downloadRef)) {
+            downloadRef = queryParameter(textOrNull(item.get("downloadUrl")), "link");
+        }
+        if (StringUtils.hasText(downloadRef)) {
+            return downloadRef;
+        }
+
+        String magnetUrl = textOrNull(item.get("magnetUrl"));
+        if (isMagnet(magnetUrl)) {
+            return magnetUrl.trim();
+        }
+        String downloadUrl = textOrNull(item.get("downloadUrl"));
+        if (isMagnet(downloadUrl)) {
+            return downloadUrl.trim();
+        }
+        String guid = textOrNull(item.get("guid"));
+        if (isMagnet(guid)) {
+            return guid.trim();
+        }
+        return null;
     }
 
     private String queryParameter(String value, String parameterName) {

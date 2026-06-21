@@ -67,6 +67,7 @@ public class ProwlarrReleaseIngestService {
         }
 
         List<ProwlarrReleaseItemResponse> items = search(query).stream()
+                .filter(release -> !isMagnetReference(release.downloadRef()))
                 .map(release -> {
                     ReleaseTitleTags tags = tagParser.parse(release.title());
                     return new ProwlarrReleaseItemResponse(
@@ -209,6 +210,10 @@ public class ProwlarrReleaseIngestService {
             log.warn("Prowlarr release reference has invalid URI title={}", logValue(releaseTitle), exception);
             throw badRequest("发布资源无法解析为 magnet 链接");
         }
+    }
+
+    private boolean isMagnetReference(String downloadRef) {
+        return downloadRef != null && downloadRef.trim().toLowerCase(Locale.ROOT).startsWith("magnet:");
     }
 
     private ReleaseIngestMetadata metadata(ProwlarrRelease release, ReleaseTitleTags tags) {
