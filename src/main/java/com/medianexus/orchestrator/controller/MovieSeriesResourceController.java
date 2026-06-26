@@ -5,9 +5,14 @@ import com.medianexus.orchestrator.dto.magnet.response.MovieMagnetIngestTaskResp
 import com.medianexus.orchestrator.dto.magnet.response.SeriesMagnetIngestTaskResponse;
 import com.medianexus.orchestrator.dto.resources.request.MovieOpenListIngestRequest;
 import com.medianexus.orchestrator.dto.resources.request.MovieReleaseOpenListIngestRequest;
+import com.medianexus.orchestrator.dto.resources.request.MovieReleaseRecommendationRequest;
+import com.medianexus.orchestrator.dto.resources.request.MovieReleaseSearchRequest;
 import com.medianexus.orchestrator.dto.resources.request.SeriesOpenListIngestRequest;
 import com.medianexus.orchestrator.dto.resources.request.SeriesReleaseOpenListIngestRequest;
+import com.medianexus.orchestrator.dto.resources.request.SeriesReleaseRecommendationRequest;
+import com.medianexus.orchestrator.dto.resources.request.SeriesReleaseSearchRequest;
 import com.medianexus.orchestrator.dto.resources.response.MovieSearchResponse;
+import com.medianexus.orchestrator.dto.resources.response.ProwlarrReleaseRecommendationResponse;
 import com.medianexus.orchestrator.dto.resources.response.ProwlarrReleaseSearchResponse;
 import com.medianexus.orchestrator.dto.resources.response.SeriesSearchResponse;
 import com.medianexus.orchestrator.dto.resources.response.SeriesSeasonsResponse;
@@ -65,6 +70,22 @@ public class MovieSeriesResourceController {
         return ApiResponse.success(prowlarrReleaseIngestService.ingestSelectedMovie(request));
     }
 
+    @PostMapping("/movies/releases/recommendation")
+    @Operation(summary = "推荐电影发布资源", description = "基于已选电影实体优先执行 TMDB/IMDB ID 搜索，必要时回退到标题搜索，并返回可确认的推荐发布。")
+    public ApiResponse<ProwlarrReleaseRecommendationResponse> recommendMovieRelease(
+            @Valid @RequestBody MovieReleaseRecommendationRequest request
+    ) {
+        return ApiResponse.success(prowlarrReleaseIngestService.recommendMovieRelease(request));
+    }
+
+    @PostMapping("/movies/releases/search")
+    @Operation(summary = "搜索电影发布资源", description = "基于已选电影实体执行与快速添加一致的 ID 和标题搜索计划，合并并去重发布列表。")
+    public ApiResponse<ProwlarrReleaseSearchResponse> searchMovieReleases(
+            @Valid @RequestBody MovieReleaseSearchRequest request
+    ) {
+        return ApiResponse.success(prowlarrReleaseIngestService.searchMovieReleases(request));
+    }
+
     @GetMapping("/series/search")
     @Operation(summary = "搜索剧集", description = "按关键词代理 Sonarr series lookup，并返回前端选择器字段。")
     public ApiResponse<SeriesSearchResponse> searchSeries(
@@ -97,6 +118,22 @@ public class MovieSeriesResourceController {
             @Valid @RequestBody SeriesReleaseOpenListIngestRequest request
     ) {
         return ApiResponse.success(prowlarrReleaseIngestService.ingestSelectedSeries(request));
+    }
+
+    @PostMapping("/series/releases/recommendation")
+    @Operation(summary = "推荐剧集发布资源", description = "基于已选剧集实体和目标季执行 TVDB/TMDB/IMDB ID 与标题搜索计划，并返回可确认的推荐发布。")
+    public ApiResponse<ProwlarrReleaseRecommendationResponse> recommendSeriesRelease(
+            @Valid @RequestBody SeriesReleaseRecommendationRequest request
+    ) {
+        return ApiResponse.success(prowlarrReleaseIngestService.recommendSeriesRelease(request));
+    }
+
+    @PostMapping("/series/releases/search")
+    @Operation(summary = "搜索剧集发布资源", description = "基于已选剧集实体和目标季执行与快速添加一致的 ID 和标题搜索计划，合并并去重发布列表。")
+    public ApiResponse<ProwlarrReleaseSearchResponse> searchSeriesReleases(
+            @Valid @RequestBody SeriesReleaseSearchRequest request
+    ) {
+        return ApiResponse.success(prowlarrReleaseIngestService.searchSeriesReleases(request));
     }
 
     @GetMapping("/releases/search")

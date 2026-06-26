@@ -2,6 +2,7 @@ package com.medianexus.orchestrator.dto.resources.response;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.swagger.v3.oas.annotations.media.Schema;
+import java.util.List;
 
 @Schema(description = "电影搜索结果条目")
 public record MovieSearchItem(
@@ -16,6 +17,8 @@ public record MovieSearchItem(
         Integer tmdbId,
         @JsonProperty("imdb_id")
         String imdbId,
+        @JsonProperty("alternate_titles")
+        List<String> alternateTitles,
         String status
 ) {
 }

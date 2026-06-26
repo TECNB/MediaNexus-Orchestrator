@@ -1,0 +1,346 @@
+package com.medianexus.orchestrator.service;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.medianexus.orchestrator.common.exception.BusinessException;
+import com.medianexus.orchestrator.config.ProwlarrProperties;
+import com.medianexus.orchestrator.dto.resources.request.MovieReleaseRecommendationRequest;
+import com.medianexus.orchestrator.dto.resources.request.MovieReleaseSearchRequest;
+import com.medianexus.orchestrator.dto.resources.response.ProwlarrReleaseRecommendationResponse;
+import com.medianexus.orchestrator.dto.resources.response.ProwlarrReleaseSearchResponse;
+import com.medianexus.orchestrator.integration.prowlarr.ProwlarrClient;
+import com.medianexus.orchestrator.integration.prowlarr.ProwlarrRelease;
+import com.medianexus.orchestrator.model.User;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+class ProwlarrReleaseIngestServiceTest {
+
+    private FakeProwlarrClient prowlarrClient;
+
+    private ProwlarrReleaseIngestService service;
+
+    @BeforeEach
+    void setUp() {
+        prowlarrClient = new FakeProwlarrClient();
+        service = new ProwlarrReleaseIngestService(
+                new TestAuthService(),
+                prowlarrClient,
+                new ReleaseTitleTagParser(),
+                new MagnetIngestService(null, null, null, null, null, null, null, null, null)
+        );
+    }
+
+    @Test
+    void recommendsDisplayTitleCandidatesBeforeIdentifierMatches() {
+        prowlarrClient.respondWith("{TmdbId:129}", List.of(
+                release("Spirited.Away.2001.1080p.BluRay.x264", 5, 20_000_000_000L)
+        ));
+        prowlarrClient.respondWith("{ImdbId:tt0245429}", List.of(
+                release("Spirited.Away.2001.1080p.WEB-DL.x265", 4, 12_000_000_000L)
+        ));
+        prowlarrClient.respondWith("千与千寻 2001", List.of(
+                release("千与千寻.2001.1080p.BluRay.x265", 6, 30_000_000_000L),
+                release("千与千寻.2001.1080p.WEB-DL.x264", 30, 8_000_000_000L)
+        ));
+
+        ProwlarrReleaseRecommendationResponse response = service.recommendMovieRelease(
+                request(129, "tt0245429", "千与千寻", "Spirited Away", 2001, "1080p")
+        );
+
+        assertThat(response.query()).isEqualTo("千与千寻 2001");
+        assertThat(response.item().matchSource()).isEqualTo("展示标题");
+        assertThat(response.item().title()).isEqualTo("千与千寻.2001.1080p.BluRay.x265");
+        assertThat(response.items())
+                .extracting("title")
+                .containsExactly(
+                        "千与千寻.2001.1080p.BluRay.x265",
+                        "千与千寻.2001.1080p.WEB-DL.x264",
+                        "Spirited.Away.2001.1080p.BluRay.x264",
+                        "Spirited.Away.2001.1080p.WEB-DL.x265"
+                );
+        assertThat(prowlarrClient.calls()).containsExactlyInAnyOrder(
+                "{ImdbId:tt0245429}",
+                "{TmdbId:129}",
+                "Spirited Away 2001",
+                "千与千寻 2001"
+        );
+    }
+
+    @Test
+    void recommendsOriginalTitleCandidatesBySizeAndSeedersWhenDisplayTitleHasNoMatch() {
+        prowlarrClient.respondWith("{TmdbId:129}", List.of(
+                release("Spirited.Away.2001.1080p.BluRay.x264", 8, 8_000_000_000L)
+        ));
+        prowlarrClient.respondWith("{ImdbId:tt0245429}", List.of());
+        prowlarrClient.respondWith("千与千寻 2001", List.of());
+        prowlarrClient.respondWith("Spirited Away 2001", List.of(
+                release("Spirited.Away.2001.1080p.BluRay.x265", 6, 14_000_000_000L)
+        ));
+
+        ProwlarrReleaseRecommendationResponse response = service.recommendMovieRelease(
+                request(129, "tt0245429", "千与千寻", "Spirited Away", 2001, "1080p")
+        );
+
+        assertThat(response.query()).isEqualTo("Spirited Away 2001");
+        assertThat(response.item().matchSource()).isEqualTo("原始标题");
+        assertThat(response.item().resolutionTags()).containsExactly("1080p");
+        assertThat(response.items())
+                .extracting("title")
+                .containsExactly(
+                        "Spirited.Away.2001.1080p.BluRay.x265",
+                        "Spirited.Away.2001.1080p.BluRay.x264"
+                );
+    }
+
+    @Test
+    void originalTitleCanFindReleaseWhenDisplayTitleCannot() {
+        prowlarrClient.respondWith("千与千寻 2001", List.of());
+        prowlarrClient.respondWith("Spirited Away 2001", List.of(
+                release("Spirited.Away.2001.2160p.UHD.BluRay.x265", 4, 40_000_000_000L)
+        ));
+
+        ProwlarrReleaseRecommendationResponse response = service.recommendMovieRelease(
+                request(null, null, "千与千寻", "Spirited Away", 2001, "2160p")
+        );
+
+        assertThat(response.query()).isEqualTo("Spirited Away 2001");
+        assertThat(response.item().title()).contains("Spirited.Away");
+    }
+
+    @Test
+    void recommendsDisplayTitleMatchBeforeOriginalTitleMatch() {
+        prowlarrClient.respondWith("千与千寻 2001", List.of(
+                release("千与千寻.2001.2160p.BluRay.x265", 30, 60_000_000_000L)
+        ));
+        prowlarrClient.respondWith("Spirited Away 2001", List.of(
+                release("Spirited.Away.2001.2160p.BluRay.x265", 4, 20_000_000_000L)
+        ));
+
+        ProwlarrReleaseRecommendationResponse response = service.recommendMovieRelease(
+                request(null, null, "千与千寻", "Spirited Away", 2001, "2160p")
+        );
+
+        assertThat(response.query()).isEqualTo("千与千寻 2001");
+        assertThat(response.item().matchSource()).isEqualTo("展示标题");
+        assertThat(response.items())
+                .extracting("title")
+                .containsExactly(
+                        "千与千寻.2001.2160p.BluRay.x265",
+                        "Spirited.Away.2001.2160p.BluRay.x265"
+                );
+    }
+
+    @Test
+    void originalTitleWithFrenchDiacriticsCanFindAsciiReleaseTitle() {
+        prowlarrClient.respondWith("我住在凡尔赛的日子 2021", List.of());
+        prowlarrClient.respondWith("La Vie de château : Mon enfance à Versailles 2021", List.of(
+                release("La.Vie.de.Chateau.Mon.Enfance.a.Versailles.2021.1080p.WEB-DL.x264", 5, 9_000_000_000L)
+        ));
+
+        ProwlarrReleaseRecommendationResponse response = service.recommendMovieRelease(
+                request(
+                        null,
+                        null,
+                        "我住在凡尔赛的日子",
+                        "La Vie de château : Mon enfance à Versailles",
+                        2021,
+                        "1080p"
+                )
+        );
+
+        assertThat(response.query()).isEqualTo("La Vie de château : Mon enfance à Versailles 2021");
+        assertThat(response.item().title()).contains("La.Vie.de.Chateau");
+    }
+
+    @Test
+    void originalTitleCanFindReleaseWhenAsciiTitleOmitsStopWords() {
+        prowlarrClient.respondWith("{TmdbId:1489456}", List.of());
+        prowlarrClient.respondWith("{ImdbId:tt37436610}", List.of());
+        prowlarrClient.respondWith("我住在凡尔赛的日子 2025", List.of());
+        prowlarrClient.respondWith("La Vie de château : Mon enfance à Versailles 2025", List.of(
+                release("Www UIndex org Vie chateau Mon enfance Versailles 2025 FRENCH 1080p WEB DL 264 Slay3R", 3, 4_300_000_000L)
+        ));
+
+        ProwlarrReleaseRecommendationResponse response = service.recommendMovieRelease(
+                request(
+                        1489456,
+                        "tt37436610",
+                        "我住在凡尔赛的日子",
+                        "La Vie de château : Mon enfance à Versailles",
+                        2025,
+                        "1080p"
+                )
+        );
+
+        assertThat(response.query()).isEqualTo("La Vie de château : Mon enfance à Versailles 2025");
+        assertThat(response.item().title()).contains("Vie chateau");
+    }
+
+    @Test
+    void movieReleaseSearchSortsLikeRecommendationAndDeduplicatesReleaseReferences() {
+        ProwlarrRelease duplicateFromTmdb = release(
+                "La.Vie.de.Chateau.Mon.Enfance.a.Versailles.2025.1080p.WEB-DL.x264",
+                4,
+                9_000_000_000L
+        );
+        ProwlarrRelease duplicateFromOriginalTitle = releaseWithDownloadRef(
+                "La Vie de chateau Mon enfance a Versailles 2025 FRENCH 1080p WEB DL H 264 Slay3R",
+                7,
+                8_800_000_000L,
+                duplicateFromTmdb.downloadRef()
+        );
+        prowlarrClient.respondWith("{TmdbId:1489456}", List.of(duplicateFromTmdb));
+        prowlarrClient.respondWith("{ImdbId:tt37436610}", List.of());
+        prowlarrClient.respondWith("我住在凡尔赛的日子 2025", List.of(
+                release("我住在凡尔赛的日子.2025.720p.WEB-DL.x264", 2, 5_000_000_000L)
+        ));
+        prowlarrClient.respondWith("La Vie de château : Mon enfance à Versailles 2025", List.of(
+                duplicateFromOriginalTitle,
+                release("La.Vie.de.Chateau.Mon.Enfance.a.Versailles.2025.2160p.WEB-DL.x265", 3, 16_000_000_000L)
+        ));
+
+        ProwlarrReleaseSearchResponse response = service.searchMovieReleases(
+                new MovieReleaseSearchRequest(
+                        1489456,
+                        "tt37436610",
+                        "我住在凡尔赛的日子",
+                        "La Vie de château : Mon enfance à Versailles",
+                        2025,
+                        "2160p"
+                )
+        );
+
+        assertThat(prowlarrClient.calls()).containsExactlyInAnyOrder(
+                "{TmdbId:1489456}",
+                "{ImdbId:tt37436610}",
+                "我住在凡尔赛的日子 2025",
+                "La Vie de château : Mon enfance à Versailles 2025"
+        );
+        assertThat(response.query()).isEqualTo("电影发布搜索计划");
+        assertThat(response.items()).hasSize(3);
+        assertThat(response.items())
+                .extracting("title")
+                .containsExactly(
+                        "La.Vie.de.Chateau.Mon.Enfance.a.Versailles.2025.2160p.WEB-DL.x265",
+                        "我住在凡尔赛的日子.2025.720p.WEB-DL.x264",
+                        "La Vie de chateau Mon enfance a Versailles 2025 FRENCH 1080p WEB DL H 264 Slay3R"
+                );
+        assertThat(response.items().get(0).matchSource()).isEqualTo("原始标题");
+        assertThat(response.items().get(0).matchQuery())
+                .isEqualTo("La Vie de château : Mon enfance à Versailles 2025");
+        assertThat(response.items().get(2).matchSource()).isEqualTo("原始标题");
+    }
+
+    @Test
+    void movieReleaseSearchOnlyUsesDisplayAndOriginalTitles() {
+        prowlarrClient.respondWith("F1：狂飙飞车 2025", List.of());
+        prowlarrClient.respondWith("F1 2025", List.of());
+
+        assertThatThrownBy(() -> service.recommendMovieRelease(
+                request(null, null, "F1：狂飙飞车", "F1", 2025, "2160p")
+        ))
+                .isInstanceOf(BusinessException.class)
+                .hasMessage("未找到匹配分辨率且有做种的电影发布资源");
+
+        assertThat(prowlarrClient.calls()).containsExactlyInAnyOrder(
+                "F1：狂飙飞车 2025",
+                "F1 2025"
+        );
+    }
+
+    @Test
+    void reportsClearFailureWhenNoLayerHasSelectableRelease() {
+        prowlarrClient.respondWith("{TmdbId:129}", List.of());
+        prowlarrClient.respondWith("{ImdbId:tt0245429}", List.of());
+        prowlarrClient.respondWith("千与千寻 2001", List.of());
+        prowlarrClient.respondWith("Spirited Away 2001", List.of(
+                release("Spirited.Away.2001.1080p.BluRay.x264", 0, 12_000_000_000L)
+        ));
+
+        assertThatThrownBy(() -> service.recommendMovieRelease(
+                request(129, "tt0245429", "千与千寻", "Spirited Away", 2001, "1080p")
+        ))
+                .isInstanceOf(BusinessException.class)
+                .hasMessage("未找到匹配分辨率且有做种的电影发布资源");
+    }
+
+    private MovieReleaseRecommendationRequest request(
+            Integer tmdbId,
+            String imdbId,
+            String title,
+            String originalTitle,
+            Integer year,
+            String quality
+    ) {
+        return new MovieReleaseRecommendationRequest(tmdbId, imdbId, title, originalTitle, year, quality);
+    }
+
+    private ProwlarrRelease release(String title, Integer seeders, Long size) {
+        return releaseWithDownloadRef(title, seeders, size, "download-ref-" + title);
+    }
+
+    private ProwlarrRelease releaseWithDownloadRef(String title, Integer seeders, Long size, String downloadRef) {
+        return new ProwlarrRelease(
+                title,
+                size,
+                seeders,
+                1,
+                10,
+                "Test Indexer",
+                "2026-06-25T00:00:00Z",
+                1,
+                "guid-" + title,
+                downloadRef
+        );
+    }
+
+    private static class TestAuthService extends AuthService {
+        TestAuthService() {
+            super(null, null, null);
+        }
+
+        @Override
+        public User requireCurrentUser() {
+            User user = new User();
+            user.setId(1L);
+            return user;
+        }
+    }
+
+    private static class FakeProwlarrClient extends ProwlarrClient {
+        private final Map<String, List<ProwlarrRelease>> responses = new HashMap<>();
+        private final List<String> calls = new ArrayList<>();
+
+        FakeProwlarrClient() {
+            super(prowlarrProperties(), new ObjectMapper());
+        }
+
+        @Override
+        public List<ProwlarrRelease> search(String query) {
+            calls.add(query);
+            return responses.getOrDefault(query, List.of());
+        }
+
+        void respondWith(String query, List<ProwlarrRelease> releases) {
+            responses.put(query, releases);
+        }
+
+        List<String> calls() {
+            return calls;
+        }
+
+        private static ProwlarrProperties prowlarrProperties() {
+            ProwlarrProperties properties = new ProwlarrProperties();
+            properties.setTimeout(Duration.ofSeconds(1));
+            return properties;
+        }
+    }
+}

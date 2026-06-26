@@ -13,6 +13,7 @@ import com.medianexus.orchestrator.integration.radarr.RadarrClientException;
 import com.medianexus.orchestrator.integration.sonarr.SonarrClient;
 import com.medianexus.orchestrator.integration.sonarr.SonarrClientException;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -124,6 +125,7 @@ public class MovieSeriesResourceSearchService {
                 extractPoster(movie.path("images")),
                 integerOrNull(movie.get("tmdbId")),
                 textOrNull(movie.get("imdbId")),
+                extractAlternateTitles(movie.path("alternateTitles")),
                 mapMovieStatus(movie)
         );
     }
@@ -210,6 +212,20 @@ public class MovieSeriesResourceSearchService {
             }
         }
         return new ArrayList<>(seasonNumbers);
+    }
+
+    private List<String> extractAlternateTitles(JsonNode alternateTitles) {
+        if (alternateTitles == null || !alternateTitles.isArray()) {
+            return List.of();
+        }
+        Set<String> titles = new LinkedHashSet<>();
+        for (JsonNode alternateTitle : alternateTitles) {
+            String title = textOrNull(alternateTitle.get("title"));
+            if (StringUtils.hasText(title)) {
+                titles.add(title.trim());
+            }
+        }
+        return List.copyOf(titles);
     }
 
     private String mapMovieStatus(JsonNode movie) {
