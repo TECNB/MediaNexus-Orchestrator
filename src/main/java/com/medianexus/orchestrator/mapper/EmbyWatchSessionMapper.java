@@ -183,16 +183,21 @@ public interface EmbyWatchSessionMapper extends BaseMapper<EmbyWatchSession> {
                    COUNT(*) AS total_play_count,
                    MAX(stop_time) AS last_watched_at
             FROM emby_watch_sessions
-            WHERE watch_date = #{watchDate}
+            WHERE watch_date >= #{startDate}
+              AND watch_date < #{endDate}
             """)
-    EmbyWatchSummaryRow selectSummary(@Param("watchDate") LocalDate watchDate);
+    EmbyWatchSummaryRow selectSummary(
+            @Param("startDate") LocalDate startDate,
+            @Param("endDate") LocalDate endDate
+    );
 
     @Select("""
             SELECT sessions.emby_user_id,
                    (
                        SELECT latest.emby_user_name
                        FROM emby_watch_sessions latest
-                       WHERE latest.watch_date = #{watchDate}
+                       WHERE latest.watch_date >= #{startDate}
+                         AND latest.watch_date < #{endDate}
                          AND latest.emby_user_id = sessions.emby_user_id
                        ORDER BY latest.stop_time DESC, latest.id DESC
                        LIMIT 1
@@ -203,19 +208,22 @@ public interface EmbyWatchSessionMapper extends BaseMapper<EmbyWatchSession> {
                    (
                        SELECT COALESCE(NULLIF(latest.series_name, ''), latest.item_name)
                        FROM emby_watch_sessions latest
-                       WHERE latest.watch_date = #{watchDate}
+                       WHERE latest.watch_date >= #{startDate}
+                         AND latest.watch_date < #{endDate}
                          AND latest.emby_user_id = sessions.emby_user_id
                        ORDER BY latest.stop_time DESC, latest.id DESC
                        LIMIT 1
                    ) AS last_item_name
             FROM emby_watch_sessions sessions
-            WHERE sessions.watch_date = #{watchDate}
+            WHERE sessions.watch_date >= #{startDate}
+              AND sessions.watch_date < #{endDate}
             GROUP BY sessions.emby_user_id
             ORDER BY watch_seconds DESC, play_count DESC, user_name ASC
             LIMIT #{limit}
             """)
     List<EmbyUserWatchRankingRow> selectUserRankings(
-            @Param("watchDate") LocalDate watchDate,
+            @Param("startDate") LocalDate startDate,
+            @Param("endDate") LocalDate endDate,
             @Param("limit") int limit
     );
 
@@ -224,7 +232,8 @@ public interface EmbyWatchSessionMapper extends BaseMapper<EmbyWatchSession> {
                    (
                        SELECT latest.item_name
                        FROM emby_watch_sessions latest
-                       WHERE latest.watch_date = #{watchDate}
+                       WHERE latest.watch_date >= #{startDate}
+                         AND latest.watch_date < #{endDate}
                          AND latest.item_type = 'Movie'
                          AND latest.item_id = sessions.item_id
                        ORDER BY latest.stop_time DESC, latest.id DESC
@@ -234,14 +243,16 @@ public interface EmbyWatchSessionMapper extends BaseMapper<EmbyWatchSession> {
                    COUNT(*) AS play_count,
                    MAX(sessions.stop_time) AS last_played_at
             FROM emby_watch_sessions sessions
-            WHERE sessions.watch_date = #{watchDate}
+            WHERE sessions.watch_date >= #{startDate}
+              AND sessions.watch_date < #{endDate}
               AND sessions.item_type = 'Movie'
             GROUP BY sessions.item_id
             ORDER BY watch_seconds DESC, play_count DESC, title ASC
             LIMIT #{limit}
             """)
     List<EmbyMediaWatchRankingRow> selectMovieRankings(
-            @Param("watchDate") LocalDate watchDate,
+            @Param("startDate") LocalDate startDate,
+            @Param("endDate") LocalDate endDate,
             @Param("limit") int limit
     );
 
@@ -250,7 +261,8 @@ public interface EmbyWatchSessionMapper extends BaseMapper<EmbyWatchSession> {
                    (
                        SELECT COALESCE(NULLIF(latest.series_name, ''), latest.item_name)
                        FROM emby_watch_sessions latest
-                       WHERE latest.watch_date = #{watchDate}
+                       WHERE latest.watch_date >= #{startDate}
+                         AND latest.watch_date < #{endDate}
                          AND latest.item_type = 'Episode'
                          AND COALESCE(NULLIF(latest.series_id, ''), NULLIF(latest.series_name, ''), latest.item_id) = grouped.group_key
                        ORDER BY latest.stop_time DESC, latest.id DESC
@@ -265,7 +277,8 @@ public interface EmbyWatchSessionMapper extends BaseMapper<EmbyWatchSession> {
                        COUNT(*) AS play_count,
                        MAX(stop_time) AS last_played_at
                 FROM emby_watch_sessions
-                WHERE watch_date = #{watchDate}
+                WHERE watch_date >= #{startDate}
+                  AND watch_date < #{endDate}
                   AND item_type = 'Episode'
                 GROUP BY COALESCE(NULLIF(series_id, ''), NULLIF(series_name, ''), item_id)
             ) grouped
@@ -273,7 +286,8 @@ public interface EmbyWatchSessionMapper extends BaseMapper<EmbyWatchSession> {
             LIMIT #{limit}
             """)
     List<EmbyMediaWatchRankingRow> selectSeriesRankings(
-            @Param("watchDate") LocalDate watchDate,
+            @Param("startDate") LocalDate startDate,
+            @Param("endDate") LocalDate endDate,
             @Param("limit") int limit
     );
 

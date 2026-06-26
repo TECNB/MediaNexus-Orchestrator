@@ -19,9 +19,11 @@ import com.medianexus.orchestrator.model.EmbyWatchSession;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.time.YearMonth;
 import java.time.format.DateTimeParseException;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 import org.springframework.stereotype.Service;
@@ -33,6 +35,8 @@ public class EmbyWatchRankingService {
     private static final ZoneId WATCH_ZONE = ZoneId.of("Asia/Shanghai");
     private static final int DEFAULT_LIMIT = 20;
     private static final int RECENT_EVENT_LIMIT = 8;
+    private static final String PERIOD_DAY = "day";
+    private static final String PERIOD_MONTH = "month";
 
     private final AuthService authService;
     private final EmbyProperties embyProperties;
@@ -51,24 +55,41 @@ public class EmbyWatchRankingService {
         this.watchSessionMapper = watchSessionMapper;
     }
 
-    public EmbyWatchRankingResponse getRankings(String date, Integer limit) {
+    public EmbyWatchRankingResponse getRankings(String period, String date, String month, Integer limit) {
         authService.requireAdminUser();
-        LocalDate watchDate = normalizeDate(date);
+        WatchRankingPeriod rankingPeriod = normalizePeriod(period, date, month);
         int normalizedLimit = normalizeLimit(limit);
 
-        EmbyWatchSummaryRow summaryRow = watchSessionMapper.selectSummary(watchDate);
+        EmbyWatchSummaryRow summaryRow = watchSessionMapper.selectSummary(
+                rankingPeriod.startDate(),
+                rankingPeriod.endDate()
+        );
         List<EmbyUserWatchRankingItem> users = toUserRankingItems(
-                watchSessionMapper.selectUserRankings(watchDate, normalizedLimit)
+                watchSessionMapper.selectUserRankings(
+                        rankingPeriod.startDate(),
+                        rankingPeriod.endDate(),
+                        normalizedLimit
+                )
         );
         List<EmbyMediaWatchRankingItem> movies = toMediaRankingItems(
-                watchSessionMapper.selectMovieRankings(watchDate, normalizedLimit)
+                watchSessionMapper.selectMovieRankings(
+                        rankingPeriod.startDate(),
+                        rankingPeriod.endDate(),
+                        normalizedLimit
+                )
         );
         List<EmbyMediaWatchRankingItem> series = toMediaRankingItems(
-                watchSessionMapper.selectSeriesRankings(watchDate, normalizedLimit)
+                watchSessionMapper.selectSeriesRankings(
+                        rankingPeriod.startDate(),
+                        rankingPeriod.endDate(),
+                        normalizedLimit
+                )
         );
 
         return new EmbyWatchRankingResponse(
-                watchDate,
+                rankingPeriod.period(),
+                rankingPeriod.date(),
+                rankingPeriod.month(),
                 WATCH_ZONE.getId(),
                 LocalDateTime.now(WATCH_ZONE),
                 toSummaryResponse(summaryRow),
@@ -79,6 +100,34 @@ public class EmbyWatchRankingService {
         );
     }
 
+    private WatchRankingPeriod normalizePeriod(String period, String date, String month) {
+        String normalizedPeriod = StringUtils.hasText(period)
+                ? period.trim().toLowerCase(Locale.ROOT)
+                : PERIOD_DAY;
+        if (PERIOD_DAY.equals(normalizedPeriod)) {
+            LocalDate watchDate = normalizeDate(date);
+            return new WatchRankingPeriod(
+                    PERIOD_DAY,
+                    watchDate,
+                    YearMonth.from(watchDate).toString(),
+                    watchDate,
+                    watchDate.plusDays(1)
+            );
+        }
+        if (PERIOD_MONTH.equals(normalizedPeriod)) {
+            YearMonth watchMonth = normalizeMonth(month);
+            LocalDate startDate = watchMonth.atDay(1);
+            return new WatchRankingPeriod(
+                    PERIOD_MONTH,
+                    startDate,
+                    watchMonth.toString(),
+                    startDate,
+                    watchMonth.plusMonths(1).atDay(1)
+            );
+        }
+        throw new BusinessException(ErrorCode.BAD_REQUEST, "统计周期无效，请使用 day 或 month");
+    }
+
     private LocalDate normalizeDate(String date) {
         if (!StringUtils.hasText(date)) {
             return LocalDate.now(WATCH_ZONE);
@@ -87,6 +136,17 @@ public class EmbyWatchRankingService {
             return LocalDate.parse(date.trim());
         } catch (DateTimeParseException exception) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "日期格式无效，请使用 yyyy-MM-dd");
+        }
+    }
+
+    private YearMonth normalizeMonth(String month) {
+        if (!StringUtils.hasText(month)) {
+            return YearMonth.now(WATCH_ZONE);
+        }
+        try {
+            return YearMonth.parse(month.trim());
+        } catch (DateTimeParseException exception) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "月份格式无效，请使用 yyyy-MM");
         }
     }
 
@@ -196,5 +256,14 @@ public class EmbyWatchRankingService {
 
     private long safeLong(Long value) {
         return value == null ? 0 : value;
+    }
+
+    private record WatchRankingPeriod(
+            String period,
+            LocalDate date,
+            String month,
+            LocalDate startDate,
+            LocalDate endDate
+    ) {
     }
 }

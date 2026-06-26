@@ -8,8 +8,12 @@ import java.util.List;
 
 @Schema(description = "Emby 观看活跃与排行统计")
 public record EmbyWatchRankingResponse(
-        @Schema(description = "统计日期，北京时间自然日")
+        @Schema(description = "统计周期，day 或 month")
+        String period,
+        @Schema(description = "统计日期，北京时间自然日；月统计时为该月第一天")
         LocalDate date,
+        @Schema(description = "统计月份，格式 yyyy-MM")
+        String month,
         @Schema(description = "统计时区")
         String timezone,
         @Schema(description = "生成时间")

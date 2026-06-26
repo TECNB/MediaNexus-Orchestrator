@@ -23,13 +23,17 @@ public class AdminEmbyWatchRankingController {
     }
 
     @GetMapping("/watch-rankings")
-    @Operation(summary = "查看 Emby 观看活跃与排行", description = "按北京时间自然日统计用户、电影和电视剧/番剧观看排行。")
+    @Operation(summary = "查看 Emby 观看活跃与排行", description = "按北京时间自然日或自然月统计用户、电影和电视剧/番剧观看排行。")
     public ApiResponse<EmbyWatchRankingResponse> getWatchRankings(
+            @Parameter(description = "统计周期，day 或 month；不传时使用 day")
+            @RequestParam(name = "period", required = false) String period,
             @Parameter(description = "统计日期，格式 yyyy-MM-dd；不传时使用北京时间今天")
             @RequestParam(name = "date", required = false) String date,
+            @Parameter(description = "统计月份，格式 yyyy-MM；period=month 时生效，不传时使用北京时间当前月")
+            @RequestParam(name = "month", required = false) String month,
             @Parameter(description = "每个榜单返回条数；不传或小于 1 时默认为 20")
             @RequestParam(name = "limit", required = false) Integer limit
     ) {
-        return ApiResponse.success(rankingService.getRankings(date, limit));
+        return ApiResponse.success(rankingService.getRankings(period, date, month, limit));
     }
 }
