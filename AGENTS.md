@@ -20,6 +20,13 @@ Managed by Trellis. Edits outside this block are preserved; edits inside may be 
 
 <!-- TRELLIS:END -->
 
+## External Product Docs
+
+- For feature work, check the relevant external docs under:
+  `/Users/tengenchang/Library/Mobile Documents/com~apple~CloudDocs/AI-Coding-Docs/Media`
+- If those docs conflict with in-repo Trellis docs or archived tasks, treat the
+  external docs as the current source of truth.
+
 ## Backend Logs
 
 User owns backend start/stop. For errors, read `logs/dev-run.log` first, usually with `tail -n 200`.
