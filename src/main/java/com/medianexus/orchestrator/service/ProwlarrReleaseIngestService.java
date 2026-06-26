@@ -660,7 +660,7 @@ public class ProwlarrReleaseIngestService {
     private List<MovieReleaseSearchResult> searchQueriesInParallel(List<MovieReleaseSearchQuery> queries) {
         List<CompletableFuture<MovieReleaseSearchResult>> futures = queries.stream()
                 .map(query -> CompletableFuture.supplyAsync(() -> {
-                    log.info("Prowlarr movie release search source={} query={}", query.source(), logValue(query.query()));
+                    log.info("Prowlarr release search source={} query={}", query.source(), logValue(query.query()));
                     return new MovieReleaseSearchResult(query, search(query.query()));
                 }))
                 .toList();
