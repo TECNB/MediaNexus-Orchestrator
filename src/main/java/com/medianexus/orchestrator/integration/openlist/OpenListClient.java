@@ -62,10 +62,14 @@ public class OpenListClient {
      * 创建 OpenList 离线下载任务并返回上游任务 id。
      */
     public String addOfflineDownload(String path, String magnet) {
+        return addOfflineDownload(path, magnet, offlineTool());
+    }
+
+    public String addOfflineDownload(String path, String magnet, String tool) {
         JsonNode data = post("fs/add_offline_download", Map.of(
                 "path", normalizePath(path),
                 "urls", List.of(magnet),
-                "tool", offlineTool(),
+                "tool", cleanConfigValue(tool),
                 "delete_policy", deletePolicy()
         ));
 
@@ -107,11 +111,15 @@ public class OpenListClient {
      * 列出单层目录内容，返回结果按文件大小倒序排序，便于优先处理主体视频文件。
      */
     public List<OpenListFileInfo> listFiles(String path) {
+        return listFiles(path, false);
+    }
+
+    public List<OpenListFileInfo> listFiles(String path, boolean refresh) {
         JsonNode data = post("fs/list", Map.of(
                 "path", normalizePath(path),
                 "page", 1,
                 "per_page", 0,
-                "refresh", false
+                "refresh", refresh
         ));
         JsonNode content = data.path("content");
         if (!content.isArray()) {
@@ -135,11 +143,15 @@ public class OpenListClient {
      * 递归查找目录下所有文件，不返回目录自身。
      */
     public List<OpenListFileInfo> findFiles(String path) {
-        List<OpenListFileInfo> children = listFiles(path);
+        return findFiles(path, false);
+    }
+
+    public List<OpenListFileInfo> findFiles(String path, boolean refresh) {
+        List<OpenListFileInfo> children = listFiles(path, refresh);
         List<OpenListFileInfo> files = new ArrayList<>();
         for (OpenListFileInfo child : children) {
             if (Boolean.TRUE.equals(child.isDir())) {
-                files.addAll(findFiles(joinPath(path, child.name())));
+                files.addAll(findFiles(joinPath(path, child.name()), refresh));
             } else {
                 files.add(child);
             }
@@ -362,7 +374,7 @@ public class OpenListClient {
                     root == null ? null : root.path("code").asInt(-1),
                     message(root)
             );
-            throw new OpenListClientException("OpenList returned non-success payload");
+            throw new OpenListClientException("OpenList returned non-success payload: " + message(root));
         }
         JsonNode data = root.get("data");
         return data == null || data.isNull() ? objectMapper.createObjectNode() : data;
@@ -407,7 +419,7 @@ public class OpenListClient {
                     root == null ? null : root.path("code").asInt(-1),
                     message(root)
             );
-            throw new OpenListClientException("OpenList returned non-success payload");
+            throw new OpenListClientException("OpenList returned non-success payload: " + message(root));
         }
         return root.path("data");
     }

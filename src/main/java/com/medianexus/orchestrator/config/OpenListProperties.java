@@ -32,6 +32,12 @@ public class OpenListProperties {
     private String offlineTool;
 
     /**
+     * OpenList ed2k 离线下载工具名称。OpenList 的 PikPak 工具不支持 ed2k。
+     */
+    @NotBlank
+    private String ed2kOfflineTool;
+
+    /**
      * OpenList 离线下载任务的删除策略。
      */
     @NotBlank
@@ -52,6 +58,11 @@ public class OpenListProperties {
      * 剧集离线提交基础保存路径；为空时仅禁用剧集提交能力，不影响应用启动。
      */
     private String tvRootPath;
+
+    /**
+     * Adult 离线提交基础保存路径；为空时仅禁用 Adult 提交能力，不影响应用启动。
+     */
+    private String adultRootPath;
 
     /**
      * 整理后文件名模板，支持 {title}、{season}、{seasonFormat}、{episode}、{episodeFormat} 占位符。
@@ -87,6 +98,13 @@ public class OpenListProperties {
     private Duration offlineTimeout;
 
     /**
+     * Adult 离线下载任务最长等待时间，死种较多时使用更短窗口。
+     */
+    @NotNull
+    @DurationMin(seconds = 1)
+    private Duration adultOfflineTimeout;
+
+    /**
      * OpenList 离线任务失败后的最大重试次数。
      */
     @Min(0)
@@ -114,6 +132,14 @@ public class OpenListProperties {
 
     public void setOfflineTool(String offlineTool) {
         this.offlineTool = offlineTool;
+    }
+
+    public String getEd2kOfflineTool() {
+        return ed2kOfflineTool;
+    }
+
+    public void setEd2kOfflineTool(String ed2kOfflineTool) {
+        this.ed2kOfflineTool = ed2kOfflineTool;
     }
 
     public String getDeletePolicy() {
@@ -146,6 +172,14 @@ public class OpenListProperties {
 
     public void setTvRootPath(String tvRootPath) {
         this.tvRootPath = tvRootPath;
+    }
+
+    public String getAdultRootPath() {
+        return adultRootPath;
+    }
+
+    public void setAdultRootPath(String adultRootPath) {
+        this.adultRootPath = adultRootPath;
     }
 
     public String getAnimeRenameTemplate() {
@@ -186,6 +220,14 @@ public class OpenListProperties {
 
     public void setOfflineTimeout(Duration offlineTimeout) {
         this.offlineTimeout = offlineTimeout;
+    }
+
+    public Duration getAdultOfflineTimeout() {
+        return adultOfflineTimeout;
+    }
+
+    public void setAdultOfflineTimeout(Duration adultOfflineTimeout) {
+        this.adultOfflineTimeout = adultOfflineTimeout;
     }
 
     public int getRetryLimit() {

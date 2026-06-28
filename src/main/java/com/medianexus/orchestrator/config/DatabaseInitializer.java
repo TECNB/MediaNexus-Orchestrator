@@ -2,6 +2,8 @@ package com.medianexus.orchestrator.config;
 
 import com.medianexus.orchestrator.mapper.AnimeMagnetIngestTaskLogMapper;
 import com.medianexus.orchestrator.mapper.AnimeMagnetIngestTaskMapper;
+import com.medianexus.orchestrator.mapper.AdultMagnetIngestTaskLogMapper;
+import com.medianexus.orchestrator.mapper.AdultMagnetIngestTaskMapper;
 import com.medianexus.orchestrator.mapper.EmbyActivePlaybackSessionMapper;
 import com.medianexus.orchestrator.mapper.EmbyWatchSessionMapper;
 import com.medianexus.orchestrator.mapper.MovieMagnetIngestTaskLogMapper;
@@ -39,6 +41,8 @@ public class DatabaseInitializer implements ApplicationRunner {
     private final MovieMagnetIngestTaskLogMapper movieMagnetIngestTaskLogMapper;
     private final SeriesMagnetIngestTaskMapper seriesMagnetIngestTaskMapper;
     private final SeriesMagnetIngestTaskLogMapper seriesMagnetIngestTaskLogMapper;
+    private final AdultMagnetIngestTaskMapper adultMagnetIngestTaskMapper;
+    private final AdultMagnetIngestTaskLogMapper adultMagnetIngestTaskLogMapper;
     private final SubtitleUploadMapper subtitleUploadMapper;
     private final SubtitleUploadLogMapper subtitleUploadLogMapper;
     private final EmbyActivePlaybackSessionMapper embyActivePlaybackSessionMapper;
@@ -56,6 +60,8 @@ public class DatabaseInitializer implements ApplicationRunner {
             MovieMagnetIngestTaskLogMapper movieMagnetIngestTaskLogMapper,
             SeriesMagnetIngestTaskMapper seriesMagnetIngestTaskMapper,
             SeriesMagnetIngestTaskLogMapper seriesMagnetIngestTaskLogMapper,
+            AdultMagnetIngestTaskMapper adultMagnetIngestTaskMapper,
+            AdultMagnetIngestTaskLogMapper adultMagnetIngestTaskLogMapper,
             SubtitleUploadMapper subtitleUploadMapper,
             SubtitleUploadLogMapper subtitleUploadLogMapper,
             EmbyActivePlaybackSessionMapper embyActivePlaybackSessionMapper,
@@ -72,6 +78,8 @@ public class DatabaseInitializer implements ApplicationRunner {
         this.movieMagnetIngestTaskLogMapper = movieMagnetIngestTaskLogMapper;
         this.seriesMagnetIngestTaskMapper = seriesMagnetIngestTaskMapper;
         this.seriesMagnetIngestTaskLogMapper = seriesMagnetIngestTaskLogMapper;
+        this.adultMagnetIngestTaskMapper = adultMagnetIngestTaskMapper;
+        this.adultMagnetIngestTaskLogMapper = adultMagnetIngestTaskLogMapper;
         this.subtitleUploadMapper = subtitleUploadMapper;
         this.subtitleUploadLogMapper = subtitleUploadLogMapper;
         this.embyActivePlaybackSessionMapper = embyActivePlaybackSessionMapper;
@@ -116,6 +124,8 @@ public class DatabaseInitializer implements ApplicationRunner {
         seriesMagnetIngestTaskMapper.createTableIfNotExists();
         ensureSeriesMagnetTaskTagColumns();
         seriesMagnetIngestTaskLogMapper.createTableIfNotExists();
+        adultMagnetIngestTaskMapper.createTableIfNotExists();
+        adultMagnetIngestTaskLogMapper.createTableIfNotExists();
         subtitleUploadMapper.createTableIfNotExists();
         ensureSubtitleUploadColumns();
         subtitleUploadLogMapper.createTableIfNotExists();
