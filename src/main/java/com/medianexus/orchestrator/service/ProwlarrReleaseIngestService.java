@@ -148,10 +148,13 @@ public class ProwlarrReleaseIngestService {
         authService.requireCurrentUser();
         SeriesReleaseIdentity series = seriesReleaseIdentity(request);
         String quality = normalizeOptionalQuality(request.quality());
+        List<SearchTitleTerm> titleTerms = titleTerms(series);
         Map<String, ProwlarrReleaseItemResponse> releasesByReference = new LinkedHashMap<>();
         List<RecommendedRelease> candidates = movieReleaseSearchCandidates(
                 searchQueriesInParallel(seriesReleaseSearchPlan(series))
-        );
+        ).stream()
+                .filter(candidate -> matchesSeriesSearchCandidate(series, titleTerms, candidate))
+                .toList();
 
         for (RecommendedRelease candidate : sortSeriesReleaseSearchCandidates(series, quality, candidates)) {
             releasesByReference.putIfAbsent(
@@ -273,7 +276,7 @@ public class ProwlarrReleaseIngestService {
             for (RecommendedRelease candidate : movieReleaseSearchCandidates(List.of(searchResult)).stream()
                     .filter(release -> hasActivePeers(release.release()))
                     .filter(release -> release.tags().resolutionTags().contains(quality))
-                    .filter(release -> matchesAnyTitle(release.release().title(), titleTerms))
+                    .filter(release -> matchesSeriesSearchCandidate(series, titleTerms, release))
                     .toList()) {
                 releasesByReference.putIfAbsent(releaseReference(candidate.release()), candidate);
             }
@@ -566,6 +569,7 @@ public class ProwlarrReleaseIngestService {
     private List<MovieReleaseSearchQuery> seriesTitleSearchQueries(SeriesReleaseIdentity series) {
         LinkedHashSet<String> seenTitles = new LinkedHashSet<>();
         List<MovieReleaseSearchQuery> queries = new ArrayList<>();
+        addSeriesTitleSearchQuery(queries, seenTitles, "展示标题", series.title(), series.seasonNumber());
         addSeriesTitleSearchQuery(
                 queries,
                 seenTitles,
@@ -573,7 +577,6 @@ public class ProwlarrReleaseIngestService {
                 series.originalTitle(),
                 series.seasonNumber()
         );
-        addSeriesTitleSearchQuery(queries, seenTitles, "展示标题", series.title(), series.seasonNumber());
         return queries;
     }
 
@@ -827,6 +830,22 @@ public class ProwlarrReleaseIngestService {
         String normalizedTitle = normalizeSearchText(releaseTitle);
         List<String> releaseTokens = significantSearchTokens(releaseTitle);
         return titleTerms.stream().anyMatch(term -> matchesTitle(normalizedTitle, releaseTokens, term));
+    }
+
+    private boolean matchesSeriesSearchCandidate(
+            SeriesReleaseIdentity series,
+            List<SearchTitleTerm> titleTerms,
+            RecommendedRelease candidate
+    ) {
+        SearchTitleTerm sourceTitle = switch (candidate.query().source()) {
+            case "展示标题" -> titleTerm(series.title());
+            case "原始标题" -> titleTerm(series.originalTitle());
+            default -> null;
+        };
+        if (sourceTitle != null) {
+            return matchesTitle(candidate.release().title(), sourceTitle);
+        }
+        return matchesAnyTitle(candidate.release().title(), titleTerms);
     }
 
     private boolean matchesTitle(String releaseTitle, SearchTitleTerm term) {

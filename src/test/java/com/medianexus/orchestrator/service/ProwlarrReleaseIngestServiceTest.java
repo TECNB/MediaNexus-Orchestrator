@@ -292,6 +292,130 @@ class ProwlarrReleaseIngestServiceTest {
     }
 
     @Test
+    void recommendsTmdbSeriesWithoutTvdbAndKeepsBothTitlesInSearchPlan() {
+        prowlarrClient.respondWith("{ImdbId:tt27981453} S02", List.of());
+        prowlarrClient.respondWith("{TmdbId:281449} S02", List.of(
+                release("Spider-Noir.S02.1080p.WEB-DL.x265", 8, 12_000_000_000L)
+        ));
+        prowlarrClient.respondWith("暗影蜘蛛侠 S02", List.of());
+        prowlarrClient.respondWith("Spider-Noir S02", List.of());
+
+        ProwlarrReleaseRecommendationResponse response = service.recommendSeriesRelease(
+                seriesRequest(null, 281449, "tt27981453", "暗影蜘蛛侠", "Spider-Noir", 2, "1080p")
+        );
+
+        assertThat(response.query()).isEqualTo("{TmdbId:281449} S02");
+        assertThat(response.item().matchSource()).isEqualTo("TMDB ID");
+        assertThat(response.item().matchQuery()).isEqualTo("{TmdbId:281449} S02");
+        assertThat(prowlarrClient.calls()).containsExactlyInAnyOrder(
+                "{ImdbId:tt27981453} S02",
+                "{TmdbId:281449} S02",
+                "暗影蜘蛛侠 S02",
+                "Spider-Noir S02"
+        );
+        assertThat(prowlarrClient.calls()).noneMatch(query -> query.contains("TvdbId"));
+    }
+
+    @Test
+    void listsTmdbSeriesReleasesWithIdAndTitleMatchSourcesWhenTvdbIsMissing() {
+        prowlarrClient.respondWith("{TmdbId:281449} S02", List.of(
+                release("Spider-Noir.S02.2160p.WEB-DL.x265", 5, 24_000_000_000L)
+        ));
+        prowlarrClient.respondWith("暗影蜘蛛侠 S02", List.of(
+                release("暗影蜘蛛侠.S02.1080p.WEB-DL.x265", 7, 12_000_000_000L)
+        ));
+        prowlarrClient.respondWith("Spider-Noir S02", List.of(
+                release("Spider-Noir.S02.720p.WEB-DL.x264", 9, 6_000_000_000L)
+        ));
+
+        ProwlarrReleaseSearchResponse response = service.searchSeriesReleases(
+                new SeriesReleaseSearchRequest(
+                        null,
+                        281449,
+                        null,
+                        "暗影蜘蛛侠",
+                        "Spider-Noir",
+                        2,
+                        "1080p"
+                )
+        );
+
+        assertThat(response.items()).hasSize(3);
+        assertThat(response.items())
+                .extracting("matchSource")
+                .containsExactlyInAnyOrder("TMDB ID", "展示标题", "原始标题");
+        assertThat(response.items())
+                .extracting("matchQuery")
+                .containsExactlyInAnyOrder(
+                        "{TmdbId:281449} S02",
+                        "暗影蜘蛛侠 S02",
+                        "Spider-Noir S02"
+                );
+    }
+
+    @Test
+    void filtersUnrelatedSeriesResultsAndLabelsDuplicateTitleAsDisplayTitle() {
+        prowlarrClient.respondWith("{TmdbId:93370} S01", List.of());
+        prowlarrClient.respondWith("杀不死 S01", List.of(
+                release("Tunshi.Xingkong.S01-S04.2160p.UHDTV.H265", 10, 480_000_000_000L),
+                release("The.Agency.S02.2160p.WEB-DL.H265", 15, 89_000_000_000L),
+                release("Star.City.S01.2160p.WEB-DL.H265", 11, 65_000_000_000L),
+                release("杀不死.S01.1080p.WEB-DL.x265", 6, 12_000_000_000L)
+        ));
+
+        ProwlarrReleaseSearchResponse response = service.searchSeriesReleases(
+                new SeriesReleaseSearchRequest(
+                        null,
+                        93370,
+                        null,
+                        "杀不死",
+                        "杀不死",
+                        1,
+                        "1080p"
+                )
+        );
+
+        assertThat(response.items()).singleElement()
+                .satisfies(release -> {
+                    assertThat(release.title()).isEqualTo("杀不死.S01.1080p.WEB-DL.x265");
+                    assertThat(release.matchSource()).isEqualTo("展示标题");
+                    assertThat(release.matchQuery()).isEqualTo("杀不死 S01");
+                });
+    }
+
+    @Test
+    void reportsClearSeriesRecommendationFailureAndLegalEmptySearch() {
+        SeriesReleaseRecommendationRequest recommendationRequest = seriesRequest(
+                null,
+                281449,
+                null,
+                "暗影蜘蛛侠",
+                "Spider-Noir",
+                2,
+                "1080p"
+        );
+
+        assertThatThrownBy(() -> service.recommendSeriesRelease(recommendationRequest))
+                .isInstanceOf(BusinessException.class)
+                .hasMessage("未找到匹配分辨率且有做种的剧集发布资源");
+
+        ProwlarrReleaseSearchResponse response = service.searchSeriesReleases(
+                new SeriesReleaseSearchRequest(
+                        null,
+                        281449,
+                        null,
+                        "暗影蜘蛛侠",
+                        "Spider-Noir",
+                        2,
+                        "1080p"
+                )
+        );
+
+        assertThat(response.query()).isEqualTo("剧集发布搜索计划");
+        assertThat(response.items()).isEmpty();
+    }
+
+    @Test
     void seriesReleaseSearchSortsLikeRecommendationAndDeduplicatesReleaseReferences() {
         ProwlarrRelease duplicateFromTvdb = release(
                 "Breaking.Bad.S01.1080p.WEB-DL.x264",

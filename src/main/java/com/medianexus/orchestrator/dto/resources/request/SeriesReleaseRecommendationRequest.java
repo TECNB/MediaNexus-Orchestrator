@@ -11,11 +11,11 @@ import jakarta.validation.constraints.NotNull;
 @JsonIgnoreProperties(ignoreUnknown = false)
 @Schema(description = "资源页剧集发布资源推荐请求")
 public record SeriesReleaseRecommendationRequest(
-        @Schema(description = "剧集 TVDB ID；用于优先执行 ID 搜索", nullable = true)
+        @Schema(description = "剧集 TVDB ID；可用于执行 ID 搜索", nullable = true)
         @JsonProperty("tvdb_id")
         @Min(1)
         Integer tvdbId,
-        @Schema(description = "剧集 TMDB ID；用于补充执行 ID 搜索", nullable = true)
+        @Schema(description = "剧集 TMDB ID；TMDB 目录结果的稳定身份，可用于执行 ID 搜索", nullable = true)
         @JsonProperty("tmdb_id")
         @Min(1)
         Integer tmdbId,
