@@ -1,6 +1,7 @@
 package com.medianexus.orchestrator;
 
 import com.medianexus.orchestrator.config.AuthProperties;
+import com.medianexus.orchestrator.config.AutoSymlinkProperties;
 import com.medianexus.orchestrator.config.AniRssProperties;
 import com.medianexus.orchestrator.config.DatabaseSshTunnelProperties;
 import com.medianexus.orchestrator.config.EmbyProperties;
@@ -20,6 +21,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 @EnableConfigurationProperties({
         AniRssProperties.class,
         AuthProperties.class,
+        AutoSymlinkProperties.class,
         DatabaseSshTunnelProperties.class,
         EmbyProperties.class,
         OpenListProperties.class,

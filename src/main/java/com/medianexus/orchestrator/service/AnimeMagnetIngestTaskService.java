@@ -68,6 +68,7 @@ public class AnimeMagnetIngestTaskService {
     private final AnimeEpisodeRenameService renameService;
     private final AuthService authService;
     private final UserActionQuotaService userActionQuotaService;
+    private final AutoSymlinkRefreshService autoSymlinkRefreshService;
     private final ExecutorService executorService;
 
     public AnimeMagnetIngestTaskService(
@@ -78,7 +79,8 @@ public class AnimeMagnetIngestTaskService {
             AniRssClient aniRssClient,
             AnimeEpisodeRenameService renameService,
             AuthService authService,
-            UserActionQuotaService userActionQuotaService
+            UserActionQuotaService userActionQuotaService,
+            AutoSymlinkRefreshService autoSymlinkRefreshService
     ) {
         this.taskMapper = taskMapper;
         this.taskLogMapper = taskLogMapper;
@@ -88,6 +90,7 @@ public class AnimeMagnetIngestTaskService {
         this.renameService = renameService;
         this.authService = authService;
         this.userActionQuotaService = userActionQuotaService;
+        this.autoSymlinkRefreshService = autoSymlinkRefreshService;
         this.executorService = Executors.newSingleThreadExecutor(new WorkerThreadFactory());
     }
 
@@ -258,6 +261,7 @@ public class AnimeMagnetIngestTaskService {
             }
 
             markSucceeded(taskId, openListTaskId, result);
+            refreshAutoSymlink(taskId);
         } catch (Exception exception) {
             log.warn("Anime magnet ingest task failed id={}", taskId, exception);
             markFailed(taskId, safeMessage(exception));
@@ -300,6 +304,30 @@ public class AnimeMagnetIngestTaskService {
                 result.organizedCount(),
                 result.skippedCount()
         );
+    }
+
+    private void refreshAutoSymlink(String taskId) {
+        try {
+            writeLog(taskId, "INFO", "succeeded", "正在触发 AutoSymlink 刷新", null);
+            AutoSymlinkRefreshService.RefreshOutcome outcome = autoSymlinkRefreshService.refreshAnime();
+            writeAutoSymlinkOutcome(taskId, "succeeded", outcome);
+        } catch (Exception exception) {
+            log.warn("Anime AutoSymlink refresh logging failed taskId={}", taskId, exception);
+            try {
+                writeLog(taskId, "WARN", "succeeded", "AutoSymlink 刷新任务提交失败，已跳过", null);
+            } catch (Exception logException) {
+                log.warn("Anime AutoSymlink refresh task log write failed taskId={}", taskId, logException);
+            }
+        }
+    }
+
+    private void writeAutoSymlinkOutcome(
+            String taskId,
+            String stage,
+            AutoSymlinkRefreshService.RefreshOutcome outcome
+    ) {
+        String level = outcome.status() == AutoSymlinkRefreshService.Status.SUBMITTED ? "INFO" : "WARN";
+        writeLog(taskId, level, stage, outcome.message(), outcome.detail());
     }
 
     private void markFailed(String taskId, String errorMessage) {

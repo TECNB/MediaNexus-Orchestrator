@@ -79,6 +79,7 @@ public class MagnetIngestService {
     private final MovieSeriesFileRenameService renameService;
     private final AuthService authService;
     private final UserActionQuotaService userActionQuotaService;
+    private final AutoSymlinkRefreshService autoSymlinkRefreshService;
     private final ExecutorService executorService;
 
     public MagnetIngestService(
@@ -90,7 +91,8 @@ public class MagnetIngestService {
             OpenListProperties openListProperties,
             MovieSeriesFileRenameService renameService,
             AuthService authService,
-            UserActionQuotaService userActionQuotaService
+            UserActionQuotaService userActionQuotaService,
+            AutoSymlinkRefreshService autoSymlinkRefreshService
     ) {
         this.movieTaskMapper = movieTaskMapper;
         this.movieTaskLogMapper = movieTaskLogMapper;
@@ -101,6 +103,7 @@ public class MagnetIngestService {
         this.renameService = renameService;
         this.authService = authService;
         this.userActionQuotaService = userActionQuotaService;
+        this.autoSymlinkRefreshService = autoSymlinkRefreshService;
         this.executorService = Executors.newSingleThreadExecutor(new WorkerThreadFactory());
     }
 
@@ -334,6 +337,7 @@ public class MagnetIngestService {
             }
 
             markMovieSucceeded(taskId, openListTaskId, result);
+            refreshMovieAutoSymlink(taskId);
         } catch (Exception exception) {
             log.warn("Movie magnet ingest task failed id={}", taskId, exception);
             markMovieFailed(taskId, safeMessage(exception));
@@ -365,6 +369,7 @@ public class MagnetIngestService {
             }
 
             markSeriesSucceeded(taskId, openListTaskId, result);
+            refreshSeriesAutoSymlink(taskId);
         } catch (Exception exception) {
             log.warn("Series magnet ingest task failed id={}", taskId, exception);
             markSeriesFailed(taskId, safeMessage(exception));
@@ -461,6 +466,53 @@ public class MagnetIngestService {
         );
         log.info("Series magnet ingest task succeeded taskId={} openListTaskId={} organized={} skipped={}",
                 taskId, openListTaskId, result.organizedCount(), result.skippedCount());
+    }
+
+    private void refreshMovieAutoSymlink(String taskId) {
+        refreshAutoSymlink(
+                taskId,
+                "Movie",
+                autoSymlinkRefreshService::refreshMovie,
+                (level, message, detail) -> writeMovieLog(taskId, level, "succeeded", message, detail)
+        );
+    }
+
+    private void refreshSeriesAutoSymlink(String taskId) {
+        refreshAutoSymlink(
+                taskId,
+                "Series",
+                autoSymlinkRefreshService::refreshSeries,
+                (level, message, detail) -> writeSeriesLog(taskId, level, "succeeded", message, detail)
+        );
+    }
+
+    private void refreshAutoSymlink(
+            String taskId,
+            String mediaType,
+            AutoSymlinkRefreshOperation refreshOperation,
+            AutoSymlinkTaskLogWriter taskLogWriter
+    ) {
+        try {
+            taskLogWriter.write("INFO", "正在触发 AutoSymlink 刷新", null);
+            AutoSymlinkRefreshService.RefreshOutcome outcome = refreshOperation.refresh();
+            String level = outcome.status() == AutoSymlinkRefreshService.Status.SUBMITTED ? "INFO" : "WARN";
+            taskLogWriter.write(level, outcome.message(), outcome.detail());
+        } catch (Exception exception) {
+            log.warn("{} AutoSymlink refresh logging failed taskId={}", mediaType, taskId, exception);
+            try {
+                taskLogWriter.write("WARN", "AutoSymlink 刷新任务提交失败，已跳过", null);
+            } catch (Exception logException) {
+                log.warn("{} AutoSymlink refresh task log write failed taskId={}", mediaType, taskId, logException);
+            }
+        }
+    }
+
+    private interface AutoSymlinkRefreshOperation {
+        AutoSymlinkRefreshService.RefreshOutcome refresh();
+    }
+
+    private interface AutoSymlinkTaskLogWriter {
+        void write(String level, String message, String detail);
     }
 
     private void markMovieFailed(String taskId, String errorMessage) {

@@ -75,6 +75,7 @@ public class AdultMagnetIngestService {
     private final OpenListProperties openListProperties;
     private final MovieSeriesFileRenameService renameService;
     private final AuthService authService;
+    private final AutoSymlinkRefreshService autoSymlinkRefreshService;
     private final ExecutorService executorService;
     private final ExecutorService prepareExecutorService;
     private final ExecutorService organizeExecutorService;
@@ -87,7 +88,8 @@ public class AdultMagnetIngestService {
             OpenListClient openListClient,
             OpenListProperties openListProperties,
             MovieSeriesFileRenameService renameService,
-            AuthService authService
+            AuthService authService,
+            AutoSymlinkRefreshService autoSymlinkRefreshService
     ) {
         this.taskMapper = taskMapper;
         this.taskLogMapper = taskLogMapper;
@@ -95,6 +97,7 @@ public class AdultMagnetIngestService {
         this.openListProperties = openListProperties;
         this.renameService = renameService;
         this.authService = authService;
+        this.autoSymlinkRefreshService = autoSymlinkRefreshService;
         this.executorService = Executors.newSingleThreadExecutor(new AdultWorkerThreadFactory());
         this.prepareExecutorService = Executors.newFixedThreadPool(PREPARE_PARALLELISM, new AdultPrepareThreadFactory());
         this.organizeExecutorService = Executors.newFixedThreadPool(ORGANIZE_PARALLELISM, new AdultOrganizeThreadFactory());
@@ -215,6 +218,7 @@ public class AdultMagnetIngestService {
             int keptCount = safeInt(finishedTask.getKeptCount());
             if (succeededCount > 0 && failedCount == 0 && keptCount > 0) {
                 markFinished(taskId, "SUCCEEDED", "succeeded", null);
+                refreshAutoSymlink(taskId, "succeeded");
             } else if (keptCount > 0) {
                 markFinished(taskId, "PARTIAL_SUCCESS", "partial_success", "部分 Adult 下载链接未成功完成");
             } else {
@@ -860,6 +864,30 @@ public class AdultMagnetIngestService {
                 "Adult 批量任务结束",
                 "status=" + status + (errorMessage == null ? "" : ", message=" + errorMessage)
         );
+    }
+
+    private void refreshAutoSymlink(String taskId, String stage) {
+        try {
+            writeLog(taskId, "INFO", stage, "正在触发 AutoSymlink 刷新", null);
+            AutoSymlinkRefreshService.RefreshOutcome outcome = autoSymlinkRefreshService.refreshAdult();
+            writeAutoSymlinkOutcome(taskId, stage, outcome);
+        } catch (Exception exception) {
+            log.warn("Adult AutoSymlink refresh logging failed taskId={}", taskId, exception);
+            try {
+                writeLog(taskId, "WARN", stage, "AutoSymlink 刷新任务提交失败，已跳过", null);
+            } catch (Exception logException) {
+                log.warn("Adult AutoSymlink refresh task log write failed taskId={}", taskId, logException);
+            }
+        }
+    }
+
+    private void writeAutoSymlinkOutcome(
+            String taskId,
+            String stage,
+            AutoSymlinkRefreshService.RefreshOutcome outcome
+    ) {
+        String level = outcome.status() == AutoSymlinkRefreshService.Status.SUBMITTED ? "INFO" : "WARN";
+        writeLog(taskId, level, stage, outcome.message(), outcome.detail());
     }
 
     private void writeLog(String taskId, String level, String stage, String message, String detail) {

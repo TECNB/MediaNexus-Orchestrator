@@ -36,6 +36,24 @@ medianexus:
     base-url: ${MEDIANEXUS_ANI_RSS_BASE_URL:http://example.invalid:7789}
     api-key: ${MEDIANEXUS_ANI_RSS_API_KEY:}
     timeout: ${MEDIANEXUS_ANI_RSS_TIMEOUT:10s}
+  autosymlink:
+    base-url: ${MEDIANEXUS_AUTOSYMLINK_BASE_URL:}
+    cookie: ${MEDIANEXUS_AUTOSYMLINK_COOKIE:}
+    timeout: ${MEDIANEXUS_AUTOSYMLINK_TIMEOUT:15s}
+    max-attempts: ${MEDIANEXUS_AUTOSYMLINK_MAX_ATTEMPTS:2}
+    retry-interval: ${MEDIANEXUS_AUTOSYMLINK_RETRY_INTERVAL:3s}
+    movie:
+      uuid: ${MEDIANEXUS_AUTOSYMLINK_MOVIE_TASK_UUID:}
+      request-body-json: ${MEDIANEXUS_AUTOSYMLINK_MOVIE_REQUEST_BODY_JSON:}
+    tv:
+      uuid: ${MEDIANEXUS_AUTOSYMLINK_TV_TASK_UUID:}
+      request-body-json: ${MEDIANEXUS_AUTOSYMLINK_TV_REQUEST_BODY_JSON:}
+    anime:
+      uuid: ${MEDIANEXUS_AUTOSYMLINK_ANIME_TASK_UUID:}
+      request-body-json: ${MEDIANEXUS_AUTOSYMLINK_ANIME_REQUEST_BODY_JSON:}
+    adult:
+      uuid: ${MEDIANEXUS_AUTOSYMLINK_ADULT_TASK_UUID:}
+      request-body-json: ${MEDIANEXUS_AUTOSYMLINK_ADULT_REQUEST_BODY_JSON:}
   emby:
     webhook-secret: ${MEDIANEXUS_EMBY_WEBHOOK_SECRET:}
   openlist:

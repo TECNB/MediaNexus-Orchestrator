@@ -36,7 +36,7 @@ class ProwlarrReleaseIngestServiceTest {
                 new TestAuthService(),
                 prowlarrClient,
                 new ReleaseTitleTagParser(),
-                new MagnetIngestService(null, null, null, null, null, null, null, null, null)
+                new MagnetIngestService(null, null, null, null, null, null, null, null, null, null)
         );
     }
 
