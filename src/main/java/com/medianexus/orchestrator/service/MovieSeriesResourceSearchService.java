@@ -10,14 +10,16 @@ import com.medianexus.orchestrator.dto.resources.response.SeriesSearchResponse;
 import com.medianexus.orchestrator.dto.resources.response.SeriesSeasonsResponse;
 import com.medianexus.orchestrator.integration.radarr.RadarrClient;
 import com.medianexus.orchestrator.integration.radarr.RadarrClientException;
-import com.medianexus.orchestrator.integration.sonarr.SonarrClient;
-import com.medianexus.orchestrator.integration.sonarr.SonarrClientException;
+import com.medianexus.orchestrator.service.catalog.MediaCatalogSearch;
+import com.medianexus.orchestrator.service.catalog.MediaCatalogSearchException;
+import com.medianexus.orchestrator.service.catalog.SeriesCatalogIdentity;
+import com.medianexus.orchestrator.service.catalog.SeriesCatalogItem;
+import com.medianexus.orchestrator.service.catalog.SeriesCatalogSeasons;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
-import java.util.TreeSet;
 import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -32,16 +34,16 @@ public class MovieSeriesResourceSearchService {
     private static final Pattern SAFE_ID_PATTERN = Pattern.compile("[^a-zA-Z0-9]+");
 
     private final RadarrClient radarrClient;
-    private final SonarrClient sonarrClient;
+    private final MediaCatalogSearch mediaCatalogSearch;
     private final AuthService authService;
 
     public MovieSeriesResourceSearchService(
             RadarrClient radarrClient,
-            SonarrClient sonarrClient,
+            MediaCatalogSearch mediaCatalogSearch,
             AuthService authService
     ) {
         this.radarrClient = radarrClient;
-        this.sonarrClient = sonarrClient;
+        this.mediaCatalogSearch = mediaCatalogSearch;
         this.authService = authService;
     }
 
@@ -68,47 +70,58 @@ public class MovieSeriesResourceSearchService {
         String normalizedTerm = normalizeSearchTerm(term);
         try {
             List<SeriesSearchItem> items = new ArrayList<>();
-            for (JsonNode series : sonarrClient.searchSeries(normalizedTerm)) {
+            for (SeriesCatalogItem series : mediaCatalogSearch.searchSeries(normalizedTerm)) {
                 items.add(toSeriesSearchItem(series));
             }
             return new SeriesSearchResponse(items);
-        } catch (SonarrClientException exception) {
-            if (exception.getReason() == SonarrClientException.Reason.CONFIGURATION) {
-                throw serviceUnavailable("Sonarr 服务尚未配置");
+        } catch (MediaCatalogSearchException exception) {
+            if (exception.getReason() == MediaCatalogSearchException.Reason.CONFIGURATION) {
+                throw serviceUnavailable("剧集目录服务尚未配置");
             }
             log.warn("Series search failed term={} reason={}", logValue(normalizedTerm), exception.getMessage(), exception);
             throw internalError("剧集搜索失败，请稍后重试");
         }
     }
 
-    public SeriesSeasonsResponse getSeriesSeasons(Integer tvdbId) {
+    public SeriesSeasonsResponse getSeriesSeasons(Integer tvdbId, Integer tmdbId) {
         authService.requireCurrentUser();
-        if (tvdbId == null) {
-            throw badRequest("tvdb_id is required");
+        if (tvdbId == null && tmdbId == null) {
+            throw badRequest("tmdb_id or tvdb_id is required");
         }
-        if (tvdbId <= 0) {
+        if (tvdbId != null && tvdbId <= 0) {
             throw badRequest("tvdb_id must be greater than 0");
+        }
+        if (tmdbId != null && tmdbId <= 0) {
+            throw badRequest("tmdb_id must be greater than 0");
         }
 
         try {
-            JsonNode series = sonarrClient.getSeriesByTvdbId(tvdbId);
-            if (series == null) {
+            SeriesCatalogSeasons seasons = mediaCatalogSearch.getSeriesSeasons(
+                    new SeriesCatalogIdentity(tvdbId, tmdbId, null)
+            );
+            if (seasons == null) {
                 throw new BusinessException(ErrorCode.BAD_REQUEST, "series not found", HttpStatus.NOT_FOUND);
             }
-            List<Integer> seasonNumbers = extractSeasonNumbers(series.path("seasons"));
             return new SeriesSeasonsResponse(
-                    tvdbId,
-                    textOrFallback(series.get("title"), "Unknown Title"),
-                    seasonNumbers.size(),
-                    seasonNumbers
+                    seasons.tvdbId(),
+                    seasons.tmdbId(),
+                    seasons.title(),
+                    seasons.seasonCount(),
+                    seasons.seasonNumbers()
             );
         } catch (BusinessException exception) {
             throw exception;
-        } catch (SonarrClientException exception) {
-            if (exception.getReason() == SonarrClientException.Reason.CONFIGURATION) {
-                throw serviceUnavailable("Sonarr 服务尚未配置");
+        } catch (MediaCatalogSearchException exception) {
+            if (exception.getReason() == MediaCatalogSearchException.Reason.CONFIGURATION) {
+                throw serviceUnavailable("剧集目录服务尚未配置");
             }
-            log.warn("Series seasons lookup failed tvdbId={} reason={}", tvdbId, exception.getMessage(), exception);
+            log.warn(
+                    "Series seasons lookup failed tmdbId={} tvdbId={} reason={}",
+                    tmdbId,
+                    tvdbId,
+                    exception.getMessage(),
+                    exception
+            );
             throw internalError("剧集季数加载失败，请稍后重试");
         }
     }
@@ -130,22 +143,20 @@ public class MovieSeriesResourceSearchService {
         );
     }
 
-    private SeriesSearchItem toSeriesSearchItem(JsonNode series) {
-        String title = textOrFallback(series.get("title"), "Unknown Title");
-        Integer year = integerOrNull(series.get("year"));
+    private SeriesSearchItem toSeriesSearchItem(SeriesCatalogItem series) {
         return new SeriesSearchItem(
-                buildSeriesId(series, title, year),
-                title,
-                textOrNull(series.get("originalTitle")),
-                year,
-                textOrFallback(series.get("overview"), ""),
-                extractPoster(series.path("images")),
-                integerOrNull(series.get("tvdbId")),
-                textOrNull(series.get("imdbId")),
-                integerOrNull(series.get("tmdbId")),
-                normalizeStatus(textOrNull(series.get("status"))),
-                textOrNull(series.get("network")),
-                textOrNull(series.get("seriesType"))
+                series.id(),
+                series.title(),
+                series.originalTitle(),
+                series.year(),
+                series.overview(),
+                series.poster(),
+                series.tvdbId(),
+                series.imdbId(),
+                series.tmdbId(),
+                series.status(),
+                series.network(),
+                series.seriesType()
         );
     }
 
@@ -155,22 +166,6 @@ public class MovieSeriesResourceSearchService {
             return "tmdb:" + tmdbId;
         }
         String imdbId = textOrNull(movie.get("imdbId"));
-        if (StringUtils.hasText(imdbId)) {
-            return "imdb:" + imdbId;
-        }
-        return fallbackId(title, year);
-    }
-
-    private String buildSeriesId(JsonNode series, String title, Integer year) {
-        Integer tvdbId = integerOrNull(series.get("tvdbId"));
-        if (tvdbId != null) {
-            return "tvdb:" + tvdbId;
-        }
-        Integer tmdbId = integerOrNull(series.get("tmdbId"));
-        if (tmdbId != null) {
-            return "tmdb:" + tmdbId;
-        }
-        String imdbId = textOrNull(series.get("imdbId"));
         if (StringUtils.hasText(imdbId)) {
             return "imdb:" + imdbId;
         }
@@ -198,20 +193,6 @@ public class MovieSeriesResourceSearchService {
             }
         }
         return null;
-    }
-
-    private List<Integer> extractSeasonNumbers(JsonNode seasons) {
-        if (seasons == null || !seasons.isArray()) {
-            return List.of();
-        }
-        Set<Integer> seasonNumbers = new TreeSet<>();
-        for (JsonNode season : seasons) {
-            Integer seasonNumber = integerOrNull(season.get("seasonNumber"));
-            if (seasonNumber != null && seasonNumber > 0) {
-                seasonNumbers.add(seasonNumber);
-            }
-        }
-        return new ArrayList<>(seasonNumbers);
     }
 
     private List<String> extractAlternateTitles(JsonNode alternateTitles) {
@@ -259,10 +240,6 @@ public class MovieSeriesResourceSearchService {
             return "announced";
         }
         return null;
-    }
-
-    private String normalizeStatus(String value) {
-        return StringUtils.hasText(value) ? value.trim().toLowerCase(Locale.ROOT) : "unknown";
     }
 
     private String normalizeSearchTerm(String term) {

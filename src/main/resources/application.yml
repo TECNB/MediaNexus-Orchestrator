@@ -79,6 +79,14 @@ medianexus:
     port: ${MEDIANEXUS_SONARR_PORT:0}
     api-key: ${MEDIANEXUS_SONARR_API_KEY:}
     timeout: ${MEDIANEXUS_SONARR_TIMEOUT:10s}
+  tmdb:
+    base-url: ${MEDIANEXUS_TMDB_BASE_URL:https://api.themoviedb.org/3}
+    api-token: ${MEDIANEXUS_TMDB_API_TOKEN:}
+    default-language: ${MEDIANEXUS_TMDB_DEFAULT_LANGUAGE:zh-CN}
+    fallback-language: ${MEDIANEXUS_TMDB_FALLBACK_LANGUAGE:en-US}
+    image-base-url: ${MEDIANEXUS_TMDB_IMAGE_BASE_URL:https://image.tmdb.org/t/p/w500}
+    fallback-to-sonarr: ${MEDIANEXUS_TMDB_FALLBACK_TO_SONARR:true}
+    timeout: ${MEDIANEXUS_TMDB_TIMEOUT:10s}
   auth:
     registration-code: ${MEDIANEXUS_AUTH_REGISTRATION_CODE:}
   quota:

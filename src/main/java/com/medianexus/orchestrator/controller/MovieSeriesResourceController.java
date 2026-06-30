@@ -31,7 +31,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping("/api/v1/resources")
-@Tag(name = "电影剧集资源搜索", description = "面向前端选择器的 Radarr/Sonarr 只读搜索接口")
+@Tag(name = "电影剧集资源搜索", description = "面向前端选择器的媒体目录与发布资源接口")
 public class MovieSeriesResourceController {
 
     private final MovieSeriesResourceSearchService resourceSearchService;
@@ -87,7 +87,7 @@ public class MovieSeriesResourceController {
     }
 
     @GetMapping("/series/search")
-    @Operation(summary = "搜索剧集", description = "按关键词代理 Sonarr series lookup，并返回前端选择器字段。")
+    @Operation(summary = "搜索剧集", description = "按关键词搜索剧集目录，并返回前端选择器字段。")
     public ApiResponse<SeriesSearchResponse> searchSeries(
             @Parameter(description = "剧集搜索关键词，不能为空")
             @RequestParam(name = "term", required = false) String term
@@ -96,12 +96,14 @@ public class MovieSeriesResourceController {
     }
 
     @GetMapping("/series/seasons")
-    @Operation(summary = "获取剧集季数", description = "按 TVDB id 代理 Sonarr lookup，并从 seasons 提取可选季数。")
+    @Operation(summary = "获取剧集季数", description = "按 TMDB 或 TVDB 剧集目录身份加载可选季数，优先使用 TMDB。")
     public ApiResponse<SeriesSeasonsResponse> getSeriesSeasons(
-            @Parameter(description = "TVDB id，必须大于 0")
+            @Parameter(description = "TMDB id，必须大于 0")
+            @RequestParam(name = "tmdb_id", required = false) Integer tmdbId,
+            @Parameter(description = "TVDB id，必须大于 0；TMDB 不可用时用于兼容回退")
             @RequestParam(name = "tvdb_id", required = false) Integer tvdbId
     ) {
-        return ApiResponse.success(resourceSearchService.getSeriesSeasons(tvdbId));
+        return ApiResponse.success(resourceSearchService.getSeriesSeasons(tvdbId, tmdbId));
     }
 
     @PostMapping("/series/openlist-ingest")

@@ -23,6 +23,7 @@ public class ProductionConfigurationGuard implements InitializingBean {
     private final ProwlarrProperties prowlarrProperties;
     private final RadarrProperties radarrProperties;
     private final SonarrProperties sonarrProperties;
+    private final TmdbProperties tmdbProperties;
     private final String datasourceUrl;
     private final String datasourceUsername;
     private final String datasourcePassword;
@@ -36,6 +37,7 @@ public class ProductionConfigurationGuard implements InitializingBean {
             ProwlarrProperties prowlarrProperties,
             RadarrProperties radarrProperties,
             SonarrProperties sonarrProperties,
+            TmdbProperties tmdbProperties,
             @Value("${spring.datasource.url:}") String datasourceUrl,
             @Value("${spring.datasource.username:}") String datasourceUsername,
             @Value("${spring.datasource.password:}") String datasourcePassword
@@ -48,6 +50,7 @@ public class ProductionConfigurationGuard implements InitializingBean {
         this.prowlarrProperties = prowlarrProperties;
         this.radarrProperties = radarrProperties;
         this.sonarrProperties = sonarrProperties;
+        this.tmdbProperties = tmdbProperties;
         this.datasourceUrl = datasourceUrl;
         this.datasourceUsername = datasourceUsername;
         this.datasourcePassword = datasourcePassword;
@@ -160,6 +163,7 @@ public class ProductionConfigurationGuard implements InitializingBean {
         rejectPlaceholder("medianexus.prowlarr.api-key", prowlarrProperties.getApiKey(), violations);
         rejectPlaceholder("medianexus.radarr.api-key", radarrProperties.getApiKey(), violations);
         rejectPlaceholder("medianexus.sonarr.api-key", sonarrProperties.getApiKey(), violations);
+        rejectPlaceholder("medianexus.tmdb.api-token", tmdbProperties.getApiToken(), violations);
     }
 
     private void rejectPlaceholder(String propertyName, String value, List<String> violations) {
