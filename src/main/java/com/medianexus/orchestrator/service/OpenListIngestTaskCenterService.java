@@ -3,10 +3,12 @@ package com.medianexus.orchestrator.service;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.medianexus.orchestrator.dto.taskcenter.response.OpenListIngestTaskCenterItemResponse;
 import com.medianexus.orchestrator.dto.taskcenter.response.OpenListIngestTaskCenterListResponse;
+import com.medianexus.orchestrator.mapper.AdultMagnetIngestTaskMapper;
 import com.medianexus.orchestrator.mapper.AnimeMagnetIngestTaskMapper;
 import com.medianexus.orchestrator.mapper.MovieMagnetIngestTaskMapper;
 import com.medianexus.orchestrator.mapper.SeriesMagnetIngestTaskMapper;
 import com.medianexus.orchestrator.mapper.UserMapper;
+import com.medianexus.orchestrator.model.AdultMagnetIngestTask;
 import com.medianexus.orchestrator.model.AnimeMagnetIngestTask;
 import com.medianexus.orchestrator.model.MovieMagnetIngestTask;
 import com.medianexus.orchestrator.model.SeriesMagnetIngestTask;
@@ -31,9 +33,11 @@ public class OpenListIngestTaskCenterService {
     private static final String MOVIE_TASK_TYPE = "MOVIE";
     private static final String SERIES_TASK_TYPE = "SERIES";
     private static final String ANIME_TASK_TYPE = "ANIME";
+    private static final String ADULT_TASK_TYPE = "ADULT";
     private static final String MOVIE_PRODUCT_TYPE = "MOVIE";
     private static final String SERIES_PRODUCT_TYPE = "SERIES";
     private static final String ANIME_PRODUCT_TYPE = "ANIME";
+    private static final String ADULT_PRODUCT_TYPE = "ADULT";
     private static final String MANUAL_MAGNET_SOURCE = "MANUAL_MAGNET";
     private static final String PROWLARR_RELEASE_SOURCE = "PROWLARR_RELEASE";
     private static final String ALL_FILTER = "ALL";
@@ -58,6 +62,7 @@ public class OpenListIngestTaskCenterService {
     private final MovieMagnetIngestTaskMapper movieTaskMapper;
     private final SeriesMagnetIngestTaskMapper seriesTaskMapper;
     private final AnimeMagnetIngestTaskMapper animeTaskMapper;
+    private final AdultMagnetIngestTaskMapper adultTaskMapper;
     private final UserMapper userMapper;
 
     public OpenListIngestTaskCenterService(
@@ -65,12 +70,14 @@ public class OpenListIngestTaskCenterService {
             MovieMagnetIngestTaskMapper movieTaskMapper,
             SeriesMagnetIngestTaskMapper seriesTaskMapper,
             AnimeMagnetIngestTaskMapper animeTaskMapper,
+            AdultMagnetIngestTaskMapper adultTaskMapper,
             UserMapper userMapper
     ) {
         this.authService = authService;
         this.movieTaskMapper = movieTaskMapper;
         this.seriesTaskMapper = seriesTaskMapper;
         this.animeTaskMapper = animeTaskMapper;
+        this.adultTaskMapper = adultTaskMapper;
         this.userMapper = userMapper;
     }
 
@@ -90,7 +97,8 @@ public class OpenListIngestTaskCenterService {
         List<MovieMagnetIngestTask> movieTasks = movieTaskMapper.selectList(ownedMovieTasks(user));
         List<SeriesMagnetIngestTask> seriesTasks = seriesTaskMapper.selectList(ownedSeriesTasks(user));
         List<AnimeMagnetIngestTask> animeTasks = animeTaskMapper.selectList(ownedAnimeTasks(user));
-        Map<Long, User> creatorsById = creatorsById(movieTasks, seriesTasks, animeTasks);
+        List<AdultMagnetIngestTask> adultTasks = adultTasksVisibleTo(user);
+        Map<Long, User> creatorsById = creatorsById(movieTasks, seriesTasks, animeTasks, adultTasks);
         List<TaskCenterListingCandidate> candidates = new ArrayList<>();
 
         candidates.addAll(movieTasks.stream()
@@ -101,6 +109,9 @@ public class OpenListIngestTaskCenterService {
                 .toList());
         candidates.addAll(animeTasks.stream()
                 .map(task -> animeItem(task, creatorsById))
+                .toList());
+        candidates.addAll(adultTasks.stream()
+                .map(task -> adultItem(task, creatorsById))
                 .toList());
 
         String normalizedView = normalizeView(view);
@@ -161,6 +172,13 @@ public class OpenListIngestTaskCenterService {
             queryWrapper.eq(AnimeMagnetIngestTask::getCreatedByUserId, user.getId());
         }
         return queryWrapper;
+    }
+
+    private List<AdultMagnetIngestTask> adultTasksVisibleTo(User user) {
+        if (!isAdmin(user)) {
+            return List.of();
+        }
+        return adultTaskMapper.selectList(new LambdaQueryWrapper<>());
     }
 
     private TaskCenterListingCandidate movieItem(
@@ -232,6 +250,29 @@ public class OpenListIngestTaskCenterService {
         return new TaskCenterListingCandidate(response, task.getMagnetHash());
     }
 
+    private TaskCenterListingCandidate adultItem(
+            AdultMagnetIngestTask task,
+            Map<Long, User> creatorsById
+    ) {
+        OpenListIngestTaskCenterItemResponse response = new OpenListIngestTaskCenterItemResponse(
+                ADULT_TASK_TYPE,
+                task.getId(),
+                ADULT_PRODUCT_TYPE,
+                task.getCreatedByUserId(),
+                creatorUsername(creatorsById, task.getCreatedByUserId()),
+                adultTitle(task),
+                task.getStatus(),
+                task.getStage(),
+                MANUAL_MAGNET_SOURCE,
+                null,
+                adultProgressSummary(task),
+                "/magnet-ingest",
+                task.getCreatedAt(),
+                task.getUpdatedAt()
+        );
+        return new TaskCenterListingCandidate(response, null);
+    }
+
     private Comparator<TaskCenterListingCandidate> taskCenterOrdering() {
         Comparator<TaskCenterListingCandidate> byUpdatedAt =
                 Comparator.comparing(this::effectiveUpdatedAt);
@@ -272,11 +313,37 @@ public class OpenListIngestTaskCenterService {
         return "已整理 %d，跳过 %d".formatted(organized, skipped);
     }
 
+    private String adultTitle(AdultMagnetIngestTask task) {
+        String category = StringUtils.hasText(task.getCategory()) ? task.getCategory() : ADULT_PRODUCT_TYPE;
+        if (!StringUtils.hasText(task.getDateFolder())) {
+            return "%s 批量任务".formatted(category);
+        }
+        return "%s 批量任务 %s".formatted(category, task.getDateFolder());
+    }
+
+    private String adultProgressSummary(AdultMagnetIngestTask task) {
+        return "已提交 %d，成功 %d，失败 %d，重复 %d，保留 %d，删除 %d".formatted(
+                safeCount(task.getSubmittedCount()),
+                safeCount(task.getSucceededCount()),
+                safeCount(task.getFailedCount()),
+                safeCount(task.getDuplicateCount()),
+                safeCount(task.getKeptCount()),
+                safeCount(task.getDeletedCount())
+        );
+    }
+
+    private int safeCount(Integer count) {
+        return count == null ? 0 : count;
+    }
+
     private boolean matchesProductType(TaskCenterListingCandidate item, String productType) {
         return ALL_FILTER.equals(productType) || productType.equals(item.response().productType());
     }
 
     private boolean matchesSourceType(TaskCenterListingCandidate item, String sourceType) {
+        if (ADULT_PRODUCT_TYPE.equals(item.response().productType())) {
+            return ALL_FILTER.equals(sourceType);
+        }
         return ALL_FILTER.equals(sourceType) || sourceType.equals(item.response().sourceType());
     }
 
@@ -347,7 +414,8 @@ public class OpenListIngestTaskCenterService {
     private Map<Long, User> creatorsById(
             List<MovieMagnetIngestTask> movieTasks,
             List<SeriesMagnetIngestTask> seriesTasks,
-            List<AnimeMagnetIngestTask> animeTasks
+            List<AnimeMagnetIngestTask> animeTasks,
+            List<AdultMagnetIngestTask> adultTasks
     ) {
         Set<Long> creatorIds = new HashSet<>();
         movieTasks.stream()
@@ -360,6 +428,10 @@ public class OpenListIngestTaskCenterService {
                 .forEach(creatorIds::add);
         animeTasks.stream()
                 .map(AnimeMagnetIngestTask::getCreatedByUserId)
+                .filter(id -> id != null)
+                .forEach(creatorIds::add);
+        adultTasks.stream()
+                .map(AdultMagnetIngestTask::getCreatedByUserId)
                 .filter(id -> id != null)
                 .forEach(creatorIds::add);
         if (creatorIds.isEmpty()) {

@@ -27,7 +27,7 @@ public class OpenListIngestTaskCenterController {
     }
 
     @GetMapping("/tasks")
-    @Operation(summary = "列出 OpenList 入库任务", description = "统一返回电影、剧集和动漫整季任务，并支持状态视图、筛选、搜索和分页。")
+    @Operation(summary = "列出 OpenList 入库任务", description = "统一返回电影、剧集、动漫整季和有权查看的 Adult 批量任务，并支持状态视图、筛选、搜索和分页。")
     public ApiResponse<OpenListIngestTaskCenterListResponse> listTasks(
             @Parameter(description = "状态视图：ALL、IN_PROGRESS、NEEDS_ATTENTION 或 SUCCEEDED")
             @Pattern(regexp = "(?i)ALL|IN_PROGRESS|NEEDS_ATTENTION|SUCCEEDED", message = "状态视图无效")

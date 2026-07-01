@@ -6,12 +6,12 @@ import java.time.LocalDateTime;
 
 @Schema(description = "任务中心 OpenList 入库任务列表项")
 public record OpenListIngestTaskCenterItemResponse(
-        @Schema(description = "底层任务类型：MOVIE、SERIES 或 ANIME")
+        @Schema(description = "底层任务类型：MOVIE、SERIES、ANIME 或 ADULT")
         @JsonProperty("task_type")
         String taskType,
         @Schema(description = "底层任务 id")
         String id,
-        @Schema(description = "任务中心产品类别：MOVIE、SERIES 或 ANIME")
+        @Schema(description = "任务中心产品类别：MOVIE、SERIES、ANIME 或 ADULT")
         @JsonProperty("product_type")
         String productType,
         @Schema(description = "创建任务的用户 id；历史无归属任务可能为 null", nullable = true)
