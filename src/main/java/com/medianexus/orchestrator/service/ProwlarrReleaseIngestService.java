@@ -548,19 +548,19 @@ public class ProwlarrReleaseIngestService {
         if (series.tvdbId() != null) {
             queries.add(new MovieReleaseSearchQuery(
                     "TVDB ID",
-                    "{TvdbId:" + series.tvdbId() + "} " + seasonQuerySuffix(series.seasonNumber())
+                    releaseSearchQueryForSeason("{TvdbId:" + series.tvdbId() + "}", series.seasonNumber())
             ));
         }
         if (StringUtils.hasText(series.imdbId())) {
             queries.add(new MovieReleaseSearchQuery(
                     "IMDB ID",
-                    "{ImdbId:" + series.imdbId() + "} " + seasonQuerySuffix(series.seasonNumber())
+                    releaseSearchQueryForSeason("{ImdbId:" + series.imdbId() + "}", series.seasonNumber())
             ));
         }
         if (series.tmdbId() != null) {
             queries.add(new MovieReleaseSearchQuery(
                     "TMDB ID",
-                    "{TmdbId:" + series.tmdbId() + "} " + seasonQuerySuffix(series.seasonNumber())
+                    releaseSearchQueryForSeason("{TmdbId:" + series.tmdbId() + "}", series.seasonNumber())
             ));
         }
         return queries;
@@ -591,7 +591,7 @@ public class ProwlarrReleaseIngestService {
         if (!StringUtils.hasText(normalizedTitle) || !seenTitles.add(normalizedTitle)) {
             return;
         }
-        queries.add(new MovieReleaseSearchQuery(source, title.trim() + " " + seasonQuerySuffix(seasonNumber)));
+        queries.add(new MovieReleaseSearchQuery(source, releaseSearchQueryForSeason(title.trim(), seasonNumber)));
     }
 
     private List<MovieReleaseSearchQuery> seriesReleaseSearchPlan(SeriesReleaseIdentity series) {
@@ -761,6 +761,7 @@ public class ProwlarrReleaseIngestService {
                 release.downloadRef(),
                 tags.resolutionTags(),
                 tags.dynamicRangeTags(),
+                tags.seasonTags(),
                 match == null ? null : match.source(),
                 match == null ? null : match.query()
         );
@@ -837,6 +838,9 @@ public class ProwlarrReleaseIngestService {
             List<SearchTitleTerm> titleTerms,
             RecommendedRelease candidate
     ) {
+        if (!candidate.tags().seasonTags().contains(seasonQuerySuffix(series.seasonNumber()))) {
+            return false;
+        }
         SearchTitleTerm sourceTitle = switch (candidate.query().source()) {
             case "展示标题" -> titleTerm(series.title());
             case "原始标题" -> titleTerm(series.originalTitle());
@@ -933,6 +937,10 @@ public class ProwlarrReleaseIngestService {
 
     private String seriesQuery(String term, int seasonNumber) {
         return requiredText(term, "搜索关键词不能为空") + " " + seasonQuerySuffix(seasonNumber);
+    }
+
+    private String releaseSearchQueryForSeason(String query, int seasonNumber) {
+        return seasonNumber == 1 ? query : query + " " + seasonQuerySuffix(seasonNumber);
     }
 
     private String seasonQuerySuffix(int seasonNumber) {

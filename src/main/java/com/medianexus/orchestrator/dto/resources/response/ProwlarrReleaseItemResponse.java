@@ -33,6 +33,9 @@ public record ProwlarrReleaseItemResponse(
         @Schema(description = "从发布标题解析出的动态范围标签")
         @JsonProperty("dynamic_range_tags")
         List<String> dynamicRangeTags,
+        @Schema(description = "从发布标题解析出的季度标签，例如 S01")
+        @JsonProperty("season_tags")
+        List<String> seasonTags,
         @Schema(description = "命中来源；旧通用发布搜索没有搜索计划来源时为 null", nullable = true)
         @JsonProperty("match_source")
         String matchSource,

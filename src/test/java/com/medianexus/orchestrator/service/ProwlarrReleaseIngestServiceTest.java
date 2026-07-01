@@ -260,11 +260,11 @@ class ProwlarrReleaseIngestServiceTest {
 
     @Test
     void recommendsSeriesOriginalTitleCandidatesWhenDisplayTitleHasNoMatch() {
-        prowlarrClient.respondWith("{TvdbId:81189} S01", List.of());
-        prowlarrClient.respondWith("{ImdbId:tt0903747} S01", List.of());
-        prowlarrClient.respondWith("{TmdbId:1396} S01", List.of());
-        prowlarrClient.respondWith("绝命毒师 S01", List.of());
-        prowlarrClient.respondWith("Breaking Bad S01", List.of(
+        prowlarrClient.respondWith("{TvdbId:81189}", List.of());
+        prowlarrClient.respondWith("{ImdbId:tt0903747}", List.of());
+        prowlarrClient.respondWith("{TmdbId:1396}", List.of());
+        prowlarrClient.respondWith("绝命毒师", List.of());
+        prowlarrClient.respondWith("Breaking Bad", List.of(
                 release("Breaking.Bad.S01.1080p.BluRay.x265", 7, 26_000_000_000L),
                 release("Breaking.Bad.S01.1080p.WEB-DL.x264", 20, 9_000_000_000L)
         ));
@@ -273,7 +273,7 @@ class ProwlarrReleaseIngestServiceTest {
                 seriesRequest(81189, 1396, "tt0903747", "绝命毒师", "Breaking Bad", 1, "1080p")
         );
 
-        assertThat(response.query()).isEqualTo("Breaking Bad S01");
+        assertThat(response.query()).isEqualTo("Breaking Bad");
         assertThat(response.item().matchSource()).isEqualTo("原始标题");
         assertThat(response.item().title()).isEqualTo("Breaking.Bad.S01.1080p.BluRay.x265");
         assertThat(response.items())
@@ -283,11 +283,11 @@ class ProwlarrReleaseIngestServiceTest {
                         "Breaking.Bad.S01.1080p.WEB-DL.x264"
                 );
         assertThat(prowlarrClient.calls()).containsExactlyInAnyOrder(
-                "{TvdbId:81189} S01",
-                "{ImdbId:tt0903747} S01",
-                "{TmdbId:1396} S01",
-                "绝命毒师 S01",
-                "Breaking Bad S01"
+                "{TvdbId:81189}",
+                "{ImdbId:tt0903747}",
+                "{TmdbId:1396}",
+                "绝命毒师",
+                "Breaking Bad"
         );
     }
 
@@ -314,6 +314,48 @@ class ProwlarrReleaseIngestServiceTest {
                 "Spider-Noir S02"
         );
         assertThat(prowlarrClient.calls()).noneMatch(query -> query.contains("TvdbId"));
+    }
+
+    @Test
+    void firstSeasonSearchUsesUnqualifiedQueriesAndKeepsOnlyMatchingSeasonPacks() {
+        prowlarrClient.respondWith("{TmdbId:231873}", List.of(
+                release("失忆投捕.S02.1080p.WEB-DL.x265", 8, 8_000_000_000L)
+        ));
+        prowlarrClient.respondWith("失忆投捕", List.of(
+                release(
+                        "[LoliHouse] 失忆投捕 / Boukyaku Battery [01-12 合集] [1080p]",
+                        25,
+                        5_200_000_000L
+                ),
+                release("失忆投捕 [04] [1080p]", 4, 420_000_000L)
+        ));
+        prowlarrClient.respondWith("Boukyaku Battery", List.of());
+
+        ProwlarrReleaseSearchResponse response = service.searchSeriesReleases(
+                new SeriesReleaseSearchRequest(
+                        null,
+                        231873,
+                        null,
+                        "失忆投捕",
+                        "Boukyaku Battery",
+                        1,
+                        "1080p"
+                )
+        );
+
+        assertThat(response.items()).singleElement()
+                .satisfies(release -> {
+                    assertThat(release.title())
+                            .isEqualTo("[LoliHouse] 失忆投捕 / Boukyaku Battery [01-12 合集] [1080p]");
+                    assertThat(release.seasonTags()).containsExactly("S01");
+                    assertThat(release.matchSource()).isEqualTo("展示标题");
+                    assertThat(release.matchQuery()).isEqualTo("失忆投捕");
+                });
+        assertThat(prowlarrClient.calls()).containsExactlyInAnyOrder(
+                "{TmdbId:231873}",
+                "失忆投捕",
+                "Boukyaku Battery"
+        );
     }
 
     @Test
@@ -355,8 +397,8 @@ class ProwlarrReleaseIngestServiceTest {
 
     @Test
     void filtersUnrelatedSeriesResultsAndLabelsDuplicateTitleAsDisplayTitle() {
-        prowlarrClient.respondWith("{TmdbId:93370} S01", List.of());
-        prowlarrClient.respondWith("杀不死 S01", List.of(
+        prowlarrClient.respondWith("{TmdbId:93370}", List.of());
+        prowlarrClient.respondWith("杀不死", List.of(
                 release("Tunshi.Xingkong.S01-S04.2160p.UHDTV.H265", 10, 480_000_000_000L),
                 release("The.Agency.S02.2160p.WEB-DL.H265", 15, 89_000_000_000L),
                 release("Star.City.S01.2160p.WEB-DL.H265", 11, 65_000_000_000L),
@@ -379,7 +421,7 @@ class ProwlarrReleaseIngestServiceTest {
                 .satisfies(release -> {
                     assertThat(release.title()).isEqualTo("杀不死.S01.1080p.WEB-DL.x265");
                     assertThat(release.matchSource()).isEqualTo("展示标题");
-                    assertThat(release.matchQuery()).isEqualTo("杀不死 S01");
+                    assertThat(release.matchQuery()).isEqualTo("杀不死");
                 });
     }
 
@@ -428,13 +470,13 @@ class ProwlarrReleaseIngestServiceTest {
                 14_000_000_000L,
                 duplicateFromTvdb.downloadRef()
         );
-        prowlarrClient.respondWith("{TvdbId:81189} S01", List.of(duplicateFromTvdb));
-        prowlarrClient.respondWith("{ImdbId:tt0903747} S01", List.of());
-        prowlarrClient.respondWith("{TmdbId:1396} S01", List.of());
-        prowlarrClient.respondWith("绝命毒师 S01", List.of(
+        prowlarrClient.respondWith("{TvdbId:81189}", List.of(duplicateFromTvdb));
+        prowlarrClient.respondWith("{ImdbId:tt0903747}", List.of());
+        prowlarrClient.respondWith("{TmdbId:1396}", List.of());
+        prowlarrClient.respondWith("绝命毒师", List.of(
                 release("绝命毒师.S01.720p.WEB-DL.x264", 3, 7_000_000_000L)
         ));
-        prowlarrClient.respondWith("Breaking Bad S01", List.of(
+        prowlarrClient.respondWith("Breaking Bad", List.of(
                 duplicateFromOriginalTitle,
                 release("Breaking.Bad.S01.2160p.WEB-DL.x265", 5, 40_000_000_000L)
         ));
@@ -461,7 +503,7 @@ class ProwlarrReleaseIngestServiceTest {
                         "Breaking Bad Season 01 1080p WEB DL x264"
                 );
         assertThat(response.items().get(0).matchSource()).isEqualTo("原始标题");
-        assertThat(response.items().get(0).matchQuery()).isEqualTo("Breaking Bad S01");
+        assertThat(response.items().get(0).matchQuery()).isEqualTo("Breaking Bad");
         assertThat(response.items().get(2).matchSource()).isEqualTo("原始标题");
     }
 
