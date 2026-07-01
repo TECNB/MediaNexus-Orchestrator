@@ -1,6 +1,7 @@
 package com.medianexus.orchestrator.controller;
 
 import com.medianexus.orchestrator.common.response.ApiResponse;
+import com.medianexus.orchestrator.dto.taskcenter.response.OpenListIngestTaskCenterDetailResponse;
 import com.medianexus.orchestrator.dto.taskcenter.response.OpenListIngestTaskCenterListResponse;
 import com.medianexus.orchestrator.service.OpenListIngestTaskCenterService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -10,6 +11,7 @@ import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.Pattern;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -55,5 +57,17 @@ public class OpenListIngestTaskCenterController {
                 page,
                 pageSize == null ? null : Integer.valueOf(pageSize)
         ));
+    }
+
+    @GetMapping("/tasks/{taskType}/{taskId}")
+    @Operation(summary = "读取 OpenList 入库任务详情", description = "统一返回电影、剧集、动漫整季和有权查看的 Adult 批量任务详情、失败证据和完整日志。")
+    public ApiResponse<OpenListIngestTaskCenterDetailResponse> getTaskDetail(
+            @Parameter(description = "底层任务类型：movie、series、anime 或 adult")
+            @Pattern(regexp = "(?i)movie|series|anime|adult", message = "任务类型无效")
+            @PathVariable String taskType,
+            @Parameter(description = "底层任务 id")
+            @PathVariable String taskId
+    ) {
+        return ApiResponse.success(taskCenterService.getOpenListIngestTaskDetail(taskType, taskId));
     }
 }

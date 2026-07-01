@@ -1,28 +1,40 @@
 package com.medianexus.orchestrator.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.medianexus.orchestrator.common.exception.BusinessException;
+import com.medianexus.orchestrator.dto.taskcenter.response.OpenListIngestTaskCenterDetailResponse;
 import com.medianexus.orchestrator.dto.taskcenter.response.OpenListIngestTaskCenterListResponse;
 import com.medianexus.orchestrator.mapper.AdultMagnetIngestTaskMapper;
+import com.medianexus.orchestrator.mapper.AdultMagnetIngestTaskLogMapper;
 import com.medianexus.orchestrator.mapper.AnimeMagnetIngestTaskMapper;
+import com.medianexus.orchestrator.mapper.AnimeMagnetIngestTaskLogMapper;
 import com.medianexus.orchestrator.mapper.MovieMagnetIngestTaskMapper;
+import com.medianexus.orchestrator.mapper.MovieMagnetIngestTaskLogMapper;
 import com.medianexus.orchestrator.mapper.SeriesMagnetIngestTaskMapper;
+import com.medianexus.orchestrator.mapper.SeriesMagnetIngestTaskLogMapper;
 import com.medianexus.orchestrator.mapper.UserMapper;
 import com.medianexus.orchestrator.model.AdultMagnetIngestTask;
+import com.medianexus.orchestrator.model.AdultMagnetIngestTaskLog;
 import com.medianexus.orchestrator.model.AnimeMagnetIngestTask;
+import com.medianexus.orchestrator.model.AnimeMagnetIngestTaskLog;
 import com.medianexus.orchestrator.model.MovieMagnetIngestTask;
+import com.medianexus.orchestrator.model.MovieMagnetIngestTaskLog;
 import com.medianexus.orchestrator.model.SeriesMagnetIngestTask;
+import com.medianexus.orchestrator.model.SeriesMagnetIngestTaskLog;
 import com.medianexus.orchestrator.model.User;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.stream.IntStream;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpStatus;
 
 class OpenListIngestTaskCenterServiceTest {
 
@@ -31,6 +43,10 @@ class OpenListIngestTaskCenterServiceTest {
     private final SeriesMagnetIngestTaskMapper seriesTaskMapper = mock(SeriesMagnetIngestTaskMapper.class);
     private final AnimeMagnetIngestTaskMapper animeTaskMapper = mock(AnimeMagnetIngestTaskMapper.class);
     private final AdultMagnetIngestTaskMapper adultTaskMapper = mock(AdultMagnetIngestTaskMapper.class);
+    private final MovieMagnetIngestTaskLogMapper movieTaskLogMapper = mock(MovieMagnetIngestTaskLogMapper.class);
+    private final SeriesMagnetIngestTaskLogMapper seriesTaskLogMapper = mock(SeriesMagnetIngestTaskLogMapper.class);
+    private final AnimeMagnetIngestTaskLogMapper animeTaskLogMapper = mock(AnimeMagnetIngestTaskLogMapper.class);
+    private final AdultMagnetIngestTaskLogMapper adultTaskLogMapper = mock(AdultMagnetIngestTaskLogMapper.class);
     private final UserMapper userMapper = mock(UserMapper.class);
     private final OpenListIngestTaskCenterService service = new OpenListIngestTaskCenterService(
             authService,
@@ -38,12 +54,20 @@ class OpenListIngestTaskCenterServiceTest {
             seriesTaskMapper,
             animeTaskMapper,
             adultTaskMapper,
+            movieTaskLogMapper,
+            seriesTaskLogMapper,
+            animeTaskLogMapper,
+            adultTaskLogMapper,
             userMapper
     );
 
     @BeforeEach
     void setUp() {
         when(adultTaskMapper.selectList(any())).thenReturn(List.of());
+        when(movieTaskLogMapper.selectList(any())).thenReturn(List.of());
+        when(seriesTaskLogMapper.selectList(any())).thenReturn(List.of());
+        when(animeTaskLogMapper.selectList(any())).thenReturn(List.of());
+        when(adultTaskLogMapper.selectList(any())).thenReturn(List.of());
     }
 
     @Test
@@ -291,7 +315,7 @@ class OpenListIngestTaskCenterServiceTest {
         assertThat(response.items().get(0).createdByUsername()).isEqualTo("adult-admin");
         assertThat(response.items().get(0).title()).isEqualTo("western 批量任务 2026-07-01");
         assertThat(response.items().get(0).releaseTitle()).isNull();
-        assertThat(response.items().get(0).detailPath()).isEqualTo("/magnet-ingest");
+        assertThat(response.items().get(0).detailPath()).isEqualTo("/tasks/adult/adult-1");
         assertThat(response.items().get(0).progressSummary())
                 .isEqualTo("已提交 7，成功 4，失败 1，重复 2，保留 3，删除 1");
         assertThat(response.total()).isEqualTo(1);
@@ -406,6 +430,137 @@ class OpenListIngestTaskCenterServiceTest {
         assertThat(allSourceResponse.items())
                 .extracting("id")
                 .containsExactly("adult-1");
+    }
+
+    @Test
+    void returnsMovieDetailWithReleaseMetadataLogsAndPendingExplanation() {
+        authService.currentUser = user(1L, "USER", "owner");
+        MovieMagnetIngestTask task = movieTask(
+                "movie-1",
+                "Movie",
+                "PENDING",
+                "movie-hash",
+                LocalDateTime.parse("2026-07-01T10:00:00")
+        );
+        task.setSourceType("PROWLARR_RELEASE");
+        task.setReleaseTitle("Movie.Release.2160p");
+        task.setReleaseIndexer("Indexer");
+        task.setReleaseSize(12_345L);
+        task.setResolutionTags("2160p,1080p");
+        task.setQualityTag("2160p");
+        task.setDynamicRangeTags("hdr10,dolby_vision");
+        when(movieTaskMapper.selectById("movie-1")).thenReturn(task);
+        when(userMapper.selectById(1L)).thenReturn(user(1L, "USER", "owner"));
+        when(movieTaskLogMapper.selectList(any())).thenReturn(List.of(
+                movieLog(1L, "movie-1", "INFO", "created", "已创建"),
+                movieLog(2L, "movie-1", "WARN", "downloading", "下载较慢"),
+                movieLog(3L, "movie-1", "ERROR", "failed", "下载失败")
+        ));
+
+        OpenListIngestTaskCenterDetailResponse response = service.getOpenListIngestTaskDetail("movie", "movie-1");
+
+        assertThat(response.taskType()).isEqualTo("MOVIE");
+        assertThat(response.productType()).isEqualTo("MOVIE");
+        assertThat(response.createdByUsername()).isEqualTo("owner");
+        assertThat(response.sourceType()).isEqualTo("PROWLARR_RELEASE");
+        assertThat(response.releaseTitle()).isEqualTo("Movie.Release.2160p");
+        assertThat(response.releaseIndexer()).isEqualTo("Indexer");
+        assertThat(response.releaseSize()).isEqualTo(12_345L);
+        assertThat(response.resolutionTags()).containsExactly("2160p", "1080p");
+        assertThat(response.dynamicRangeTags()).containsExactly("hdr10", "dolby_vision");
+        assertThat(response.progress().organizedCount()).isZero();
+        assertThat(response.progress().skippedCount()).isZero();
+        assertThat(response.active()).isTrue();
+        assertThat(response.pendingExplanation()).isEqualTo("任务已创建，正在等待对应任务执行器处理。");
+        assertThat(response.logs()).extracting("id").containsExactly(1L, 2L, 3L);
+        assertThat(response.lastWarningOrErrorLog().id()).isEqualTo(3L);
+    }
+
+    @Test
+    void returnsSharedSeriesAnimeDetailAsAnimeProductType() {
+        authService.currentUser = user(1L, "ADMIN", "admin");
+        SeriesMagnetIngestTask task = seriesTask(
+                "series-anime-1",
+                "Anime via Series",
+                "ANIME",
+                LocalDateTime.parse("2026-07-01T11:00:00")
+        );
+        task.setErrorMessage("整理失败");
+        when(seriesTaskMapper.selectById("series-anime-1")).thenReturn(task);
+        when(userMapper.selectById(1L)).thenReturn(user(1L, "ADMIN", "admin"));
+        when(seriesTaskLogMapper.selectList(any())).thenReturn(List.of(
+                seriesLog(1L, "series-anime-1", "INFO", "submitted", "已提交"),
+                seriesLog(2L, "series-anime-1", "WARN", "organizing", "跳过一个文件")
+        ));
+
+        OpenListIngestTaskCenterDetailResponse response = service.getOpenListIngestTaskDetail("SERIES", "series-anime-1");
+
+        assertThat(response.taskType()).isEqualTo("SERIES");
+        assertThat(response.productType()).isEqualTo("ANIME");
+        assertThat(response.errorMessage()).isEqualTo("整理失败");
+        assertThat(response.lastWarningOrErrorLog().message()).isEqualTo("跳过一个文件");
+    }
+
+    @Test
+    void returnsStandaloneAnimeDetailWithOrganizedProgress() {
+        authService.currentUser = user(1L, "USER");
+        AnimeMagnetIngestTask task = animeTask(
+                "anime-1",
+                "Anime",
+                "PARTIAL_SUCCESS",
+                "anime-hash",
+                LocalDateTime.parse("2026-07-01T12:00:00")
+        );
+        task.setOrganizedCount(3);
+        task.setSkippedCount(2);
+        when(animeTaskMapper.selectById("anime-1")).thenReturn(task);
+        when(userMapper.selectById(1L)).thenReturn(user(1L, "USER", "owner"));
+        when(animeTaskLogMapper.selectList(any())).thenReturn(List.of(
+                animeLog(1L, "anime-1", "ERROR", "failed", "整理失败")
+        ));
+
+        OpenListIngestTaskCenterDetailResponse response = service.getOpenListIngestTaskDetail("anime", "anime-1");
+
+        assertThat(response.productType()).isEqualTo("ANIME");
+        assertThat(response.sourceType()).isEqualTo("MANUAL_MAGNET");
+        assertThat(response.progressSummary()).isEqualTo("已整理 3，跳过 2");
+        assertThat(response.progress().organizedCount()).isEqualTo(3);
+        assertThat(response.progress().skippedCount()).isEqualTo(2);
+        assertThat(response.active()).isFalse();
+    }
+
+    @Test
+    void returnsAdultDetailForAdminWithBatchProgress() {
+        authService.currentUser = user(9L, "ADMIN", "admin");
+        AdultMagnetIngestTask task = adultTask("adult-1", 9L, LocalDateTime.parse("2026-07-01T14:00:00"));
+        when(adultTaskMapper.selectById("adult-1")).thenReturn(task);
+        when(userMapper.selectById(9L)).thenReturn(user(9L, "ADMIN", "admin"));
+        when(adultTaskLogMapper.selectList(any())).thenReturn(List.of(
+                adultLog(1L, "adult-1", "WARN", "finished", "部分链接失败")
+        ));
+
+        OpenListIngestTaskCenterDetailResponse response = service.getOpenListIngestTaskDetail("adult", "adult-1");
+
+        assertThat(response.productType()).isEqualTo("ADULT");
+        assertThat(response.releaseTitle()).isNull();
+        assertThat(response.progress().submittedCount()).isEqualTo(7);
+        assertThat(response.progress().succeededCount()).isEqualTo(4);
+        assertThat(response.progress().failedCount()).isEqualTo(1);
+        assertThat(response.progress().duplicateCount()).isEqualTo(2);
+        assertThat(response.progress().keptCount()).isEqualTo(3);
+        assertThat(response.progress().deletedCount()).isEqualTo(1);
+        assertThat(response.lastWarningOrErrorLog().message()).isEqualTo("部分链接失败");
+    }
+
+    @Test
+    void hidesAdultDetailFromNonAdminWithoutReadingAdultMapper() {
+        authService.currentUser = user(1L, "USER");
+
+        assertThatThrownBy(() -> service.getOpenListIngestTaskDetail("adult", "adult-1"))
+                .isInstanceOf(BusinessException.class)
+                .extracting("httpStatus")
+                .isEqualTo(HttpStatus.NOT_FOUND);
+        verify(adultTaskMapper, never()).selectById("adult-1");
     }
 
     private User user(Long id, String role) {
@@ -538,6 +693,74 @@ class OpenListIngestTaskCenterServiceTest {
         task.setCreatedAt(updatedAt.minusMinutes(5));
         task.setUpdatedAt(updatedAt);
         return task;
+    }
+
+    private MovieMagnetIngestTaskLog movieLog(
+            Long id,
+            String taskId,
+            String level,
+            String stage,
+            String message
+    ) {
+        MovieMagnetIngestTaskLog log = new MovieMagnetIngestTaskLog();
+        log.setId(id);
+        log.setTaskId(taskId);
+        log.setLevel(level);
+        log.setStage(stage);
+        log.setMessage(message);
+        log.setCreatedAt(LocalDateTime.parse("2026-07-01T10:00:00").plusMinutes(id));
+        return log;
+    }
+
+    private SeriesMagnetIngestTaskLog seriesLog(
+            Long id,
+            String taskId,
+            String level,
+            String stage,
+            String message
+    ) {
+        SeriesMagnetIngestTaskLog log = new SeriesMagnetIngestTaskLog();
+        log.setId(id);
+        log.setTaskId(taskId);
+        log.setLevel(level);
+        log.setStage(stage);
+        log.setMessage(message);
+        log.setCreatedAt(LocalDateTime.parse("2026-07-01T10:00:00").plusMinutes(id));
+        return log;
+    }
+
+    private AnimeMagnetIngestTaskLog animeLog(
+            Long id,
+            String taskId,
+            String level,
+            String stage,
+            String message
+    ) {
+        AnimeMagnetIngestTaskLog log = new AnimeMagnetIngestTaskLog();
+        log.setId(id);
+        log.setTaskId(taskId);
+        log.setLevel(level);
+        log.setStage(stage);
+        log.setMessage(message);
+        log.setCreatedAt(LocalDateTime.parse("2026-07-01T10:00:00").plusMinutes(id));
+        return log;
+    }
+
+    private AdultMagnetIngestTaskLog adultLog(
+            Long id,
+            String taskId,
+            String level,
+            String stage,
+            String message
+    ) {
+        AdultMagnetIngestTaskLog log = new AdultMagnetIngestTaskLog();
+        log.setId(id);
+        log.setTaskId(taskId);
+        log.setLevel(level);
+        log.setStage(stage);
+        log.setMessage(message);
+        log.setCreatedAt(LocalDateTime.parse("2026-07-01T10:00:00").plusMinutes(id));
+        return log;
     }
 
     private static class TestAuthService extends AuthService {
