@@ -25,6 +25,8 @@ public class SeriesMagnetIngestTask {
 
     private Integer seasonNumber;
 
+    private String taskProductType;
+
     private String sourceType;
 
     private String releaseTitle;
@@ -129,6 +131,14 @@ public class SeriesMagnetIngestTask {
 
     public void setSeasonNumber(Integer seasonNumber) {
         this.seasonNumber = seasonNumber;
+    }
+
+    public String getTaskProductType() {
+        return taskProductType;
+    }
+
+    public void setTaskProductType(String taskProductType) {
+        this.taskProductType = taskProductType;
     }
 
     public String getSourceType() {

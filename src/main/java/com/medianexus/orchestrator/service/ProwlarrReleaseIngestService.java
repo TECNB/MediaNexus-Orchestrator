@@ -46,6 +46,8 @@ public class ProwlarrReleaseIngestService {
     private static final List<String> DYNAMIC_RANGE_TAGS =
             List.of("dolby_vision", "hdr10_plus", "hdr10", "hdr", "hlg", "sdr");
     private static final List<String> HDR_DYNAMIC_TAGS = List.of("hdr10_plus", "hdr10", "hdr", "hlg");
+    private static final String SERIES_PRODUCT_TYPE = "SERIES";
+    private static final String ANIME_PRODUCT_TYPE = "ANIME";
     private static final List<String> SEARCH_STOP_WORDS = List.of(
             "a", "an", "and", "de", "des", "du", "en", "et", "la", "le", "les", "of", "the", "to"
     );
@@ -192,15 +194,17 @@ public class ProwlarrReleaseIngestService {
         String query = seriesQuery(request == null ? null : request.term(), seasonNumber);
         SelectedRelease selectedRelease = selectRelease(query, quality);
         String magnet = resolveMagnet(selectedRelease.release());
-        return magnetIngestService.createSeriesTask(
-                new SeriesMagnetIngestRequest(
-                        magnet,
-                        title,
-                        trimToNull(request.originalTitle()),
-                        seasonNumber
-                ),
-                metadata(selectedRelease.release(), selectedRelease.tags())
+        SeriesMagnetIngestRequest ingestRequest = new SeriesMagnetIngestRequest(
+                magnet,
+                title,
+                trimToNull(request.originalTitle()),
+                seasonNumber
         );
+        ReleaseIngestMetadata releaseMetadata = metadata(selectedRelease.release(), selectedRelease.tags());
+        if (requiresAnimeSeriesTask(request.taskProductType())) {
+            return magnetIngestService.createAnimeSeasonSeriesTask(ingestRequest, releaseMetadata);
+        }
+        return magnetIngestService.createSeriesTask(ingestRequest, releaseMetadata);
     }
 
     public MovieMagnetIngestTaskResponse ingestSelectedMovie(MovieReleaseOpenListIngestRequest request) {
@@ -228,17 +232,20 @@ public class ProwlarrReleaseIngestService {
         String releaseTitle = requiredText(request == null ? null : request.releaseTitle(), "发布标题不能为空");
         int seasonNumber = validateSeasonNumber(request == null ? null : request.seasonNumber());
         String magnet = resolveMagnet(request.indexerId(), request.downloadRef(), releaseTitle);
-        return magnetIngestService.createSeriesTask(
-                new SeriesMagnetIngestRequest(magnet, title, trimToNull(request.originalTitle()), seasonNumber),
-                requestMetadata(
-                        releaseTitle,
-                        request.indexer(),
-                        request.size(),
-                        request.indexerId(),
-                        request.resolutionTags(),
-                        request.dynamicRangeTags()
-                )
+        SeriesMagnetIngestRequest ingestRequest =
+                new SeriesMagnetIngestRequest(magnet, title, trimToNull(request.originalTitle()), seasonNumber);
+        ReleaseIngestMetadata releaseMetadata = requestMetadata(
+                releaseTitle,
+                request.indexer(),
+                request.size(),
+                request.indexerId(),
+                request.resolutionTags(),
+                request.dynamicRangeTags()
         );
+        if (requiresAnimeSeriesTask(request.taskProductType())) {
+            return magnetIngestService.createAnimeSeasonSeriesTask(ingestRequest, releaseMetadata);
+        }
+        return magnetIngestService.createSeriesTask(ingestRequest, releaseMetadata);
     }
 
     /**
@@ -979,6 +986,16 @@ public class ProwlarrReleaseIngestService {
             throw badRequest("季编号必须大于 0");
         }
         return seasonNumber;
+    }
+
+    private boolean requiresAnimeSeriesTask(String taskProductType) {
+        if (!StringUtils.hasText(taskProductType) || SERIES_PRODUCT_TYPE.equals(taskProductType)) {
+            return false;
+        }
+        if (ANIME_PRODUCT_TYPE.equals(taskProductType)) {
+            return true;
+        }
+        throw badRequest("不支持的任务产品类别");
     }
 
     private String requiredText(String value, String message) {

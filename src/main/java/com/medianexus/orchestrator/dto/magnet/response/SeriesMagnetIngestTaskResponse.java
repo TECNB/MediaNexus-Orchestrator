@@ -24,6 +24,9 @@ public record SeriesMagnetIngestTaskResponse(
         @Schema(description = "季度编号")
         @JsonProperty("season_number")
         Integer seasonNumber,
+        @Schema(description = "任务中心产品类别：SERIES 或 ANIME")
+        @JsonProperty("task_product_type")
+        String taskProductType,
         @JsonProperty("source_type")
         String sourceType,
         @JsonProperty("release_title")

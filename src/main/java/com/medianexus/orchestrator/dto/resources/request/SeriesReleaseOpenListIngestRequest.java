@@ -1,6 +1,7 @@
 package com.medianexus.orchestrator.dto.resources.request;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import jakarta.validation.constraints.Pattern;
 import java.util.List;
 
 public record SeriesReleaseOpenListIngestRequest(
@@ -9,6 +10,9 @@ public record SeriesReleaseOpenListIngestRequest(
         String originalTitle,
         @JsonProperty("season_number")
         Integer seasonNumber,
+        @JsonProperty("task_product_type")
+        @Pattern(regexp = "SERIES|ANIME", message = "任务产品类别只能是 SERIES 或 ANIME")
+        String taskProductType,
         @JsonProperty("release_title")
         String releaseTitle,
         String indexer,

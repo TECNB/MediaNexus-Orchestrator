@@ -69,6 +69,8 @@ public class MagnetIngestService {
     private static final Duration SAVING_FILES_VISIBLE_GRACE = Duration.ofMinutes(5);
     private static final int FIRST_MOVIE_YEAR = 1888;
     private static final String ADMIN_ROLE = "ADMIN";
+    private static final String SERIES_PRODUCT_TYPE = "SERIES";
+    private static final String ANIME_PRODUCT_TYPE = "ANIME";
 
     private final MovieMagnetIngestTaskMapper movieTaskMapper;
     private final MovieMagnetIngestTaskLogMapper movieTaskLogMapper;
@@ -200,7 +202,25 @@ public class MagnetIngestService {
         User user = authService.requireCurrentUser();
         SeriesTaskPlan plan = buildSeriesPlan(request);
         ReleaseIngestMetadata releaseMetadata = metadata == null ? ReleaseIngestMetadata.manual() : metadata;
+        return createPlannedSeriesTask(user, plan, releaseMetadata, SERIES_PRODUCT_TYPE);
+    }
 
+    public SeriesMagnetIngestTaskResponse createAnimeSeasonSeriesTask(
+            SeriesMagnetIngestRequest request,
+            ReleaseIngestMetadata metadata
+    ) {
+        User user = authService.requireCurrentUser();
+        SeriesTaskPlan plan = buildSeriesPlan(request);
+        ReleaseIngestMetadata releaseMetadata = metadata == null ? ReleaseIngestMetadata.manual() : metadata;
+        return createPlannedSeriesTask(user, plan, releaseMetadata, ANIME_PRODUCT_TYPE);
+    }
+
+    private SeriesMagnetIngestTaskResponse createPlannedSeriesTask(
+            User user,
+            SeriesTaskPlan plan,
+            ReleaseIngestMetadata releaseMetadata,
+            String persistedProductType
+    ) {
         SeriesMagnetIngestTask activeTask = seriesTaskMapper.selectOne(new LambdaQueryWrapper<SeriesMagnetIngestTask>()
                 .eq(SeriesMagnetIngestTask::getMagnetHash, plan.magnetHash())
                 .in(SeriesMagnetIngestTask::getStatus, ACTIVE_STATUSES)
@@ -226,6 +246,7 @@ public class MagnetIngestService {
         task.setTitle(plan.title());
         task.setOriginalTitle(plan.originalTitle());
         task.setSeasonNumber(plan.seasonNumber());
+        task.setTaskProductType(persistedProductType);
         applyReleaseMetadata(task, releaseMetadata);
         task.setSeriesName(plan.seriesName());
         task.setSeasonFolder(plan.seasonFolder());
@@ -1222,6 +1243,7 @@ public class MagnetIngestService {
                 task.getTitle(),
                 task.getOriginalTitle(),
                 task.getSeasonNumber(),
+                seriesTaskProductType(task),
                 task.getSourceType() == null ? "MANUAL_MAGNET" : task.getSourceType(),
                 task.getReleaseTitle(),
                 task.getReleaseIndexer(),
@@ -1284,6 +1306,10 @@ public class MagnetIngestService {
                 "OpenList 目标目录创建失败",
                 HttpStatus.BAD_GATEWAY
         );
+    }
+
+    private String seriesTaskProductType(SeriesMagnetIngestTask task) {
+        return StringUtils.hasText(task.getTaskProductType()) ? task.getTaskProductType() : SERIES_PRODUCT_TYPE;
     }
 
     private BusinessException badRequest(String message) {

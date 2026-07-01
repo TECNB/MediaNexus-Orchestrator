@@ -169,6 +169,10 @@ public class DatabaseInitializer implements ApplicationRunner {
     }
 
     private void ensureSeriesMagnetTaskTagColumns() {
+        Integer taskProductTypeColumnCount = seriesMagnetIngestTaskMapper.countTaskProductTypeColumn();
+        if (taskProductTypeColumnCount == null || taskProductTypeColumnCount == 0) {
+            seriesMagnetIngestTaskMapper.addTaskProductTypeColumn();
+        }
         Integer sourceTypeColumnCount = seriesMagnetIngestTaskMapper.countSourceTypeColumn();
         if (sourceTypeColumnCount == null || sourceTypeColumnCount == 0) {
             seriesMagnetIngestTaskMapper.addReleaseMetadataColumns();

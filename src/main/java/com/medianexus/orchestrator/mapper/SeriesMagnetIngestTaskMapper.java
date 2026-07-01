@@ -19,6 +19,7 @@ public interface SeriesMagnetIngestTaskMapper extends BaseMapper<SeriesMagnetIng
                 title VARCHAR(255) NOT NULL,
                 original_title VARCHAR(255) NULL,
                 season_number INT NOT NULL,
+                task_product_type VARCHAR(32) NOT NULL DEFAULT 'SERIES',
                 source_type VARCHAR(32) NULL,
                 release_title VARCHAR(1024) NULL,
                 release_indexer VARCHAR(255) NULL,
@@ -56,6 +57,21 @@ public interface SeriesMagnetIngestTaskMapper extends BaseMapper<SeriesMagnetIng
               AND COLUMN_NAME = 'source_type'
             """)
     Integer countSourceTypeColumn();
+
+    @Select("""
+            SELECT COUNT(*)
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'series_magnet_ingest_tasks'
+              AND COLUMN_NAME = 'task_product_type'
+            """)
+    Integer countTaskProductTypeColumn();
+
+    @Update("""
+            ALTER TABLE series_magnet_ingest_tasks
+            ADD COLUMN task_product_type VARCHAR(32) NOT NULL DEFAULT 'SERIES' AFTER season_number
+            """)
+    void addTaskProductTypeColumn();
 
     @Update("""
             ALTER TABLE series_magnet_ingest_tasks
