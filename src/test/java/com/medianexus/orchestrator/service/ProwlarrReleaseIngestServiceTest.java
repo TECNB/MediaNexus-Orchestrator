@@ -6,8 +6,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.medianexus.orchestrator.common.exception.BusinessException;
 import com.medianexus.orchestrator.config.ProwlarrProperties;
+import com.medianexus.orchestrator.dto.magnet.request.SeriesMagnetIngestRequest;
+import com.medianexus.orchestrator.dto.magnet.response.SeriesMagnetIngestTaskResponse;
 import com.medianexus.orchestrator.dto.resources.request.MovieReleaseRecommendationRequest;
 import com.medianexus.orchestrator.dto.resources.request.MovieReleaseSearchRequest;
+import com.medianexus.orchestrator.dto.resources.request.SeriesReleaseOpenListIngestRequest;
 import com.medianexus.orchestrator.dto.resources.request.SeriesReleaseRecommendationRequest;
 import com.medianexus.orchestrator.dto.resources.request.SeriesReleaseSearchRequest;
 import com.medianexus.orchestrator.dto.resources.response.ProwlarrReleaseRecommendationResponse;
@@ -27,16 +30,19 @@ class ProwlarrReleaseIngestServiceTest {
 
     private FakeProwlarrClient prowlarrClient;
 
+    private FakeMagnetIngestService magnetIngestService;
+
     private ProwlarrReleaseIngestService service;
 
     @BeforeEach
     void setUp() {
         prowlarrClient = new FakeProwlarrClient();
+        magnetIngestService = new FakeMagnetIngestService();
         service = new ProwlarrReleaseIngestService(
                 new TestAuthService(),
                 prowlarrClient,
                 new ReleaseTitleTagParser(),
-                new MagnetIngestService(null, null, null, null, null, null, null, null, null, null)
+                magnetIngestService
         );
     }
 
@@ -577,6 +583,31 @@ class ProwlarrReleaseIngestServiceTest {
                 .hasMessage("未找到匹配分辨率且有做种的电影发布资源");
     }
 
+    @Test
+    void selectedAnimeSeasonReleaseCreatesAnimeProductSeriesTask() {
+        magnetIngestService.animeResponse = seriesTaskResponse("task-anime", "ANIME");
+
+        SeriesMagnetIngestTaskResponse response = service.ingestSelectedSeries(
+                new SeriesReleaseOpenListIngestRequest(
+                        "葬送的芙莉莲",
+                        "Frieren Beyond Journey's End",
+                        1,
+                        "ANIME",
+                        "[Group] Sousou no Frieren S01 1080p",
+                        "Test Indexer",
+                        12_000_000_000L,
+                        1,
+                        "download-ref-frieren",
+                        List.of("1080p"),
+                        List.of("sdr")
+                )
+        );
+
+        assertThat(response.taskProductType()).isEqualTo("ANIME");
+        assertThat(magnetIngestService.createdAnimeSeasonSeriesTask).isTrue();
+        assertThat(magnetIngestService.createdSeriesTask).isFalse();
+    }
+
     private MovieReleaseRecommendationRequest request(
             Integer tmdbId,
             String imdbId,
@@ -610,6 +641,37 @@ class ProwlarrReleaseIngestServiceTest {
 
     private ProwlarrRelease release(String title, Integer seeders, Long size) {
         return releaseWithDownloadRef(title, seeders, size, "download-ref-" + title);
+    }
+
+    private SeriesMagnetIngestTaskResponse seriesTaskResponse(String id, String taskProductType) {
+        return new SeriesMagnetIngestTaskResponse(
+                id,
+                1L,
+                "PENDING",
+                "created",
+                "葬送的芙莉莲",
+                "Frieren Beyond Journey's End",
+                1,
+                taskProductType,
+                "PROWLARR_RELEASE",
+                "[Group] Sousou no Frieren S01 1080p",
+                "Test Indexer",
+                12_000_000_000L,
+                List.of("1080p"),
+                "1080p",
+                List.of("sdr"),
+                "葬送的芙莉莲",
+                "Season 1",
+                "frieren-hash",
+                "/media/series/葬送的芙莉莲",
+                "/media/series/葬送的芙莉莲",
+                0,
+                0,
+                null,
+                null,
+                null,
+                null
+        );
     }
 
     private ProwlarrRelease releaseWithDownloadRef(String title, Integer seeders, Long size, String downloadRef) {
@@ -654,6 +716,11 @@ class ProwlarrReleaseIngestServiceTest {
             return responses.getOrDefault(query, List.of());
         }
 
+        @Override
+        public String resolveMagnet(Integer indexerId, String downloadRef, String releaseTitle) {
+            return "magnet:?xt=urn:btih:frierenhash&dn=" + releaseTitle;
+        }
+
         void respondWith(String query, List<ProwlarrRelease> releases) {
             responses.put(query, releases);
         }
@@ -666,6 +733,65 @@ class ProwlarrReleaseIngestServiceTest {
             ProwlarrProperties properties = new ProwlarrProperties();
             properties.setTimeout(Duration.ofSeconds(1));
             return properties;
+        }
+    }
+
+    private static class FakeMagnetIngestService extends MagnetIngestService {
+        private boolean createdSeriesTask;
+        private boolean createdAnimeSeasonSeriesTask;
+        private SeriesMagnetIngestTaskResponse animeResponse;
+
+        FakeMagnetIngestService() {
+            super(null, null, null, null, null, null, null, null, null, null);
+        }
+
+        @Override
+        public SeriesMagnetIngestTaskResponse createSeriesTask(
+                SeriesMagnetIngestRequest request,
+                ReleaseIngestMetadata metadata
+        ) {
+            createdSeriesTask = true;
+            return seriesTaskResponse("task-series", "SERIES");
+        }
+
+        @Override
+        public SeriesMagnetIngestTaskResponse createAnimeSeasonSeriesTask(
+                SeriesMagnetIngestRequest request,
+                ReleaseIngestMetadata metadata
+        ) {
+            createdAnimeSeasonSeriesTask = true;
+            return animeResponse == null ? seriesTaskResponse("task-anime", "ANIME") : animeResponse;
+        }
+
+        private SeriesMagnetIngestTaskResponse seriesTaskResponse(String id, String taskProductType) {
+            return new SeriesMagnetIngestTaskResponse(
+                    id,
+                    1L,
+                    "PENDING",
+                    "created",
+                    "葬送的芙莉莲",
+                    "Frieren Beyond Journey's End",
+                    1,
+                    taskProductType,
+                    "PROWLARR_RELEASE",
+                    "[Group] Sousou no Frieren S01 1080p",
+                    "Test Indexer",
+                    12_000_000_000L,
+                    List.of("1080p"),
+                    "1080p",
+                    List.of("sdr"),
+                    "葬送的芙莉莲",
+                    "Season 1",
+                    "frieren-hash",
+                    "/media/series/葬送的芙莉莲",
+                    "/media/series/葬送的芙莉莲",
+                    0,
+                    0,
+                    null,
+                    null,
+                    null,
+                    null
+            );
         }
     }
 }

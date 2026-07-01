@@ -210,7 +210,7 @@ public class MagnetIngestService {
             ReleaseIngestMetadata metadata
     ) {
         User user = authService.requireCurrentUser();
-        SeriesTaskPlan plan = buildSeriesPlan(request);
+        SeriesTaskPlan plan = buildAnimeSeasonSeriesPlan(request);
         ReleaseIngestMetadata releaseMetadata = metadata == null ? ReleaseIngestMetadata.manual() : metadata;
         return createPlannedSeriesTask(user, plan, releaseMetadata, ANIME_PRODUCT_TYPE);
     }
@@ -259,9 +259,10 @@ public class MagnetIngestService {
         task.setUpdatedAt(now);
         seriesTaskMapper.insert(task);
 
-        writeSeriesLog(taskId, "INFO", "created", "已创建剧集磁力任务", "savePath=" + plan.savePath());
+        writeSeriesLog(taskId, "INFO", "created", "已创建磁力任务", "savePath=" + plan.savePath());
         log.info(
-                "Created series magnet ingest task taskId={} userId={} magnetHash={} savePath={}",
+                "Created {} magnet ingest task taskId={} userId={} magnetHash={} savePath={}",
+                persistedProductType,
                 taskId,
                 user.getId(),
                 plan.magnetHash(),
@@ -368,33 +369,54 @@ public class MagnetIngestService {
     private void runSeriesTask(String taskId) {
         try {
             SeriesMagnetIngestTask task = getExistingSeriesTask(taskId);
-            prepareSeriesDownloadRoot(task);
-
-            markSeriesSubmitted(task);
-            String openListTaskId = openListClient.addOfflineDownload(task.getTempPath(), task.getMagnet());
-            markSeriesDownloading(taskId, openListTaskId);
-
-            waitForOfflineTask(
-                    taskId,
-                    openListTaskId,
-                    task.getTempPath(),
-                    (level, stage, message, detail) -> writeSeriesLog(taskId, level, stage, message, detail),
-                    () -> refreshSeriesTaskUpdatedAt(taskId)
-            );
-
-            markSeriesOrganizing(taskId, openListTaskId, task.getTempPath());
-            OrganizeResult result = organizeSeriesFiles(getExistingSeriesTask(taskId));
-            if (result.videoCount() < 1) {
-                markSeriesNoOrganizedFiles(taskId, openListTaskId, result);
-                return;
+            if (ANIME_PRODUCT_TYPE.equals(task.getTaskProductType())) {
+                runAnimeSeasonSeriesTask(task);
+            } else {
+                runTelevisionSeriesTask(task);
             }
-
-            markSeriesSucceeded(taskId, openListTaskId, result);
-            refreshSeriesAutoSymlink(taskId);
         } catch (Exception exception) {
             log.warn("Series magnet ingest task failed id={}", taskId, exception);
             markSeriesFailed(taskId, safeMessage(exception));
         }
+    }
+
+    private void runTelevisionSeriesTask(SeriesMagnetIngestTask task) {
+        prepareTelevisionSeriesDownloadRoot(task);
+        if (downloadAndOrganizeSeriesTask(task)) {
+            refreshSeriesAutoSymlink(task.getId());
+        }
+    }
+
+    private void runAnimeSeasonSeriesTask(SeriesMagnetIngestTask task) {
+        prepareAnimeSeasonDownloadRoot(task);
+        if (downloadAndOrganizeSeriesTask(task)) {
+            refreshAnimeAutoSymlink(task.getId());
+        }
+    }
+
+    private boolean downloadAndOrganizeSeriesTask(SeriesMagnetIngestTask task) {
+        String taskId = task.getId();
+        markSeriesSubmitted(task);
+        String openListTaskId = openListClient.addOfflineDownload(task.getTempPath(), task.getMagnet());
+        markSeriesDownloading(taskId, openListTaskId);
+
+        waitForOfflineTask(
+                taskId,
+                openListTaskId,
+                task.getTempPath(),
+                (level, stage, message, detail) -> writeSeriesLog(taskId, level, stage, message, detail),
+                () -> refreshSeriesTaskUpdatedAt(taskId)
+        );
+
+        markSeriesOrganizing(taskId, openListTaskId, task.getTempPath());
+        OrganizeResult result = organizeSeriesFiles(getExistingSeriesTask(taskId));
+        if (result.videoCount() < 1) {
+            markSeriesNoOrganizedFiles(taskId, openListTaskId, result);
+            return false;
+        }
+
+        markSeriesSucceeded(taskId, openListTaskId, result);
+        return true;
     }
 
     private void prepareMovieDownloadRoot(MovieMagnetIngestTask task) {
@@ -410,7 +432,7 @@ public class MagnetIngestService {
         writeMovieLog(task.getId(), "INFO", "created", "OpenList 保存目录准备完成", task.getSavePath());
     }
 
-    private void prepareSeriesDownloadRoot(SeriesMagnetIngestTask task) {
+    private void prepareTelevisionSeriesDownloadRoot(SeriesMagnetIngestTask task) {
         writeSeriesLog(task.getId(), "INFO", "created", "正在准备 OpenList 保存目录", task.getSavePath());
         try {
             openListClient.ensureDirectoryReady(task.getSavePath(), configuredRootPath(
@@ -421,6 +443,12 @@ public class MagnetIngestService {
             throw mapDirectoryPrepareException(exception, "OpenList 剧集基础路径不存在");
         }
         writeSeriesLog(task.getId(), "INFO", "created", "OpenList 保存目录准备完成", task.getSavePath());
+    }
+
+    private void prepareAnimeSeasonDownloadRoot(SeriesMagnetIngestTask task) {
+        writeSeriesLog(task.getId(), "INFO", "created", "正在准备 OpenList 动漫保存目录", task.getSavePath());
+        openListClient.ensureDirectoryHierarchy(task.getSavePath());
+        writeSeriesLog(task.getId(), "INFO", "created", "OpenList 动漫保存目录准备完成", task.getSavePath());
     }
 
     private void markMovieSubmitted(MovieMagnetIngestTask task) {
@@ -503,6 +531,15 @@ public class MagnetIngestService {
                 taskId,
                 "Series",
                 autoSymlinkRefreshService::refreshSeries,
+                (level, message, detail) -> writeSeriesLog(taskId, level, "succeeded", message, detail)
+        );
+    }
+
+    private void refreshAnimeAutoSymlink(String taskId) {
+        refreshAutoSymlink(
+                taskId,
+                "Anime",
+                autoSymlinkRefreshService::refreshAnime,
                 (level, message, detail) -> writeSeriesLog(taskId, level, "succeeded", message, detail)
         );
     }
@@ -917,9 +954,62 @@ public class MagnetIngestService {
                 seasonNumber,
                 seriesName,
                 seasonFolder,
-                rootPath,
                 savePath
         );
+    }
+
+    private SeriesTaskPlan buildAnimeSeasonSeriesPlan(SeriesMagnetIngestRequest request) {
+        if (request == null) {
+            throw badRequest("请求不能为空");
+        }
+        String magnet = normalizeMagnet(request.magnet());
+        String magnetHash = extractMagnetHash(magnet);
+        int seasonNumber = validateSeasonNumber(request.seasonNumber());
+        String title = preferredTitle(request.title(), request.originalTitle(), "动漫标题不能为空");
+        String originalTitle = trimToNull(request.originalTitle());
+        String displayTitle = StringUtils.hasText(request.title()) ? request.title().trim() : title;
+        String themoviedbName = StringUtils.hasText(originalTitle) ? originalTitle : displayTitle;
+        String seriesName = renameService.seriesFolderName(title);
+        String seasonFolder = renameService.seasonFolderName(seasonNumber);
+        String savePath = renderAnimeSeasonPath(displayTitle, themoviedbName, seasonNumber);
+        return new SeriesTaskPlan(
+                magnet,
+                magnetHash,
+                title,
+                originalTitle,
+                seasonNumber,
+                seriesName,
+                seasonFolder,
+                savePath
+        );
+    }
+
+    String renderAnimeSeasonPath(String title, String themoviedbName, int seasonNumber) {
+        String template = cleanConfigValue(openListProperties.getAnimePathTemplate());
+        if (!StringUtils.hasText(template)) {
+            throw serviceUnavailable("OpenList 动漫保存路径尚未配置");
+        }
+        String path = replaceTemplateValue(template, "themoviedbName", sanitizePathSegment(themoviedbName));
+        path = replaceTemplateValue(path, "title", sanitizePathSegment(title));
+        path = replaceTemplateValue(path, "season", String.valueOf(seasonNumber));
+        path = replaceTemplateValue(path, "seasonFormat", String.format("%02d", seasonNumber));
+        return openListClient.normalizePath(path);
+    }
+
+    private String sanitizePathSegment(String value) {
+        String trimmed = trimToNull(value);
+        if (!StringUtils.hasText(trimmed)) {
+            return "";
+        }
+        return trimmed.replaceAll("[\\\\/:*?\"<>|]+", " ")
+                .replaceAll("\\s+", " ")
+                .trim();
+    }
+
+    private String replaceTemplateValue(String template, String key, String value) {
+        return template
+                .replace("{" + key + "}", value)
+                .replace("${" + key + "}", value);
     }
 
     private String normalizeMagnet(String magnet) {
@@ -1421,7 +1511,6 @@ public class MagnetIngestService {
             Integer seasonNumber,
             String seriesName,
             String seasonFolder,
-            String rootPath,
             String savePath
     ) {
     }

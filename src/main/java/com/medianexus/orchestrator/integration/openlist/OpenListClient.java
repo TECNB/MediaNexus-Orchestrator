@@ -16,6 +16,7 @@ import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -220,6 +221,19 @@ public class OpenListClient {
                 );
             }
         }
+    }
+
+    /**
+     * 确认绝对路径的完整目录层级可用；首级目录视为 OpenList 存储根，根以下层级按需创建。
+     */
+    public void ensureDirectoryHierarchy(String fullPath) {
+        String normalizedFullPath = normalizePath(fullPath);
+        String storageRoot = Arrays.stream(normalizedFullPath.split("/"))
+                .filter(StringUtils::hasText)
+                .findFirst()
+                .map(segment -> "/" + segment)
+                .orElse("/");
+        ensureDirectoryReady(normalizedFullPath, storageRoot);
     }
 
     /**
