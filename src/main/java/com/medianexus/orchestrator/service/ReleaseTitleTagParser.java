@@ -40,7 +40,9 @@ public class ReleaseTitleTagParser {
     private static final Pattern CJK_SEASON_NUMBER_PATTERN = Pattern.compile(
             "第\\s*(?<season>\\d{1,2})\\s*[季期]"
     );
-    private static final Pattern CJK_FIRST_SEASON_PATTERN = Pattern.compile("第\\s*一\\s*[季期]");
+    private static final Pattern CJK_SEASON_TEXT_PATTERN = Pattern.compile(
+            "第\\s*(?<season>[一二三四五六七八九十两]+)\\s*[季期]"
+    );
     private static final Pattern FIRST_SEASON_PACK_PATTERN = Pattern.compile(
             "(?ix)(?:"
                     + "[\\[【(]\\s*(?:E|EP)?0?1\\s*(?:-|~|–|—|TO)\\s*(?:E|EP)?\\d{2,3}[^\\]】)]*[\\]】)]"
@@ -106,9 +108,7 @@ public class ReleaseTitleTagParser {
         addSeasonMatches(seasons, SEASON_NUMBER_PATTERN.matcher(title));
         addSeasonMatches(seasons, ORDINAL_SEASON_PATTERN.matcher(title));
         addSeasonMatches(seasons, CJK_SEASON_NUMBER_PATTERN.matcher(title));
-        if (CJK_FIRST_SEASON_PATTERN.matcher(title).find()) {
-            seasons.add(1);
-        }
+        addCjkSeasonMatches(seasons, CJK_SEASON_TEXT_PATTERN.matcher(title));
         if (seasons.isEmpty() && FIRST_SEASON_PACK_PATTERN.matcher(title).find()) {
             seasons.add(1);
         }
@@ -122,6 +122,40 @@ public class ReleaseTitleTagParser {
                 seasons.add(season);
             }
         }
+    }
+
+    private void addCjkSeasonMatches(Set<Integer> seasons, Matcher matcher) {
+        while (matcher.find()) {
+            int season = parseCjkNumber(matcher.group("season"));
+            if (season >= 1) {
+                seasons.add(season);
+            }
+        }
+    }
+
+    private int parseCjkNumber(String value) {
+        int tenIndex = value.indexOf('十');
+        if (tenIndex < 0) {
+            return cjkDigit(value.charAt(0));
+        }
+        int tens = tenIndex == 0 ? 1 : cjkDigit(value.charAt(0));
+        int ones = tenIndex == value.length() - 1 ? 0 : cjkDigit(value.charAt(tenIndex + 1));
+        return tens * 10 + ones;
+    }
+
+    private int cjkDigit(char value) {
+        return switch (value) {
+            case '一' -> 1;
+            case '二', '两' -> 2;
+            case '三' -> 3;
+            case '四' -> 4;
+            case '五' -> 5;
+            case '六' -> 6;
+            case '七' -> 7;
+            case '八' -> 8;
+            case '九' -> 9;
+            default -> 0;
+        };
     }
 
     private String seasonTag(int season) {

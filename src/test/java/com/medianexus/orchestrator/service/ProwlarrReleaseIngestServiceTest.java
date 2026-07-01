@@ -311,7 +311,9 @@ class ProwlarrReleaseIngestServiceTest {
                 "{ImdbId:tt27981453} S02",
                 "{TmdbId:281449} S02",
                 "暗影蜘蛛侠 S02",
-                "Spider-Noir S02"
+                "暗影蜘蛛侠",
+                "Spider-Noir S02",
+                "Spider-Noir"
         );
         assertThat(prowlarrClient.calls()).noneMatch(query -> query.contains("TvdbId"));
     }
@@ -355,6 +357,46 @@ class ProwlarrReleaseIngestServiceTest {
                 "{TmdbId:231873}",
                 "失忆投捕",
                 "Boukyaku Battery"
+        );
+    }
+
+    @Test
+    void laterSeasonSearchMergesQualifiedAndUnqualifiedTitleQueries() {
+        prowlarrClient.respondWith("间谍过家家 S02", List.of(
+                release("间谍过家家.S02.1080p.WEB-DL.x265", 8, 8_000_000_000L)
+        ));
+        prowlarrClient.respondWith("间谍过家家", List.of(
+                release("间谍过家家.第二季.1080p.BluRay.x265", 6, 12_000_000_000L),
+                release("间谍过家家.S01.1080p.BluRay.x265", 10, 10_000_000_000L)
+        ));
+        prowlarrClient.respondWith("SPY x FAMILY S02", List.of());
+        prowlarrClient.respondWith("SPY x FAMILY", List.of());
+
+        ProwlarrReleaseSearchResponse response = service.searchSeriesReleases(
+                new SeriesReleaseSearchRequest(
+                        null,
+                        null,
+                        null,
+                        "间谍过家家",
+                        "SPY x FAMILY",
+                        2,
+                        "1080p"
+                )
+        );
+
+        assertThat(response.items())
+                .extracting("title")
+                .containsExactlyInAnyOrder(
+                        "间谍过家家.S02.1080p.WEB-DL.x265",
+                        "间谍过家家.第二季.1080p.BluRay.x265"
+                );
+        assertThat(response.items())
+                .allSatisfy(release -> assertThat(release.seasonTags()).containsExactly("S02"));
+        assertThat(prowlarrClient.calls()).containsExactlyInAnyOrder(
+                "间谍过家家 S02",
+                "间谍过家家",
+                "SPY x FAMILY S02",
+                "SPY x FAMILY"
         );
     }
 

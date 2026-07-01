@@ -569,8 +569,8 @@ public class ProwlarrReleaseIngestService {
     private List<MovieReleaseSearchQuery> seriesTitleSearchQueries(SeriesReleaseIdentity series) {
         LinkedHashSet<String> seenTitles = new LinkedHashSet<>();
         List<MovieReleaseSearchQuery> queries = new ArrayList<>();
-        addSeriesTitleSearchQuery(queries, seenTitles, "展示标题", series.title(), series.seasonNumber());
-        addSeriesTitleSearchQuery(
+        addSeriesTitleSearchQueries(queries, seenTitles, "展示标题", series.title(), series.seasonNumber());
+        addSeriesTitleSearchQueries(
                 queries,
                 seenTitles,
                 "原始标题",
@@ -580,7 +580,7 @@ public class ProwlarrReleaseIngestService {
         return queries;
     }
 
-    private void addSeriesTitleSearchQuery(
+    private void addSeriesTitleSearchQueries(
             List<MovieReleaseSearchQuery> queries,
             LinkedHashSet<String> seenTitles,
             String source,
@@ -591,7 +591,14 @@ public class ProwlarrReleaseIngestService {
         if (!StringUtils.hasText(normalizedTitle) || !seenTitles.add(normalizedTitle)) {
             return;
         }
-        queries.add(new MovieReleaseSearchQuery(source, releaseSearchQueryForSeason(title.trim(), seasonNumber)));
+        String trimmedTitle = title.trim();
+        if (seasonNumber > 1) {
+            queries.add(new MovieReleaseSearchQuery(
+                    source,
+                    trimmedTitle + " " + seasonQuerySuffix(seasonNumber)
+            ));
+        }
+        queries.add(new MovieReleaseSearchQuery(source, trimmedTitle));
     }
 
     private List<MovieReleaseSearchQuery> seriesReleaseSearchPlan(SeriesReleaseIdentity series) {

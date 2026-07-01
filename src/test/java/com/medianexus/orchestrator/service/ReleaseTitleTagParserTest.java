@@ -14,6 +14,8 @@ class ReleaseTitleTagParserTest {
         assertThat(parser.parse("Show Season 1 Complete").seasonTags()).containsExactly("S01");
         assertThat(parser.parse("Show 第1季").seasonTags()).containsExactly("S01");
         assertThat(parser.parse("Show 第一期").seasonTags()).containsExactly("S01");
+        assertThat(parser.parse("Show 第二季").seasonTags()).containsExactly("S02");
+        assertThat(parser.parse("Show 第十二季").seasonTags()).containsExactly("S12");
         assertThat(parser.parse("Show 1st Season").seasonTags()).containsExactly("S01");
         assertThat(parser.parse("Show.S02.1080p").seasonTags()).containsExactly("S02");
         assertThat(parser.parse("Show.S01-S04.Complete").seasonTags())
