@@ -16,6 +16,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
@@ -34,6 +35,24 @@ public class OpenListIngestTaskCenterService {
     private static final String SERIES_PRODUCT_TYPE = "SERIES";
     private static final String ANIME_PRODUCT_TYPE = "ANIME";
     private static final String MANUAL_MAGNET_SOURCE = "MANUAL_MAGNET";
+    private static final String PROWLARR_RELEASE_SOURCE = "PROWLARR_RELEASE";
+    private static final String ALL_FILTER = "ALL";
+    private static final String IN_PROGRESS_VIEW = "IN_PROGRESS";
+    private static final String NEEDS_ATTENTION_VIEW = "NEEDS_ATTENTION";
+    private static final String SUCCEEDED_VIEW = "SUCCEEDED";
+    private static final int DEFAULT_PAGE = 1;
+    private static final int DEFAULT_PAGE_SIZE = 10;
+    private static final Set<String> IN_PROGRESS_STATUSES = Set.of(
+            "PENDING",
+            "SUBMITTED",
+            "DOWNLOADING",
+            "ORGANIZING"
+    );
+    private static final Set<String> NEEDS_ATTENTION_STATUSES = Set.of(
+            "FAILED",
+            "INTERRUPTED",
+            "PARTIAL_SUCCESS"
+    );
 
     private final AuthService authService;
     private final MovieMagnetIngestTaskMapper movieTaskMapper;
@@ -56,27 +75,68 @@ public class OpenListIngestTaskCenterService {
     }
 
     public OpenListIngestTaskCenterListResponse listOpenListIngestTasks() {
+        return listOpenListIngestTasks(null, null, null, null, null, null);
+    }
+
+    public OpenListIngestTaskCenterListResponse listOpenListIngestTasks(
+            String view,
+            String productType,
+            String sourceType,
+            String keyword,
+            Integer page,
+            Integer pageSize
+    ) {
         User user = authService.requireCurrentUser();
         List<MovieMagnetIngestTask> movieTasks = movieTaskMapper.selectList(ownedMovieTasks(user));
         List<SeriesMagnetIngestTask> seriesTasks = seriesTaskMapper.selectList(ownedSeriesTasks(user));
         List<AnimeMagnetIngestTask> animeTasks = animeTaskMapper.selectList(ownedAnimeTasks(user));
         Map<Long, User> creatorsById = creatorsById(movieTasks, seriesTasks, animeTasks);
-        List<OpenListIngestTaskCenterItemResponse> items = new ArrayList<>();
+        List<TaskCenterListingCandidate> candidates = new ArrayList<>();
 
-        items.addAll(movieTasks.stream()
+        candidates.addAll(movieTasks.stream()
                 .map(task -> movieItem(task, creatorsById))
                 .toList());
-        items.addAll(seriesTasks.stream()
+        candidates.addAll(seriesTasks.stream()
                 .map(task -> seriesItem(task, creatorsById))
                 .toList());
-        items.addAll(animeTasks.stream()
+        candidates.addAll(animeTasks.stream()
                 .map(task -> animeItem(task, creatorsById))
                 .toList());
 
-        List<OpenListIngestTaskCenterItemResponse> sortedItems = items.stream()
-                .sorted(taskCenterOrdering())
+        String normalizedView = normalizeView(view);
+        String normalizedProductType = normalizeProductType(productType);
+        String normalizedSourceType = normalizeSourceType(sourceType);
+        String normalizedKeyword = normalizeKeyword(keyword);
+        int normalizedPageSize = normalizePageSize(pageSize);
+
+        List<TaskCenterListingCandidate> searchableItems = candidates.stream()
+                .filter(item -> matchesProductType(item, normalizedProductType))
+                .filter(item -> matchesSourceType(item, normalizedSourceType))
+                .filter(item -> matchesKeyword(item, normalizedKeyword))
                 .toList();
-        return new OpenListIngestTaskCenterListResponse(sortedItems, sortedItems.size());
+        int total = (int) searchableItems.stream()
+                .filter(item -> matchesView(item, normalizedView))
+                .count();
+        int normalizedPage = normalizePage(page, total, normalizedPageSize);
+        int offset = (normalizedPage - 1) * normalizedPageSize;
+        List<OpenListIngestTaskCenterItemResponse> pageItems = searchableItems.stream()
+                .filter(item -> matchesView(item, normalizedView))
+                .sorted(taskCenterOrdering())
+                .skip(offset)
+                .limit(normalizedPageSize)
+                .map(TaskCenterListingCandidate::response)
+                .toList();
+
+        return new OpenListIngestTaskCenterListResponse(
+                pageItems,
+                total,
+                normalizedPage,
+                normalizedPageSize,
+                searchableItems.size(),
+                countByView(searchableItems, IN_PROGRESS_VIEW),
+                countByView(searchableItems, NEEDS_ATTENTION_VIEW),
+                countByView(searchableItems, SUCCEEDED_VIEW)
+        );
     }
 
     private LambdaQueryWrapper<MovieMagnetIngestTask> ownedMovieTasks(User user) {
@@ -103,11 +163,11 @@ public class OpenListIngestTaskCenterService {
         return queryWrapper;
     }
 
-    private OpenListIngestTaskCenterItemResponse movieItem(
+    private TaskCenterListingCandidate movieItem(
             MovieMagnetIngestTask task,
             Map<Long, User> creatorsById
     ) {
-        return new OpenListIngestTaskCenterItemResponse(
+        OpenListIngestTaskCenterItemResponse response = new OpenListIngestTaskCenterItemResponse(
                 MOVIE_TASK_TYPE,
                 task.getId(),
                 MOVIE_PRODUCT_TYPE,
@@ -123,13 +183,14 @@ public class OpenListIngestTaskCenterService {
                 task.getCreatedAt(),
                 task.getUpdatedAt()
         );
+        return new TaskCenterListingCandidate(response, task.getMagnetHash());
     }
 
-    private OpenListIngestTaskCenterItemResponse seriesItem(
+    private TaskCenterListingCandidate seriesItem(
             SeriesMagnetIngestTask task,
             Map<Long, User> creatorsById
     ) {
-        return new OpenListIngestTaskCenterItemResponse(
+        OpenListIngestTaskCenterItemResponse response = new OpenListIngestTaskCenterItemResponse(
                 SERIES_TASK_TYPE,
                 task.getId(),
                 seriesProductType(task.getTaskProductType()),
@@ -145,13 +206,14 @@ public class OpenListIngestTaskCenterService {
                 task.getCreatedAt(),
                 task.getUpdatedAt()
         );
+        return new TaskCenterListingCandidate(response, task.getMagnetHash());
     }
 
-    private OpenListIngestTaskCenterItemResponse animeItem(
+    private TaskCenterListingCandidate animeItem(
             AnimeMagnetIngestTask task,
             Map<Long, User> creatorsById
     ) {
-        return new OpenListIngestTaskCenterItemResponse(
+        OpenListIngestTaskCenterItemResponse response = new OpenListIngestTaskCenterItemResponse(
                 ANIME_TASK_TYPE,
                 task.getId(),
                 ANIME_PRODUCT_TYPE,
@@ -167,26 +229,30 @@ public class OpenListIngestTaskCenterService {
                 task.getCreatedAt(),
                 task.getUpdatedAt()
         );
+        return new TaskCenterListingCandidate(response, task.getMagnetHash());
     }
 
-    private Comparator<OpenListIngestTaskCenterItemResponse> taskCenterOrdering() {
-        Comparator<OpenListIngestTaskCenterItemResponse> byUpdatedAt =
+    private Comparator<TaskCenterListingCandidate> taskCenterOrdering() {
+        Comparator<TaskCenterListingCandidate> byUpdatedAt =
                 Comparator.comparing(this::effectiveUpdatedAt);
-        Comparator<OpenListIngestTaskCenterItemResponse> byCreatedAt =
+        Comparator<TaskCenterListingCandidate> byCreatedAt =
                 Comparator.comparing(this::effectiveCreatedAt);
         return byUpdatedAt.reversed()
                 .thenComparing(byCreatedAt.reversed())
-                .thenComparing(OpenListIngestTaskCenterItemResponse::taskType)
-                .thenComparing(OpenListIngestTaskCenterItemResponse::id);
+                .thenComparing(item -> item.response().taskType())
+                .thenComparing(item -> item.response().id());
     }
 
-    private LocalDateTime effectiveUpdatedAt(OpenListIngestTaskCenterItemResponse item) {
-        LocalDateTime updatedAt = item.updatedAt() == null ? item.createdAt() : item.updatedAt();
+    private LocalDateTime effectiveUpdatedAt(TaskCenterListingCandidate item) {
+        LocalDateTime updatedAt = item.response().updatedAt() == null
+                ? item.response().createdAt()
+                : item.response().updatedAt();
         return updatedAt == null ? LocalDateTime.MIN : updatedAt;
     }
 
-    private LocalDateTime effectiveCreatedAt(OpenListIngestTaskCenterItemResponse item) {
-        return item.createdAt() == null ? LocalDateTime.MIN : item.createdAt();
+    private LocalDateTime effectiveCreatedAt(TaskCenterListingCandidate item) {
+        LocalDateTime createdAt = item.response().createdAt();
+        return createdAt == null ? LocalDateTime.MIN : createdAt;
     }
 
     private String sourceType(String sourceType) {
@@ -204,6 +270,78 @@ public class OpenListIngestTaskCenterService {
         int organized = organizedCount == null ? 0 : organizedCount;
         int skipped = skippedCount == null ? 0 : skippedCount;
         return "已整理 %d，跳过 %d".formatted(organized, skipped);
+    }
+
+    private boolean matchesProductType(TaskCenterListingCandidate item, String productType) {
+        return ALL_FILTER.equals(productType) || productType.equals(item.response().productType());
+    }
+
+    private boolean matchesSourceType(TaskCenterListingCandidate item, String sourceType) {
+        return ALL_FILTER.equals(sourceType) || sourceType.equals(item.response().sourceType());
+    }
+
+    private boolean matchesView(TaskCenterListingCandidate item, String view) {
+        String status = item.response().status();
+        return switch (view) {
+            case IN_PROGRESS_VIEW -> IN_PROGRESS_STATUSES.contains(status);
+            case NEEDS_ATTENTION_VIEW -> NEEDS_ATTENTION_STATUSES.contains(status);
+            case SUCCEEDED_VIEW -> "SUCCEEDED".equals(status);
+            default -> true;
+        };
+    }
+
+    private boolean matchesKeyword(TaskCenterListingCandidate item, String keyword) {
+        if (!StringUtils.hasText(keyword)) {
+            return true;
+        }
+        OpenListIngestTaskCenterItemResponse response = item.response();
+        return containsIgnoreCase(response.title(), keyword)
+                || containsIgnoreCase(response.releaseTitle(), keyword)
+                || containsIgnoreCase(item.magnetHash(), keyword);
+    }
+
+    private boolean containsIgnoreCase(String value, String keyword) {
+        return StringUtils.hasText(value)
+                && value.toLowerCase(Locale.ROOT).contains(keyword);
+    }
+
+    private int countByView(List<TaskCenterListingCandidate> items, String view) {
+        return (int) items.stream()
+                .filter(item -> matchesView(item, view))
+                .count();
+    }
+
+    private String normalizeView(String view) {
+        return normalizeToken(view);
+    }
+
+    private String normalizeProductType(String productType) {
+        return normalizeToken(productType);
+    }
+
+    private String normalizeSourceType(String sourceType) {
+        return normalizeToken(sourceType);
+    }
+
+    private String normalizeToken(String value) {
+        return StringUtils.hasText(value) ? value.trim().toUpperCase(Locale.ROOT) : ALL_FILTER;
+    }
+
+    private String normalizeKeyword(String keyword) {
+        return StringUtils.hasText(keyword) ? keyword.trim().toLowerCase(Locale.ROOT) : "";
+    }
+
+    private int normalizePage(Integer page, int total, int pageSize) {
+        int requestedPage = page == null ? DEFAULT_PAGE : page;
+        if (total <= 0) {
+            return DEFAULT_PAGE;
+        }
+        int maxPage = (int) Math.ceil((double) total / pageSize);
+        return Math.min(requestedPage, maxPage);
+    }
+
+    private int normalizePageSize(Integer pageSize) {
+        return pageSize == null ? DEFAULT_PAGE_SIZE : pageSize;
     }
 
     private Map<Long, User> creatorsById(
@@ -238,5 +376,11 @@ public class OpenListIngestTaskCenterService {
 
     private boolean isAdmin(User user) {
         return user != null && ADMIN_ROLE.equalsIgnoreCase(user.getRole());
+    }
+
+    private record TaskCenterListingCandidate(
+            OpenListIngestTaskCenterItemResponse response,
+            String magnetHash
+    ) {
     }
 }
