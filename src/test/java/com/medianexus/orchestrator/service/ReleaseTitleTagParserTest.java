@@ -34,6 +34,7 @@ class ReleaseTitleTagParserTest {
                 "[Prejudice-Studio] 失忆投捕 Boukyaku Battery [01-12][Bilibili WEB-DL 1080P]"
         ).seasonTags()).containsExactly("S01");
         assertThat(parser.parse("Show [01-12] [Fin] 1080p").seasonTags()).containsExactly("S01");
+        assertThat(parser.parse("Show 01-12 1080p").seasonTags()).containsExactly("S01");
         assertThat(parser.parse("Show 全12集 1080p").seasonTags()).containsExactly("S01");
         assertThat(parser.parse("Show 12集全 1080p").seasonTags()).containsExactly("S01");
         assertThat(parser.parse("Show Complete 1080p").seasonTags()).containsExactly("S01");
