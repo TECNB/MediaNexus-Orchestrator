@@ -286,7 +286,9 @@ class ProwlarrReleaseIngestServiceTest {
                 "{TvdbId:81189}",
                 "{ImdbId:tt0903747}",
                 "{TmdbId:1396}",
+                "绝命毒师 S01",
                 "绝命毒师",
+                "Breaking Bad S01",
                 "Breaking Bad"
         );
     }
@@ -319,9 +321,12 @@ class ProwlarrReleaseIngestServiceTest {
     }
 
     @Test
-    void firstSeasonSearchUsesUnqualifiedQueriesAndKeepsOnlyMatchingSeasonPacks() {
+    void firstSeasonSearchMergesQualifiedAndUnqualifiedTitleQueries() {
         prowlarrClient.respondWith("{TmdbId:231873}", List.of(
                 release("失忆投捕.S02.1080p.WEB-DL.x265", 8, 8_000_000_000L)
+        ));
+        prowlarrClient.respondWith("失忆投捕 S01", List.of(
+                release("失忆投捕.S01.1080p.BluRay.x265", 18, 15_000_000_000L)
         ));
         prowlarrClient.respondWith("失忆投捕", List.of(
                 release(
@@ -331,6 +336,7 @@ class ProwlarrReleaseIngestServiceTest {
                 ),
                 release("失忆投捕 [04] [1080p]", 4, 420_000_000L)
         ));
+        prowlarrClient.respondWith("Boukyaku Battery S01", List.of());
         prowlarrClient.respondWith("Boukyaku Battery", List.of());
 
         ProwlarrReleaseSearchResponse response = service.searchSeriesReleases(
@@ -345,17 +351,23 @@ class ProwlarrReleaseIngestServiceTest {
                 )
         );
 
-        assertThat(response.items()).singleElement()
-                .satisfies(release -> {
-                    assertThat(release.title())
-                            .isEqualTo("[LoliHouse] 失忆投捕 / Boukyaku Battery [01-12 合集] [1080p]");
-                    assertThat(release.seasonTags()).containsExactly("S01");
-                    assertThat(release.matchSource()).isEqualTo("展示标题");
-                    assertThat(release.matchQuery()).isEqualTo("失忆投捕");
-                });
+        assertThat(response.items())
+                .extracting(item -> item.title())
+                .containsExactly(
+                        "失忆投捕.S01.1080p.BluRay.x265",
+                        "[LoliHouse] 失忆投捕 / Boukyaku Battery [01-12 合集] [1080p]"
+                );
+        assertThat(response.items()).allSatisfy(release -> {
+            assertThat(release.seasonTags()).containsExactly("S01");
+            assertThat(release.matchSource()).isEqualTo("展示标题");
+        });
+        assertThat(response.items().get(0).matchQuery()).isEqualTo("失忆投捕 S01");
+        assertThat(response.items().get(1).matchQuery()).isEqualTo("失忆投捕");
         assertThat(prowlarrClient.calls()).containsExactlyInAnyOrder(
                 "{TmdbId:231873}",
+                "失忆投捕 S01",
                 "失忆投捕",
+                "Boukyaku Battery S01",
                 "Boukyaku Battery"
         );
     }

@@ -592,12 +592,10 @@ public class ProwlarrReleaseIngestService {
             return;
         }
         String trimmedTitle = title.trim();
-        if (seasonNumber > 1) {
-            queries.add(new MovieReleaseSearchQuery(
-                    source,
-                    trimmedTitle + " " + seasonQuerySuffix(seasonNumber)
-            ));
-        }
+        queries.add(new MovieReleaseSearchQuery(
+                source,
+                trimmedTitle + " " + seasonQuerySuffix(seasonNumber)
+        ));
         queries.add(new MovieReleaseSearchQuery(source, trimmedTitle));
     }
 
