@@ -1,5 +1,6 @@
 package com.medianexus.orchestrator.service;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
@@ -9,8 +10,17 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.medianexus.orchestrator.common.exception.BusinessException;
+import com.medianexus.orchestrator.dto.magnet.response.AdultMagnetIngestTaskResponse;
+import com.medianexus.orchestrator.dto.magnet.response.AnimeMagnetIngestTaskResponse;
+import com.medianexus.orchestrator.dto.magnet.response.MovieMagnetIngestTaskResponse;
+import com.medianexus.orchestrator.dto.magnet.response.SeriesMagnetIngestTaskResponse;
+import com.medianexus.orchestrator.dto.taskcenter.request.OpenListManualMagnetRetryRequest;
+import com.medianexus.orchestrator.dto.taskcenter.request.OpenListAdultBatchRetryRequest;
+import com.medianexus.orchestrator.dto.taskcenter.request.OpenListReleaseRetryRequest;
 import com.medianexus.orchestrator.dto.taskcenter.response.OpenListIngestTaskCenterDetailResponse;
 import com.medianexus.orchestrator.dto.taskcenter.response.OpenListIngestTaskCenterListResponse;
+import com.medianexus.orchestrator.dto.taskcenter.response.OpenListManualMagnetRetryResponse;
+import com.medianexus.orchestrator.dto.taskcenter.response.OpenListReleaseRetryContextResponse;
 import com.medianexus.orchestrator.mapper.AdultMagnetIngestTaskMapper;
 import com.medianexus.orchestrator.mapper.AdultMagnetIngestTaskLogMapper;
 import com.medianexus.orchestrator.mapper.AnimeMagnetIngestTaskMapper;
@@ -48,6 +58,19 @@ class OpenListIngestTaskCenterServiceTest {
     private final AnimeMagnetIngestTaskLogMapper animeTaskLogMapper = mock(AnimeMagnetIngestTaskLogMapper.class);
     private final AdultMagnetIngestTaskLogMapper adultTaskLogMapper = mock(AdultMagnetIngestTaskLogMapper.class);
     private final UserMapper userMapper = mock(UserMapper.class);
+    private final MovieSeriesRetryRecorder movieSeriesRetryRecorder = new MovieSeriesRetryRecorder();
+    private final AnimeRetryRecorder animeRetryRecorder = new AnimeRetryRecorder();
+    private final AdultRetryRecorder adultRetryRecorder = new AdultRetryRecorder();
+    private final MovieSeriesReleaseRetryRecorder releaseRetryRecorder = new MovieSeriesReleaseRetryRecorder();
+    private final AnimeReleaseRetryRecorder animeReleaseRetryRecorder = new AnimeReleaseRetryRecorder();
+    private final RecordingMagnetIngestService magnetIngestService =
+            new RecordingMagnetIngestService(movieSeriesRetryRecorder);
+    private final RecordingAnimeMagnetIngestTaskService animeMagnetIngestTaskService =
+            new RecordingAnimeMagnetIngestTaskService(animeRetryRecorder);
+    private final RecordingAdultMagnetIngestService adultMagnetIngestService =
+            new RecordingAdultMagnetIngestService(adultRetryRecorder);
+    private final RecordingProwlarrReleaseIngestService prowlarrReleaseIngestService =
+            new RecordingProwlarrReleaseIngestService(releaseRetryRecorder, animeReleaseRetryRecorder);
     private final OpenListIngestTaskCenterService service = new OpenListIngestTaskCenterService(
             authService,
             movieTaskMapper,
@@ -58,7 +81,12 @@ class OpenListIngestTaskCenterServiceTest {
             seriesTaskLogMapper,
             animeTaskLogMapper,
             adultTaskLogMapper,
-            userMapper
+            userMapper,
+            new ObjectMapper(),
+            magnetIngestService,
+            animeMagnetIngestTaskService,
+            adultMagnetIngestService,
+            prowlarrReleaseIngestService
     );
 
     @BeforeEach
@@ -68,6 +96,11 @@ class OpenListIngestTaskCenterServiceTest {
         when(seriesTaskLogMapper.selectList(any())).thenReturn(List.of());
         when(animeTaskLogMapper.selectList(any())).thenReturn(List.of());
         when(adultTaskLogMapper.selectList(any())).thenReturn(List.of());
+        movieSeriesRetryRecorder.reset();
+        animeRetryRecorder.reset();
+        adultRetryRecorder.reset();
+        releaseRetryRecorder.reset();
+        animeReleaseRetryRecorder.reset();
     }
 
     @Test
@@ -106,6 +139,90 @@ class OpenListIngestTaskCenterServiceTest {
         assertThat(response.inProgressCount()).isEqualTo(4);
         assertThat(response.needsAttentionCount()).isZero();
         assertThat(response.succeededCount()).isZero();
+    }
+
+    @Test
+    void listsOnlyLatestAttemptWhileSearchingAndCountingAcrossAttemptChain() {
+        authService.currentUser = user(1L, "USER", "owner");
+        MovieMagnetIngestTask first = movieTask(
+                "movie-1",
+                "Original searchable title",
+                "FAILED",
+                "old-searchable-hash",
+                LocalDateTime.parse("2026-07-01T10:00:00")
+        );
+        first.setAttemptGroupId("group-1");
+        MovieMagnetIngestTask second = movieTask(
+                "movie-2",
+                "Movie retry",
+                "INTERRUPTED",
+                "retry-hash",
+                LocalDateTime.parse("2026-07-01T11:00:00")
+        );
+        second.setAttemptGroupId("group-1");
+        MovieMagnetIngestTask latest = movieTask(
+                "movie-3",
+                "Movie current",
+                "PENDING",
+                "current-hash",
+                LocalDateTime.parse("2026-07-01T12:00:00")
+        );
+        latest.setAttemptGroupId("group-1");
+        when(movieTaskMapper.selectList(any())).thenReturn(List.of(first, latest, second));
+
+        OpenListIngestTaskCenterListResponse response = service.listOpenListIngestTasks(
+                "ALL",
+                "ALL",
+                "ALL",
+                "Original searchable title",
+                1,
+                10
+        );
+
+        assertThat(response.items()).hasSize(1);
+        assertThat(response.items().get(0).id()).isEqualTo("movie-3");
+        assertThat(response.items().get(0).attemptCount()).isEqualTo(3);
+        assertThat(response.allCount()).isEqualTo(1);
+        assertThat(response.inProgressCount()).isEqualTo(1);
+        assertThat(response.needsAttentionCount()).isZero();
+    }
+
+    @Test
+    void filtersCollapsedAttemptChainByOriginSourceInsteadOfLatestRecoverySource() {
+        authService.currentUser = user(1L, "USER", "owner");
+        MovieMagnetIngestTask releaseOrigin = movieTask(
+                "movie-1",
+                "Release origin",
+                "FAILED",
+                "release-hash",
+                LocalDateTime.parse("2026-07-01T10:00:00")
+        );
+        releaseOrigin.setSourceType("PROWLARR_RELEASE");
+        releaseOrigin.setAttemptGroupId("group-1");
+        MovieMagnetIngestTask manualFallback = movieTask(
+                "movie-2",
+                "Manual fallback",
+                "PENDING",
+                "manual-hash",
+                LocalDateTime.parse("2026-07-01T11:00:00")
+        );
+        manualFallback.setSourceType("MANUAL_MAGNET");
+        manualFallback.setAttemptGroupId("group-1");
+        manualFallback.setRetryOfTaskType("MOVIE");
+        manualFallback.setRetryOfTaskId("movie-1");
+        when(movieTaskMapper.selectList(any())).thenReturn(List.of(releaseOrigin, manualFallback));
+
+        OpenListIngestTaskCenterListResponse releaseFiltered = service.listOpenListIngestTasks(
+                "ALL", "ALL", "PROWLARR_RELEASE", null, 1, 10
+        );
+        OpenListIngestTaskCenterListResponse manualFiltered = service.listOpenListIngestTasks(
+                "ALL", "ALL", "MANUAL_MAGNET", null, 1, 10
+        );
+
+        assertThat(releaseFiltered.items()).hasSize(1);
+        assertThat(releaseFiltered.items().get(0).id()).isEqualTo("movie-2");
+        assertThat(releaseFiltered.items().get(0).sourceType()).isEqualTo("MANUAL_MAGNET");
+        assertThat(manualFiltered.items()).isEmpty();
     }
 
     @Test
@@ -382,6 +499,7 @@ class OpenListIngestTaskCenterServiceTest {
         when(seriesTaskMapper.selectList(any())).thenReturn(List.of());
         when(animeTaskMapper.selectList(any())).thenReturn(List.of());
         AdultMagnetIngestTask task = adultTask("adult-1", 9L, LocalDateTime.parse("2026-07-01T14:00:00"));
+        task.setDownloadLinksJson("[\"magnet:?xt=urn:btih:firsthash\",\"ed2k://|file|video.mkv|123|0123456789abcdef0123456789abcdef|/\"]");
         task.setSubmittedCount(null);
         task.setSucceededCount(null);
         task.setFailedCount(null);
@@ -533,6 +651,7 @@ class OpenListIngestTaskCenterServiceTest {
     void returnsAdultDetailForAdminWithBatchProgress() {
         authService.currentUser = user(9L, "ADMIN", "admin");
         AdultMagnetIngestTask task = adultTask("adult-1", 9L, LocalDateTime.parse("2026-07-01T14:00:00"));
+        task.setDownloadLinksJson("[\"magnet:?xt=urn:btih:firsthash\",\"ed2k://|file|video.mkv|123|0123456789abcdef0123456789abcdef|/\"]");
         when(adultTaskMapper.selectById("adult-1")).thenReturn(task);
         when(userMapper.selectById(9L)).thenReturn(user(9L, "ADMIN", "admin"));
         when(adultTaskLogMapper.selectList(any())).thenReturn(List.of(
@@ -550,6 +669,588 @@ class OpenListIngestTaskCenterServiceTest {
         assertThat(response.progress().keptCount()).isEqualTo(3);
         assertThat(response.progress().deletedCount()).isEqualTo(1);
         assertThat(response.lastWarningOrErrorLog().message()).isEqualTo("部分链接失败");
+        assertThat(response.batchDownloadLinks()).containsExactly(
+                "magnet:?xt=urn:btih:firsthash",
+                "ed2k://|file|video.mkv|123|0123456789abcdef0123456789abcdef|/"
+        );
+    }
+
+    @Test
+    void returnsOriginalAttemptChainForNewTaskIdentity() {
+        authService.currentUser = user(1L, "USER", "owner");
+        MovieMagnetIngestTask task = movieTask(
+                "movie-1",
+                "Movie",
+                "FAILED",
+                "movie-hash",
+                LocalDateTime.parse("2026-07-01T10:00:00")
+        );
+        task.setAttemptGroupId("movie-1");
+        when(movieTaskMapper.selectById("movie-1")).thenReturn(task);
+        when(movieTaskMapper.selectList(any())).thenReturn(List.of(task));
+        when(userMapper.selectById(1L)).thenReturn(user(1L, "USER", "owner"));
+
+        OpenListIngestTaskCenterDetailResponse response = service.getOpenListIngestTaskDetail("movie", "movie-1");
+
+        assertThat(response.attemptChain().attemptGroupId()).isEqualTo("movie-1");
+        assertThat(response.attemptChain().attempts()).hasSize(1);
+        assertThat(response.attemptChain().currentAttempt().id()).isEqualTo("movie-1");
+        assertThat(response.attemptChain().currentAttempt().current()).isTrue();
+        assertThat(response.attemptChain().currentAttempt().retryOfTaskType()).isNull();
+        assertThat(response.attemptChain().retryOf()).isNull();
+    }
+
+    @Test
+    void givesLegacyTaskStableAttemptChainIdentityWithoutPersistedGroup() {
+        authService.currentUser = user(1L, "USER", "owner");
+        MovieMagnetIngestTask task = movieTask(
+                "legacy-movie-1",
+                "Legacy Movie",
+                "FAILED",
+                "legacy-movie-hash",
+                LocalDateTime.parse("2026-07-01T10:00:00")
+        );
+        when(movieTaskMapper.selectById("legacy-movie-1")).thenReturn(task);
+        when(userMapper.selectById(1L)).thenReturn(user(1L, "USER", "owner"));
+
+        OpenListIngestTaskCenterDetailResponse response =
+                service.getOpenListIngestTaskDetail("movie", "legacy-movie-1");
+
+        assertThat(response.attemptChain().attemptGroupId()).isEqualTo("LEGACY:MOVIE:legacy-movie-1");
+        assertThat(response.attemptChain().attempts())
+                .extracting("id")
+                .containsExactly("legacy-movie-1");
+        assertThat(response.status()).isEqualTo("FAILED");
+        assertThat(response.logs()).isEmpty();
+    }
+
+    @Test
+    void returnsContinuousAttemptsInTimeOrderWithVisibleRetrySources() {
+        authService.currentUser = user(1L, "USER", "owner");
+        MovieMagnetIngestTask first = movieTask(
+                "movie-1",
+                "Movie",
+                "FAILED",
+                "movie-hash-1",
+                LocalDateTime.parse("2026-07-01T10:00:00")
+        );
+        first.setAttemptGroupId("group-1");
+        MovieMagnetIngestTask second = movieTask(
+                "movie-2",
+                "Movie",
+                "INTERRUPTED",
+                "movie-hash-2",
+                LocalDateTime.parse("2026-07-01T11:00:00")
+        );
+        second.setAttemptGroupId("group-1");
+        second.setRetryOfTaskType("MOVIE");
+        second.setRetryOfTaskId("movie-1");
+        MovieMagnetIngestTask third = movieTask(
+                "movie-3",
+                "Movie",
+                "PENDING",
+                "movie-hash-3",
+                LocalDateTime.parse("2026-07-01T12:00:00")
+        );
+        third.setAttemptGroupId("group-1");
+        third.setRetryOfTaskType("MOVIE");
+        third.setRetryOfTaskId("movie-2");
+        when(movieTaskMapper.selectById("movie-3")).thenReturn(third);
+        when(movieTaskMapper.selectList(any())).thenReturn(List.of(third, first, second));
+        when(userMapper.selectById(1L)).thenReturn(user(1L, "USER", "owner"));
+
+        OpenListIngestTaskCenterDetailResponse response = service.getOpenListIngestTaskDetail("movie", "movie-3");
+
+        assertThat(response.attemptChain().attempts())
+                .extracting("id")
+                .containsExactly("movie-1", "movie-2", "movie-3");
+        assertThat(response.attemptChain().currentAttempt().id()).isEqualTo("movie-3");
+        assertThat(response.attemptChain().retryOf().id()).isEqualTo("movie-2");
+        assertThat(response.attemptChain().attempts().get(1).retryOfTaskId()).isEqualTo("movie-1");
+        assertThat(response.attemptChain().attempts().get(2).retryOfTaskId()).isEqualTo("movie-2");
+    }
+
+    @Test
+    void returnsRecursiveRetrySourceWhenOriginalAttemptHasNoPersistedGroup() {
+        authService.currentUser = user(1L, "USER", "owner");
+        AnimeMagnetIngestTask first = animeTask(
+                "anime-1",
+                "失忆投捕",
+                "INTERRUPTED",
+                "anime-hash-1",
+                LocalDateTime.parse("2026-06-30T17:02:00")
+        );
+        AnimeMagnetIngestTask second = animeTask(
+                "anime-2",
+                "失忆投捕",
+                "INTERRUPTED",
+                "anime-hash-2",
+                LocalDateTime.parse("2026-07-02T13:42:00")
+        );
+        second.setAttemptGroupId("LEGACY:ANIME:anime-1");
+        second.setRetryOfTaskType("ANIME");
+        second.setRetryOfTaskId("anime-1");
+        AnimeMagnetIngestTask third = animeTask(
+                "anime-3",
+                "失忆投捕",
+                "PENDING",
+                "anime-hash-3",
+                LocalDateTime.parse("2026-07-02T13:46:00")
+        );
+        third.setAttemptGroupId("LEGACY:ANIME:anime-1");
+        third.setRetryOfTaskType("ANIME");
+        third.setRetryOfTaskId("anime-2");
+        when(animeTaskMapper.selectById("anime-3")).thenReturn(third);
+        when(animeTaskMapper.selectById("anime-2")).thenReturn(second);
+        when(animeTaskMapper.selectById("anime-1")).thenReturn(first);
+        when(animeTaskMapper.selectList(any())).thenReturn(List.of(second, third));
+        when(userMapper.selectById(1L)).thenReturn(user(1L, "USER", "owner"));
+
+        OpenListIngestTaskCenterDetailResponse response = service.getOpenListIngestTaskDetail("anime", "anime-3");
+
+        assertThat(response.attemptChain().attemptGroupId()).isEqualTo("LEGACY:ANIME:anime-1");
+        assertThat(response.attemptChain().attempts())
+                .extracting("id")
+                .containsExactly("anime-1", "anime-2", "anime-3");
+        assertThat(response.attemptChain().retryOf().id()).isEqualTo("anime-2");
+        assertThat(response.attemptChain().attempts().get(1).retryOfTaskId()).isEqualTo("anime-1");
+        assertThat(response.attemptChain().attempts().get(2).retryOfTaskId()).isEqualTo("anime-2");
+    }
+
+    @Test
+    void returnsCrossTypeAttemptChainAndKeepsSharedSeriesAnimeProductType() {
+        authService.currentUser = user(1L, "ADMIN", "admin");
+        MovieMagnetIngestTask movieAttempt = movieTask(
+                "movie-1",
+                "Movie",
+                "FAILED",
+                "movie-hash",
+                LocalDateTime.parse("2026-07-01T10:00:00")
+        );
+        movieAttempt.setAttemptGroupId("group-cross");
+        SeriesMagnetIngestTask animeAttempt = seriesTask(
+                "series-anime-1",
+                "Anime via Series",
+                "ANIME",
+                LocalDateTime.parse("2026-07-01T11:00:00")
+        );
+        animeAttempt.setAttemptGroupId("group-cross");
+        animeAttempt.setRetryOfTaskType("MOVIE");
+        animeAttempt.setRetryOfTaskId("movie-1");
+        when(seriesTaskMapper.selectById("series-anime-1")).thenReturn(animeAttempt);
+        when(movieTaskMapper.selectList(any())).thenReturn(List.of(movieAttempt));
+        when(seriesTaskMapper.selectList(any())).thenReturn(List.of(animeAttempt));
+        when(userMapper.selectById(1L)).thenReturn(user(1L, "ADMIN", "admin"));
+
+        OpenListIngestTaskCenterDetailResponse response =
+                service.getOpenListIngestTaskDetail("series", "series-anime-1");
+
+        assertThat(response.productType()).isEqualTo("ANIME");
+        assertThat(response.attemptChain().attempts())
+                .extracting("id")
+                .containsExactly("movie-1", "series-anime-1");
+        assertThat(response.attemptChain().currentAttempt().productType()).isEqualTo("ANIME");
+        assertThat(response.attemptChain().retryOf().taskType()).isEqualTo("MOVIE");
+        assertThat(response.attemptChain().retryOf().id()).isEqualTo("movie-1");
+    }
+
+    @Test
+    void filtersAttemptChainByPermissionWithoutLeakingAdultSource() {
+        authService.currentUser = user(1L, "USER", "owner");
+        MovieMagnetIngestTask movieAttempt = movieTask(
+                "movie-1",
+                "Movie",
+                "FAILED",
+                "movie-hash",
+                LocalDateTime.parse("2026-07-01T10:00:00")
+        );
+        movieAttempt.setAttemptGroupId("group-sensitive");
+        movieAttempt.setRetryOfTaskType("ADULT");
+        movieAttempt.setRetryOfTaskId("adult-1");
+        when(movieTaskMapper.selectById("movie-1")).thenReturn(movieAttempt);
+        when(movieTaskMapper.selectList(any())).thenReturn(List.of(movieAttempt));
+        when(userMapper.selectById(1L)).thenReturn(user(1L, "USER", "owner"));
+
+        OpenListIngestTaskCenterDetailResponse response = service.getOpenListIngestTaskDetail("movie", "movie-1");
+
+        assertThat(response.attemptChain().attempts()).hasSize(1);
+        assertThat(response.attemptChain().currentAttempt().retryOfTaskType()).isNull();
+        assertThat(response.attemptChain().currentAttempt().retryOfTaskId()).isNull();
+        assertThat(response.attemptChain().retryOf()).isNull();
+        verify(adultTaskMapper, never()).selectList(any());
+    }
+
+    @Test
+    void reusesOriginalMovieManualMagnetAsNewAttempt() {
+        authService.currentUser = user(1L, "USER", "owner");
+        MovieMagnetIngestTask original = movieTask(
+                "movie-1",
+                "Movie",
+                "FAILED",
+                "old-hash",
+                LocalDateTime.parse("2026-07-01T10:00:00")
+        );
+        original.setMagnet("magnet:?xt=urn:btih:oldhash");
+        original.setAttemptGroupId("group-1");
+        when(movieTaskMapper.selectById("movie-1")).thenReturn(original);
+        movieSeriesRetryRecorder.nextMovieResponse = movieRetryResponse("movie-2");
+
+        OpenListManualMagnetRetryResponse response =
+                service.reuseOriginalManualMagnet("movie", "movie-1");
+
+        assertThat(response.taskType()).isEqualTo("MOVIE");
+        assertThat(response.id()).isEqualTo("movie-2");
+        assertThat(response.detailPath()).isEqualTo("/tasks/movie/movie-2");
+        assertThat(movieSeriesRetryRecorder.movieCallCount).isEqualTo(1);
+        assertThat(movieSeriesRetryRecorder.lastMovieMagnet).isEqualTo("magnet:?xt=urn:btih:oldhash");
+        assertThat(movieSeriesRetryRecorder.lastMovieRetryReference.attemptGroupId()).isEqualTo("group-1");
+        assertThat(movieSeriesRetryRecorder.lastMovieRetryReference.taskType()).isEqualTo("MOVIE");
+        assertThat(movieSeriesRetryRecorder.lastMovieRetryReference.taskId()).isEqualTo("movie-1");
+    }
+
+    @Test
+    void replacesSeriesManualMagnetAndKeepsSharedAnimeProductContext() {
+        authService.currentUser = user(1L, "USER", "owner");
+        SeriesMagnetIngestTask original = seriesTask(
+                "series-anime-1",
+                "Anime via Series",
+                "ANIME",
+                "PARTIAL_SUCCESS",
+                "MANUAL_MAGNET",
+                null,
+                "old-hash",
+                LocalDateTime.parse("2026-07-01T10:00:00")
+        );
+        original.setMagnet("magnet:?xt=urn:btih:oldhash");
+        when(seriesTaskMapper.selectById("series-anime-1")).thenReturn(original);
+        movieSeriesRetryRecorder.nextSeriesResponse = seriesRetryResponse("series-anime-2", "ANIME");
+
+        OpenListManualMagnetRetryResponse response = service.replaceManualMagnet(
+                "series",
+                "series-anime-1",
+                new OpenListManualMagnetRetryRequest("magnet:?xt=urn:btih:newhash")
+        );
+
+        assertThat(response.detailPath()).isEqualTo("/tasks/series/series-anime-2");
+        assertThat(movieSeriesRetryRecorder.seriesCallCount).isEqualTo(1);
+        assertThat(movieSeriesRetryRecorder.lastSeriesTask.getTaskProductType()).isEqualTo("ANIME");
+        assertThat(movieSeriesRetryRecorder.lastSeriesTask.getSeasonNumber()).isEqualTo(1);
+        assertThat(movieSeriesRetryRecorder.lastSeriesMagnet).isEqualTo("magnet:?xt=urn:btih:newhash");
+        assertThat(movieSeriesRetryRecorder.lastSeriesRetryReference.attemptGroupId()).isEqualTo("LEGACY:SERIES:series-anime-1");
+    }
+
+    @Test
+    void replacesIndependentAnimeManualMagnetAsNewAttempt() {
+        authService.currentUser = user(1L, "USER", "owner");
+        AnimeMagnetIngestTask original = animeTask(
+                "anime-1",
+                "Anime",
+                "INTERRUPTED",
+                "old-hash",
+                LocalDateTime.parse("2026-07-01T10:00:00")
+        );
+        original.setMagnet("magnet:?xt=urn:btih:oldhash");
+        original.setBgmId("1234");
+        original.setSavePath("/anime/Anime/Season 01");
+        when(animeTaskMapper.selectById("anime-1")).thenReturn(original);
+        animeRetryRecorder.nextResponse = animeRetryResponse("anime-2");
+
+        OpenListManualMagnetRetryResponse response = service.replaceManualMagnet(
+                "anime",
+                "anime-1",
+                new OpenListManualMagnetRetryRequest("magnet:?xt=urn:btih:newhash")
+        );
+
+        assertThat(response.taskType()).isEqualTo("ANIME");
+        assertThat(response.detailPath()).isEqualTo("/tasks/anime/anime-2");
+        assertThat(animeRetryRecorder.callCount).isEqualTo(1);
+        assertThat(animeRetryRecorder.lastMagnet).isEqualTo("magnet:?xt=urn:btih:newhash");
+    }
+
+    @Test
+    void reusesCurrentMagnetForProwlarrReleaseTask() {
+        authService.currentUser = user(1L, "USER", "owner");
+        SeriesMagnetIngestTask original = seriesTask(
+                "series-1",
+                "Series",
+                "SERIES",
+                "FAILED",
+                "PROWLARR_RELEASE",
+                "Release",
+                "old-hash",
+                LocalDateTime.parse("2026-07-01T10:00:00")
+        );
+        when(seriesTaskMapper.selectById("series-1")).thenReturn(original);
+        movieSeriesRetryRecorder.nextSeriesResponse = seriesRetryResponse("series-2", "SERIES");
+
+        OpenListManualMagnetRetryResponse response = service.reuseOriginalManualMagnet("series", "series-1");
+
+        assertThat(response.detailPath()).isEqualTo("/tasks/series/series-2");
+        assertThat(movieSeriesRetryRecorder.lastSeriesMagnet).isEqualTo(original.getMagnet());
+        assertThat(movieSeriesRetryRecorder.lastSeriesRetryReference.taskId()).isEqualTo("series-1");
+    }
+
+    @Test
+    void returnsReleaseRetryContextForManualSharedAnimeTaskWithoutGuessingProductType() {
+        authService.currentUser = user(1L, "USER", "owner");
+        SeriesMagnetIngestTask original = seriesTask(
+                "series-anime-1",
+                "Anime via Series",
+                "ANIME",
+                "FAILED",
+                "MANUAL_MAGNET",
+                null,
+                "old-hash",
+                LocalDateTime.parse("2026-07-01T10:00:00")
+        );
+        original.setOriginalTitle("Original Anime");
+        original.setSeasonNumber(2);
+        original.setQualityTag("1080p");
+        when(seriesTaskMapper.selectById("series-anime-1")).thenReturn(original);
+
+        OpenListReleaseRetryContextResponse response = service.getReleaseRetryContext(
+                "series",
+                "series-anime-1"
+        );
+
+        assertThat(response.productType()).isEqualTo("ANIME");
+        assertThat(response.seasonNumber()).isEqualTo(2);
+        assertThat(response.qualityTag()).isEqualTo("1080p");
+        assertThat(response.releaseTitle()).isNull();
+    }
+
+    @Test
+    void retriesManualSharedAnimeTaskWithSelectedReleaseInSameAttemptChain() {
+        authService.currentUser = user(1L, "USER", "owner");
+        SeriesMagnetIngestTask original = seriesTask(
+                "series-anime-1",
+                "Anime via Series",
+                "ANIME",
+                "PARTIAL_SUCCESS",
+                "MANUAL_MAGNET",
+                null,
+                "old-hash",
+                LocalDateTime.parse("2026-07-01T10:00:00")
+        );
+        original.setAttemptGroupId("anime-group-1");
+        when(seriesTaskMapper.selectById("series-anime-1")).thenReturn(original);
+        releaseRetryRecorder.nextSeriesResponse = seriesRetryResponse("series-anime-2", "ANIME");
+        OpenListReleaseRetryRequest request = releaseRetryRequest();
+
+        OpenListManualMagnetRetryResponse response = service.retryWithSelectedRelease(
+                "series",
+                "series-anime-1",
+                request
+        );
+
+        assertThat(response.detailPath()).isEqualTo("/tasks/series/series-anime-2");
+        assertThat(releaseRetryRecorder.lastSeriesTask.getTaskProductType()).isEqualTo("ANIME");
+        assertThat(releaseRetryRecorder.lastRelease).isSameAs(request);
+        assertThat(releaseRetryRecorder.lastRetryReference.attemptGroupId()).isEqualTo("anime-group-1");
+        assertThat(releaseRetryRecorder.lastRetryReference.taskId()).isEqualTo("series-anime-1");
+    }
+
+    @Test
+    void returnsReleaseRetryContextForIndependentAnimeTask() {
+        authService.currentUser = user(1L, "USER", "owner");
+        AnimeMagnetIngestTask original = animeTask(
+                "anime-1",
+                "Anime Title",
+                "FAILED",
+                "old-hash",
+                LocalDateTime.parse("2026-07-01T10:00:00")
+        );
+        original.setSourceType("PROWLARR_RELEASE");
+        original.setReleaseTitle("Anime.Release.1080p");
+        original.setReleaseIndexer("Indexer A");
+        original.setReleaseSize(8_000_000_000L);
+        original.setResolutionTags("1080p");
+        original.setQualityTag("1080p");
+        original.setDynamicRangeTags("sdr");
+        when(animeTaskMapper.selectById("anime-1")).thenReturn(original);
+
+        OpenListReleaseRetryContextResponse response = service.getReleaseRetryContext("anime", "anime-1");
+
+        assertThat(response.taskType()).isEqualTo("ANIME");
+        assertThat(response.productType()).isEqualTo("ANIME");
+        assertThat(response.title()).isEqualTo("Anime Title");
+        assertThat(response.originalTitle()).isEqualTo("Anime Title");
+        assertThat(response.seasonNumber()).isEqualTo(1);
+        assertThat(response.releaseTitle()).isEqualTo("Anime.Release.1080p");
+        assertThat(response.releaseIndexer()).isEqualTo("Indexer A");
+        assertThat(response.releaseSize()).isEqualTo(8_000_000_000L);
+        assertThat(response.resolutionTags()).containsExactly("1080p");
+        assertThat(response.dynamicRangeTags()).containsExactly("sdr");
+    }
+
+    @Test
+    void retriesIndependentAnimeTaskWithSelectedReleaseInSameAttemptChain() {
+        authService.currentUser = user(1L, "USER", "owner");
+        AnimeMagnetIngestTask original = animeTask(
+                "anime-1",
+                "Anime Title",
+                "PARTIAL_SUCCESS",
+                "old-hash",
+                LocalDateTime.parse("2026-07-01T10:00:00")
+        );
+        original.setSourceType("MANUAL_MAGNET");
+        original.setAttemptGroupId("anime-group-1");
+        when(animeTaskMapper.selectById("anime-1")).thenReturn(original);
+        animeReleaseRetryRecorder.nextResponse = animeRetryResponse("anime-2");
+        OpenListReleaseRetryRequest request = releaseRetryRequest();
+
+        OpenListManualMagnetRetryResponse response = service.retryWithSelectedRelease(
+                "anime",
+                "anime-1",
+                request
+        );
+
+        assertThat(response.detailPath()).isEqualTo("/tasks/anime/anime-2");
+        assertThat(animeReleaseRetryRecorder.lastTask).isSameAs(original);
+        assertThat(animeReleaseRetryRecorder.lastRelease).isSameAs(request);
+        assertThat(animeReleaseRetryRecorder.lastRetryReference.attemptGroupId()).isEqualTo("anime-group-1");
+        assertThat(animeReleaseRetryRecorder.lastRetryReference.taskId()).isEqualTo("anime-1");
+    }
+
+    @Test
+    void allowsProwlarrTaskToReplaceOrReuseCurrentMagnet() {
+        authService.currentUser = user(1L, "USER", "owner");
+        MovieMagnetIngestTask original = movieTask(
+                "movie-1",
+                "Movie",
+                "FAILED",
+                "old-hash",
+                LocalDateTime.parse("2026-07-01T10:00:00")
+        );
+        original.setSourceType("PROWLARR_RELEASE");
+        original.setMagnet("magnet:?xt=urn:btih:oldhash");
+        when(movieTaskMapper.selectById("movie-1")).thenReturn(original);
+        movieSeriesRetryRecorder.nextMovieResponse = movieRetryResponse("movie-2");
+
+        OpenListManualMagnetRetryResponse response = service.replaceManualMagnet(
+                "movie",
+                "movie-1",
+                new OpenListManualMagnetRetryRequest("magnet:?xt=urn:btih:newhash")
+        );
+
+        assertThat(response.detailPath()).isEqualTo("/tasks/movie/movie-2");
+        assertThat(movieSeriesRetryRecorder.lastMovieMagnet).isEqualTo("magnet:?xt=urn:btih:newhash");
+
+        OpenListManualMagnetRetryResponse reused = service.reuseOriginalManualMagnet("movie", "movie-1");
+
+        assertThat(reused.detailPath()).isEqualTo("/tasks/movie/movie-2");
+        assertThat(movieSeriesRetryRecorder.lastMovieMagnet).isEqualTo("magnet:?xt=urn:btih:oldhash");
+    }
+
+    @Test
+    void rejectsManualMagnetRetryForSucceededTask() {
+        authService.currentUser = user(1L, "USER", "owner");
+        MovieMagnetIngestTask original = movieTask(
+                "movie-1",
+                "Movie",
+                "SUCCEEDED",
+                "old-hash",
+                LocalDateTime.parse("2026-07-01T10:00:00")
+        );
+        when(movieTaskMapper.selectById("movie-1")).thenReturn(original);
+
+        assertThatThrownBy(() -> service.reuseOriginalManualMagnet("movie", "movie-1"))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("状态不支持");
+        assertThat(movieSeriesRetryRecorder.movieCallCount).isZero();
+    }
+
+    @Test
+    void rejectsManualMagnetRetryForAdultWithoutReadingAdultTask() {
+        authService.currentUser = user(9L, "ADMIN", "admin");
+
+        assertThatThrownBy(() -> service.reuseOriginalManualMagnet("adult", "adult-1"))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("任务类型不支持");
+        verify(adultTaskMapper, never()).selectById("adult-1");
+    }
+
+    @Test
+    void resubmitsRecoverableAdultBatchAsLinkedAttemptWithInheritedCategory() {
+        authService.currentUser = user(9L, "ADMIN", "admin");
+        AdultMagnetIngestTask original = adultTask(
+                "adult-1",
+                9L,
+                LocalDateTime.parse("2026-07-01T14:00:00")
+        );
+        original.setCategory("JAV");
+        original.setAttemptGroupId("adult-group-1");
+        when(adultTaskMapper.selectById("adult-1")).thenReturn(original);
+        adultRetryRecorder.nextTaskId = "adult-2";
+
+        OpenListManualMagnetRetryResponse response = service.retryAdultBatch(
+                "adult-1",
+                new OpenListAdultBatchRetryRequest(List.of(
+                        "magnet:?xt=urn:btih:firsthash",
+                        "ed2k://|file|video.mkv|123|0123456789abcdef0123456789abcdef|/"
+                ))
+        );
+
+        assertThat(response.taskType()).isEqualTo("ADULT");
+        assertThat(response.detailPath()).isEqualTo("/tasks/adult/adult-2");
+        assertThat(adultRetryRecorder.lastCategory).isEqualTo("JAV");
+        assertThat(adultRetryRecorder.lastRetryReference.attemptGroupId()).isEqualTo("adult-group-1");
+        assertThat(adultRetryRecorder.lastRetryReference.taskType()).isEqualTo("ADULT");
+        assertThat(adultRetryRecorder.lastRetryReference.taskId()).isEqualTo("adult-1");
+    }
+
+    @Test
+    void rejectsEmptyAdultBatchBeforeCreatingAttempt() {
+        authService.currentUser = user(9L, "ADMIN", "admin");
+        AdultMagnetIngestTask original = adultTask(
+                "adult-1",
+                9L,
+                LocalDateTime.parse("2026-07-01T14:00:00")
+        );
+        when(adultTaskMapper.selectById("adult-1")).thenReturn(original);
+
+        assertThatThrownBy(() -> service.retryAdultBatch(
+                "adult-1",
+                new OpenListAdultBatchRetryRequest(List.of())
+        ))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("不能为空");
+        assertThat(adultRetryRecorder.callCount).isZero();
+    }
+
+    @Test
+    void rejectsAdultBatchRetryForActiveTask() {
+        authService.currentUser = user(9L, "ADMIN", "admin");
+        AdultMagnetIngestTask original = adultTask(
+                "adult-1",
+                9L,
+                LocalDateTime.parse("2026-07-01T14:00:00")
+        );
+        original.setStatus("DOWNLOADING");
+        when(adultTaskMapper.selectById("adult-1")).thenReturn(original);
+
+        assertThatThrownBy(() -> service.retryAdultBatch(
+                "adult-1",
+                new OpenListAdultBatchRetryRequest(List.of("magnet:?xt=urn:btih:firsthash"))
+        ))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("状态不支持");
+        assertThat(adultRetryRecorder.callCount).isZero();
+    }
+
+    @Test
+    void hidesAdultBatchRetryFromNonAdminWithoutReadingTask() {
+        authService.currentUser = user(1L, "USER", "user");
+
+        assertThatThrownBy(() -> service.retryAdultBatch(
+                "adult-1",
+                new OpenListAdultBatchRetryRequest(List.of("magnet:?xt=urn:btih:firsthash"))
+        ))
+                .isInstanceOf(BusinessException.class)
+                .extracting("httpStatus")
+                .isEqualTo(HttpStatus.NOT_FOUND);
+        verify(adultTaskMapper, never()).selectById("adult-1");
+        assertThat(adultRetryRecorder.callCount).isZero();
     }
 
     @Test
@@ -589,10 +1290,14 @@ class OpenListIngestTaskCenterServiceTest {
         MovieMagnetIngestTask task = new MovieMagnetIngestTask();
         task.setId(id);
         task.setTitle(title);
+        task.setOriginalTitle(title);
         task.setYear(2026);
         task.setStatus(status);
         task.setStage("created");
+        task.setMagnet("magnet:?xt=urn:btih:" + magnetHash);
         task.setMagnetHash(magnetHash);
+        task.setSavePath("/movies/" + title);
+        task.setTempPath("/movies/" + title);
         task.setCreatedByUserId(1L);
         task.setOrganizedCount(0);
         task.setSkippedCount(0);
@@ -631,14 +1336,20 @@ class OpenListIngestTaskCenterServiceTest {
     ) {
         SeriesMagnetIngestTask task = new SeriesMagnetIngestTask();
         task.setId(id);
+        task.setTitle(title);
+        task.setOriginalTitle(title);
+        task.setSeasonNumber(1);
         task.setSeriesName(title);
         task.setSeasonFolder("Season 1");
         task.setStatus(status);
         task.setStage("submitted");
         task.setSourceType(sourceType);
         task.setReleaseTitle(releaseTitle);
+        task.setMagnet("magnet:?xt=urn:btih:" + magnetHash);
         task.setMagnetHash(magnetHash);
         task.setTaskProductType(productType);
+        task.setSavePath("/series/" + title + "/Season 1");
+        task.setTempPath("/series/" + title + "/Season 1");
         task.setCreatedByUserId(1L);
         task.setOrganizedCount(0);
         task.setSkippedCount(0);
@@ -661,16 +1372,137 @@ class OpenListIngestTaskCenterServiceTest {
         AnimeMagnetIngestTask task = new AnimeMagnetIngestTask();
         task.setId(id);
         task.setTitle(title);
+        task.setNameCn(title);
+        task.setName(title);
+        task.setBgmId(id + "-bgm");
         task.setSeasonNumber(1);
         task.setStatus(status);
         task.setStage("downloading");
+        task.setMagnet("magnet:?xt=urn:btih:" + magnetHash);
         task.setMagnetHash(magnetHash);
+        task.setSavePath("/anime/" + title + "/Season 01");
+        task.setTempPath("/anime/" + title + "/Season 01");
         task.setCreatedByUserId(1L);
         task.setOrganizedCount(0);
         task.setSkippedCount(0);
         task.setCreatedAt(updatedAt.minusMinutes(5));
         task.setUpdatedAt(updatedAt);
         return task;
+    }
+
+    private MovieMagnetIngestTaskResponse movieRetryResponse(String id) {
+        return new MovieMagnetIngestTaskResponse(
+                id,
+                1L,
+                "PENDING",
+                "created",
+                "Movie",
+                "Movie",
+                2026,
+                "MANUAL_MAGNET",
+                null,
+                null,
+                null,
+                List.of(),
+                null,
+                List.of(),
+                "new-hash",
+                "/movies/Movie",
+                "/movies/Movie",
+                0,
+                0,
+                null,
+                LocalDateTime.parse("2026-07-01T11:00:00"),
+                LocalDateTime.parse("2026-07-01T11:00:00"),
+                null
+        );
+    }
+
+    private OpenListReleaseRetryRequest releaseRetryRequest() {
+        return new OpenListReleaseRetryRequest(
+                "New.Release.1080p",
+                "Indexer B",
+                12_000_000_000L,
+                2,
+                "https://prowlarr.example/download/2",
+                List.of("1080p"),
+                List.of("sdr")
+        );
+    }
+
+    private SeriesMagnetIngestTaskResponse seriesRetryResponse(String id, String productType) {
+        return new SeriesMagnetIngestTaskResponse(
+                id,
+                1L,
+                "PENDING",
+                "created",
+                "Series",
+                "Series",
+                1,
+                productType,
+                "MANUAL_MAGNET",
+                null,
+                null,
+                null,
+                List.of(),
+                null,
+                List.of(),
+                "Series",
+                "Season 1",
+                "new-hash",
+                "/series/Series/Season 1",
+                "/series/Series/Season 1",
+                0,
+                0,
+                null,
+                LocalDateTime.parse("2026-07-01T11:00:00"),
+                LocalDateTime.parse("2026-07-01T11:00:00"),
+                null
+        );
+    }
+
+    private AnimeMagnetIngestTaskResponse animeRetryResponse(String id) {
+        return new AnimeMagnetIngestTaskResponse(
+                id,
+                1L,
+                "PENDING",
+                "created",
+                "1234",
+                "Anime",
+                1,
+                "new-hash",
+                "/anime/Anime/Season 01",
+                "/anime/Anime/Season 01",
+                0,
+                0,
+                null,
+                LocalDateTime.parse("2026-07-01T11:00:00"),
+                LocalDateTime.parse("2026-07-01T11:00:00"),
+                null
+        );
+    }
+
+    private AdultMagnetIngestTaskResponse adultRetryResponse(String id) {
+        return new AdultMagnetIngestTaskResponse(
+                id,
+                1L,
+                "JAV",
+                "PENDING",
+                "created",
+                "2026-07-01",
+                "/adult/2026-07-01",
+                1,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                null,
+                LocalDateTime.parse("2026-07-01T11:00:00"),
+                LocalDateTime.parse("2026-07-01T11:00:00"),
+                null
+        );
     }
 
     private AdultMagnetIngestTask adultTask(String id, Long createdByUserId, LocalDateTime updatedAt) {
@@ -774,6 +1606,222 @@ class OpenListIngestTaskCenterServiceTest {
         @Override
         public User requireCurrentUser() {
             return currentUser;
+        }
+    }
+
+    private static class RecordingMagnetIngestService extends MagnetIngestService {
+
+        private final MovieSeriesRetryRecorder recorder;
+
+        RecordingMagnetIngestService(MovieSeriesRetryRecorder recorder) {
+            super(null, null, null, null, null, null, null, null, null, null);
+            this.recorder = recorder;
+        }
+
+        @Override
+        public MovieMagnetIngestTaskResponse createMovieRetryTask(
+                MovieMagnetIngestTask originalTask,
+                String magnet,
+                TaskRetryReference retryReference
+        ) {
+            recorder.movieCallCount++;
+            recorder.lastMovieMagnet = magnet;
+            recorder.lastMovieRetryReference = retryReference;
+            return recorder.nextMovieResponse;
+        }
+
+        @Override
+        public SeriesMagnetIngestTaskResponse createSeriesRetryTask(
+                SeriesMagnetIngestTask originalTask,
+                String magnet,
+                TaskRetryReference retryReference
+        ) {
+            recorder.seriesCallCount++;
+            recorder.lastSeriesTask = originalTask;
+            recorder.lastSeriesMagnet = magnet;
+            recorder.lastSeriesRetryReference = retryReference;
+            return recorder.nextSeriesResponse;
+        }
+    }
+
+    private static class RecordingAnimeMagnetIngestTaskService extends AnimeMagnetIngestTaskService {
+
+        private final AnimeRetryRecorder recorder;
+
+        RecordingAnimeMagnetIngestTaskService(AnimeRetryRecorder recorder) {
+            super(null, null, null, null, null, null, null, null, null);
+            this.recorder = recorder;
+        }
+
+        @Override
+        public AnimeMagnetIngestTaskResponse createRetryTask(
+                AnimeMagnetIngestTask originalTask,
+                String magnet,
+                TaskRetryReference retryReference
+        ) {
+            recorder.callCount++;
+            recorder.lastMagnet = magnet;
+            return recorder.nextResponse;
+        }
+    }
+
+    private class RecordingAdultMagnetIngestService extends AdultMagnetIngestService {
+
+        private final AdultRetryRecorder recorder;
+
+        RecordingAdultMagnetIngestService(AdultRetryRecorder recorder) {
+            super(null, null, null, null, null, null, null, new ObjectMapper());
+            this.recorder = recorder;
+        }
+
+        @Override
+        public AdultMagnetIngestTaskResponse createRetryTask(
+                String category,
+                List<String> downloadLinks,
+                TaskRetryReference retryReference
+        ) {
+            recorder.callCount++;
+            recorder.lastCategory = category;
+            recorder.lastRetryReference = retryReference;
+            return adultRetryResponse(recorder.nextTaskId);
+        }
+    }
+
+    private static class RecordingProwlarrReleaseIngestService extends ProwlarrReleaseIngestService {
+
+        private final MovieSeriesReleaseRetryRecorder movieSeriesRecorder;
+        private final AnimeReleaseRetryRecorder animeRecorder;
+
+        RecordingProwlarrReleaseIngestService(
+                MovieSeriesReleaseRetryRecorder movieSeriesRecorder,
+                AnimeReleaseRetryRecorder animeRecorder
+        ) {
+            super(null, null, null, null, null);
+            this.movieSeriesRecorder = movieSeriesRecorder;
+            this.animeRecorder = animeRecorder;
+        }
+
+        @Override
+        public MovieMagnetIngestTaskResponse ingestSelectedMovieRetry(
+                MovieMagnetIngestTask originalTask,
+                OpenListReleaseRetryRequest request,
+                TaskRetryReference retryReference
+        ) {
+            movieSeriesRecorder.lastMovieTask = originalTask;
+            movieSeriesRecorder.lastRelease = request;
+            movieSeriesRecorder.lastRetryReference = retryReference;
+            return movieSeriesRecorder.nextMovieResponse;
+        }
+
+        @Override
+        public SeriesMagnetIngestTaskResponse ingestSelectedSeriesRetry(
+                SeriesMagnetIngestTask originalTask,
+                OpenListReleaseRetryRequest request,
+                TaskRetryReference retryReference
+        ) {
+            movieSeriesRecorder.lastSeriesTask = originalTask;
+            movieSeriesRecorder.lastRelease = request;
+            movieSeriesRecorder.lastRetryReference = retryReference;
+            return movieSeriesRecorder.nextSeriesResponse;
+        }
+
+        @Override
+        public AnimeMagnetIngestTaskResponse ingestSelectedAnimeRetry(
+                AnimeMagnetIngestTask originalTask,
+                OpenListReleaseRetryRequest request,
+                TaskRetryReference retryReference
+        ) {
+            animeRecorder.lastTask = originalTask;
+            animeRecorder.lastRelease = request;
+            animeRecorder.lastRetryReference = retryReference;
+            return animeRecorder.nextResponse;
+        }
+    }
+
+    private static class MovieSeriesRetryRecorder {
+
+        private MovieMagnetIngestTaskResponse nextMovieResponse;
+        private SeriesMagnetIngestTaskResponse nextSeriesResponse;
+        private int movieCallCount;
+        private int seriesCallCount;
+        private String lastMovieMagnet;
+        private String lastSeriesMagnet;
+        private SeriesMagnetIngestTask lastSeriesTask;
+        private TaskRetryReference lastMovieRetryReference;
+        private TaskRetryReference lastSeriesRetryReference;
+
+        void reset() {
+            nextMovieResponse = null;
+            nextSeriesResponse = null;
+            movieCallCount = 0;
+            seriesCallCount = 0;
+            lastMovieMagnet = null;
+            lastSeriesMagnet = null;
+            lastSeriesTask = null;
+            lastMovieRetryReference = null;
+            lastSeriesRetryReference = null;
+        }
+    }
+
+    private static class AnimeRetryRecorder {
+
+        private AnimeMagnetIngestTaskResponse nextResponse;
+        private int callCount;
+        private String lastMagnet;
+
+        void reset() {
+            nextResponse = null;
+            callCount = 0;
+            lastMagnet = null;
+        }
+    }
+
+    private static class MovieSeriesReleaseRetryRecorder {
+
+        private MovieMagnetIngestTaskResponse nextMovieResponse;
+        private SeriesMagnetIngestTaskResponse nextSeriesResponse;
+        private MovieMagnetIngestTask lastMovieTask;
+        private SeriesMagnetIngestTask lastSeriesTask;
+        private OpenListReleaseRetryRequest lastRelease;
+        private TaskRetryReference lastRetryReference;
+
+        void reset() {
+            nextMovieResponse = null;
+            nextSeriesResponse = null;
+            lastMovieTask = null;
+            lastSeriesTask = null;
+            lastRelease = null;
+            lastRetryReference = null;
+        }
+    }
+
+    private static class AnimeReleaseRetryRecorder {
+
+        private AnimeMagnetIngestTaskResponse nextResponse;
+        private AnimeMagnetIngestTask lastTask;
+        private OpenListReleaseRetryRequest lastRelease;
+        private TaskRetryReference lastRetryReference;
+
+        void reset() {
+            nextResponse = null;
+            lastTask = null;
+            lastRelease = null;
+            lastRetryReference = null;
+        }
+    }
+
+    private static class AdultRetryRecorder {
+
+        private String nextTaskId;
+        private int callCount;
+        private String lastCategory;
+        private TaskRetryReference lastRetryReference;
+
+        void reset() {
+            nextTaskId = null;
+            callCount = 0;
+            lastCategory = null;
+            lastRetryReference = null;
         }
     }
 }

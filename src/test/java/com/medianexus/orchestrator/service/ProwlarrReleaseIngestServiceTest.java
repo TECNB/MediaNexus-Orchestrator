@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.medianexus.orchestrator.common.exception.BusinessException;
 import com.medianexus.orchestrator.config.ProwlarrProperties;
 import com.medianexus.orchestrator.dto.magnet.request.SeriesMagnetIngestRequest;
+import com.medianexus.orchestrator.dto.magnet.response.AnimeMagnetIngestTaskResponse;
 import com.medianexus.orchestrator.dto.magnet.response.SeriesMagnetIngestTaskResponse;
 import com.medianexus.orchestrator.dto.resources.request.MovieReleaseRecommendationRequest;
 import com.medianexus.orchestrator.dto.resources.request.MovieReleaseSearchRequest;
@@ -15,9 +16,12 @@ import com.medianexus.orchestrator.dto.resources.request.SeriesReleaseRecommenda
 import com.medianexus.orchestrator.dto.resources.request.SeriesReleaseSearchRequest;
 import com.medianexus.orchestrator.dto.resources.response.ProwlarrReleaseRecommendationResponse;
 import com.medianexus.orchestrator.dto.resources.response.ProwlarrReleaseSearchResponse;
+import com.medianexus.orchestrator.dto.taskcenter.request.OpenListReleaseRetryRequest;
 import com.medianexus.orchestrator.integration.prowlarr.ProwlarrClient;
 import com.medianexus.orchestrator.integration.prowlarr.ProwlarrRelease;
+import com.medianexus.orchestrator.model.AnimeMagnetIngestTask;
 import com.medianexus.orchestrator.model.User;
+import com.medianexus.orchestrator.model.SeriesMagnetIngestTask;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -31,6 +35,7 @@ class ProwlarrReleaseIngestServiceTest {
     private FakeProwlarrClient prowlarrClient;
 
     private FakeMagnetIngestService magnetIngestService;
+    private FakeAnimeMagnetIngestTaskService animeMagnetIngestTaskService;
 
     private ProwlarrReleaseIngestService service;
 
@@ -38,11 +43,13 @@ class ProwlarrReleaseIngestServiceTest {
     void setUp() {
         prowlarrClient = new FakeProwlarrClient();
         magnetIngestService = new FakeMagnetIngestService();
+        animeMagnetIngestTaskService = new FakeAnimeMagnetIngestTaskService();
         service = new ProwlarrReleaseIngestService(
                 new TestAuthService(),
                 prowlarrClient,
                 new ReleaseTitleTagParser(),
-                magnetIngestService
+                magnetIngestService,
+                animeMagnetIngestTaskService
         );
     }
 
@@ -121,6 +128,70 @@ class ProwlarrReleaseIngestServiceTest {
 
         assertThat(response.query()).isEqualTo("Spirited Away 2001");
         assertThat(response.item().title()).contains("Spirited.Away");
+    }
+
+    @Test
+    void selectedSeriesReleaseRetryResolvesMagnetAndKeepsReleaseMetadata() {
+        SeriesMagnetIngestTask originalTask = new SeriesMagnetIngestTask();
+        originalTask.setId("series-anime-1");
+        originalTask.setTaskProductType("ANIME");
+        TaskRetryReference retryReference = new TaskRetryReference(
+                "anime-group-1",
+                "SERIES",
+                "series-anime-1"
+        );
+
+        service.ingestSelectedSeriesRetry(
+                originalTask,
+                new OpenListReleaseRetryRequest(
+                        "New.Anime.S02.1080p.HDR",
+                        "Test Indexer",
+                        20_000_000_000L,
+                        7,
+                        "https://prowlarr.example/download/7",
+                        List.of("1080p"),
+                        List.of("hdr")
+                ),
+                retryReference
+        );
+
+        assertThat(magnetIngestService.retryOriginalTask).isSameAs(originalTask);
+        assertThat(magnetIngestService.retryMagnet).contains("frierenhash");
+        assertThat(magnetIngestService.retryMetadata.sourceType()).isEqualTo("PROWLARR_RELEASE");
+        assertThat(magnetIngestService.retryMetadata.releaseTitle()).isEqualTo("New.Anime.S02.1080p.HDR");
+        assertThat(magnetIngestService.retryReference).isSameAs(retryReference);
+    }
+
+    @Test
+    void selectedIndependentAnimeReleaseRetryResolvesMagnetAndKeepsReleaseMetadata() {
+        AnimeMagnetIngestTask originalTask = new AnimeMagnetIngestTask();
+        originalTask.setId("anime-1");
+        TaskRetryReference retryReference = new TaskRetryReference(
+                "anime-group-1",
+                "ANIME",
+                "anime-1"
+        );
+
+        service.ingestSelectedAnimeRetry(
+                originalTask,
+                new OpenListReleaseRetryRequest(
+                        "New.Anime.S01.1080p.HDR",
+                        "Test Indexer",
+                        20_000_000_000L,
+                        7,
+                        "https://prowlarr.example/download/7",
+                        List.of("1080p"),
+                        List.of("hdr")
+                ),
+                retryReference
+        );
+
+        assertThat(animeMagnetIngestTaskService.retryOriginalTask).isSameAs(originalTask);
+        assertThat(animeMagnetIngestTaskService.retryMagnet).contains("frierenhash");
+        assertThat(animeMagnetIngestTaskService.retryMetadata.sourceType()).isEqualTo("PROWLARR_RELEASE");
+        assertThat(animeMagnetIngestTaskService.retryMetadata.releaseTitle()).isEqualTo("New.Anime.S01.1080p.HDR");
+        assertThat(animeMagnetIngestTaskService.retryMetadata.releaseIndexer()).isEqualTo("Test Indexer");
+        assertThat(animeMagnetIngestTaskService.retryReference).isSameAs(retryReference);
     }
 
     @Test
@@ -736,10 +807,57 @@ class ProwlarrReleaseIngestServiceTest {
         }
     }
 
+    private static class FakeAnimeMagnetIngestTaskService extends AnimeMagnetIngestTaskService {
+
+        private AnimeMagnetIngestTask retryOriginalTask;
+        private String retryMagnet;
+        private ReleaseIngestMetadata retryMetadata;
+        private TaskRetryReference retryReference;
+
+        FakeAnimeMagnetIngestTaskService() {
+            super(null, null, null, null, null, null, null, null, null);
+        }
+
+        @Override
+        public AnimeMagnetIngestTaskResponse createRetryTask(
+                AnimeMagnetIngestTask originalTask,
+                String magnet,
+                ReleaseIngestMetadata releaseMetadata,
+                TaskRetryReference retryReference
+        ) {
+            this.retryOriginalTask = originalTask;
+            this.retryMagnet = magnet;
+            this.retryMetadata = releaseMetadata;
+            this.retryReference = retryReference;
+            return new AnimeMagnetIngestTaskResponse(
+                    "anime-retry-1",
+                    1L,
+                    "PENDING",
+                    "created",
+                    "1234",
+                    "葬送的芙莉莲",
+                    1,
+                    "frieren-hash",
+                    "/media/anime/葬送的芙莉莲/Season 01",
+                    "/media/anime/葬送的芙莉莲/Season 01",
+                    0,
+                    0,
+                    null,
+                    null,
+                    null,
+                    null
+            );
+        }
+    }
+
     private static class FakeMagnetIngestService extends MagnetIngestService {
         private boolean createdSeriesTask;
         private boolean createdAnimeSeasonSeriesTask;
         private SeriesMagnetIngestTaskResponse animeResponse;
+        private SeriesMagnetIngestTask retryOriginalTask;
+        private String retryMagnet;
+        private ReleaseIngestMetadata retryMetadata;
+        private TaskRetryReference retryReference;
 
         FakeMagnetIngestService() {
             super(null, null, null, null, null, null, null, null, null, null);
@@ -761,6 +879,20 @@ class ProwlarrReleaseIngestServiceTest {
         ) {
             createdAnimeSeasonSeriesTask = true;
             return animeResponse == null ? seriesTaskResponse("task-anime", "ANIME") : animeResponse;
+        }
+
+        @Override
+        public SeriesMagnetIngestTaskResponse createSeriesRetryTask(
+                SeriesMagnetIngestTask originalTask,
+                String magnet,
+                ReleaseIngestMetadata releaseMetadata,
+                TaskRetryReference retryReference
+        ) {
+            this.retryOriginalTask = originalTask;
+            this.retryMagnet = magnet;
+            this.retryMetadata = releaseMetadata;
+            this.retryReference = retryReference;
+            return seriesTaskResponse("task-anime-retry", "ANIME");
         }
 
         private SeriesMagnetIngestTaskResponse seriesTaskResponse(String id, String taskProductType) {
