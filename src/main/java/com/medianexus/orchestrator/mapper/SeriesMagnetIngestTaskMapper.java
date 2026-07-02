@@ -34,6 +34,9 @@ public interface SeriesMagnetIngestTaskMapper extends BaseMapper<SeriesMagnetIng
                 save_path VARCHAR(1024) NOT NULL,
                 temp_path VARCHAR(1024) NOT NULL,
                 openlist_task_id VARCHAR(128) NULL,
+                attempt_group_id VARCHAR(128) NULL,
+                retry_of_task_type VARCHAR(32) NULL,
+                retry_of_task_id VARCHAR(36) NULL,
                 created_by_user_id BIGINT NULL,
                 organized_count INT NOT NULL DEFAULT 0,
                 skipped_count INT NOT NULL DEFAULT 0,
@@ -44,10 +47,43 @@ public interface SeriesMagnetIngestTaskMapper extends BaseMapper<SeriesMagnetIng
                 PRIMARY KEY (id),
                 KEY idx_series_magnet_tasks_hash_status (magnet_hash, status),
                 KEY idx_series_magnet_tasks_owner_created_at (created_by_user_id, created_at),
+                KEY idx_series_magnet_tasks_attempt_group (attempt_group_id, created_at),
                 KEY idx_series_magnet_tasks_created_at (created_at)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
             """)
     void createTableIfNotExists();
+
+    @Select("""
+            SELECT COUNT(*)
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'series_magnet_ingest_tasks'
+              AND COLUMN_NAME = 'attempt_group_id'
+            """)
+    Integer countAttemptChainColumns();
+
+    @Update("""
+            ALTER TABLE series_magnet_ingest_tasks
+            ADD COLUMN attempt_group_id VARCHAR(128) NULL AFTER openlist_task_id,
+            ADD COLUMN retry_of_task_type VARCHAR(32) NULL AFTER attempt_group_id,
+            ADD COLUMN retry_of_task_id VARCHAR(36) NULL AFTER retry_of_task_type
+            """)
+    void addAttemptChainColumns();
+
+    @Select("""
+            SELECT COUNT(*)
+            FROM information_schema.STATISTICS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'series_magnet_ingest_tasks'
+              AND INDEX_NAME = 'idx_series_magnet_tasks_attempt_group'
+            """)
+    Integer countAttemptGroupIndex();
+
+    @Update("""
+            CREATE INDEX idx_series_magnet_tasks_attempt_group
+            ON series_magnet_ingest_tasks (attempt_group_id, created_at)
+            """)
+    void addAttemptGroupIndex();
 
     @Select("""
             SELECT COUNT(*)

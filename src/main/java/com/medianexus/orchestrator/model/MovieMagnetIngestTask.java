@@ -49,6 +49,12 @@ public class MovieMagnetIngestTask {
 
     private String openlistTaskId;
 
+    private String attemptGroupId;
+
+    private String retryOfTaskType;
+
+    private String retryOfTaskId;
+
     private Long createdByUserId;
 
     private Integer organizedCount;
@@ -221,6 +227,30 @@ public class MovieMagnetIngestTask {
 
     public void setOpenlistTaskId(String openlistTaskId) {
         this.openlistTaskId = openlistTaskId;
+    }
+
+    public String getAttemptGroupId() {
+        return attemptGroupId;
+    }
+
+    public void setAttemptGroupId(String attemptGroupId) {
+        this.attemptGroupId = attemptGroupId;
+    }
+
+    public String getRetryOfTaskType() {
+        return retryOfTaskType;
+    }
+
+    public void setRetryOfTaskType(String retryOfTaskType) {
+        this.retryOfTaskType = retryOfTaskType;
+    }
+
+    public String getRetryOfTaskId() {
+        return retryOfTaskId;
+    }
+
+    public void setRetryOfTaskId(String retryOfTaskId) {
+        this.retryOfTaskId = retryOfTaskId;
     }
 
     public Long getCreatedByUserId() {

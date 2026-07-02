@@ -94,6 +94,30 @@ public class AnimeMagnetIngestTaskService {
         this.executorService = Executors.newSingleThreadExecutor(new WorkerThreadFactory());
     }
 
+    AnimeMagnetIngestTaskService(
+            AnimeMagnetIngestTaskMapper taskMapper,
+            AnimeMagnetIngestTaskLogMapper taskLogMapper,
+            OpenListClient openListClient,
+            OpenListProperties openListProperties,
+            AniRssClient aniRssClient,
+            AnimeEpisodeRenameService renameService,
+            AuthService authService,
+            UserActionQuotaService userActionQuotaService,
+            AutoSymlinkRefreshService autoSymlinkRefreshService,
+            ExecutorService executorService
+    ) {
+        this.taskMapper = taskMapper;
+        this.taskLogMapper = taskLogMapper;
+        this.openListClient = openListClient;
+        this.openListProperties = openListProperties;
+        this.aniRssClient = aniRssClient;
+        this.renameService = renameService;
+        this.authService = authService;
+        this.userActionQuotaService = userActionQuotaService;
+        this.autoSymlinkRefreshService = autoSymlinkRefreshService;
+        this.executorService = executorService;
+    }
+
     /**
      * 服务重启后中断未完成任务。
      *
@@ -153,48 +177,157 @@ public class AnimeMagnetIngestTaskService {
         String title = preferredTitle(request);
         Integer season = request.seasonNumber() == null ? 1 : request.seasonNumber();
         String themoviedbName = resolveThemoviedbName(request);
-        userActionQuotaService.consumeDailyContentCreate(user, UserActionType.MAGNET_INGEST_CREATE);
-
         String savePath = renderAnimePath(title, themoviedbName, season);
+        AnimeMagnetIngestTaskResponse response = insertTask(
+                user,
+                new AnimeTaskSeed(
+                        magnet,
+                        magnetHash,
+                        request.bgmId().trim(),
+                        trimToNull(request.bgmUrl()),
+                        title,
+                        trimToNull(request.nameCn()),
+                        trimToNull(request.name()),
+                        season,
+                        savePath
+                ),
+                ReleaseIngestMetadata.manual(),
+                null
+        );
+        if (!StringUtils.hasText(request.themoviedbName()) && StringUtils.hasText(themoviedbName)) {
+            writeLog(response.id(), "INFO", "created", "已通过 Ani-RSS 解析 TMDB 标题", themoviedbName);
+        }
+        return response;
+    }
+
+    public AnimeMagnetIngestTaskResponse createRetryTask(
+            AnimeMagnetIngestTask originalTask,
+            String magnet,
+            TaskRetryReference retryReference
+    ) {
+        return createRetryTask(originalTask, magnet, ReleaseIngestMetadata.manual(), retryReference);
+    }
+
+    public AnimeMagnetIngestTaskResponse createRetryTask(
+            AnimeMagnetIngestTask originalTask,
+            String magnet,
+            ReleaseIngestMetadata releaseMetadata,
+            TaskRetryReference retryReference
+    ) {
+        User user = authService.requireCurrentUser();
+        String normalizedMagnet = magnet == null ? "" : magnet.trim();
+        if (!normalizedMagnet.toLowerCase(Locale.ROOT).startsWith("magnet:?")) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "请输入有效 magnet 链接");
+        }
+        String magnetHash = extractMagnetHash(normalizedMagnet);
+
+        AnimeMagnetIngestTask activeTask = taskMapper.selectOne(new LambdaQueryWrapper<AnimeMagnetIngestTask>()
+                .eq(AnimeMagnetIngestTask::getMagnetHash, magnetHash)
+                .in(AnimeMagnetIngestTask::getStatus, ACTIVE_STATUSES)
+                .last("LIMIT 1"));
+        if (activeTask != null) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "相同 magnet 正在处理中，请稍后再试");
+        }
+
+        return insertTask(
+                user,
+                new AnimeTaskSeed(
+                        normalizedMagnet,
+                        magnetHash,
+                        originalTask.getBgmId(),
+                        trimToNull(originalTask.getBgmUrl()),
+                        originalTask.getTitle(),
+                        trimToNull(originalTask.getNameCn()),
+                        trimToNull(originalTask.getName()),
+                        originalTask.getSeasonNumber(),
+                        originalTask.getSavePath()
+                ),
+                releaseMetadata,
+                retryReference
+        );
+    }
+
+    private AnimeMagnetIngestTaskResponse insertTask(
+            User user,
+            AnimeTaskSeed seed,
+            ReleaseIngestMetadata releaseMetadata,
+            TaskRetryReference retryReference
+    ) {
+        userActionQuotaService.consumeDailyContentCreate(user, UserActionType.MAGNET_INGEST_CREATE);
         String taskId = UUID.randomUUID().toString();
-        String tempPath = savePath;
 
         AnimeMagnetIngestTask task = new AnimeMagnetIngestTask();
         task.setId(taskId);
         task.setStatus("PENDING");
         task.setStage("created");
-        task.setMagnet(magnet);
-        task.setMagnetHash(magnetHash);
-        task.setBgmId(request.bgmId().trim());
-        task.setBgmUrl(trimToNull(request.bgmUrl()));
-        task.setTitle(title);
-        task.setNameCn(trimToNull(request.nameCn()));
-        task.setName(trimToNull(request.name()));
-        task.setSeasonNumber(season);
-        task.setSavePath(savePath);
-        task.setTempPath(tempPath);
+        task.setMagnet(seed.magnet());
+        task.setMagnetHash(seed.magnetHash());
+        task.setBgmId(seed.bgmId());
+        task.setBgmUrl(seed.bgmUrl());
+        task.setTitle(seed.title());
+        task.setNameCn(seed.nameCn());
+        task.setName(seed.name());
+        task.setSeasonNumber(seed.seasonNumber());
+        applyReleaseMetadata(task, releaseMetadata);
+        task.setSavePath(seed.savePath());
+        task.setTempPath(seed.savePath());
+        task.setAttemptGroupId(retryReference == null ? taskId : retryReference.attemptGroupId());
+        if (retryReference != null) {
+            task.setRetryOfTaskType(retryReference.taskType());
+            task.setRetryOfTaskId(retryReference.taskId());
+        }
         task.setCreatedByUserId(user.getId());
         task.setOrganizedCount(0);
         task.setSkippedCount(0);
         task.setCreatedAt(LocalDateTime.now());
         task.setUpdatedAt(task.getCreatedAt());
         taskMapper.insert(task);
+        AnimeMagnetIngestTaskResponse response = toResponse(task);
+        try {
+            writeLog(taskId, "INFO", "created", "已创建动漫整季磁力任务", "savePath=" + seed.savePath());
+            log.info(
+                    "Created anime magnet ingest task taskId={} userId={} bgmId={} magnetHash={} savePath={}",
+                    taskId,
+                    user.getId(),
+                    task.getBgmId(),
+                    seed.magnetHash(),
+                    seed.savePath()
+            );
 
-        writeLog(taskId, "INFO", "created", "已创建动漫整季磁力任务", "savePath=" + savePath);
-        log.info(
-                "Created anime magnet ingest task taskId={} userId={} bgmId={} magnetHash={} savePath={}",
-                taskId,
-                user.getId(),
-                task.getBgmId(),
-                magnetHash,
-                savePath
-        );
-        if (!StringUtils.hasText(request.themoviedbName()) && StringUtils.hasText(themoviedbName)) {
-            writeLog(taskId, "INFO", "created", "已通过 Ani-RSS 解析 TMDB 标题", themoviedbName);
+            executorService.submit(() -> runTask(taskId));
+            return response;
+        } catch (RuntimeException exception) {
+            removeTaskAfterCreationFailure(taskId, exception);
+            throw exception;
         }
+    }
 
-        executorService.submit(() -> runTask(taskId));
-        return toResponse(getExistingTask(taskId));
+    private void applyReleaseMetadata(AnimeMagnetIngestTask task, ReleaseIngestMetadata metadata) {
+        ReleaseIngestMetadata effectiveMetadata = metadata == null ? ReleaseIngestMetadata.manual() : metadata;
+        List<String> resolutionTags = effectiveMetadata.resolutionTags() == null
+                ? List.of()
+                : effectiveMetadata.resolutionTags();
+        task.setSourceType(trimToNull(effectiveMetadata.sourceType()));
+        task.setReleaseTitle(trimToNull(effectiveMetadata.releaseTitle()));
+        task.setReleaseIndexer(trimToNull(effectiveMetadata.releaseIndexer()));
+        task.setReleaseSize(effectiveMetadata.releaseSize());
+        task.setReleaseIndexerId(effectiveMetadata.releaseIndexerId());
+        task.setReleaseGuid(trimToNull(effectiveMetadata.releaseGuid()));
+        task.setResolutionTags(serializeTags(resolutionTags));
+        task.setQualityTag(resolutionTags.stream().findFirst().map(this::trimToNull).orElse(null));
+        task.setDynamicRangeTags(serializeTags(effectiveMetadata.dynamicRangeTags()));
+    }
+
+    private String serializeTags(List<String> tags) {
+        if (tags == null || tags.isEmpty()) {
+            return null;
+        }
+        String serialized = tags.stream()
+                .map(this::trimToNull)
+                .filter(StringUtils::hasText)
+                .distinct()
+                .collect(java.util.stream.Collectors.joining(","));
+        return StringUtils.hasText(serialized) ? serialized : null;
     }
 
     /**
@@ -695,6 +828,20 @@ public class AnimeMagnetIngestTaskService {
         taskMapper.update(updateWrapper);
     }
 
+    private void removeTaskAfterCreationFailure(String taskId, RuntimeException cause) {
+        try {
+            taskLogMapper.delete(new LambdaQueryWrapper<AnimeMagnetIngestTaskLog>()
+                    .eq(AnimeMagnetIngestTaskLog::getTaskId, taskId));
+        } catch (RuntimeException cleanupException) {
+            cause.addSuppressed(cleanupException);
+        }
+        try {
+            taskMapper.deleteById(taskId);
+        } catch (RuntimeException cleanupException) {
+            cause.addSuppressed(cleanupException);
+        }
+    }
+
     private void writeLog(String taskId, String level, String stage, String message, String detail) {
         AnimeMagnetIngestTaskLog taskLog = new AnimeMagnetIngestTaskLog();
         taskLog.setTaskId(taskId);
@@ -864,6 +1011,19 @@ public class AnimeMagnetIngestTaskService {
     }
 
     private record OrganizeResult(int organizedCount, int skippedCount) {
+    }
+
+    private record AnimeTaskSeed(
+            String magnet,
+            String magnetHash,
+            String bgmId,
+            String bgmUrl,
+            String title,
+            String nameCn,
+            String name,
+            Integer seasonNumber,
+            String savePath
+    ) {
     }
 
     private static class WorkerThreadFactory implements ThreadFactory {

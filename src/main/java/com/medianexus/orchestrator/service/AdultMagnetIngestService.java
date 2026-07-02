@@ -1,5 +1,7 @@
 package com.medianexus.orchestrator.service;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.medianexus.orchestrator.common.exception.BusinessException;
@@ -47,6 +49,7 @@ import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.event.EventListener;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -76,12 +79,14 @@ public class AdultMagnetIngestService {
     private final MovieSeriesFileRenameService renameService;
     private final AuthService authService;
     private final AutoSymlinkRefreshService autoSymlinkRefreshService;
+    private final ObjectMapper objectMapper;
     private final ExecutorService executorService;
     private final ExecutorService prepareExecutorService;
     private final ExecutorService organizeExecutorService;
     private final Object countLock = new Object();
     private volatile boolean tablesReady;
 
+    @Autowired
     public AdultMagnetIngestService(
             AdultMagnetIngestTaskMapper taskMapper,
             AdultMagnetIngestTaskLogMapper taskLogMapper,
@@ -89,7 +94,8 @@ public class AdultMagnetIngestService {
             OpenListProperties openListProperties,
             MovieSeriesFileRenameService renameService,
             AuthService authService,
-            AutoSymlinkRefreshService autoSymlinkRefreshService
+            AutoSymlinkRefreshService autoSymlinkRefreshService,
+            ObjectMapper objectMapper
     ) {
         this.taskMapper = taskMapper;
         this.taskLogMapper = taskLogMapper;
@@ -98,9 +104,36 @@ public class AdultMagnetIngestService {
         this.renameService = renameService;
         this.authService = authService;
         this.autoSymlinkRefreshService = autoSymlinkRefreshService;
+        this.objectMapper = objectMapper;
         this.executorService = Executors.newSingleThreadExecutor(new AdultWorkerThreadFactory());
         this.prepareExecutorService = Executors.newFixedThreadPool(PREPARE_PARALLELISM, new AdultPrepareThreadFactory());
         this.organizeExecutorService = Executors.newFixedThreadPool(ORGANIZE_PARALLELISM, new AdultOrganizeThreadFactory());
+    }
+
+    AdultMagnetIngestService(
+            AdultMagnetIngestTaskMapper taskMapper,
+            AdultMagnetIngestTaskLogMapper taskLogMapper,
+            OpenListClient openListClient,
+            OpenListProperties openListProperties,
+            MovieSeriesFileRenameService renameService,
+            AuthService authService,
+            AutoSymlinkRefreshService autoSymlinkRefreshService,
+            ObjectMapper objectMapper,
+            ExecutorService executorService,
+            ExecutorService prepareExecutorService,
+            ExecutorService organizeExecutorService
+    ) {
+        this.taskMapper = taskMapper;
+        this.taskLogMapper = taskLogMapper;
+        this.openListClient = openListClient;
+        this.openListProperties = openListProperties;
+        this.renameService = renameService;
+        this.authService = authService;
+        this.autoSymlinkRefreshService = autoSymlinkRefreshService;
+        this.objectMapper = objectMapper;
+        this.executorService = executorService;
+        this.prepareExecutorService = prepareExecutorService;
+        this.organizeExecutorService = organizeExecutorService;
     }
 
     @EventListener(ApplicationReadyEvent.class)
@@ -118,6 +151,24 @@ public class AdultMagnetIngestService {
     }
 
     public AdultMagnetIngestTaskResponse createTask(AdultMagnetIngestTaskCreateRequest request) {
+        return createTask(request, null);
+    }
+
+    public AdultMagnetIngestTaskResponse createRetryTask(
+            String category,
+            List<String> downloadLinks,
+            TaskRetryReference retryReference
+    ) {
+        if (retryReference == null) {
+            throw badRequest("重试来源不能为空");
+        }
+        return createTask(new AdultMagnetIngestTaskCreateRequest(category, downloadLinks), retryReference);
+    }
+
+    private AdultMagnetIngestTaskResponse createTask(
+            AdultMagnetIngestTaskCreateRequest request,
+            TaskRetryReference retryReference
+    ) {
         ensureTablesReady();
         User admin = authService.requireAdminUser();
         String taskId = UUID.randomUUID().toString();
@@ -136,7 +187,11 @@ public class AdultMagnetIngestService {
         task.setDateFolder(plan.dateFolder());
         task.setTargetPath(plan.targetPath());
         task.setMagnetHashes(String.join("\n", plan.items().stream().map(AdultMagnetItem::magnetHash).toList()));
+        task.setDownloadLinksJson(serializeDownloadLinks(plan.items().stream().map(AdultMagnetItem::magnet).toList()));
         task.setOpenlistTaskIds("");
+        task.setAttemptGroupId(retryReference == null ? taskId : retryReference.attemptGroupId());
+        task.setRetryOfTaskType(retryReference == null ? null : retryReference.taskType());
+        task.setRetryOfTaskId(retryReference == null ? null : retryReference.taskId());
         task.setMagnetCount(plan.items().size());
         task.setSubmittedCount(0);
         task.setSucceededCount(0);
@@ -148,12 +203,34 @@ public class AdultMagnetIngestService {
         task.setUpdatedAt(now);
         taskMapper.insert(task);
 
-        writeLog(taskId, "INFO", "created", "已创建 Adult 批量磁力任务", "targetPath=" + plan.targetPath());
-        if (plan.duplicateCount() > 0) {
-            writeLog(taskId, "WARN", "created", "已忽略本批次内重复的 Adult 下载链接", "count=" + plan.duplicateCount());
+        try {
+            writeLog(taskId, "INFO", "created", "已创建 Adult 批量磁力任务", "targetPath=" + plan.targetPath());
+            if (plan.duplicateCount() > 0) {
+                writeLog(taskId, "WARN", "created", "已忽略本批次内重复的 Adult 下载链接", "count=" + plan.duplicateCount());
+            }
+            executorService.submit(() -> runTask(taskId, plan.items(), plan.rootPath()));
+        } catch (RuntimeException exception) {
+            removeUnscheduledTask(taskId);
+            throw serviceUnavailable("Adult 批量任务调度失败，请稍后重试");
         }
-        executorService.submit(() -> runTask(taskId, plan.items(), plan.rootPath()));
         return toResponse(getExistingTask(taskId));
+    }
+
+    private String serializeDownloadLinks(List<String> downloadLinks) {
+        try {
+            return objectMapper.writeValueAsString(downloadLinks);
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("Adult download links could not be serialized", exception);
+        }
+    }
+
+    private void removeUnscheduledTask(String taskId) {
+        try {
+            taskLogMapper.delete(new LambdaQueryWrapper<AdultMagnetIngestTaskLog>()
+                    .eq(AdultMagnetIngestTaskLog::getTaskId, taskId));
+        } finally {
+            taskMapper.deleteById(taskId);
+        }
     }
 
     public AdultMagnetIngestTaskListResponse listTasks() {

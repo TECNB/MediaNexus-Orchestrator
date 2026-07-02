@@ -5,6 +5,7 @@ import com.medianexus.orchestrator.common.exception.ErrorCode;
 import com.medianexus.orchestrator.dto.magnet.request.MovieMagnetIngestRequest;
 import com.medianexus.orchestrator.dto.magnet.request.SeriesMagnetIngestRequest;
 import com.medianexus.orchestrator.dto.magnet.response.MovieMagnetIngestTaskResponse;
+import com.medianexus.orchestrator.dto.magnet.response.AnimeMagnetIngestTaskResponse;
 import com.medianexus.orchestrator.dto.magnet.response.SeriesMagnetIngestTaskResponse;
 import com.medianexus.orchestrator.dto.resources.request.MovieOpenListIngestRequest;
 import com.medianexus.orchestrator.dto.resources.request.MovieReleaseOpenListIngestRequest;
@@ -17,9 +18,13 @@ import com.medianexus.orchestrator.dto.resources.request.SeriesReleaseSearchRequ
 import com.medianexus.orchestrator.dto.resources.response.ProwlarrReleaseItemResponse;
 import com.medianexus.orchestrator.dto.resources.response.ProwlarrReleaseRecommendationResponse;
 import com.medianexus.orchestrator.dto.resources.response.ProwlarrReleaseSearchResponse;
+import com.medianexus.orchestrator.dto.taskcenter.request.OpenListReleaseRetryRequest;
 import com.medianexus.orchestrator.integration.prowlarr.ProwlarrClient;
 import com.medianexus.orchestrator.integration.prowlarr.ProwlarrClientException;
 import com.medianexus.orchestrator.integration.prowlarr.ProwlarrRelease;
+import com.medianexus.orchestrator.model.MovieMagnetIngestTask;
+import com.medianexus.orchestrator.model.AnimeMagnetIngestTask;
+import com.medianexus.orchestrator.model.SeriesMagnetIngestTask;
 import com.medianexus.orchestrator.service.ReleaseTitleTagParser.ReleaseTitleTags;
 import java.text.Normalizer;
 import java.util.ArrayList;
@@ -58,17 +63,20 @@ public class ProwlarrReleaseIngestService {
     private final ProwlarrClient prowlarrClient;
     private final ReleaseTitleTagParser tagParser;
     private final MagnetIngestService magnetIngestService;
+    private final AnimeMagnetIngestTaskService animeMagnetIngestTaskService;
 
     public ProwlarrReleaseIngestService(
             AuthService authService,
             ProwlarrClient prowlarrClient,
             ReleaseTitleTagParser tagParser,
-            MagnetIngestService magnetIngestService
+            MagnetIngestService magnetIngestService,
+            AnimeMagnetIngestTaskService animeMagnetIngestTaskService
     ) {
         this.authService = authService;
         this.prowlarrClient = prowlarrClient;
         this.tagParser = tagParser;
         this.magnetIngestService = magnetIngestService;
+        this.animeMagnetIngestTaskService = animeMagnetIngestTaskService;
     }
 
     public ProwlarrReleaseSearchResponse searchReleases(
@@ -246,6 +254,75 @@ public class ProwlarrReleaseIngestService {
             return magnetIngestService.createAnimeSeasonSeriesTask(ingestRequest, releaseMetadata);
         }
         return magnetIngestService.createSeriesTask(ingestRequest, releaseMetadata);
+    }
+
+    public MovieMagnetIngestTaskResponse ingestSelectedMovieRetry(
+            MovieMagnetIngestTask originalTask,
+            OpenListReleaseRetryRequest request,
+            TaskRetryReference retryReference
+    ) {
+        authService.requireCurrentUser();
+        String releaseTitle = requiredText(request == null ? null : request.releaseTitle(), "发布标题不能为空");
+        String magnet = resolveMagnet(request.indexerId(), request.downloadRef(), releaseTitle);
+        return magnetIngestService.createMovieRetryTask(
+                originalTask,
+                magnet,
+                requestMetadata(
+                        releaseTitle,
+                        request.indexer(),
+                        request.size(),
+                        request.indexerId(),
+                        request.resolutionTags(),
+                        request.dynamicRangeTags()
+                ),
+                retryReference
+        );
+    }
+
+    public SeriesMagnetIngestTaskResponse ingestSelectedSeriesRetry(
+            SeriesMagnetIngestTask originalTask,
+            OpenListReleaseRetryRequest request,
+            TaskRetryReference retryReference
+    ) {
+        authService.requireCurrentUser();
+        String releaseTitle = requiredText(request == null ? null : request.releaseTitle(), "发布标题不能为空");
+        String magnet = resolveMagnet(request.indexerId(), request.downloadRef(), releaseTitle);
+        return magnetIngestService.createSeriesRetryTask(
+                originalTask,
+                magnet,
+                requestMetadata(
+                        releaseTitle,
+                        request.indexer(),
+                        request.size(),
+                        request.indexerId(),
+                        request.resolutionTags(),
+                        request.dynamicRangeTags()
+                ),
+                retryReference
+        );
+    }
+
+    public AnimeMagnetIngestTaskResponse ingestSelectedAnimeRetry(
+            AnimeMagnetIngestTask originalTask,
+            OpenListReleaseRetryRequest request,
+            TaskRetryReference retryReference
+    ) {
+        authService.requireCurrentUser();
+        String releaseTitle = requiredText(request == null ? null : request.releaseTitle(), "发布标题不能为空");
+        String magnet = resolveMagnet(request.indexerId(), request.downloadRef(), releaseTitle);
+        return animeMagnetIngestTaskService.createRetryTask(
+                originalTask,
+                magnet,
+                requestMetadata(
+                        releaseTitle,
+                        request.indexer(),
+                        request.size(),
+                        request.indexerId(),
+                        request.resolutionTags(),
+                        request.dynamicRangeTags()
+                ),
+                retryReference
+        );
     }
 
     /**

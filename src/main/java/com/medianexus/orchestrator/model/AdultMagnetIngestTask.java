@@ -25,7 +25,15 @@ public class AdultMagnetIngestTask {
 
     private String magnetHashes;
 
+    private String downloadLinksJson;
+
     private String openlistTaskIds;
+
+    private String attemptGroupId;
+
+    private String retryOfTaskType;
+
+    private String retryOfTaskId;
 
     private Integer magnetCount;
 
@@ -117,8 +125,40 @@ public class AdultMagnetIngestTask {
         return openlistTaskIds;
     }
 
+    public String getDownloadLinksJson() {
+        return downloadLinksJson;
+    }
+
+    public void setDownloadLinksJson(String downloadLinksJson) {
+        this.downloadLinksJson = downloadLinksJson;
+    }
+
     public void setOpenlistTaskIds(String openlistTaskIds) {
         this.openlistTaskIds = openlistTaskIds;
+    }
+
+    public String getAttemptGroupId() {
+        return attemptGroupId;
+    }
+
+    public void setAttemptGroupId(String attemptGroupId) {
+        this.attemptGroupId = attemptGroupId;
+    }
+
+    public String getRetryOfTaskType() {
+        return retryOfTaskType;
+    }
+
+    public void setRetryOfTaskType(String retryOfTaskType) {
+        this.retryOfTaskType = retryOfTaskType;
+    }
+
+    public String getRetryOfTaskId() {
+        return retryOfTaskId;
+    }
+
+    public void setRetryOfTaskId(String retryOfTaskId) {
+        this.retryOfTaskId = retryOfTaskId;
     }
 
     public Integer getMagnetCount() {

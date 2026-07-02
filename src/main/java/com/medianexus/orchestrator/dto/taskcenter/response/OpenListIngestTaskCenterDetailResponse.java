@@ -67,6 +67,12 @@ public record OpenListIngestTaskCenterDetailResponse(
         @Schema(description = "等待中说明；非 PENDING 状态为 null", nullable = true)
         @JsonProperty("pending_explanation")
         String pendingExplanation,
+        @Schema(description = "Adult 原批次完整下载链接；历史任务不可回填或非 Adult 任务时为 null", nullable = true)
+        @JsonProperty("batch_download_links")
+        List<String> batchDownloadLinks,
+        @Schema(description = "不可变任务尝试链")
+        @JsonProperty("attempt_chain")
+        OpenListIngestTaskCenterAttemptChainResponse attemptChain,
         @Schema(description = "任务创建时间")
         @JsonProperty("created_at")
         LocalDateTime createdAt,

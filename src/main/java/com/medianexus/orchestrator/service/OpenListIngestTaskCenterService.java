@@ -1,13 +1,25 @@
 package com.medianexus.orchestrator.service;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.medianexus.orchestrator.common.exception.BusinessException;
 import com.medianexus.orchestrator.common.exception.ErrorCode;
+import com.medianexus.orchestrator.dto.magnet.response.AnimeMagnetIngestTaskResponse;
+import com.medianexus.orchestrator.dto.magnet.response.MovieMagnetIngestTaskResponse;
+import com.medianexus.orchestrator.dto.magnet.response.SeriesMagnetIngestTaskResponse;
+import com.medianexus.orchestrator.dto.taskcenter.request.OpenListManualMagnetRetryRequest;
+import com.medianexus.orchestrator.dto.taskcenter.request.OpenListAdultBatchRetryRequest;
+import com.medianexus.orchestrator.dto.taskcenter.request.OpenListReleaseRetryRequest;
+import com.medianexus.orchestrator.dto.taskcenter.response.OpenListIngestTaskCenterAttemptChainResponse;
+import com.medianexus.orchestrator.dto.taskcenter.response.OpenListIngestTaskCenterAttemptResponse;
 import com.medianexus.orchestrator.dto.taskcenter.response.OpenListIngestTaskCenterDetailResponse;
 import com.medianexus.orchestrator.dto.taskcenter.response.OpenListIngestTaskCenterItemResponse;
 import com.medianexus.orchestrator.dto.taskcenter.response.OpenListIngestTaskCenterListResponse;
 import com.medianexus.orchestrator.dto.taskcenter.response.OpenListIngestTaskCenterLogResponse;
 import com.medianexus.orchestrator.dto.taskcenter.response.OpenListIngestTaskCenterProgressResponse;
+import com.medianexus.orchestrator.dto.taskcenter.response.OpenListManualMagnetRetryResponse;
+import com.medianexus.orchestrator.dto.taskcenter.response.OpenListReleaseRetryContextResponse;
 import com.medianexus.orchestrator.mapper.AdultMagnetIngestTaskMapper;
 import com.medianexus.orchestrator.mapper.AdultMagnetIngestTaskLogMapper;
 import com.medianexus.orchestrator.mapper.AnimeMagnetIngestTaskMapper;
@@ -31,6 +43,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -83,6 +96,11 @@ public class OpenListIngestTaskCenterService {
     private final AnimeMagnetIngestTaskLogMapper animeTaskLogMapper;
     private final AdultMagnetIngestTaskLogMapper adultTaskLogMapper;
     private final UserMapper userMapper;
+    private final ObjectMapper objectMapper;
+    private final MagnetIngestService magnetIngestService;
+    private final AnimeMagnetIngestTaskService animeMagnetIngestTaskService;
+    private final AdultMagnetIngestService adultMagnetIngestService;
+    private final ProwlarrReleaseIngestService prowlarrReleaseIngestService;
 
     public OpenListIngestTaskCenterService(
             AuthService authService,
@@ -94,7 +112,12 @@ public class OpenListIngestTaskCenterService {
             SeriesMagnetIngestTaskLogMapper seriesTaskLogMapper,
             AnimeMagnetIngestTaskLogMapper animeTaskLogMapper,
             AdultMagnetIngestTaskLogMapper adultTaskLogMapper,
-            UserMapper userMapper
+            UserMapper userMapper,
+            ObjectMapper objectMapper,
+            MagnetIngestService magnetIngestService,
+            AnimeMagnetIngestTaskService animeMagnetIngestTaskService,
+            AdultMagnetIngestService adultMagnetIngestService,
+            ProwlarrReleaseIngestService prowlarrReleaseIngestService
     ) {
         this.authService = authService;
         this.movieTaskMapper = movieTaskMapper;
@@ -106,6 +129,11 @@ public class OpenListIngestTaskCenterService {
         this.animeTaskLogMapper = animeTaskLogMapper;
         this.adultTaskLogMapper = adultTaskLogMapper;
         this.userMapper = userMapper;
+        this.objectMapper = objectMapper;
+        this.magnetIngestService = magnetIngestService;
+        this.animeMagnetIngestTaskService = animeMagnetIngestTaskService;
+        this.adultMagnetIngestService = adultMagnetIngestService;
+        this.prowlarrReleaseIngestService = prowlarrReleaseIngestService;
     }
 
     public OpenListIngestTaskCenterListResponse listOpenListIngestTasks() {
@@ -140,6 +168,7 @@ public class OpenListIngestTaskCenterService {
         candidates.addAll(adultTasks.stream()
                 .map(task -> adultItem(task, creatorsById))
                 .toList());
+        List<TaskCenterListingCandidate> latestAttemptCandidates = collapseAttemptChains(candidates);
 
         String normalizedView = normalizeView(view);
         String normalizedProductType = normalizeProductType(productType);
@@ -147,7 +176,7 @@ public class OpenListIngestTaskCenterService {
         String normalizedKeyword = normalizeKeyword(keyword);
         int normalizedPageSize = normalizePageSize(pageSize);
 
-        List<TaskCenterListingCandidate> searchableItems = candidates.stream()
+        List<TaskCenterListingCandidate> searchableItems = latestAttemptCandidates.stream()
                 .filter(item -> matchesProductType(item, normalizedProductType))
                 .filter(item -> matchesSourceType(item, normalizedSourceType))
                 .filter(item -> matchesKeyword(item, normalizedKeyword))
@@ -184,15 +213,288 @@ public class OpenListIngestTaskCenterService {
         User user = authService.requireCurrentUser();
         String normalizedTaskType = normalizeTaskType(taskType);
         return switch (normalizedTaskType) {
-            case MOVIE_TASK_TYPE -> movieDetail(getAccessibleMovieTask(taskId, user));
-            case SERIES_TASK_TYPE -> seriesDetail(getAccessibleSeriesTask(taskId, user));
-            case ANIME_TASK_TYPE -> animeDetail(getAccessibleAnimeTask(taskId, user));
-            case ADULT_TASK_TYPE -> adultDetail(getAccessibleAdultTask(taskId, user));
+            case MOVIE_TASK_TYPE -> movieDetail(getAccessibleMovieTask(taskId, user), user);
+            case SERIES_TASK_TYPE -> seriesDetail(getAccessibleSeriesTask(taskId, user), user);
+            case ANIME_TASK_TYPE -> animeDetail(getAccessibleAnimeTask(taskId, user), user);
+            case ADULT_TASK_TYPE -> adultDetail(getAccessibleAdultTask(taskId, user), user);
             default -> throw taskNotFoundException();
         };
     }
 
-    private OpenListIngestTaskCenterDetailResponse movieDetail(MovieMagnetIngestTask task) {
+    public OpenListManualMagnetRetryResponse reuseOriginalManualMagnet(
+            String taskType,
+            String taskId
+    ) {
+        User user = authService.requireCurrentUser();
+        String normalizedTaskType = normalizeTaskType(taskType);
+        return switch (normalizedTaskType) {
+            case MOVIE_TASK_TYPE -> retryMovieWithOriginalMagnet(getAccessibleMovieTask(taskId, user));
+            case SERIES_TASK_TYPE -> retrySeriesWithOriginalMagnet(getAccessibleSeriesTask(taskId, user));
+            case ANIME_TASK_TYPE -> retryAnimeWithSelectedMagnet(getAccessibleAnimeTask(taskId, user), null);
+            default -> throw manualMagnetRetryNotSupportedException();
+        };
+    }
+
+    public OpenListManualMagnetRetryResponse replaceManualMagnet(
+            String taskType,
+            String taskId,
+            OpenListManualMagnetRetryRequest request
+    ) {
+        if (request == null || !StringUtils.hasText(request.magnet())) {
+            throw badRequest("magnet 链接不能为空");
+        }
+        User user = authService.requireCurrentUser();
+        String normalizedTaskType = normalizeTaskType(taskType);
+        return switch (normalizedTaskType) {
+            case MOVIE_TASK_TYPE -> retryMovieWithSelectedMagnet(getAccessibleMovieTask(taskId, user), request.magnet());
+            case SERIES_TASK_TYPE -> retrySeriesWithSelectedMagnet(getAccessibleSeriesTask(taskId, user), request.magnet());
+            case ANIME_TASK_TYPE -> retryAnimeWithSelectedMagnet(getAccessibleAnimeTask(taskId, user), request.magnet());
+            default -> throw manualMagnetRetryNotSupportedException();
+        };
+    }
+
+    public OpenListReleaseRetryContextResponse getReleaseRetryContext(
+            String taskType,
+            String taskId
+    ) {
+        User user = authService.requireCurrentUser();
+        String normalizedTaskType = normalizeTaskType(taskType);
+        return switch (normalizedTaskType) {
+            case MOVIE_TASK_TYPE -> movieReleaseRetryContext(getAccessibleMovieTask(taskId, user));
+            case SERIES_TASK_TYPE -> seriesReleaseRetryContext(getAccessibleSeriesTask(taskId, user));
+            case ANIME_TASK_TYPE -> animeReleaseRetryContext(getAccessibleAnimeTask(taskId, user));
+            default -> throw releaseRetryNotSupportedException();
+        };
+    }
+
+    public OpenListManualMagnetRetryResponse retryWithSelectedRelease(
+            String taskType,
+            String taskId,
+            OpenListReleaseRetryRequest request
+    ) {
+        User user = authService.requireCurrentUser();
+        String normalizedTaskType = normalizeTaskType(taskType);
+        return switch (normalizedTaskType) {
+            case MOVIE_TASK_TYPE -> retryMovieWithSelectedRelease(
+                    getAccessibleMovieTask(taskId, user),
+                    request
+            );
+            case SERIES_TASK_TYPE -> retrySeriesWithSelectedRelease(
+                    getAccessibleSeriesTask(taskId, user),
+                    request
+            );
+            case ANIME_TASK_TYPE -> retryAnimeWithSelectedRelease(
+                    getAccessibleAnimeTask(taskId, user),
+                    request
+            );
+            default -> throw releaseRetryNotSupportedException();
+        };
+    }
+
+    public OpenListManualMagnetRetryResponse retryAdultBatch(
+            String taskId,
+            OpenListAdultBatchRetryRequest request
+    ) {
+        if (request == null || request.downloadLinks() == null || request.downloadLinks().isEmpty()) {
+            throw badRequest("下载链接列表不能为空");
+        }
+        User user = authService.requireCurrentUser();
+        AdultMagnetIngestTask originalTask = getAccessibleAdultTask(taskId, user);
+        ensureRecoverableStatus(originalTask.getStatus());
+        String newTaskId = adultMagnetIngestService.createRetryTask(
+                originalTask.getCategory(),
+                request.downloadLinks(),
+                retryReference(ADULT_TASK_TYPE, originalTask.getId(), originalTask.getAttemptGroupId())
+        ).id();
+        return retryResponse(ADULT_TASK_TYPE, newTaskId);
+    }
+
+    private OpenListManualMagnetRetryResponse retryMovieWithSelectedMagnet(
+            MovieMagnetIngestTask originalTask,
+            String replacementMagnet
+    ) {
+        ensureMagnetReplacementAllowed(originalTask.getStatus(), sourceType(originalTask.getSourceType()));
+        MovieMagnetIngestTaskResponse response = magnetIngestService.createMovieRetryTask(
+                originalTask,
+                StringUtils.hasText(replacementMagnet) ? replacementMagnet : originalTask.getMagnet(),
+                retryReference(MOVIE_TASK_TYPE, originalTask.getId(), originalTask.getAttemptGroupId())
+        );
+        return retryResponse(MOVIE_TASK_TYPE, response.id());
+    }
+
+    private OpenListManualMagnetRetryResponse retryMovieWithOriginalMagnet(MovieMagnetIngestTask originalTask) {
+        ensureMagnetReplacementAllowed(originalTask.getStatus(), sourceType(originalTask.getSourceType()));
+        return retryMovieWithSelectedMagnet(originalTask, originalTask.getMagnet());
+    }
+
+    private OpenListManualMagnetRetryResponse retrySeriesWithSelectedMagnet(
+            SeriesMagnetIngestTask originalTask,
+            String replacementMagnet
+    ) {
+        ensureMagnetReplacementAllowed(originalTask.getStatus(), sourceType(originalTask.getSourceType()));
+        SeriesMagnetIngestTaskResponse response = magnetIngestService.createSeriesRetryTask(
+                originalTask,
+                StringUtils.hasText(replacementMagnet) ? replacementMagnet : originalTask.getMagnet(),
+                retryReference(SERIES_TASK_TYPE, originalTask.getId(), originalTask.getAttemptGroupId())
+        );
+        return retryResponse(SERIES_TASK_TYPE, response.id());
+    }
+
+    private OpenListManualMagnetRetryResponse retrySeriesWithOriginalMagnet(SeriesMagnetIngestTask originalTask) {
+        ensureMagnetReplacementAllowed(originalTask.getStatus(), sourceType(originalTask.getSourceType()));
+        return retrySeriesWithSelectedMagnet(originalTask, originalTask.getMagnet());
+    }
+
+    private OpenListManualMagnetRetryResponse retryAnimeWithSelectedMagnet(
+            AnimeMagnetIngestTask originalTask,
+            String replacementMagnet
+    ) {
+        ensureRecoverableStatus(originalTask.getStatus());
+        AnimeMagnetIngestTaskResponse response = animeMagnetIngestTaskService.createRetryTask(
+                originalTask,
+                StringUtils.hasText(replacementMagnet) ? replacementMagnet : originalTask.getMagnet(),
+                retryReference(ANIME_TASK_TYPE, originalTask.getId(), originalTask.getAttemptGroupId())
+        );
+        return retryResponse(ANIME_TASK_TYPE, response.id());
+    }
+
+    private void ensureMagnetReplacementAllowed(String status, String sourceType) {
+        ensureRecoverableStatus(status);
+        if (!MANUAL_MAGNET_SOURCE.equals(sourceType) && !PROWLARR_RELEASE_SOURCE.equals(sourceType)) {
+            throw badRequest("当前任务来源不支持手动提供 magnet");
+        }
+    }
+
+    private OpenListReleaseRetryContextResponse movieReleaseRetryContext(MovieMagnetIngestTask task) {
+        ensureReleaseSelectionAllowed(task.getStatus(), sourceType(task.getSourceType()));
+        return new OpenListReleaseRetryContextResponse(
+                MOVIE_TASK_TYPE,
+                task.getId(),
+                MOVIE_PRODUCT_TYPE,
+                task.getTitle(),
+                task.getOriginalTitle(),
+                task.getYear(),
+                null,
+                task.getQualityTag(),
+                task.getReleaseTitle(),
+                task.getReleaseIndexer(),
+                task.getReleaseSize(),
+                splitTags(task.getResolutionTags()),
+                splitTags(task.getDynamicRangeTags())
+        );
+    }
+
+    private OpenListReleaseRetryContextResponse seriesReleaseRetryContext(SeriesMagnetIngestTask task) {
+        ensureReleaseSelectionAllowed(task.getStatus(), sourceType(task.getSourceType()));
+        return new OpenListReleaseRetryContextResponse(
+                SERIES_TASK_TYPE,
+                task.getId(),
+                seriesProductType(task.getTaskProductType()),
+                task.getTitle(),
+                task.getOriginalTitle(),
+                null,
+                task.getSeasonNumber(),
+                task.getQualityTag(),
+                task.getReleaseTitle(),
+                task.getReleaseIndexer(),
+                task.getReleaseSize(),
+                splitTags(task.getResolutionTags()),
+                splitTags(task.getDynamicRangeTags())
+        );
+    }
+
+    private OpenListReleaseRetryContextResponse animeReleaseRetryContext(AnimeMagnetIngestTask task) {
+        ensureReleaseSelectionAllowed(task.getStatus(), sourceType(task.getSourceType()));
+        return new OpenListReleaseRetryContextResponse(
+                ANIME_TASK_TYPE,
+                task.getId(),
+                ANIME_PRODUCT_TYPE,
+                task.getTitle(),
+                task.getName(),
+                null,
+                task.getSeasonNumber(),
+                task.getQualityTag(),
+                task.getReleaseTitle(),
+                task.getReleaseIndexer(),
+                task.getReleaseSize(),
+                splitTags(task.getResolutionTags()),
+                splitTags(task.getDynamicRangeTags())
+        );
+    }
+
+    private OpenListManualMagnetRetryResponse retryMovieWithSelectedRelease(
+            MovieMagnetIngestTask originalTask,
+            OpenListReleaseRetryRequest request
+    ) {
+        ensureReleaseSelectionAllowed(originalTask.getStatus(), sourceType(originalTask.getSourceType()));
+        MovieMagnetIngestTaskResponse response = prowlarrReleaseIngestService.ingestSelectedMovieRetry(
+                originalTask,
+                request,
+                retryReference(MOVIE_TASK_TYPE, originalTask.getId(), originalTask.getAttemptGroupId())
+        );
+        return retryResponse(MOVIE_TASK_TYPE, response.id());
+    }
+
+    private OpenListManualMagnetRetryResponse retrySeriesWithSelectedRelease(
+            SeriesMagnetIngestTask originalTask,
+            OpenListReleaseRetryRequest request
+    ) {
+        ensureReleaseSelectionAllowed(originalTask.getStatus(), sourceType(originalTask.getSourceType()));
+        SeriesMagnetIngestTaskResponse response = prowlarrReleaseIngestService.ingestSelectedSeriesRetry(
+                originalTask,
+                request,
+                retryReference(SERIES_TASK_TYPE, originalTask.getId(), originalTask.getAttemptGroupId())
+        );
+        return retryResponse(SERIES_TASK_TYPE, response.id());
+    }
+
+    private OpenListManualMagnetRetryResponse retryAnimeWithSelectedRelease(
+            AnimeMagnetIngestTask originalTask,
+            OpenListReleaseRetryRequest request
+    ) {
+        ensureReleaseSelectionAllowed(originalTask.getStatus(), sourceType(originalTask.getSourceType()));
+        AnimeMagnetIngestTaskResponse response = prowlarrReleaseIngestService.ingestSelectedAnimeRetry(
+                originalTask,
+                request,
+                retryReference(ANIME_TASK_TYPE, originalTask.getId(), originalTask.getAttemptGroupId())
+        );
+        return retryResponse(ANIME_TASK_TYPE, response.id());
+    }
+
+    private void ensureReleaseSelectionAllowed(String status, String sourceType) {
+        ensureRecoverableStatus(status);
+        if (!MANUAL_MAGNET_SOURCE.equals(sourceType) && !PROWLARR_RELEASE_SOURCE.equals(sourceType)) {
+            throw badRequest("当前任务来源不支持重新选择发布资源");
+        }
+    }
+
+    private void ensureRecoverableStatus(String status) {
+        if (!NEEDS_ATTENTION_STATUSES.contains(status)) {
+            throw badRequest("当前任务状态不支持重试");
+        }
+    }
+
+    private TaskRetryReference retryReference(
+            String taskType,
+            String taskId,
+            String attemptGroupId
+    ) {
+        return new TaskRetryReference(
+                effectiveAttemptGroupId(taskType, taskId, attemptGroupId),
+                taskType,
+                taskId
+        );
+    }
+
+    private OpenListManualMagnetRetryResponse retryResponse(String taskType, String taskId) {
+        return new OpenListManualMagnetRetryResponse(
+                taskType,
+                taskId,
+                taskCenterDetailPath(taskType, taskId)
+        );
+    }
+
+    private OpenListIngestTaskCenterDetailResponse movieDetail(MovieMagnetIngestTask task, User user) {
         List<OpenListIngestTaskCenterLogResponse> logs = movieLogs(task.getId());
         return new OpenListIngestTaskCenterDetailResponse(
                 MOVIE_TASK_TYPE,
@@ -217,13 +519,15 @@ public class OpenListIngestTaskCenterService {
                 logs,
                 isActive(task.getStatus()),
                 pendingExplanation(task.getStatus()),
+                null,
+                attemptChain(movieSnapshot(task), user),
                 task.getCreatedAt(),
                 task.getUpdatedAt(),
                 task.getFinishedAt()
         );
     }
 
-    private OpenListIngestTaskCenterDetailResponse seriesDetail(SeriesMagnetIngestTask task) {
+    private OpenListIngestTaskCenterDetailResponse seriesDetail(SeriesMagnetIngestTask task, User user) {
         List<OpenListIngestTaskCenterLogResponse> logs = seriesLogs(task.getId());
         return new OpenListIngestTaskCenterDetailResponse(
                 SERIES_TASK_TYPE,
@@ -248,13 +552,15 @@ public class OpenListIngestTaskCenterService {
                 logs,
                 isActive(task.getStatus()),
                 pendingExplanation(task.getStatus()),
+                null,
+                attemptChain(seriesSnapshot(task), user),
                 task.getCreatedAt(),
                 task.getUpdatedAt(),
                 task.getFinishedAt()
         );
     }
 
-    private OpenListIngestTaskCenterDetailResponse animeDetail(AnimeMagnetIngestTask task) {
+    private OpenListIngestTaskCenterDetailResponse animeDetail(AnimeMagnetIngestTask task, User user) {
         List<OpenListIngestTaskCenterLogResponse> logs = animeLogs(task.getId());
         return new OpenListIngestTaskCenterDetailResponse(
                 ANIME_TASK_TYPE,
@@ -265,13 +571,13 @@ public class OpenListIngestTaskCenterService {
                 "%s S%02d".formatted(task.getTitle(), task.getSeasonNumber()),
                 task.getStatus(),
                 task.getStage(),
-                MANUAL_MAGNET_SOURCE,
-                null,
-                null,
-                null,
-                List.of(),
-                null,
-                List.of(),
+                sourceType(task.getSourceType()),
+                task.getReleaseTitle(),
+                task.getReleaseIndexer(),
+                task.getReleaseSize(),
+                splitTags(task.getResolutionTags()),
+                task.getQualityTag(),
+                splitTags(task.getDynamicRangeTags()),
                 progressSummary(task.getOrganizedCount(), task.getSkippedCount()),
                 organizedProgress(task.getOrganizedCount(), task.getSkippedCount()),
                 task.getErrorMessage(),
@@ -279,13 +585,15 @@ public class OpenListIngestTaskCenterService {
                 logs,
                 isActive(task.getStatus()),
                 pendingExplanation(task.getStatus()),
+                null,
+                attemptChain(animeSnapshot(task), user),
                 task.getCreatedAt(),
                 task.getUpdatedAt(),
                 task.getFinishedAt()
         );
     }
 
-    private OpenListIngestTaskCenterDetailResponse adultDetail(AdultMagnetIngestTask task) {
+    private OpenListIngestTaskCenterDetailResponse adultDetail(AdultMagnetIngestTask task, User user) {
         List<OpenListIngestTaskCenterLogResponse> logs = adultLogs(task.getId());
         return new OpenListIngestTaskCenterDetailResponse(
                 ADULT_TASK_TYPE,
@@ -310,10 +618,230 @@ public class OpenListIngestTaskCenterService {
                 logs,
                 isActive(task.getStatus()),
                 pendingExplanation(task.getStatus()),
+                adultDownloadLinks(task.getDownloadLinksJson()),
+                attemptChain(adultSnapshot(task), user),
                 task.getCreatedAt(),
                 task.getUpdatedAt(),
                 task.getFinishedAt()
         );
+    }
+
+    private OpenListIngestTaskCenterAttemptChainResponse attemptChain(
+            TaskAttemptSnapshot current,
+            User user
+    ) {
+        Map<TaskAttemptKey, TaskAttemptSnapshot> uniqueSnapshots = new LinkedHashMap<>();
+        collectAttemptChainSnapshots(current, user).stream()
+                .sorted(attemptOrdering())
+                .forEach(snapshot -> uniqueSnapshots.putIfAbsent(snapshot.key(), snapshot));
+
+        Set<TaskAttemptKey> visibleKeys = uniqueSnapshots.keySet();
+        List<OpenListIngestTaskCenterAttemptResponse> attempts = uniqueSnapshots.values().stream()
+                .map(snapshot -> attemptResponse(snapshot, current.key(), visibleKeys))
+                .toList();
+        OpenListIngestTaskCenterAttemptResponse currentAttempt = attempts.stream()
+                .filter(attempt -> current.taskType().equals(attempt.taskType()) && current.id().equals(attempt.id()))
+                .findFirst()
+                .orElseGet(() -> attemptResponse(current, current.key(), visibleKeys));
+        OpenListIngestTaskCenterAttemptResponse retryOf = attempts.stream()
+                .filter(attempt -> current.retryOfKey()
+                        .map(key -> key.matches(attempt.taskType(), attempt.id()))
+                        .orElse(false))
+                .findFirst()
+                .orElse(null);
+
+        return new OpenListIngestTaskCenterAttemptChainResponse(
+                current.attemptGroupId(),
+                currentAttempt,
+                retryOf,
+                attempts
+        );
+    }
+
+    private List<TaskAttemptSnapshot> collectAttemptChainSnapshots(TaskAttemptSnapshot current, User user) {
+        Map<TaskAttemptKey, TaskAttemptSnapshot> uniqueSnapshots = new LinkedHashMap<>();
+        List<TaskAttemptSnapshot> pendingSnapshots = new ArrayList<>();
+        addAttemptSnapshot(uniqueSnapshots, pendingSnapshots, current, user);
+        addAttemptSnapshots(
+                uniqueSnapshots,
+                pendingSnapshots,
+                accessibleAttemptSnapshots(current.attemptGroupId(), user),
+                user
+        );
+
+        for (int index = 0; index < pendingSnapshots.size(); index++) {
+            TaskAttemptSnapshot snapshot = pendingSnapshots.get(index);
+            addAttemptSnapshots(
+                    uniqueSnapshots,
+                    pendingSnapshots,
+                    accessibleAttemptSnapshots(snapshot.attemptGroupId(), user),
+                    user
+            );
+            snapshot.retryOfKey()
+                    .flatMap(key -> accessibleAttemptSnapshot(key, user))
+                    .ifPresent(source -> addAttemptSnapshot(uniqueSnapshots, pendingSnapshots, source, user));
+        }
+        return List.copyOf(uniqueSnapshots.values());
+    }
+
+    private void addAttemptSnapshots(
+            Map<TaskAttemptKey, TaskAttemptSnapshot> uniqueSnapshots,
+            List<TaskAttemptSnapshot> pendingSnapshots,
+            List<TaskAttemptSnapshot> snapshots,
+            User user
+    ) {
+        snapshots.forEach(snapshot -> addAttemptSnapshot(uniqueSnapshots, pendingSnapshots, snapshot, user));
+    }
+
+    private void addAttemptSnapshot(
+            Map<TaskAttemptKey, TaskAttemptSnapshot> uniqueSnapshots,
+            List<TaskAttemptSnapshot> pendingSnapshots,
+            TaskAttemptSnapshot snapshot,
+            User user
+    ) {
+        if (snapshot == null || !canAccessAttempt(user, snapshot) || uniqueSnapshots.containsKey(snapshot.key())) {
+            return;
+        }
+        uniqueSnapshots.put(snapshot.key(), snapshot);
+        pendingSnapshots.add(snapshot);
+    }
+
+    private List<TaskAttemptSnapshot> accessibleAttemptSnapshots(String attemptGroupId, User user) {
+        if (!StringUtils.hasText(attemptGroupId)) {
+            return List.of();
+        }
+        List<TaskAttemptSnapshot> snapshots = new ArrayList<>();
+        snapshots.addAll(selectMovieAttempts(attemptGroupId, user).stream()
+                .map(this::movieSnapshot)
+                .toList());
+        snapshots.addAll(selectSeriesAttempts(attemptGroupId, user).stream()
+                .map(this::seriesSnapshot)
+                .toList());
+        snapshots.addAll(selectAnimeAttempts(attemptGroupId, user).stream()
+                .map(this::animeSnapshot)
+                .toList());
+        if (isAdmin(user)) {
+            snapshots.addAll(selectAdultAttempts(attemptGroupId).stream()
+                    .map(this::adultSnapshot)
+                    .toList());
+        }
+        return snapshots;
+    }
+
+    private java.util.Optional<TaskAttemptSnapshot> accessibleAttemptSnapshot(
+            TaskAttemptKey key,
+            User user
+    ) {
+        TaskAttemptSnapshot snapshot = switch (key.taskType()) {
+            case MOVIE_TASK_TYPE -> {
+                MovieMagnetIngestTask task = movieTaskMapper.selectById(key.taskId());
+                yield task == null ? null : movieSnapshot(task);
+            }
+            case SERIES_TASK_TYPE -> {
+                SeriesMagnetIngestTask task = seriesTaskMapper.selectById(key.taskId());
+                yield task == null ? null : seriesSnapshot(task);
+            }
+            case ANIME_TASK_TYPE -> {
+                AnimeMagnetIngestTask task = animeTaskMapper.selectById(key.taskId());
+                yield task == null ? null : animeSnapshot(task);
+            }
+            case ADULT_TASK_TYPE -> {
+                if (!isAdmin(user)) {
+                    yield null;
+                }
+                AdultMagnetIngestTask task = adultTaskMapper.selectById(key.taskId());
+                yield task == null ? null : adultSnapshot(task);
+            }
+            default -> null;
+        };
+        if (snapshot == null || !canAccessAttempt(user, snapshot)) {
+            return java.util.Optional.empty();
+        }
+        return java.util.Optional.of(snapshot);
+    }
+
+    private List<MovieMagnetIngestTask> selectMovieAttempts(String attemptGroupId, User user) {
+        LambdaQueryWrapper<MovieMagnetIngestTask> queryWrapper = new LambdaQueryWrapper<MovieMagnetIngestTask>()
+                .eq(MovieMagnetIngestTask::getAttemptGroupId, attemptGroupId);
+        if (!isAdmin(user)) {
+            queryWrapper.eq(MovieMagnetIngestTask::getCreatedByUserId, user.getId());
+        }
+        List<MovieMagnetIngestTask> tasks = movieTaskMapper.selectList(queryWrapper);
+        return tasks == null ? List.of() : tasks;
+    }
+
+    private List<SeriesMagnetIngestTask> selectSeriesAttempts(String attemptGroupId, User user) {
+        LambdaQueryWrapper<SeriesMagnetIngestTask> queryWrapper = new LambdaQueryWrapper<SeriesMagnetIngestTask>()
+                .eq(SeriesMagnetIngestTask::getAttemptGroupId, attemptGroupId);
+        if (!isAdmin(user)) {
+            queryWrapper.eq(SeriesMagnetIngestTask::getCreatedByUserId, user.getId());
+        }
+        List<SeriesMagnetIngestTask> tasks = seriesTaskMapper.selectList(queryWrapper);
+        return tasks == null ? List.of() : tasks;
+    }
+
+    private List<AnimeMagnetIngestTask> selectAnimeAttempts(String attemptGroupId, User user) {
+        LambdaQueryWrapper<AnimeMagnetIngestTask> queryWrapper = new LambdaQueryWrapper<AnimeMagnetIngestTask>()
+                .eq(AnimeMagnetIngestTask::getAttemptGroupId, attemptGroupId);
+        if (!isAdmin(user)) {
+            queryWrapper.eq(AnimeMagnetIngestTask::getCreatedByUserId, user.getId());
+        }
+        List<AnimeMagnetIngestTask> tasks = animeTaskMapper.selectList(queryWrapper);
+        return tasks == null ? List.of() : tasks;
+    }
+
+    private List<AdultMagnetIngestTask> selectAdultAttempts(String attemptGroupId) {
+        List<AdultMagnetIngestTask> tasks = adultTaskMapper.selectList(new LambdaQueryWrapper<AdultMagnetIngestTask>()
+                .eq(AdultMagnetIngestTask::getAttemptGroupId, attemptGroupId));
+        return tasks == null ? List.of() : tasks;
+    }
+
+    private OpenListIngestTaskCenterAttemptResponse attemptResponse(
+            TaskAttemptSnapshot snapshot,
+            TaskAttemptKey currentKey,
+            Set<TaskAttemptKey> visibleKeys
+    ) {
+        TaskAttemptKey retryOfKey = snapshot.retryOfKey()
+                .filter(visibleKeys::contains)
+                .orElse(null);
+        return new OpenListIngestTaskCenterAttemptResponse(
+                snapshot.taskType(),
+                snapshot.id(),
+                snapshot.productType(),
+                snapshot.title(),
+                snapshot.status(),
+                snapshot.stage(),
+                snapshot.sourceType(),
+                snapshot.createdByUserId(),
+                snapshot.createdByUsername(),
+                retryOfKey == null ? null : retryOfKey.taskType(),
+                retryOfKey == null ? null : retryOfKey.taskId(),
+                snapshot.key().equals(currentKey),
+                taskCenterDetailPath(snapshot.taskType(), snapshot.id()),
+                snapshot.createdAt(),
+                snapshot.updatedAt()
+        );
+    }
+
+    private Comparator<TaskAttemptSnapshot> attemptOrdering() {
+        Comparator<TaskAttemptSnapshot> byCreatedAt =
+                Comparator.comparing(this::effectiveAttemptCreatedAt);
+        Comparator<TaskAttemptSnapshot> byUpdatedAt =
+                Comparator.comparing(this::effectiveAttemptUpdatedAt);
+        return byCreatedAt
+                .thenComparing(byUpdatedAt)
+                .thenComparing(TaskAttemptSnapshot::taskType)
+                .thenComparing(TaskAttemptSnapshot::id);
+    }
+
+    private LocalDateTime effectiveAttemptCreatedAt(TaskAttemptSnapshot attempt) {
+        LocalDateTime createdAt = attempt.createdAt();
+        return createdAt == null ? LocalDateTime.MIN : createdAt;
+    }
+
+    private LocalDateTime effectiveAttemptUpdatedAt(TaskAttemptSnapshot attempt) {
+        LocalDateTime updatedAt = attempt.updatedAt();
+        return updatedAt == null ? LocalDateTime.MIN : updatedAt;
     }
 
     private MovieMagnetIngestTask getAccessibleMovieTask(String taskId, User user) {
@@ -498,6 +1026,18 @@ public class OpenListIngestTaskCenterService {
         return new BusinessException(ErrorCode.BAD_REQUEST, "任务不存在", HttpStatus.NOT_FOUND);
     }
 
+    private BusinessException badRequest(String message) {
+        return new BusinessException(ErrorCode.BAD_REQUEST, message);
+    }
+
+    private BusinessException manualMagnetRetryNotSupportedException() {
+        return badRequest("当前任务类型不支持手动 magnet 重试");
+    }
+
+    private BusinessException releaseRetryNotSupportedException() {
+        return badRequest("当前任务类型不支持重新选择发布资源");
+    }
+
     private LambdaQueryWrapper<MovieMagnetIngestTask> ownedMovieTasks(User user) {
         LambdaQueryWrapper<MovieMagnetIngestTask> queryWrapper = new LambdaQueryWrapper<>();
         if (!isAdmin(user)) {
@@ -545,11 +1085,18 @@ public class OpenListIngestTaskCenterService {
                 sourceType(task.getSourceType()),
                 task.getReleaseTitle(),
                 progressSummary(task.getOrganizedCount(), task.getSkippedCount()),
+                1,
                 taskCenterDetailPath(MOVIE_TASK_TYPE, task.getId()),
                 task.getCreatedAt(),
                 task.getUpdatedAt()
         );
-        return new TaskCenterListingCandidate(response, task.getMagnetHash());
+        return listingCandidate(
+                response,
+                task.getMagnetHash(),
+                task.getAttemptGroupId(),
+                task.getRetryOfTaskType(),
+                task.getRetryOfTaskId()
+        );
     }
 
     private TaskCenterListingCandidate seriesItem(
@@ -568,11 +1115,18 @@ public class OpenListIngestTaskCenterService {
                 sourceType(task.getSourceType()),
                 task.getReleaseTitle(),
                 progressSummary(task.getOrganizedCount(), task.getSkippedCount()),
+                1,
                 taskCenterDetailPath(SERIES_TASK_TYPE, task.getId()),
                 task.getCreatedAt(),
                 task.getUpdatedAt()
         );
-        return new TaskCenterListingCandidate(response, task.getMagnetHash());
+        return listingCandidate(
+                response,
+                task.getMagnetHash(),
+                task.getAttemptGroupId(),
+                task.getRetryOfTaskType(),
+                task.getRetryOfTaskId()
+        );
     }
 
     private TaskCenterListingCandidate animeItem(
@@ -588,14 +1142,21 @@ public class OpenListIngestTaskCenterService {
                 "%s S%02d".formatted(task.getTitle(), task.getSeasonNumber()),
                 task.getStatus(),
                 task.getStage(),
-                MANUAL_MAGNET_SOURCE,
-                null,
+                sourceType(task.getSourceType()),
+                task.getReleaseTitle(),
                 progressSummary(task.getOrganizedCount(), task.getSkippedCount()),
+                1,
                 taskCenterDetailPath(ANIME_TASK_TYPE, task.getId()),
                 task.getCreatedAt(),
                 task.getUpdatedAt()
         );
-        return new TaskCenterListingCandidate(response, task.getMagnetHash());
+        return listingCandidate(
+                response,
+                task.getMagnetHash(),
+                task.getAttemptGroupId(),
+                task.getRetryOfTaskType(),
+                task.getRetryOfTaskId()
+        );
     }
 
     private TaskCenterListingCandidate adultItem(
@@ -614,15 +1175,226 @@ public class OpenListIngestTaskCenterService {
                 MANUAL_MAGNET_SOURCE,
                 null,
                 adultProgressSummary(task),
+                1,
                 taskCenterDetailPath(ADULT_TASK_TYPE, task.getId()),
                 task.getCreatedAt(),
                 task.getUpdatedAt()
         );
-        return new TaskCenterListingCandidate(response, null);
+        return listingCandidate(
+                response,
+                null,
+                task.getAttemptGroupId(),
+                task.getRetryOfTaskType(),
+                task.getRetryOfTaskId()
+        );
+    }
+
+    private TaskAttemptSnapshot movieSnapshot(MovieMagnetIngestTask task) {
+        return new TaskAttemptSnapshot(
+                MOVIE_TASK_TYPE,
+                task.getId(),
+                effectiveAttemptGroupId(MOVIE_TASK_TYPE, task.getId(), task.getAttemptGroupId()),
+                MOVIE_PRODUCT_TYPE,
+                "%s (%s)".formatted(task.getTitle(), task.getYear()),
+                task.getStatus(),
+                task.getStage(),
+                sourceType(task.getSourceType()),
+                task.getCreatedByUserId(),
+                creatorUsername(task.getCreatedByUserId()),
+                normalizeTaskType(task.getRetryOfTaskType()),
+                task.getRetryOfTaskId(),
+                task.getCreatedAt(),
+                task.getUpdatedAt()
+        );
+    }
+
+    private TaskAttemptSnapshot seriesSnapshot(SeriesMagnetIngestTask task) {
+        return new TaskAttemptSnapshot(
+                SERIES_TASK_TYPE,
+                task.getId(),
+                effectiveAttemptGroupId(SERIES_TASK_TYPE, task.getId(), task.getAttemptGroupId()),
+                seriesProductType(task.getTaskProductType()),
+                "%s %s".formatted(task.getSeriesName(), task.getSeasonFolder()),
+                task.getStatus(),
+                task.getStage(),
+                sourceType(task.getSourceType()),
+                task.getCreatedByUserId(),
+                creatorUsername(task.getCreatedByUserId()),
+                normalizeTaskType(task.getRetryOfTaskType()),
+                task.getRetryOfTaskId(),
+                task.getCreatedAt(),
+                task.getUpdatedAt()
+        );
+    }
+
+    private TaskAttemptSnapshot animeSnapshot(AnimeMagnetIngestTask task) {
+        return new TaskAttemptSnapshot(
+                ANIME_TASK_TYPE,
+                task.getId(),
+                effectiveAttemptGroupId(ANIME_TASK_TYPE, task.getId(), task.getAttemptGroupId()),
+                ANIME_PRODUCT_TYPE,
+                "%s S%02d".formatted(task.getTitle(), task.getSeasonNumber()),
+                task.getStatus(),
+                task.getStage(),
+                sourceType(task.getSourceType()),
+                task.getCreatedByUserId(),
+                creatorUsername(task.getCreatedByUserId()),
+                normalizeTaskType(task.getRetryOfTaskType()),
+                task.getRetryOfTaskId(),
+                task.getCreatedAt(),
+                task.getUpdatedAt()
+        );
+    }
+
+    private TaskAttemptSnapshot adultSnapshot(AdultMagnetIngestTask task) {
+        return new TaskAttemptSnapshot(
+                ADULT_TASK_TYPE,
+                task.getId(),
+                effectiveAttemptGroupId(ADULT_TASK_TYPE, task.getId(), task.getAttemptGroupId()),
+                ADULT_PRODUCT_TYPE,
+                adultTitle(task),
+                task.getStatus(),
+                task.getStage(),
+                MANUAL_MAGNET_SOURCE,
+                task.getCreatedByUserId(),
+                creatorUsername(task.getCreatedByUserId()),
+                normalizeTaskType(task.getRetryOfTaskType()),
+                task.getRetryOfTaskId(),
+                task.getCreatedAt(),
+                task.getUpdatedAt()
+        );
+    }
+
+    private String effectiveAttemptGroupId(String taskType, String taskId, String attemptGroupId) {
+        if (StringUtils.hasText(attemptGroupId)) {
+            return attemptGroupId;
+        }
+        return "LEGACY:%s:%s".formatted(taskType, taskId);
+    }
+
+    private boolean canAccessAttempt(User user, TaskAttemptSnapshot snapshot) {
+        if (ADULT_TASK_TYPE.equals(snapshot.taskType())) {
+            return isAdmin(user);
+        }
+        return canAccessTask(user, snapshot.createdByUserId());
     }
 
     private String taskCenterDetailPath(String taskType, String taskId) {
         return "/tasks/%s/%s".formatted(taskType.toLowerCase(Locale.ROOT), taskId);
+    }
+
+    private TaskCenterListingCandidate listingCandidate(
+            OpenListIngestTaskCenterItemResponse response,
+            String magnetHash,
+            String attemptGroupId,
+            String retryOfTaskType,
+            String retryOfTaskId
+    ) {
+        TaskAttemptKey taskKey = new TaskAttemptKey(response.taskType(), response.id());
+        TaskAttemptKey retryOfKey = taskAttemptKey(retryOfTaskType, retryOfTaskId);
+        return new TaskCenterListingCandidate(
+                response,
+                effectiveAttemptGroupId(response.taskType(), response.id(), attemptGroupId),
+                searchValues(response, magnetHash),
+                taskKey,
+                retryOfKey,
+                response.sourceType()
+        );
+    }
+
+    private List<TaskCenterListingCandidate> collapseAttemptChains(List<TaskCenterListingCandidate> candidates) {
+        Map<String, List<TaskCenterListingCandidate>> candidatesByAttemptGroup = candidates.stream()
+                .collect(Collectors.groupingBy(
+                        TaskCenterListingCandidate::attemptGroupId,
+                        LinkedHashMap::new,
+                        Collectors.toList()
+                ));
+
+        return candidatesByAttemptGroup.values().stream()
+                .map(this::latestAttemptCandidate)
+                .toList();
+    }
+
+    private TaskCenterListingCandidate latestAttemptCandidate(List<TaskCenterListingCandidate> attempts) {
+        TaskCenterListingCandidate latestAttempt = attempts.stream()
+                .sorted(taskCenterOrdering())
+                .findFirst()
+                .orElseThrow();
+        List<String> searchValues = attempts.stream()
+                .flatMap(attempt -> attempt.searchValues().stream())
+                .distinct()
+                .toList();
+        Map<TaskAttemptKey, TaskCenterListingCandidate> attemptsByKey = attempts.stream()
+                .collect(Collectors.toMap(TaskCenterListingCandidate::taskKey, Function.identity()));
+        return new TaskCenterListingCandidate(
+                withAttemptCount(latestAttempt.response(), attempts.size()),
+                latestAttempt.attemptGroupId(),
+                searchValues,
+                latestAttempt.taskKey(),
+                latestAttempt.retryOfKey(),
+                originSourceType(latestAttempt, attemptsByKey)
+        );
+    }
+
+    private String originSourceType(
+            TaskCenterListingCandidate latestAttempt,
+            Map<TaskAttemptKey, TaskCenterListingCandidate> attemptsByKey
+    ) {
+        TaskCenterListingCandidate current = latestAttempt;
+        Set<TaskAttemptKey> visited = new HashSet<>();
+        while (current.retryOfKey() != null && visited.add(current.taskKey())) {
+            TaskCenterListingCandidate parent = attemptsByKey.get(current.retryOfKey());
+            if (parent == null) {
+                break;
+            }
+            current = parent;
+        }
+        return current.response().sourceType();
+    }
+
+    private TaskAttemptKey taskAttemptKey(String taskType, String taskId) {
+        if (!StringUtils.hasText(taskType) || !StringUtils.hasText(taskId)) {
+            return null;
+        }
+        return new TaskAttemptKey(normalizeTaskType(taskType), taskId);
+    }
+
+    private OpenListIngestTaskCenterItemResponse withAttemptCount(
+            OpenListIngestTaskCenterItemResponse response,
+            int attemptCount
+    ) {
+        return new OpenListIngestTaskCenterItemResponse(
+                response.taskType(),
+                response.id(),
+                response.productType(),
+                response.createdByUserId(),
+                response.createdByUsername(),
+                response.title(),
+                response.status(),
+                response.stage(),
+                response.sourceType(),
+                response.releaseTitle(),
+                response.progressSummary(),
+                attemptCount,
+                response.detailPath(),
+                response.createdAt(),
+                response.updatedAt()
+        );
+    }
+
+    private List<String> searchValues(OpenListIngestTaskCenterItemResponse response, String magnetHash) {
+        List<String> values = new ArrayList<>();
+        addSearchValue(values, response.id());
+        addSearchValue(values, response.title());
+        addSearchValue(values, response.releaseTitle());
+        addSearchValue(values, magnetHash);
+        return List.copyOf(values);
+    }
+
+    private void addSearchValue(List<String> values, String value) {
+        if (StringUtils.hasText(value)) {
+            values.add(value);
+        }
     }
 
     private Comparator<TaskCenterListingCandidate> taskCenterOrdering() {
@@ -684,6 +1456,17 @@ public class OpenListIngestTaskCenterService {
         );
     }
 
+    private List<String> adultDownloadLinks(String downloadLinksJson) {
+        if (!StringUtils.hasText(downloadLinksJson)) {
+            return null;
+        }
+        try {
+            return objectMapper.readValue(downloadLinksJson, new TypeReference<List<String>>() { });
+        } catch (Exception exception) {
+            return null;
+        }
+    }
+
     private int safeCount(Integer count) {
         return count == null ? 0 : count;
     }
@@ -696,7 +1479,7 @@ public class OpenListIngestTaskCenterService {
         if (ADULT_PRODUCT_TYPE.equals(item.response().productType())) {
             return ALL_FILTER.equals(sourceType);
         }
-        return ALL_FILTER.equals(sourceType) || sourceType.equals(item.response().sourceType());
+        return ALL_FILTER.equals(sourceType) || sourceType.equals(item.originSourceType());
     }
 
     private boolean matchesView(TaskCenterListingCandidate item, String view) {
@@ -713,10 +1496,8 @@ public class OpenListIngestTaskCenterService {
         if (!StringUtils.hasText(keyword)) {
             return true;
         }
-        OpenListIngestTaskCenterItemResponse response = item.response();
-        return containsIgnoreCase(response.title(), keyword)
-                || containsIgnoreCase(response.releaseTitle(), keyword)
-                || containsIgnoreCase(item.magnetHash(), keyword);
+        return item.searchValues().stream()
+                .anyMatch(value -> containsIgnoreCase(value, keyword));
     }
 
     private boolean containsIgnoreCase(String value, String keyword) {
@@ -804,7 +1585,48 @@ public class OpenListIngestTaskCenterService {
 
     private record TaskCenterListingCandidate(
             OpenListIngestTaskCenterItemResponse response,
-            String magnetHash
+            String attemptGroupId,
+            List<String> searchValues,
+            TaskAttemptKey taskKey,
+            TaskAttemptKey retryOfKey,
+            String originSourceType
     ) {
+    }
+
+    private record TaskAttemptSnapshot(
+            String taskType,
+            String id,
+            String attemptGroupId,
+            String productType,
+            String title,
+            String status,
+            String stage,
+            String sourceType,
+            Long createdByUserId,
+            String createdByUsername,
+            String retryOfTaskType,
+            String retryOfTaskId,
+            LocalDateTime createdAt,
+            LocalDateTime updatedAt
+    ) {
+        TaskAttemptKey key() {
+            return new TaskAttemptKey(taskType, id);
+        }
+
+        java.util.Optional<TaskAttemptKey> retryOfKey() {
+            if (!StringUtils.hasText(retryOfTaskType) || !StringUtils.hasText(retryOfTaskId)) {
+                return java.util.Optional.empty();
+            }
+            return java.util.Optional.of(new TaskAttemptKey(retryOfTaskType, retryOfTaskId));
+        }
+    }
+
+    private record TaskAttemptKey(
+            String taskType,
+            String taskId
+    ) {
+        boolean matches(String otherTaskType, String otherTaskId) {
+            return taskType.equals(otherTaskType) && taskId.equals(otherTaskId);
+        }
     }
 }

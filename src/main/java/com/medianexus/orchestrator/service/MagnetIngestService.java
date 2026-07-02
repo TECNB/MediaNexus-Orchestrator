@@ -156,6 +156,52 @@ public class MagnetIngestService {
             throw badRequest("相同 magnet 正在处理中，请稍后再试");
         }
 
+        return insertMovieTask(user, plan, releaseMetadata, null);
+    }
+
+    public MovieMagnetIngestTaskResponse createMovieRetryTask(
+            MovieMagnetIngestTask originalTask,
+            String magnet,
+            TaskRetryReference retryReference
+    ) {
+        return createMovieRetryTask(originalTask, magnet, ReleaseIngestMetadata.manual(), retryReference);
+    }
+
+    public MovieMagnetIngestTaskResponse createMovieRetryTask(
+            MovieMagnetIngestTask originalTask,
+            String magnet,
+            ReleaseIngestMetadata releaseMetadata,
+            TaskRetryReference retryReference
+    ) {
+        User user = authService.requireCurrentUser();
+        String normalizedMagnet = normalizeMagnet(magnet);
+        String magnetHash = extractMagnetHash(normalizedMagnet);
+        MovieMagnetIngestTask activeTask = movieTaskMapper.selectOne(new LambdaQueryWrapper<MovieMagnetIngestTask>()
+                .eq(MovieMagnetIngestTask::getMagnetHash, magnetHash)
+                .in(MovieMagnetIngestTask::getStatus, ACTIVE_STATUSES)
+                .last("LIMIT 1"));
+        if (activeTask != null) {
+            throw badRequest("相同 magnet 正在处理中，请稍后再试");
+        }
+
+        MovieTaskPlan plan = new MovieTaskPlan(
+                normalizedMagnet,
+                magnetHash,
+                originalTask.getTitle(),
+                trimToNull(originalTask.getOriginalTitle()),
+                originalTask.getYear(),
+                null,
+                originalTask.getSavePath()
+        );
+        return insertMovieTask(user, plan, releaseMetadata, retryReference);
+    }
+
+    private MovieMagnetIngestTaskResponse insertMovieTask(
+            User user,
+            MovieTaskPlan plan,
+            ReleaseIngestMetadata releaseMetadata,
+            TaskRetryReference retryReference
+    ) {
         userActionQuotaService.consumeDailyContentCreate(user, UserActionType.MAGNET_INGEST_CREATE);
         String taskId = UUID.randomUUID().toString();
         LocalDateTime now = LocalDateTime.now();
@@ -172,23 +218,33 @@ public class MagnetIngestService {
         applyReleaseMetadata(task, releaseMetadata);
         task.setSavePath(plan.savePath());
         task.setTempPath(plan.savePath());
+        task.setAttemptGroupId(retryReference == null ? taskId : retryReference.attemptGroupId());
+        if (retryReference != null) {
+            task.setRetryOfTaskType(retryReference.taskType());
+            task.setRetryOfTaskId(retryReference.taskId());
+        }
         task.setCreatedByUserId(user.getId());
         task.setOrganizedCount(0);
         task.setSkippedCount(0);
         task.setCreatedAt(now);
         task.setUpdatedAt(now);
         movieTaskMapper.insert(task);
-
-        writeMovieLog(taskId, "INFO", "created", "已创建电影磁力任务", "savePath=" + plan.savePath());
-        log.info(
-                "Created movie magnet ingest task taskId={} userId={} magnetHash={} savePath={}",
-                taskId,
-                user.getId(),
-                plan.magnetHash(),
-                plan.savePath()
-        );
-        executorService.submit(() -> runMovieTask(taskId));
-        return toMovieResponse(getExistingMovieTask(taskId));
+        MovieMagnetIngestTaskResponse response = toMovieResponse(task);
+        try {
+            writeMovieLog(taskId, "INFO", "created", "已创建电影磁力任务", "savePath=" + plan.savePath());
+            log.info(
+                    "Created movie magnet ingest task taskId={} userId={} magnetHash={} savePath={}",
+                    taskId,
+                    user.getId(),
+                    plan.magnetHash(),
+                    plan.savePath()
+            );
+            executorService.submit(() -> runMovieTask(taskId));
+            return response;
+        } catch (RuntimeException exception) {
+            removeMovieTaskAfterCreationFailure(taskId, exception);
+            throw exception;
+        }
     }
 
     public SeriesMagnetIngestTaskResponse createSeriesTask(SeriesMagnetIngestRequest request) {
@@ -215,6 +271,50 @@ public class MagnetIngestService {
         return createPlannedSeriesTask(user, plan, releaseMetadata, ANIME_PRODUCT_TYPE);
     }
 
+    public SeriesMagnetIngestTaskResponse createSeriesRetryTask(
+            SeriesMagnetIngestTask originalTask,
+            String magnet,
+            TaskRetryReference retryReference
+    ) {
+        return createSeriesRetryTask(originalTask, magnet, ReleaseIngestMetadata.manual(), retryReference);
+    }
+
+    public SeriesMagnetIngestTaskResponse createSeriesRetryTask(
+            SeriesMagnetIngestTask originalTask,
+            String magnet,
+            ReleaseIngestMetadata releaseMetadata,
+            TaskRetryReference retryReference
+    ) {
+        User user = authService.requireCurrentUser();
+        String normalizedMagnet = normalizeMagnet(magnet);
+        String magnetHash = extractMagnetHash(normalizedMagnet);
+        SeriesMagnetIngestTask activeTask = seriesTaskMapper.selectOne(new LambdaQueryWrapper<SeriesMagnetIngestTask>()
+                .eq(SeriesMagnetIngestTask::getMagnetHash, magnetHash)
+                .in(SeriesMagnetIngestTask::getStatus, ACTIVE_STATUSES)
+                .last("LIMIT 1"));
+        if (activeTask != null) {
+            throw badRequest("相同 magnet 正在处理中，请稍后再试");
+        }
+
+        SeriesTaskPlan plan = new SeriesTaskPlan(
+                normalizedMagnet,
+                magnetHash,
+                originalTask.getTitle(),
+                trimToNull(originalTask.getOriginalTitle()),
+                originalTask.getSeasonNumber(),
+                originalTask.getSeriesName(),
+                originalTask.getSeasonFolder(),
+                originalTask.getSavePath()
+        );
+        return insertSeriesTask(
+                user,
+                plan,
+                releaseMetadata,
+                seriesTaskProductType(originalTask),
+                retryReference
+        );
+    }
+
     private SeriesMagnetIngestTaskResponse createPlannedSeriesTask(
             User user,
             SeriesTaskPlan plan,
@@ -233,6 +333,16 @@ public class MagnetIngestService {
             throw badRequest("相同 magnet 正在处理中，请稍后再试");
         }
 
+        return insertSeriesTask(user, plan, releaseMetadata, persistedProductType, null);
+    }
+
+    private SeriesMagnetIngestTaskResponse insertSeriesTask(
+            User user,
+            SeriesTaskPlan plan,
+            ReleaseIngestMetadata releaseMetadata,
+            String persistedProductType,
+            TaskRetryReference retryReference
+    ) {
         userActionQuotaService.consumeDailyContentCreate(user, UserActionType.MAGNET_INGEST_CREATE);
         String taskId = UUID.randomUUID().toString();
         LocalDateTime now = LocalDateTime.now();
@@ -252,24 +362,34 @@ public class MagnetIngestService {
         task.setSeasonFolder(plan.seasonFolder());
         task.setSavePath(plan.savePath());
         task.setTempPath(plan.savePath());
+        task.setAttemptGroupId(retryReference == null ? taskId : retryReference.attemptGroupId());
+        if (retryReference != null) {
+            task.setRetryOfTaskType(retryReference.taskType());
+            task.setRetryOfTaskId(retryReference.taskId());
+        }
         task.setCreatedByUserId(user.getId());
         task.setOrganizedCount(0);
         task.setSkippedCount(0);
         task.setCreatedAt(now);
         task.setUpdatedAt(now);
         seriesTaskMapper.insert(task);
-
-        writeSeriesLog(taskId, "INFO", "created", "已创建磁力任务", "savePath=" + plan.savePath());
-        log.info(
-                "Created {} magnet ingest task taskId={} userId={} magnetHash={} savePath={}",
-                persistedProductType,
-                taskId,
-                user.getId(),
-                plan.magnetHash(),
-                plan.savePath()
-        );
-        executorService.submit(() -> runSeriesTask(taskId));
-        return toSeriesResponse(getExistingSeriesTask(taskId));
+        SeriesMagnetIngestTaskResponse response = toSeriesResponse(task);
+        try {
+            writeSeriesLog(taskId, "INFO", "created", "已创建磁力任务", "savePath=" + plan.savePath());
+            log.info(
+                    "Created {} magnet ingest task taskId={} userId={} magnetHash={} savePath={}",
+                    persistedProductType,
+                    taskId,
+                    user.getId(),
+                    plan.magnetHash(),
+                    plan.savePath()
+            );
+            executorService.submit(() -> runSeriesTask(taskId));
+            return response;
+        } catch (RuntimeException exception) {
+            removeSeriesTaskAfterCreationFailure(taskId, exception);
+            throw exception;
+        }
     }
 
     public MovieMagnetIngestTaskListResponse listMovieTasks() {
@@ -1214,6 +1334,34 @@ public class MagnetIngestService {
             updateWrapper.set(SeriesMagnetIngestTask::getFinishedAt, LocalDateTime.now());
         }
         seriesTaskMapper.update(updateWrapper);
+    }
+
+    private void removeMovieTaskAfterCreationFailure(String taskId, RuntimeException cause) {
+        try {
+            movieTaskLogMapper.delete(new LambdaQueryWrapper<MovieMagnetIngestTaskLog>()
+                    .eq(MovieMagnetIngestTaskLog::getTaskId, taskId));
+        } catch (RuntimeException cleanupException) {
+            cause.addSuppressed(cleanupException);
+        }
+        try {
+            movieTaskMapper.deleteById(taskId);
+        } catch (RuntimeException cleanupException) {
+            cause.addSuppressed(cleanupException);
+        }
+    }
+
+    private void removeSeriesTaskAfterCreationFailure(String taskId, RuntimeException cause) {
+        try {
+            seriesTaskLogMapper.delete(new LambdaQueryWrapper<SeriesMagnetIngestTaskLog>()
+                    .eq(SeriesMagnetIngestTaskLog::getTaskId, taskId));
+        } catch (RuntimeException cleanupException) {
+            cause.addSuppressed(cleanupException);
+        }
+        try {
+            seriesTaskMapper.deleteById(taskId);
+        } catch (RuntimeException cleanupException) {
+            cause.addSuppressed(cleanupException);
+        }
     }
 
     private void writeMovieLog(String taskId, String level, String stage, String message, String detail) {

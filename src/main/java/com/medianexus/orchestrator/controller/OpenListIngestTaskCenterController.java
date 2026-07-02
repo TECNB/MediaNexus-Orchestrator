@@ -1,17 +1,25 @@
 package com.medianexus.orchestrator.controller;
 
 import com.medianexus.orchestrator.common.response.ApiResponse;
+import com.medianexus.orchestrator.dto.taskcenter.request.OpenListManualMagnetRetryRequest;
+import com.medianexus.orchestrator.dto.taskcenter.request.OpenListAdultBatchRetryRequest;
+import com.medianexus.orchestrator.dto.taskcenter.request.OpenListReleaseRetryRequest;
 import com.medianexus.orchestrator.dto.taskcenter.response.OpenListIngestTaskCenterDetailResponse;
 import com.medianexus.orchestrator.dto.taskcenter.response.OpenListIngestTaskCenterListResponse;
+import com.medianexus.orchestrator.dto.taskcenter.response.OpenListManualMagnetRetryResponse;
+import com.medianexus.orchestrator.dto.taskcenter.response.OpenListReleaseRetryContextResponse;
 import com.medianexus.orchestrator.service.OpenListIngestTaskCenterService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.Pattern;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -37,7 +45,7 @@ public class OpenListIngestTaskCenterController {
             @Parameter(description = "任务产品类别：ALL、MOVIE、SERIES、ANIME 或 ADULT")
             @Pattern(regexp = "(?i)ALL|MOVIE|SERIES|ANIME|ADULT", message = "任务产品类别无效")
             @RequestParam(name = "product_type", required = false) String productType,
-            @Parameter(description = "任务来源：ALL、MANUAL_MAGNET 或 PROWLARR_RELEASE")
+            @Parameter(description = "尝试链起点来源：ALL、MANUAL_MAGNET 或 PROWLARR_RELEASE")
             @Pattern(regexp = "(?i)ALL|MANUAL_MAGNET|PROWLARR_RELEASE", message = "任务来源无效")
             @RequestParam(name = "source_type", required = false) String sourceType,
             @Parameter(description = "标题、发布标题或 magnet hash 关键词")
@@ -69,5 +77,61 @@ public class OpenListIngestTaskCenterController {
             @PathVariable String taskId
     ) {
         return ApiResponse.success(taskCenterService.getOpenListIngestTaskDetail(taskType, taskId));
+    }
+
+    @GetMapping("/tasks/{taskType}/{taskId}/release-retry-context")
+    @Operation(summary = "读取发布资源重试上下文", description = "支持可恢复终态的电影、剧集和共享 SERIES 动漫整季任务，不限制当前尝试来源。")
+    public ApiResponse<OpenListReleaseRetryContextResponse> getReleaseRetryContext(
+            @Pattern(regexp = "(?i)movie|series|anime|adult", message = "任务类型无效")
+            @PathVariable String taskType,
+            @PathVariable String taskId
+    ) {
+        return ApiResponse.success(taskCenterService.getReleaseRetryContext(taskType, taskId));
+    }
+
+    @PostMapping("/tasks/{taskType}/{taskId}/release-retries")
+    @Operation(summary = "选择新发布资源创建重试尝试", description = "从原任务继承媒体上下文、产品类别与尝试链，原任务保持不变。")
+    public ApiResponse<OpenListManualMagnetRetryResponse> retryWithSelectedRelease(
+            @Pattern(regexp = "(?i)movie|series|anime|adult", message = "任务类型无效")
+            @PathVariable String taskType,
+            @PathVariable String taskId,
+            @Valid @RequestBody OpenListReleaseRetryRequest request
+    ) {
+        return ApiResponse.success(taskCenterService.retryWithSelectedRelease(taskType, taskId, request));
+    }
+
+    @PostMapping("/tasks/{taskType}/{taskId}/manual-magnet-retries/reuse-original")
+    @Operation(summary = "沿用当前 magnet 创建重试尝试", description = "支持可恢复终态下的电影、剧集和动漫任务；新尝试保留尝试链，原任务保持不变。")
+    public ApiResponse<OpenListManualMagnetRetryResponse> reuseOriginalManualMagnet(
+            @Parameter(description = "底层任务类型：movie、series 或 anime")
+            @Pattern(regexp = "(?i)movie|series|anime|adult", message = "任务类型无效")
+            @PathVariable String taskType,
+            @Parameter(description = "底层任务 id")
+            @PathVariable String taskId
+    ) {
+        return ApiResponse.success(taskCenterService.reuseOriginalManualMagnet(taskType, taskId));
+    }
+
+    @PostMapping("/tasks/{taskType}/{taskId}/manual-magnet-retries/replace-magnet")
+    @Operation(summary = "更换 magnet 创建重试尝试", description = "支持可恢复终态下的电影、剧集和动漫手动 magnet 任务，以及发布资源任务的手动兜底。")
+    public ApiResponse<OpenListManualMagnetRetryResponse> replaceManualMagnet(
+            @Parameter(description = "底层任务类型：movie、series 或 anime")
+            @Pattern(regexp = "(?i)movie|series|anime|adult", message = "任务类型无效")
+            @PathVariable String taskType,
+            @Parameter(description = "底层任务 id")
+            @PathVariable String taskId,
+            @Valid @RequestBody OpenListManualMagnetRetryRequest request
+    ) {
+        return ApiResponse.success(taskCenterService.replaceManualMagnet(taskType, taskId, request));
+    }
+
+    @PostMapping("/tasks/adult/{taskId}/batch-retries")
+    @Operation(summary = "整批重新提交 Adult 下载链接", description = "仅支持可恢复终态的 Adult 任务；创建关联的新任务尝试，原任务保持不变。")
+    public ApiResponse<OpenListManualMagnetRetryResponse> retryAdultBatch(
+            @Parameter(description = "Adult 底层任务 id")
+            @PathVariable String taskId,
+            @Valid @RequestBody OpenListAdultBatchRetryRequest request
+    ) {
+        return ApiResponse.success(taskCenterService.retryAdultBatch(taskId, request));
     }
 }

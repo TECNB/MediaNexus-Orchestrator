@@ -117,14 +117,20 @@ public class DatabaseInitializer implements ApplicationRunner {
         userAdminAuditLogMapper.createTableIfNotExists();
         animeMagnetIngestTaskMapper.createTableIfNotExists();
         ensureAnimeMagnetTaskOwnerColumn();
+        ensureAnimeMagnetTaskReleaseMetadataColumns();
+        ensureAnimeMagnetTaskAttemptChainColumns();
         animeMagnetIngestTaskLogMapper.createTableIfNotExists();
         movieMagnetIngestTaskMapper.createTableIfNotExists();
         ensureMovieMagnetTaskTagColumns();
+        ensureMovieMagnetTaskAttemptChainColumns();
         movieMagnetIngestTaskLogMapper.createTableIfNotExists();
         seriesMagnetIngestTaskMapper.createTableIfNotExists();
         ensureSeriesMagnetTaskTagColumns();
+        ensureSeriesMagnetTaskAttemptChainColumns();
         seriesMagnetIngestTaskLogMapper.createTableIfNotExists();
         adultMagnetIngestTaskMapper.createTableIfNotExists();
+        ensureAdultMagnetTaskAttemptChainColumns();
+        ensureAdultMagnetTaskDownloadLinksColumn();
         adultMagnetIngestTaskLogMapper.createTableIfNotExists();
         subtitleUploadMapper.createTableIfNotExists();
         ensureSubtitleUploadColumns();
@@ -153,6 +159,13 @@ public class DatabaseInitializer implements ApplicationRunner {
         }
     }
 
+    private void ensureAnimeMagnetTaskReleaseMetadataColumns() {
+        Integer columnCount = animeMagnetIngestTaskMapper.countSourceTypeColumn();
+        if (columnCount == null || columnCount == 0) {
+            animeMagnetIngestTaskMapper.addReleaseMetadataColumns();
+        }
+    }
+
     private void ensureMovieMagnetTaskTagColumns() {
         Integer sourceTypeColumnCount = movieMagnetIngestTaskMapper.countSourceTypeColumn();
         if (sourceTypeColumnCount == null || sourceTypeColumnCount == 0) {
@@ -165,6 +178,17 @@ public class DatabaseInitializer implements ApplicationRunner {
         Integer dynamicRangeTagsColumnCount = movieMagnetIngestTaskMapper.countDynamicRangeTagsColumn();
         if (dynamicRangeTagsColumnCount == null || dynamicRangeTagsColumnCount == 0) {
             movieMagnetIngestTaskMapper.addDynamicRangeTagsColumn();
+        }
+    }
+
+    private void ensureMovieMagnetTaskAttemptChainColumns() {
+        Integer columnCount = movieMagnetIngestTaskMapper.countAttemptChainColumns();
+        if (columnCount == null || columnCount == 0) {
+            movieMagnetIngestTaskMapper.addAttemptChainColumns();
+        }
+        Integer indexCount = movieMagnetIngestTaskMapper.countAttemptGroupIndex();
+        if (indexCount == null || indexCount == 0) {
+            movieMagnetIngestTaskMapper.addAttemptGroupIndex();
         }
     }
 
@@ -184,6 +208,46 @@ public class DatabaseInitializer implements ApplicationRunner {
         Integer dynamicRangeTagsColumnCount = seriesMagnetIngestTaskMapper.countDynamicRangeTagsColumn();
         if (dynamicRangeTagsColumnCount == null || dynamicRangeTagsColumnCount == 0) {
             seriesMagnetIngestTaskMapper.addDynamicRangeTagsColumn();
+        }
+    }
+
+    private void ensureSeriesMagnetTaskAttemptChainColumns() {
+        Integer columnCount = seriesMagnetIngestTaskMapper.countAttemptChainColumns();
+        if (columnCount == null || columnCount == 0) {
+            seriesMagnetIngestTaskMapper.addAttemptChainColumns();
+        }
+        Integer indexCount = seriesMagnetIngestTaskMapper.countAttemptGroupIndex();
+        if (indexCount == null || indexCount == 0) {
+            seriesMagnetIngestTaskMapper.addAttemptGroupIndex();
+        }
+    }
+
+    private void ensureAnimeMagnetTaskAttemptChainColumns() {
+        Integer columnCount = animeMagnetIngestTaskMapper.countAttemptChainColumns();
+        if (columnCount == null || columnCount == 0) {
+            animeMagnetIngestTaskMapper.addAttemptChainColumns();
+        }
+        Integer indexCount = animeMagnetIngestTaskMapper.countAttemptGroupIndex();
+        if (indexCount == null || indexCount == 0) {
+            animeMagnetIngestTaskMapper.addAttemptGroupIndex();
+        }
+    }
+
+    private void ensureAdultMagnetTaskAttemptChainColumns() {
+        Integer columnCount = adultMagnetIngestTaskMapper.countAttemptChainColumns();
+        if (columnCount == null || columnCount == 0) {
+            adultMagnetIngestTaskMapper.addAttemptChainColumns();
+        }
+        Integer indexCount = adultMagnetIngestTaskMapper.countAttemptGroupIndex();
+        if (indexCount == null || indexCount == 0) {
+            adultMagnetIngestTaskMapper.addAttemptGroupIndex();
+        }
+    }
+
+    private void ensureAdultMagnetTaskDownloadLinksColumn() {
+        Integer columnCount = adultMagnetIngestTaskMapper.countDownloadLinksJsonColumn();
+        if (columnCount == null || columnCount == 0) {
+            adultMagnetIngestTaskMapper.addDownloadLinksJsonColumn();
         }
     }
 
