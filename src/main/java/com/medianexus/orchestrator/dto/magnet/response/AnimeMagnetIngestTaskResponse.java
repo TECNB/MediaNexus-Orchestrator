@@ -20,6 +20,11 @@ public record AnimeMagnetIngestTaskResponse(
         String bgmId,
         @Schema(description = "导入任务标题")
         String title,
+        @Schema(description = "动漫中文名；没有时为 null", nullable = true)
+        @JsonProperty("name_cn")
+        String nameCn,
+        @Schema(description = "动漫原名；没有时为 null", nullable = true)
+        String name,
         @Schema(description = "季度编号")
         @JsonProperty("season_number")
         Integer seasonNumber,

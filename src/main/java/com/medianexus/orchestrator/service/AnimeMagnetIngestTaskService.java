@@ -2,7 +2,6 @@ package com.medianexus.orchestrator.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
-import com.fasterxml.jackson.databind.JsonNode;
 import com.medianexus.orchestrator.common.exception.BusinessException;
 import com.medianexus.orchestrator.common.exception.ErrorCode;
 import com.medianexus.orchestrator.config.OpenListProperties;
@@ -11,8 +10,6 @@ import com.medianexus.orchestrator.dto.magnet.response.AnimeMagnetIngestTaskList
 import com.medianexus.orchestrator.dto.magnet.response.AnimeMagnetIngestTaskLogListResponse;
 import com.medianexus.orchestrator.dto.magnet.response.AnimeMagnetIngestTaskLogResponse;
 import com.medianexus.orchestrator.dto.magnet.response.AnimeMagnetIngestTaskResponse;
-import com.medianexus.orchestrator.integration.anirss.AniRssClient;
-import com.medianexus.orchestrator.integration.anirss.AniRssClientException;
 import com.medianexus.orchestrator.integration.openlist.OpenListClient;
 import com.medianexus.orchestrator.integration.openlist.OpenListClientException;
 import com.medianexus.orchestrator.integration.openlist.OpenListFileInfo;
@@ -42,6 +39,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.http.HttpStatus;
@@ -58,25 +56,23 @@ public class AnimeMagnetIngestTaskService {
     private static final int DEFAULT_OFFSET = 0;
     private static final Duration SAVING_FILES_VISIBLE_GRACE = Duration.ofMinutes(5);
     private static final String ADMIN_ROLE = "ADMIN";
-    private static final String TMDB_NAME_REQUIRED_MESSAGE = "未解析到 TMDB 标题，无法确定媒体根目录";
 
     private final AnimeMagnetIngestTaskMapper taskMapper;
     private final AnimeMagnetIngestTaskLogMapper taskLogMapper;
     private final OpenListClient openListClient;
     private final OpenListProperties openListProperties;
-    private final AniRssClient aniRssClient;
     private final AnimeEpisodeRenameService renameService;
     private final AuthService authService;
     private final UserActionQuotaService userActionQuotaService;
     private final AutoSymlinkRefreshService autoSymlinkRefreshService;
     private final ExecutorService executorService;
 
+    @Autowired
     public AnimeMagnetIngestTaskService(
             AnimeMagnetIngestTaskMapper taskMapper,
             AnimeMagnetIngestTaskLogMapper taskLogMapper,
             OpenListClient openListClient,
             OpenListProperties openListProperties,
-            AniRssClient aniRssClient,
             AnimeEpisodeRenameService renameService,
             AuthService authService,
             UserActionQuotaService userActionQuotaService,
@@ -86,7 +82,6 @@ public class AnimeMagnetIngestTaskService {
         this.taskLogMapper = taskLogMapper;
         this.openListClient = openListClient;
         this.openListProperties = openListProperties;
-        this.aniRssClient = aniRssClient;
         this.renameService = renameService;
         this.authService = authService;
         this.userActionQuotaService = userActionQuotaService;
@@ -99,7 +94,6 @@ public class AnimeMagnetIngestTaskService {
             AnimeMagnetIngestTaskLogMapper taskLogMapper,
             OpenListClient openListClient,
             OpenListProperties openListProperties,
-            AniRssClient aniRssClient,
             AnimeEpisodeRenameService renameService,
             AuthService authService,
             UserActionQuotaService userActionQuotaService,
@@ -110,7 +104,6 @@ public class AnimeMagnetIngestTaskService {
         this.taskLogMapper = taskLogMapper;
         this.openListClient = openListClient;
         this.openListProperties = openListProperties;
-        this.aniRssClient = aniRssClient;
         this.renameService = renameService;
         this.authService = authService;
         this.userActionQuotaService = userActionQuotaService;
@@ -176,8 +169,8 @@ public class AnimeMagnetIngestTaskService {
 
         String title = preferredTitle(request);
         Integer season = request.seasonNumber() == null ? 1 : request.seasonNumber();
-        String themoviedbName = resolveThemoviedbName(request);
-        String savePath = renderAnimePath(title, themoviedbName, season);
+        String folderTitle = animeFolderTitle(request, title);
+        String savePath = renderAnimePath(folderTitle, season);
         AnimeMagnetIngestTaskResponse response = insertTask(
                 user,
                 new AnimeTaskSeed(
@@ -194,9 +187,6 @@ public class AnimeMagnetIngestTaskService {
                 ReleaseIngestMetadata.manual(),
                 null
         );
-        if (!StringUtils.hasText(request.themoviedbName()) && StringUtils.hasText(themoviedbName)) {
-            writeLog(response.id(), "INFO", "created", "已通过 Ani-RSS 解析 TMDB 标题", themoviedbName);
-        }
         return response;
     }
 
@@ -867,6 +857,8 @@ public class AnimeMagnetIngestTaskService {
                 task.getStage(),
                 task.getBgmId(),
                 task.getTitle(),
+                task.getNameCn(),
+                task.getName(),
                 task.getSeasonNumber(),
                 task.getMagnetHash(),
                 task.getSavePath(),
@@ -923,47 +915,21 @@ public class AnimeMagnetIngestTaskService {
         return StringUtils.hasText(request.name()) ? request.name().trim() : "";
     }
 
-    private String resolveThemoviedbName(AnimeMagnetIngestTaskCreateRequest request) {
-        if (StringUtils.hasText(request.themoviedbName())) {
-            return request.themoviedbName().trim();
+    private String animeFolderTitle(AnimeMagnetIngestTaskCreateRequest request, String fallbackTitle) {
+        if (StringUtils.hasText(request.nameCn())) {
+            return request.nameCn().trim();
         }
-        if (!requiresThemoviedbName(openListProperties.getAnimePathTemplate())) {
-            return "";
+        if (StringUtils.hasText(request.title())) {
+            return request.title().trim();
         }
-
-        try {
-            JsonNode ani = aniRssClient.getAniBySubjectId(request.bgmId().trim());
-            String themoviedbName = ani == null ? null : trimToNull(ani.path("themoviedbName").asText(""));
-            if (StringUtils.hasText(themoviedbName)) {
-                return themoviedbName;
-            }
-            log.warn("Ani-RSS did not resolve TMDB title for bgmId={}", request.bgmId());
-        } catch (AniRssClientException exception) {
-            log.warn("Ani-RSS TMDB title resolve failed for bgmId={}: {}",
-                    request.bgmId(), exception.getMessage(), exception);
-            throw new BusinessException(
-                    ErrorCode.INTERNAL_ERROR,
-                    TMDB_NAME_REQUIRED_MESSAGE,
-                    HttpStatus.INTERNAL_SERVER_ERROR
-            );
-        }
-
-        throw new BusinessException(
-                ErrorCode.INTERNAL_ERROR,
-                TMDB_NAME_REQUIRED_MESSAGE,
-                HttpStatus.INTERNAL_SERVER_ERROR
-        );
+        return fallbackTitle;
     }
 
-    private boolean requiresThemoviedbName(String template) {
-        return StringUtils.hasText(template)
-                && (template.contains("{themoviedbName}") || template.contains("${themoviedbName}"));
-    }
-
-    private String renderAnimePath(String title, String themoviedbName, Integer season) {
+    private String renderAnimePath(String title, Integer season) {
         String template = openListProperties.getAnimePathTemplate();
-        String path = replaceTemplateValue(template, "themoviedbName", sanitizePathSegment(themoviedbName));
-        path = replaceTemplateValue(path, "title", sanitizePathSegment(title));
+        String folderTitle = sanitizePathSegment(title);
+        String path = replaceTemplateValue(template, "themoviedbName", folderTitle);
+        path = replaceTemplateValue(path, "title", folderTitle);
         path = replaceTemplateValue(path, "season", String.valueOf(season));
         path = replaceTemplateValue(path, "seasonFormat", String.format("%02d", season));
         return openListClient.normalizePath(path);

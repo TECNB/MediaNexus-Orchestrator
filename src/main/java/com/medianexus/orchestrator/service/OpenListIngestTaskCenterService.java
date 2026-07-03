@@ -47,6 +47,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -101,6 +102,7 @@ public class OpenListIngestTaskCenterService {
     private final AnimeMagnetIngestTaskService animeMagnetIngestTaskService;
     private final AdultMagnetIngestService adultMagnetIngestService;
     private final ProwlarrReleaseIngestService prowlarrReleaseIngestService;
+    private final MovieSeriesResourceSearchService resourceSearchService;
 
     public OpenListIngestTaskCenterService(
             AuthService authService,
@@ -117,7 +119,8 @@ public class OpenListIngestTaskCenterService {
             MagnetIngestService magnetIngestService,
             AnimeMagnetIngestTaskService animeMagnetIngestTaskService,
             AdultMagnetIngestService adultMagnetIngestService,
-            ProwlarrReleaseIngestService prowlarrReleaseIngestService
+            ProwlarrReleaseIngestService prowlarrReleaseIngestService,
+            MovieSeriesResourceSearchService resourceSearchService
     ) {
         this.authService = authService;
         this.movieTaskMapper = movieTaskMapper;
@@ -134,6 +137,7 @@ public class OpenListIngestTaskCenterService {
         this.animeMagnetIngestTaskService = animeMagnetIngestTaskService;
         this.adultMagnetIngestService = adultMagnetIngestService;
         this.prowlarrReleaseIngestService = prowlarrReleaseIngestService;
+        this.resourceSearchService = Objects.requireNonNull(resourceSearchService, "resourceSearchService");
     }
 
     public OpenListIngestTaskCenterListResponse listOpenListIngestTasks() {
@@ -367,12 +371,13 @@ public class OpenListIngestTaskCenterService {
 
     private OpenListReleaseRetryContextResponse movieReleaseRetryContext(MovieMagnetIngestTask task) {
         ensureReleaseSelectionAllowed(task.getStatus(), sourceType(task.getSourceType()));
+        ReleaseRetryTitles titles = movieReleaseRetryTitles(task);
         return new OpenListReleaseRetryContextResponse(
                 MOVIE_TASK_TYPE,
                 task.getId(),
                 MOVIE_PRODUCT_TYPE,
-                task.getTitle(),
-                task.getOriginalTitle(),
+                titles.title(),
+                titles.originalTitle(),
                 task.getYear(),
                 null,
                 task.getQualityTag(),
@@ -386,12 +391,13 @@ public class OpenListIngestTaskCenterService {
 
     private OpenListReleaseRetryContextResponse seriesReleaseRetryContext(SeriesMagnetIngestTask task) {
         ensureReleaseSelectionAllowed(task.getStatus(), sourceType(task.getSourceType()));
+        ReleaseRetryTitles titles = seriesReleaseRetryTitles(task);
         return new OpenListReleaseRetryContextResponse(
                 SERIES_TASK_TYPE,
                 task.getId(),
                 seriesProductType(task.getTaskProductType()),
-                task.getTitle(),
-                task.getOriginalTitle(),
+                titles.title(),
+                titles.originalTitle(),
                 null,
                 task.getSeasonNumber(),
                 task.getQualityTag(),
@@ -401,6 +407,100 @@ public class OpenListIngestTaskCenterService {
                 splitTags(task.getResolutionTags()),
                 splitTags(task.getDynamicRangeTags())
         );
+    }
+
+    private ReleaseRetryTitles movieReleaseRetryTitles(MovieMagnetIngestTask task) {
+        ReleaseRetryTitles storedTitles = new ReleaseRetryTitles(
+                task.getTitle(),
+                trimToNull(task.getOriginalTitle())
+        );
+        if (!shouldEnrichReleaseRetryTitles(storedTitles)) {
+            return storedTitles;
+        }
+        return enrichMovieReleaseRetryTitles(task, storedTitles);
+    }
+
+    private ReleaseRetryTitles seriesReleaseRetryTitles(SeriesMagnetIngestTask task) {
+        ReleaseRetryTitles storedTitles = new ReleaseRetryTitles(
+                task.getTitle(),
+                trimToNull(task.getOriginalTitle())
+        );
+        if (!shouldEnrichReleaseRetryTitles(storedTitles)) {
+            return storedTitles;
+        }
+        return enrichSeriesReleaseRetryTitles(storedTitles);
+    }
+
+    private boolean shouldEnrichReleaseRetryTitles(ReleaseRetryTitles titles) {
+        String title = trimToNull(titles.title());
+        String originalTitle = trimToNull(titles.originalTitle());
+        return StringUtils.hasText(originalTitle) && normalizeTitle(title).equals(normalizeTitle(originalTitle));
+    }
+
+    private ReleaseRetryTitles enrichMovieReleaseRetryTitles(
+            MovieMagnetIngestTask task,
+            ReleaseRetryTitles fallback
+    ) {
+        String searchTerm = firstText(fallback.originalTitle(), fallback.title());
+        if (!StringUtils.hasText(searchTerm)) {
+            return fallback;
+        }
+        try {
+            return resourceSearchService.searchMovies(searchTerm).items().stream()
+                    .filter(item -> task.getYear() == null || task.getYear().equals(item.year()))
+                    .filter(item -> matchesKnownTitle(item.title(), fallback)
+                            || matchesKnownTitle(item.originalTitle(), fallback)
+                            || item.alternateTitles() != null
+                            && item.alternateTitles().stream().anyMatch(title -> matchesKnownTitle(title, fallback)))
+                    .findFirst()
+                    .map(item -> new ReleaseRetryTitles(
+                            firstText(item.title(), fallback.title()),
+                            firstText(item.originalTitle(), fallback.originalTitle())
+                    ))
+                    .orElse(fallback);
+        } catch (RuntimeException ignored) {
+            return fallback;
+        }
+    }
+
+    private ReleaseRetryTitles enrichSeriesReleaseRetryTitles(ReleaseRetryTitles fallback) {
+        String searchTerm = firstText(fallback.originalTitle(), fallback.title());
+        if (!StringUtils.hasText(searchTerm)) {
+            return fallback;
+        }
+        try {
+            return resourceSearchService.searchSeries(searchTerm).items().stream()
+                    .filter(item -> matchesKnownTitle(item.title(), fallback)
+                            || matchesKnownTitle(item.originalTitle(), fallback))
+                    .findFirst()
+                    .map(item -> new ReleaseRetryTitles(
+                            firstText(item.title(), fallback.title()),
+                            firstText(item.originalTitle(), fallback.originalTitle())
+                    ))
+                    .orElse(fallback);
+        } catch (RuntimeException ignored) {
+            return fallback;
+        }
+    }
+
+    private boolean matchesKnownTitle(String candidate, ReleaseRetryTitles knownTitles) {
+        String normalizedCandidate = normalizeTitle(candidate);
+        return StringUtils.hasText(normalizedCandidate)
+                && (normalizedCandidate.equals(normalizeTitle(knownTitles.title()))
+                || normalizedCandidate.equals(normalizeTitle(knownTitles.originalTitle())));
+    }
+
+    private String normalizeTitle(String value) {
+        String normalized = trimToNull(value);
+        return normalized == null ? "" : normalized.toLowerCase(Locale.ROOT);
+    }
+
+    private String firstText(String first, String second) {
+        String normalizedFirst = trimToNull(first);
+        if (StringUtils.hasText(normalizedFirst)) {
+            return normalizedFirst;
+        }
+        return trimToNull(second);
     }
 
     private OpenListReleaseRetryContextResponse animeReleaseRetryContext(AnimeMagnetIngestTask task) {
@@ -502,7 +602,7 @@ public class OpenListIngestTaskCenterService {
                 MOVIE_PRODUCT_TYPE,
                 task.getCreatedByUserId(),
                 creatorUsername(task.getCreatedByUserId()),
-                "%s (%s)".formatted(task.getTitle(), task.getYear()),
+                movieDisplayTitle(task),
                 task.getStatus(),
                 task.getStage(),
                 sourceType(task.getSourceType()),
@@ -535,7 +635,7 @@ public class OpenListIngestTaskCenterService {
                 seriesProductType(task.getTaskProductType()),
                 task.getCreatedByUserId(),
                 creatorUsername(task.getCreatedByUserId()),
-                "%s %s".formatted(task.getSeriesName(), task.getSeasonFolder()),
+                seriesDisplayTitle(task),
                 task.getStatus(),
                 task.getStage(),
                 sourceType(task.getSourceType()),
@@ -568,7 +668,7 @@ public class OpenListIngestTaskCenterService {
                 ANIME_PRODUCT_TYPE,
                 task.getCreatedByUserId(),
                 creatorUsername(task.getCreatedByUserId()),
-                "%s S%02d".formatted(task.getTitle(), task.getSeasonNumber()),
+                animeDisplayTitle(task),
                 task.getStatus(),
                 task.getStage(),
                 sourceType(task.getSourceType()),
@@ -1079,7 +1179,7 @@ public class OpenListIngestTaskCenterService {
                 MOVIE_PRODUCT_TYPE,
                 task.getCreatedByUserId(),
                 creatorUsername(creatorsById, task.getCreatedByUserId()),
-                "%s (%s)".formatted(task.getTitle(), task.getYear()),
+                movieDisplayTitle(task),
                 task.getStatus(),
                 task.getStage(),
                 sourceType(task.getSourceType()),
@@ -1095,7 +1195,9 @@ public class OpenListIngestTaskCenterService {
                 task.getMagnetHash(),
                 task.getAttemptGroupId(),
                 task.getRetryOfTaskType(),
-                task.getRetryOfTaskId()
+                task.getRetryOfTaskId(),
+                task.getTitle(),
+                task.getOriginalTitle()
         );
     }
 
@@ -1109,7 +1211,7 @@ public class OpenListIngestTaskCenterService {
                 seriesProductType(task.getTaskProductType()),
                 task.getCreatedByUserId(),
                 creatorUsername(creatorsById, task.getCreatedByUserId()),
-                "%s %s".formatted(task.getSeriesName(), task.getSeasonFolder()),
+                seriesDisplayTitle(task),
                 task.getStatus(),
                 task.getStage(),
                 sourceType(task.getSourceType()),
@@ -1125,7 +1227,10 @@ public class OpenListIngestTaskCenterService {
                 task.getMagnetHash(),
                 task.getAttemptGroupId(),
                 task.getRetryOfTaskType(),
-                task.getRetryOfTaskId()
+                task.getRetryOfTaskId(),
+                task.getTitle(),
+                task.getOriginalTitle(),
+                task.getSeriesName()
         );
     }
 
@@ -1139,7 +1244,7 @@ public class OpenListIngestTaskCenterService {
                 ANIME_PRODUCT_TYPE,
                 task.getCreatedByUserId(),
                 creatorUsername(creatorsById, task.getCreatedByUserId()),
-                "%s S%02d".formatted(task.getTitle(), task.getSeasonNumber()),
+                animeDisplayTitle(task),
                 task.getStatus(),
                 task.getStage(),
                 sourceType(task.getSourceType()),
@@ -1155,7 +1260,10 @@ public class OpenListIngestTaskCenterService {
                 task.getMagnetHash(),
                 task.getAttemptGroupId(),
                 task.getRetryOfTaskType(),
-                task.getRetryOfTaskId()
+                task.getRetryOfTaskId(),
+                task.getTitle(),
+                task.getNameCn(),
+                task.getName()
         );
     }
 
@@ -1195,7 +1303,7 @@ public class OpenListIngestTaskCenterService {
                 task.getId(),
                 effectiveAttemptGroupId(MOVIE_TASK_TYPE, task.getId(), task.getAttemptGroupId()),
                 MOVIE_PRODUCT_TYPE,
-                "%s (%s)".formatted(task.getTitle(), task.getYear()),
+                movieDisplayTitle(task),
                 task.getStatus(),
                 task.getStage(),
                 sourceType(task.getSourceType()),
@@ -1214,7 +1322,7 @@ public class OpenListIngestTaskCenterService {
                 task.getId(),
                 effectiveAttemptGroupId(SERIES_TASK_TYPE, task.getId(), task.getAttemptGroupId()),
                 seriesProductType(task.getTaskProductType()),
-                "%s %s".formatted(task.getSeriesName(), task.getSeasonFolder()),
+                seriesDisplayTitle(task),
                 task.getStatus(),
                 task.getStage(),
                 sourceType(task.getSourceType()),
@@ -1233,7 +1341,7 @@ public class OpenListIngestTaskCenterService {
                 task.getId(),
                 effectiveAttemptGroupId(ANIME_TASK_TYPE, task.getId(), task.getAttemptGroupId()),
                 ANIME_PRODUCT_TYPE,
-                "%s S%02d".formatted(task.getTitle(), task.getSeasonNumber()),
+                animeDisplayTitle(task),
                 task.getStatus(),
                 task.getStage(),
                 sourceType(task.getSourceType()),
@@ -1288,14 +1396,15 @@ public class OpenListIngestTaskCenterService {
             String magnetHash,
             String attemptGroupId,
             String retryOfTaskType,
-            String retryOfTaskId
+            String retryOfTaskId,
+            String... extraSearchValues
     ) {
         TaskAttemptKey taskKey = new TaskAttemptKey(response.taskType(), response.id());
         TaskAttemptKey retryOfKey = taskAttemptKey(retryOfTaskType, retryOfTaskId);
         return new TaskCenterListingCandidate(
                 response,
                 effectiveAttemptGroupId(response.taskType(), response.id(), attemptGroupId),
-                searchValues(response, magnetHash),
+                searchValues(response, magnetHash, extraSearchValues),
                 taskKey,
                 retryOfKey,
                 response.sourceType()
@@ -1382,12 +1491,19 @@ public class OpenListIngestTaskCenterService {
         );
     }
 
-    private List<String> searchValues(OpenListIngestTaskCenterItemResponse response, String magnetHash) {
+    private List<String> searchValues(
+            OpenListIngestTaskCenterItemResponse response,
+            String magnetHash,
+            String... extraSearchValues
+    ) {
         List<String> values = new ArrayList<>();
         addSearchValue(values, response.id());
         addSearchValue(values, response.title());
         addSearchValue(values, response.releaseTitle());
         addSearchValue(values, magnetHash);
+        if (extraSearchValues != null) {
+            Arrays.stream(extraSearchValues).forEach(value -> addSearchValue(values, value));
+        }
         return List.copyOf(values);
     }
 
@@ -1443,6 +1559,49 @@ public class OpenListIngestTaskCenterService {
             return "%s 批量任务".formatted(category);
         }
         return "%s 批量任务 %s".formatted(category, task.getDateFolder());
+    }
+
+    private String movieDisplayTitle(MovieMagnetIngestTask task) {
+        String title = preferredChineseText(task.getTitle(), task.getOriginalTitle());
+        String fallbackTitle = StringUtils.hasText(title) ? title : "电影任务";
+        return task.getYear() == null ? fallbackTitle : "%s (%s)".formatted(fallbackTitle, task.getYear());
+    }
+
+    private String seriesDisplayTitle(SeriesMagnetIngestTask task) {
+        String title = preferredChineseText(task.getTitle(), task.getSeriesName(), task.getOriginalTitle());
+        String fallbackTitle = StringUtils.hasText(title) ? title : "剧集任务";
+        String seasonFolder = trimToNull(task.getSeasonFolder());
+        return seasonFolder == null ? fallbackTitle : "%s %s".formatted(fallbackTitle, seasonFolder);
+    }
+
+    private String animeDisplayTitle(AnimeMagnetIngestTask task) {
+        String title = preferredChineseText(task.getNameCn(), task.getTitle(), task.getName());
+        String fallbackTitle = StringUtils.hasText(title) ? title : "动漫任务";
+        Integer seasonNumber = task.getSeasonNumber();
+        return seasonNumber == null ? fallbackTitle : "%s S%02d".formatted(fallbackTitle, seasonNumber);
+    }
+
+    private String preferredChineseText(String... values) {
+        String fallback = null;
+        for (String value : values) {
+            String candidate = trimToNull(value);
+            if (!StringUtils.hasText(candidate)) {
+                continue;
+            }
+            if (fallback == null) {
+                fallback = candidate;
+            }
+            if (containsChinese(candidate)) {
+                return candidate;
+            }
+        }
+        return fallback;
+    }
+
+    private boolean containsChinese(String value) {
+        return StringUtils.hasText(value) && value.codePoints().anyMatch(codePoint ->
+                codePoint >= 0x4E00 && codePoint <= 0x9FFF
+        );
     }
 
     private String adultProgressSummary(AdultMagnetIngestTask task) {
@@ -1529,6 +1688,10 @@ public class OpenListIngestTaskCenterService {
 
     private String normalizeKeyword(String keyword) {
         return StringUtils.hasText(keyword) ? keyword.trim().toLowerCase(Locale.ROOT) : "";
+    }
+
+    private String trimToNull(String value) {
+        return StringUtils.hasText(value) ? value.trim() : null;
     }
 
     private int normalizePage(Integer page, int total, int pageSize) {
@@ -1628,5 +1791,11 @@ public class OpenListIngestTaskCenterService {
         boolean matches(String otherTaskType, String otherTaskId) {
             return taskType.equals(otherTaskType) && taskId.equals(otherTaskId);
         }
+    }
+
+    private record ReleaseRetryTitles(
+            String title,
+            String originalTitle
+    ) {
     }
 }

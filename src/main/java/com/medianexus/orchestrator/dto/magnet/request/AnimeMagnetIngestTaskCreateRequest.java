@@ -28,7 +28,7 @@ public record AnimeMagnetIngestTaskCreateRequest(
         @Min(value = 0, message = "季数无效")
         @JsonProperty("season_number")
         Integer seasonNumber,
-        @Schema(description = "TMDB 媒体目录名；未提供时用标题渲染 OpenList 保存路径", requiredMode = Schema.RequiredMode.NOT_REQUIRED, nullable = true)
+        @Schema(description = "兼容旧前端字段；动漫入库保存路径固定使用中文或展示标题渲染", requiredMode = Schema.RequiredMode.NOT_REQUIRED, nullable = true)
         @JsonProperty("themoviedb_name")
         String themoviedbName
 ) {

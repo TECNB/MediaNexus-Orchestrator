@@ -782,7 +782,7 @@ public class MagnetIngestService {
             }
             MovieSeriesFileRenameService.RenameResult rename = renameService.movieVideo(
                     file.name(),
-                    task.getTitle(),
+                    fileTitle(task.getTitle(), task.getOriginalTitle(), "电影标题不能为空"),
                     task.getYear()
             );
             boolean accepted = planFile(taskLogWriter, task.getSavePath(), targetNames, plan, file, rename.fileName());
@@ -817,7 +817,7 @@ public class MagnetIngestService {
             String matchedQuality = videoQualityByBaseName.containsKey(sourceQuality) ? sourceQuality : mainVideoQuality;
             Optional<MovieSeriesFileRenameService.RenameResult> rename = renameService.movieSubtitle(
                     file.name(),
-                    task.getTitle(),
+                    fileTitle(task.getTitle(), task.getOriginalTitle(), "电影标题不能为空"),
                     task.getYear(),
                     matchedQuality
             );
@@ -856,7 +856,7 @@ public class MagnetIngestService {
             }
             Optional<MovieSeriesFileRenameService.RenameResult> rename = renameService.seriesVideo(
                     file.name(),
-                    task.getTitle(),
+                    fileTitle(task.getTitle(), task.getOriginalTitle(), "剧集标题不能为空"),
                     task.getSeasonNumber()
             );
             if (rename.isEmpty()) {
@@ -887,7 +887,7 @@ public class MagnetIngestService {
             String sourceQuality = renameService.qualityFull(file.name());
             Optional<MovieSeriesFileRenameService.RenameResult> detected = renameService.seriesSubtitle(
                     file.name(),
-                    task.getTitle(),
+                    fileTitle(task.getTitle(), task.getOriginalTitle(), "剧集标题不能为空"),
                     task.getSeasonNumber(),
                     sourceQuality
             );
@@ -907,7 +907,7 @@ public class MagnetIngestService {
             }
             MovieSeriesFileRenameService.RenameResult result = renameService.seriesSubtitle(
                     file.name(),
-                    task.getTitle(),
+                    fileTitle(task.getTitle(), task.getOriginalTitle(), "剧集标题不能为空"),
                     task.getSeasonNumber(),
                     matchedQuality
             ).orElseThrow();
@@ -1047,9 +1047,10 @@ public class MagnetIngestService {
         String magnet = normalizeMagnet(request.magnet());
         String magnetHash = extractMagnetHash(magnet);
         int year = validateMovieYear(request.year());
-        String title = preferredTitle(request.title(), request.originalTitle(), "电影标题不能为空");
+        String title = displayTitle(request.title(), request.originalTitle(), "电影标题不能为空");
+        String fileTitle = fileTitle(request.title(), request.originalTitle(), "电影标题不能为空");
         String rootPath = configuredRootPath(openListProperties.getMovieRootPath(), "OpenList 电影基础路径尚未配置");
-        String folderName = renameService.movieFolderName(title, year);
+        String folderName = renameService.movieFolderName(fileTitle, year);
         String savePath = openListClient.joinPath(rootPath, folderName);
         return new MovieTaskPlan(magnet, magnetHash, title, trimToNull(request.originalTitle()), year, rootPath, savePath);
     }
@@ -1061,9 +1062,10 @@ public class MagnetIngestService {
         String magnet = normalizeMagnet(request.magnet());
         String magnetHash = extractMagnetHash(magnet);
         int seasonNumber = validateSeasonNumber(request.seasonNumber());
-        String title = preferredTitle(request.title(), request.originalTitle(), "剧集标题不能为空");
+        String title = displayTitle(request.title(), request.originalTitle(), "剧集标题不能为空");
+        String fileTitle = fileTitle(request.title(), request.originalTitle(), "剧集标题不能为空");
         String rootPath = configuredRootPath(openListProperties.getTvRootPath(), "OpenList 剧集基础路径尚未配置");
-        String seriesName = renameService.seriesFolderName(title);
+        String seriesName = renameService.seriesFolderName(fileTitle);
         String seasonFolder = renameService.seasonFolderName(seasonNumber);
         String savePath = openListClient.joinPath(openListClient.joinPath(rootPath, seriesName), seasonFolder);
         return new SeriesTaskPlan(
@@ -1085,13 +1087,11 @@ public class MagnetIngestService {
         String magnet = normalizeMagnet(request.magnet());
         String magnetHash = extractMagnetHash(magnet);
         int seasonNumber = validateSeasonNumber(request.seasonNumber());
-        String title = preferredTitle(request.title(), request.originalTitle(), "动漫标题不能为空");
+        String title = displayTitle(request.title(), request.originalTitle(), "动漫标题不能为空");
         String originalTitle = trimToNull(request.originalTitle());
-        String displayTitle = StringUtils.hasText(request.title()) ? request.title().trim() : title;
-        String themoviedbName = StringUtils.hasText(originalTitle) ? originalTitle : displayTitle;
         String seriesName = renameService.seriesFolderName(title);
         String seasonFolder = renameService.seasonFolderName(seasonNumber);
-        String savePath = renderAnimeSeasonPath(displayTitle, themoviedbName, seasonNumber);
+        String savePath = renderAnimeSeasonPath(title, seasonNumber);
         return new SeriesTaskPlan(
                 magnet,
                 magnetHash,
@@ -1104,13 +1104,14 @@ public class MagnetIngestService {
         );
     }
 
-    String renderAnimeSeasonPath(String title, String themoviedbName, int seasonNumber) {
+    String renderAnimeSeasonPath(String title, int seasonNumber) {
         String template = cleanConfigValue(openListProperties.getAnimePathTemplate());
         if (!StringUtils.hasText(template)) {
             throw serviceUnavailable("OpenList 动漫保存路径尚未配置");
         }
-        String path = replaceTemplateValue(template, "themoviedbName", sanitizePathSegment(themoviedbName));
-        path = replaceTemplateValue(path, "title", sanitizePathSegment(title));
+        String folderTitle = sanitizePathSegment(title);
+        String path = replaceTemplateValue(template, "themoviedbName", folderTitle);
+        path = replaceTemplateValue(path, "title", folderTitle);
         path = replaceTemplateValue(path, "season", String.valueOf(seasonNumber));
         path = replaceTemplateValue(path, "seasonFormat", String.format("%02d", seasonNumber));
         return openListClient.normalizePath(path);
@@ -1163,7 +1164,19 @@ public class MagnetIngestService {
         return seasonNumber;
     }
 
-    private String preferredTitle(String title, String originalTitle, String missingMessage) {
+    private String displayTitle(String title, String originalTitle, String missingMessage) {
+        String normalizedTitle = trimToNull(title);
+        if (StringUtils.hasText(normalizedTitle)) {
+            return normalizedTitle;
+        }
+        String normalizedOriginalTitle = trimToNull(originalTitle);
+        if (StringUtils.hasText(normalizedOriginalTitle)) {
+            return normalizedOriginalTitle;
+        }
+        throw badRequest(missingMessage);
+    }
+
+    private String fileTitle(String title, String originalTitle, String missingMessage) {
         String normalizedOriginalTitle = trimToNull(originalTitle);
         if (StringUtils.hasText(normalizedOriginalTitle)) {
             return normalizedOriginalTitle;
