@@ -815,7 +815,7 @@ class ProwlarrReleaseIngestServiceTest {
         private TaskRetryReference retryReference;
 
         FakeAnimeMagnetIngestTaskService() {
-            super(null, null, null, null, null, null, null, null, null);
+            super(null, null, null, null, null, null, null, null);
         }
 
         @Override
@@ -836,6 +836,8 @@ class ProwlarrReleaseIngestServiceTest {
                     "created",
                     "1234",
                     "葬送的芙莉莲",
+                    "葬送的芙莉莲",
+                    "葬送のフリーレン",
                     1,
                     "frieren-hash",
                     "/media/anime/葬送的芙莉莲/Season 01",

@@ -14,6 +14,10 @@ import com.medianexus.orchestrator.dto.magnet.response.AdultMagnetIngestTaskResp
 import com.medianexus.orchestrator.dto.magnet.response.AnimeMagnetIngestTaskResponse;
 import com.medianexus.orchestrator.dto.magnet.response.MovieMagnetIngestTaskResponse;
 import com.medianexus.orchestrator.dto.magnet.response.SeriesMagnetIngestTaskResponse;
+import com.medianexus.orchestrator.dto.resources.response.MovieSearchItem;
+import com.medianexus.orchestrator.dto.resources.response.MovieSearchResponse;
+import com.medianexus.orchestrator.dto.resources.response.SeriesSearchItem;
+import com.medianexus.orchestrator.dto.resources.response.SeriesSearchResponse;
 import com.medianexus.orchestrator.dto.taskcenter.request.OpenListManualMagnetRetryRequest;
 import com.medianexus.orchestrator.dto.taskcenter.request.OpenListAdultBatchRetryRequest;
 import com.medianexus.orchestrator.dto.taskcenter.request.OpenListReleaseRetryRequest;
@@ -71,6 +75,8 @@ class OpenListIngestTaskCenterServiceTest {
             new RecordingAdultMagnetIngestService(adultRetryRecorder);
     private final RecordingProwlarrReleaseIngestService prowlarrReleaseIngestService =
             new RecordingProwlarrReleaseIngestService(releaseRetryRecorder, animeReleaseRetryRecorder);
+    private final RecordingMovieSeriesResourceSearchService resourceSearchService =
+            new RecordingMovieSeriesResourceSearchService();
     private final OpenListIngestTaskCenterService service = new OpenListIngestTaskCenterService(
             authService,
             movieTaskMapper,
@@ -86,7 +92,8 @@ class OpenListIngestTaskCenterServiceTest {
             magnetIngestService,
             animeMagnetIngestTaskService,
             adultMagnetIngestService,
-            prowlarrReleaseIngestService
+            prowlarrReleaseIngestService,
+            resourceSearchService
     );
 
     @BeforeEach
@@ -101,6 +108,7 @@ class OpenListIngestTaskCenterServiceTest {
         adultRetryRecorder.reset();
         releaseRetryRecorder.reset();
         animeReleaseRetryRecorder.reset();
+        resourceSearchService.reset();
     }
 
     @Test
@@ -139,6 +147,56 @@ class OpenListIngestTaskCenterServiceTest {
         assertThat(response.inProgressCount()).isEqualTo(4);
         assertThat(response.needsAttentionCount()).isZero();
         assertThat(response.succeededCount()).isZero();
+    }
+
+    @Test
+    void prefersChineseTaskCenterTitlesAndKeepsOriginalTitleSearchable() {
+        authService.currentUser = user(1L, "USER", "owner");
+        MovieMagnetIngestTask movie = movieTask(
+                "movie-1",
+                "Casino Royale",
+                LocalDateTime.parse("2026-07-01T10:00:00")
+        );
+        movie.setOriginalTitle("007：大战皇家赌场");
+        SeriesMagnetIngestTask series = seriesTask(
+                "series-1",
+                "Breaking Bad",
+                "SERIES",
+                LocalDateTime.parse("2026-07-01T11:00:00")
+        );
+        series.setTitle("绝命毒师");
+        series.setOriginalTitle("Breaking Bad");
+        series.setSeriesName("Breaking Bad");
+        AnimeMagnetIngestTask anime = animeTask(
+                "anime-1",
+                "Frieren: Beyond Journey's End",
+                LocalDateTime.parse("2026-07-01T12:00:00")
+        );
+        anime.setNameCn("葬送的芙莉莲");
+        anime.setName("葬送のフリーレン");
+        when(movieTaskMapper.selectList(any())).thenReturn(List.of(movie));
+        when(seriesTaskMapper.selectList(any())).thenReturn(List.of(series));
+        when(animeTaskMapper.selectList(any())).thenReturn(List.of(anime));
+        when(userMapper.selectBatchIds(any())).thenReturn(List.of(user(1L, "USER", "owner")));
+
+        OpenListIngestTaskCenterListResponse response = service.listOpenListIngestTasks();
+
+        assertThat(response.items())
+                .extracting("title")
+                .containsExactly("葬送的芙莉莲 S01", "绝命毒师 Season 1", "007：大战皇家赌场 (2026)");
+
+        OpenListIngestTaskCenterListResponse searchResponse = service.listOpenListIngestTasks(
+                null,
+                null,
+                null,
+                "Frieren",
+                null,
+                null
+        );
+
+        assertThat(searchResponse.items())
+                .extracting("id")
+                .containsExactly("anime-1");
     }
 
     @Test
@@ -624,11 +682,13 @@ class OpenListIngestTaskCenterServiceTest {
         authService.currentUser = user(1L, "USER");
         AnimeMagnetIngestTask task = animeTask(
                 "anime-1",
-                "Anime",
+                "Frieren: Beyond Journey's End",
                 "PARTIAL_SUCCESS",
                 "anime-hash",
                 LocalDateTime.parse("2026-07-01T12:00:00")
         );
+        task.setNameCn("葬送的芙莉莲");
+        task.setName("葬送のフリーレン");
         task.setOrganizedCount(3);
         task.setSkippedCount(2);
         when(animeTaskMapper.selectById("anime-1")).thenReturn(task);
@@ -640,6 +700,8 @@ class OpenListIngestTaskCenterServiceTest {
         OpenListIngestTaskCenterDetailResponse response = service.getOpenListIngestTaskDetail("anime", "anime-1");
 
         assertThat(response.productType()).isEqualTo("ANIME");
+        assertThat(response.title()).isEqualTo("葬送的芙莉莲 S01");
+        assertThat(response.attemptChain().currentAttempt().title()).isEqualTo("葬送的芙莉莲 S01");
         assertThat(response.sourceType()).isEqualTo("MANUAL_MAGNET");
         assertThat(response.progressSummary()).isEqualTo("已整理 3，跳过 2");
         assertThat(response.progress().organizedCount()).isEqualTo(3);
@@ -1017,6 +1079,77 @@ class OpenListIngestTaskCenterServiceTest {
         assertThat(response.seasonNumber()).isEqualTo(2);
         assertThat(response.qualityTag()).isEqualTo("1080p");
         assertThat(response.releaseTitle()).isNull();
+    }
+
+    @Test
+    void enrichesLegacyMovieReleaseRetryContextWithCatalogDisplayTitle() {
+        authService.currentUser = user(1L, "USER", "owner");
+        MovieMagnetIngestTask original = movieTask(
+                "movie-1",
+                "Casino Royale",
+                "FAILED",
+                "old-hash",
+                LocalDateTime.parse("2026-07-01T10:00:00")
+        );
+        original.setOriginalTitle("Casino Royale");
+        original.setYear(2006);
+        original.setSourceType("PROWLARR_RELEASE");
+        when(movieTaskMapper.selectById("movie-1")).thenReturn(original);
+        resourceSearchService.movieResponse = new MovieSearchResponse(List.of(new MovieSearchItem(
+                "tmdb:36557",
+                "007：大战皇家赌场",
+                "Casino Royale",
+                2006,
+                "",
+                null,
+                36557,
+                "tt0381061",
+                List.of("Casino Royale"),
+                "released"
+        )));
+
+        OpenListReleaseRetryContextResponse response = service.getReleaseRetryContext("movie", "movie-1");
+
+        assertThat(resourceSearchService.lastMovieTerm).isEqualTo("Casino Royale");
+        assertThat(response.title()).isEqualTo("007：大战皇家赌场");
+        assertThat(response.originalTitle()).isEqualTo("Casino Royale");
+    }
+
+    @Test
+    void enrichesLegacySeriesReleaseRetryContextWithCatalogDisplayTitle() {
+        authService.currentUser = user(1L, "USER", "owner");
+        SeriesMagnetIngestTask original = seriesTask(
+                "series-1",
+                "Breaking Bad",
+                "SERIES",
+                "FAILED",
+                "PROWLARR_RELEASE",
+                null,
+                "old-hash",
+                LocalDateTime.parse("2026-07-01T10:00:00")
+        );
+        original.setOriginalTitle("Breaking Bad");
+        when(seriesTaskMapper.selectById("series-1")).thenReturn(original);
+        resourceSearchService.seriesResponse = new SeriesSearchResponse(List.of(new SeriesSearchItem(
+                "tmdb:1396",
+                "绝命毒师",
+                "Breaking Bad",
+                2008,
+                "",
+                null,
+                81189,
+                "tt0903747",
+                1396,
+                "ended",
+                "AMC",
+                "standard"
+        )));
+
+        OpenListReleaseRetryContextResponse response = service.getReleaseRetryContext("series", "series-1");
+
+        assertThat(resourceSearchService.lastSeriesTerm).isEqualTo("Breaking Bad");
+        assertThat(response.title()).isEqualTo("绝命毒师");
+        assertThat(response.originalTitle()).isEqualTo("Breaking Bad");
     }
 
     @Test
@@ -1469,6 +1602,8 @@ class OpenListIngestTaskCenterServiceTest {
                 "created",
                 "1234",
                 "Anime",
+                "Anime",
+                "Anime",
                 1,
                 "new-hash",
                 "/anime/Anime/Season 01",
@@ -1609,6 +1744,37 @@ class OpenListIngestTaskCenterServiceTest {
         }
     }
 
+    private static class RecordingMovieSeriesResourceSearchService extends MovieSeriesResourceSearchService {
+
+        private MovieSearchResponse movieResponse = new MovieSearchResponse(List.of());
+        private SeriesSearchResponse seriesResponse = new SeriesSearchResponse(List.of());
+        private String lastMovieTerm;
+        private String lastSeriesTerm;
+
+        RecordingMovieSeriesResourceSearchService() {
+            super(null, null, null);
+        }
+
+        @Override
+        public MovieSearchResponse searchMovies(String term) {
+            lastMovieTerm = term;
+            return movieResponse;
+        }
+
+        @Override
+        public SeriesSearchResponse searchSeries(String term) {
+            lastSeriesTerm = term;
+            return seriesResponse;
+        }
+
+        private void reset() {
+            movieResponse = new MovieSearchResponse(List.of());
+            seriesResponse = new SeriesSearchResponse(List.of());
+            lastMovieTerm = null;
+            lastSeriesTerm = null;
+        }
+    }
+
     private static class RecordingMagnetIngestService extends MagnetIngestService {
 
         private final MovieSeriesRetryRecorder recorder;
@@ -1649,7 +1815,7 @@ class OpenListIngestTaskCenterServiceTest {
         private final AnimeRetryRecorder recorder;
 
         RecordingAnimeMagnetIngestTaskService(AnimeRetryRecorder recorder) {
-            super(null, null, null, null, null, null, null, null, null);
+            super(null, null, null, null, null, null, null, null);
             this.recorder = recorder;
         }
 
