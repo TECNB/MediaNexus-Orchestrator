@@ -55,7 +55,11 @@ medianexus:
       uuid: ${MEDIANEXUS_AUTOSYMLINK_ADULT_TASK_UUID:}
       request-body-json: ${MEDIANEXUS_AUTOSYMLINK_ADULT_REQUEST_BODY_JSON:}
   emby:
+    base-url: ${MEDIANEXUS_EMBY_BASE_URL:}
+    api-key: ${MEDIANEXUS_EMBY_API_KEY:}
     webhook-secret: ${MEDIANEXUS_EMBY_WEBHOOK_SECRET:}
+    timeout: ${MEDIANEXUS_EMBY_TIMEOUT:5s}
+    metadata-cache-ttl: ${MEDIANEXUS_EMBY_METADATA_CACHE_TTL:12h}
   openlist:
     base-url: ${MEDIANEXUS_OPENLIST_BASE_URL:}
     authorization: ${MEDIANEXUS_OPENLIST_AUTHORIZATION:}

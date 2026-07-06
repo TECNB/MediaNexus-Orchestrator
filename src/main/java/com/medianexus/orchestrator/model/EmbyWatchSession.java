@@ -28,6 +28,10 @@ public class EmbyWatchSession {
 
     private String seriesName;
 
+    private Integer seasonNumber;
+
+    private Integer episodeNumber;
+
     private Long runtimeTicks;
 
     private LocalDateTime startTime;
@@ -118,6 +122,22 @@ public class EmbyWatchSession {
 
     public void setSeriesName(String seriesName) {
         this.seriesName = seriesName;
+    }
+
+    public Integer getSeasonNumber() {
+        return seasonNumber;
+    }
+
+    public void setSeasonNumber(Integer seasonNumber) {
+        this.seasonNumber = seasonNumber;
+    }
+
+    public Integer getEpisodeNumber() {
+        return episodeNumber;
+    }
+
+    public void setEpisodeNumber(Integer episodeNumber) {
+        this.episodeNumber = episodeNumber;
     }
 
     public Long getRuntimeTicks() {

@@ -37,6 +37,7 @@ public class EmbyWatchRankingService {
     private static final int RECENT_EVENT_LIMIT = 8;
     private static final String PERIOD_DAY = "day";
     private static final String PERIOD_MONTH = "month";
+    private static final String ITEM_TYPE_EPISODE = "Episode";
 
     private final AuthService authService;
     private final EmbyProperties embyProperties;
@@ -225,7 +226,14 @@ public class EmbyWatchRankingService {
                 "playback.start",
                 session.getStartTime(),
                 displayText(session.getEmbyUserName(), session.getEmbyUserId()),
-                displayItemName(session.getSeriesName(), session.getItemName(), session.getItemId()),
+                displayItemName(
+                        session.getItemType(),
+                        session.getSeriesName(),
+                        session.getItemName(),
+                        session.getItemId(),
+                        session.getSeasonNumber(),
+                        session.getEpisodeNumber()
+                ),
                 null
         );
     }
@@ -235,16 +243,35 @@ public class EmbyWatchRankingService {
                 "playback.stop",
                 session.getStopTime(),
                 displayText(session.getEmbyUserName(), session.getEmbyUserId()),
-                displayItemName(session.getSeriesName(), session.getItemName(), session.getItemId()),
+                displayItemName(
+                        session.getItemType(),
+                        session.getSeriesName(),
+                        session.getItemName(),
+                        session.getItemId(),
+                        session.getSeasonNumber(),
+                        session.getEpisodeNumber()
+                ),
                 session.getWatchSeconds()
         );
     }
 
-    private String displayItemName(String seriesName, String itemName, String fallback) {
-        if (StringUtils.hasText(seriesName)) {
-            return seriesName;
+    private String displayItemName(
+            String itemType,
+            String seriesName,
+            String itemName,
+            String fallback,
+            Integer seasonNumber,
+            Integer episodeNumber
+    ) {
+        String title = displayText(StringUtils.hasText(seriesName) ? seriesName : itemName, fallback);
+        if (ITEM_TYPE_EPISODE.equals(itemType) && seasonNumber != null && episodeNumber != null) {
+            return title + " " + episodePosition(seasonNumber, episodeNumber);
         }
-        return displayText(itemName, fallback);
+        return title;
+    }
+
+    private String episodePosition(Integer seasonNumber, Integer episodeNumber) {
+        return String.format(Locale.ROOT, "S%02dE%02d", seasonNumber, episodeNumber);
     }
 
     private String displayText(String value, String fallback) {

@@ -263,6 +263,11 @@ public class DatabaseInitializer implements ApplicationRunner {
     }
 
     private void ensureEmbyActivePlaybackSessionColumns() {
+        Integer seasonNumberColumnCount = embyActivePlaybackSessionMapper.countSeasonNumberColumn();
+        if (seasonNumberColumnCount == null || seasonNumberColumnCount == 0) {
+            embyActivePlaybackSessionMapper.addEpisodePositionColumns();
+        }
+
         Integer requiredStartPositionTicksColumnCount =
                 embyActivePlaybackSessionMapper.countRequiredStartPositionTicksColumn();
         if (requiredStartPositionTicksColumnCount != null && requiredStartPositionTicksColumnCount > 0) {
@@ -271,6 +276,11 @@ public class DatabaseInitializer implements ApplicationRunner {
     }
 
     private void ensureEmbyWatchSessionColumns() {
+        Integer seasonNumberColumnCount = embyWatchSessionMapper.countSeasonNumberColumn();
+        if (seasonNumberColumnCount == null || seasonNumberColumnCount == 0) {
+            embyWatchSessionMapper.addEpisodePositionColumns();
+        }
+
         Integer requiredStartPositionTicksColumnCount =
                 embyWatchSessionMapper.countRequiredStartPositionTicksColumn();
         if (requiredStartPositionTicksColumnCount != null && requiredStartPositionTicksColumnCount > 0) {

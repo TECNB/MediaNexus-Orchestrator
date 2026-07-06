@@ -7,6 +7,8 @@ import com.medianexus.orchestrator.common.exception.BusinessException;
 import com.medianexus.orchestrator.common.exception.ErrorCode;
 import com.medianexus.orchestrator.config.EmbyProperties;
 import com.medianexus.orchestrator.dto.emby.request.EmbyPlaybackWebhookRequest;
+import com.medianexus.orchestrator.integration.emby.EmbyItemMetadata;
+import com.medianexus.orchestrator.integration.emby.EmbyItemMetadataLookup;
 import com.medianexus.orchestrator.mapper.EmbyActivePlaybackSessionMapper;
 import com.medianexus.orchestrator.mapper.EmbyWatchSessionMapper;
 import com.medianexus.orchestrator.model.EmbyActivePlaybackSession;
@@ -24,6 +26,7 @@ import java.util.Locale;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -47,17 +50,20 @@ public class EmbyPlaybackWebhookService {
 
     private final EmbyProperties embyProperties;
     private final ObjectMapper objectMapper;
+    private final EmbyItemMetadataLookup itemMetadataLookup;
     private final EmbyActivePlaybackSessionMapper activeSessionMapper;
     private final EmbyWatchSessionMapper watchSessionMapper;
 
     public EmbyPlaybackWebhookService(
             EmbyProperties embyProperties,
             ObjectMapper objectMapper,
+            @Qualifier("embyItemMetadataClient") EmbyItemMetadataLookup itemMetadataLookup,
             EmbyActivePlaybackSessionMapper activeSessionMapper,
             EmbyWatchSessionMapper watchSessionMapper
     ) {
         this.embyProperties = embyProperties;
         this.objectMapper = objectMapper;
+        this.itemMetadataLookup = itemMetadataLookup;
         this.activeSessionMapper = activeSessionMapper;
         this.watchSessionMapper = watchSessionMapper;
     }
@@ -154,6 +160,10 @@ public class EmbyPlaybackWebhookService {
                             textAt(root, "seriesId", "SeriesId", "SeriesID", "Item.SeriesId", "Item.SeriesID"),
                             textAt(root, "seriesName", "SeriesName", "Item.SeriesName", "Item.ShowName",
                                     "ItemNameGrandparent", "Item.GrandparentName"),
+                            optionalSeasonNumber(textAt(root, "seasonNumber", "SeasonNumber", "ParentIndexNumber",
+                                    "Item.SeasonNumber", "Item.ParentIndexNumber")),
+                            optionalEpisodeNumber(textAt(root, "episodeNumber", "EpisodeNumber", "IndexNumber",
+                                    "Item.EpisodeNumber", "Item.IndexNumber")),
                             textAt(root, "runtimeTicks", "RuntimeTicks", "RunTimeTicks", "ItemRunTimeTicks",
                                     "Item.RuntimeTicks", "Item.RunTimeTicks"),
                             textAt(root, "positionTicks", "PositionTicks", "PlaybackPositionTicks",
@@ -235,6 +245,7 @@ public class EmbyPlaybackWebhookService {
             LocalDateTime eventTime
     ) {
         closeSupersededActiveSessions(request, embySessionId, embyUserId, itemId, eventTime);
+        PlaybackItemMetadata itemMetadata = lookupEpisodeMetadata(request, itemType, embyUserId, itemId);
 
         EmbyActivePlaybackSession session = new EmbyActivePlaybackSession();
         session.setEmbySessionId(embySessionId);
@@ -242,10 +253,12 @@ public class EmbyPlaybackWebhookService {
         session.setEmbyUserName(shortText(request.userName(), TEXT_LIMIT_NAME));
         session.setItemId(itemId);
         session.setItemType(itemType);
-        session.setItemName(shortText(request.itemName(), TEXT_LIMIT_TITLE));
-        session.setSeriesId(shortText(request.seriesId(), TEXT_LIMIT_SHORT));
-        session.setSeriesName(shortText(request.seriesName(), TEXT_LIMIT_TITLE));
-        session.setRuntimeTicks(optionalTicks(request.runtimeTicks()));
+        session.setItemName(shortText(itemMetadata.itemName(), TEXT_LIMIT_TITLE));
+        session.setSeriesId(shortText(itemMetadata.seriesId(), TEXT_LIMIT_SHORT));
+        session.setSeriesName(shortText(itemMetadata.seriesName(), TEXT_LIMIT_TITLE));
+        session.setSeasonNumber(itemMetadata.seasonNumber());
+        session.setEpisodeNumber(itemMetadata.episodeNumber());
+        session.setRuntimeTicks(optionalTicks(itemMetadata.runtimeTicks()));
         session.setStartPositionTicks(startPositionTicks);
         session.setStartTime(eventTime);
         session.setDeviceName(shortText(request.deviceName(), TEXT_LIMIT_NAME));
@@ -279,8 +292,15 @@ public class EmbyPlaybackWebhookService {
             );
             return;
         }
+        PlaybackItemMetadata itemMetadata = lookupMissingEpisodeMetadata(
+                request,
+                itemType,
+                embyUserId,
+                itemId,
+                activeSession
+        );
 
-        Long runtimeTicks = firstPositiveTick(optionalTicks(request.runtimeTicks()), activeSession.getRuntimeTicks());
+        Long runtimeTicks = firstPositiveTick(optionalTicks(itemMetadata.runtimeTicks()), activeSession.getRuntimeTicks());
         WatchDurationResult durationResult = calculateWatchSeconds(
                 activeSession.getStartPositionTicks(),
                 stopPositionTicks,
@@ -306,9 +326,11 @@ public class EmbyPlaybackWebhookService {
                 embyUserId,
                 request.userName(),
                 itemType,
-                request.itemName(),
-                request.seriesId(),
-                request.seriesName(),
+                itemMetadata.itemName(),
+                itemMetadata.seriesId(),
+                itemMetadata.seriesName(),
+                itemMetadata.seasonNumber(),
+                itemMetadata.episodeNumber(),
                 runtimeTicks,
                 stopPositionTicks,
                 stopTime,
@@ -384,6 +406,8 @@ public class EmbyPlaybackWebhookService {
                 activeSession.getItemName(),
                 activeSession.getSeriesId(),
                 activeSession.getSeriesName(),
+                activeSession.getSeasonNumber(),
+                activeSession.getEpisodeNumber(),
                 runtimeTicks,
                 null,
                 stopTime,
@@ -418,6 +442,66 @@ public class EmbyPlaybackWebhookService {
                 && !cleanedFirst.equals(cleanedSecond);
     }
 
+    private PlaybackItemMetadata lookupEpisodeMetadata(
+            EmbyPlaybackWebhookRequest request,
+            String itemType,
+            String embyUserId,
+            String itemId
+    ) {
+        PlaybackItemMetadata fallback = metadataFromRequest(request);
+        if (!ITEM_TYPE_EPISODE.equals(itemType)) {
+            return fallback;
+        }
+        return itemMetadataLookup.findItemMetadata(embyUserId, itemId)
+                .map(metadata -> mergeItemMetadata(metadata, fallback))
+                .orElse(fallback);
+    }
+
+    private PlaybackItemMetadata lookupMissingEpisodeMetadata(
+            EmbyPlaybackWebhookRequest request,
+            String itemType,
+            String embyUserId,
+            String itemId,
+            EmbyActivePlaybackSession activeSession
+    ) {
+        PlaybackItemMetadata fallback = metadataFromRequest(request);
+        if (!ITEM_TYPE_EPISODE.equals(itemType) || activeSessionHasEpisodePosition(activeSession)) {
+            return fallback;
+        }
+        return itemMetadataLookup.findItemMetadata(embyUserId, itemId)
+                .map(metadata -> mergeItemMetadata(metadata, fallback))
+                .orElse(fallback);
+    }
+
+    private boolean activeSessionHasEpisodePosition(EmbyActivePlaybackSession activeSession) {
+        return activeSession.getSeasonNumber() != null && activeSession.getEpisodeNumber() != null;
+    }
+
+    private PlaybackItemMetadata metadataFromRequest(EmbyPlaybackWebhookRequest request) {
+        return new PlaybackItemMetadata(
+                request.itemName(),
+                request.seriesId(),
+                request.seriesName(),
+                request.seasonNumber(),
+                request.episodeNumber(),
+                request.runtimeTicks()
+        );
+    }
+
+    private PlaybackItemMetadata mergeItemMetadata(
+            EmbyItemMetadata metadata,
+            PlaybackItemMetadata fallback
+    ) {
+        return new PlaybackItemMetadata(
+                firstText(metadata.itemName(), fallback.itemName(), TEXT_LIMIT_TITLE),
+                firstText(metadata.seriesId(), fallback.seriesId(), TEXT_LIMIT_SHORT),
+                firstText(metadata.seriesName(), fallback.seriesName(), TEXT_LIMIT_TITLE),
+                firstInteger(metadata.seasonNumber(), fallback.seasonNumber()),
+                firstInteger(metadata.episodeNumber(), fallback.episodeNumber()),
+                firstText(metadata.runtimeTicks(), fallback.runtimeTicks(), TEXT_LIMIT_SHORT)
+        );
+    }
+
     private EmbyWatchSession buildWatchSession(
             EmbyActivePlaybackSession activeSession,
             String embyUserId,
@@ -426,6 +510,8 @@ public class EmbyPlaybackWebhookService {
             String itemName,
             String seriesId,
             String seriesName,
+            Integer seasonNumber,
+            Integer episodeNumber,
             Long runtimeTicks,
             Long stopPositionTicks,
             LocalDateTime stopTime,
@@ -442,6 +528,8 @@ public class EmbyPlaybackWebhookService {
         watchSession.setItemName(firstText(itemName, activeSession.getItemName(), TEXT_LIMIT_TITLE));
         watchSession.setSeriesId(firstText(seriesId, activeSession.getSeriesId(), TEXT_LIMIT_SHORT));
         watchSession.setSeriesName(firstText(seriesName, activeSession.getSeriesName(), TEXT_LIMIT_TITLE));
+        watchSession.setSeasonNumber(firstInteger(seasonNumber, activeSession.getSeasonNumber()));
+        watchSession.setEpisodeNumber(firstInteger(episodeNumber, activeSession.getEpisodeNumber()));
         watchSession.setRuntimeTicks(runtimeTicks);
         watchSession.setStartTime(activeSession.getStartTime());
         watchSession.setStopTime(stopTime);
@@ -540,6 +628,28 @@ public class EmbyPlaybackWebhookService {
         }
     }
 
+    private Integer optionalSeasonNumber(String value) {
+        Integer number = optionalInteger(value);
+        return number != null && number >= 0 ? number : null;
+    }
+
+    private Integer optionalEpisodeNumber(String value) {
+        Integer number = optionalInteger(value);
+        return number != null && number > 0 ? number : null;
+    }
+
+    private Integer optionalInteger(String value) {
+        String cleaned = clean(value);
+        if (!StringUtils.hasText(cleaned)) {
+            return null;
+        }
+        try {
+            return Integer.parseInt(cleaned);
+        } catch (NumberFormatException exception) {
+            return null;
+        }
+    }
+
     private List<String> missingRequiredFields(String embySessionId, String itemId, String embyUserId) {
         List<String> fields = new ArrayList<>();
         if (!StringUtils.hasText(embySessionId)) {
@@ -627,6 +737,10 @@ public class EmbyPlaybackWebhookService {
         return shortText(second, limit);
     }
 
+    private Integer firstInteger(Integer first, Integer second) {
+        return first != null ? first : second;
+    }
+
     private String displayLogText(String value) {
         String shortened = shortText(value, 80);
         return shortened == null ? "-" : shortened;
@@ -659,6 +773,16 @@ public class EmbyPlaybackWebhookService {
     private record ParsedPlaybackWebhookRequest(
             EmbyPlaybackWebhookRequest request,
             String rootFields
+    ) {
+    }
+
+    private record PlaybackItemMetadata(
+            String itemName,
+            String seriesId,
+            String seriesName,
+            Integer seasonNumber,
+            Integer episodeNumber,
+            String runtimeTicks
     ) {
     }
 

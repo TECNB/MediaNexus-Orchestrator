@@ -24,6 +24,10 @@ public record EmbyPlaybackWebhookRequest(
         String seriesId,
         @Schema(description = "剧集系列名称；Movie 可为空", nullable = true)
         String seriesName,
+        @Schema(description = "剧集季号；Movie 可为空", nullable = true)
+        Integer seasonNumber,
+        @Schema(description = "剧集集号；Movie 可为空", nullable = true)
+        Integer episodeNumber,
         @Schema(description = "媒体总时长 ticks；10,000,000 ticks = 1 秒", nullable = true)
         String runtimeTicks,
         @Schema(description = "当前播放位置 ticks；10,000,000 ticks = 1 秒")

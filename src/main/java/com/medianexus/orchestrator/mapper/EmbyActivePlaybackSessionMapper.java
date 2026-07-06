@@ -24,6 +24,8 @@ public interface EmbyActivePlaybackSessionMapper extends BaseMapper<EmbyActivePl
                 item_name VARCHAR(512) NULL,
                 series_id VARCHAR(128) NULL,
                 series_name VARCHAR(512) NULL,
+                season_number INT NULL,
+                episode_number INT NULL,
                 runtime_ticks BIGINT NULL,
                 start_position_ticks BIGINT NULL,
                 start_time DATETIME NOT NULL,
@@ -49,6 +51,22 @@ public interface EmbyActivePlaybackSessionMapper extends BaseMapper<EmbyActivePl
             """)
     Integer countRequiredStartPositionTicksColumn();
 
+    @Select("""
+            SELECT COUNT(*)
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'emby_active_playback_sessions'
+              AND COLUMN_NAME = 'season_number'
+            """)
+    Integer countSeasonNumberColumn();
+
+    @Update("""
+            ALTER TABLE emby_active_playback_sessions
+            ADD COLUMN season_number INT NULL AFTER series_name,
+            ADD COLUMN episode_number INT NULL AFTER season_number
+            """)
+    void addEpisodePositionColumns();
+
     @Update("""
             ALTER TABLE emby_active_playback_sessions
             MODIFY start_position_ticks BIGINT NULL
@@ -65,6 +83,8 @@ public interface EmbyActivePlaybackSessionMapper extends BaseMapper<EmbyActivePl
                 item_name,
                 series_id,
                 series_name,
+                season_number,
+                episode_number,
                 runtime_ticks,
                 start_position_ticks,
                 start_time,
@@ -80,6 +100,8 @@ public interface EmbyActivePlaybackSessionMapper extends BaseMapper<EmbyActivePl
                 #{session.itemName},
                 #{session.seriesId},
                 #{session.seriesName},
+                #{session.seasonNumber},
+                #{session.episodeNumber},
                 #{session.runtimeTicks},
                 #{session.startPositionTicks},
                 #{session.startTime},
@@ -93,6 +115,8 @@ public interface EmbyActivePlaybackSessionMapper extends BaseMapper<EmbyActivePl
                 item_name = VALUES(item_name),
                 series_id = VALUES(series_id),
                 series_name = VALUES(series_name),
+                season_number = VALUES(season_number),
+                episode_number = VALUES(episode_number),
                 runtime_ticks = VALUES(runtime_ticks),
                 start_position_ticks = VALUES(start_position_ticks),
                 start_time = VALUES(start_time),
@@ -111,6 +135,8 @@ public interface EmbyActivePlaybackSessionMapper extends BaseMapper<EmbyActivePl
                    item_name,
                    series_id,
                    series_name,
+                   season_number,
+                   episode_number,
                    runtime_ticks,
                    start_position_ticks,
                    start_time,
@@ -138,6 +164,8 @@ public interface EmbyActivePlaybackSessionMapper extends BaseMapper<EmbyActivePl
                    item_name,
                    series_id,
                    series_name,
+                   season_number,
+                   episode_number,
                    runtime_ticks,
                    start_position_ticks,
                    start_time,
@@ -187,6 +215,8 @@ public interface EmbyActivePlaybackSessionMapper extends BaseMapper<EmbyActivePl
                    item_name,
                    series_id,
                    series_name,
+                   season_number,
+                   episode_number,
                    runtime_ticks,
                    start_position_ticks,
                    start_time,

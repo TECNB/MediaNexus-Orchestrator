@@ -28,6 +28,8 @@ public interface EmbyWatchSessionMapper extends BaseMapper<EmbyWatchSession> {
                 item_name VARCHAR(512) NULL,
                 series_id VARCHAR(128) NULL,
                 series_name VARCHAR(512) NULL,
+                season_number INT NULL,
+                episode_number INT NULL,
                 runtime_ticks BIGINT NULL,
                 start_time DATETIME NOT NULL,
                 stop_time DATETIME NOT NULL,
@@ -68,6 +70,22 @@ public interface EmbyWatchSessionMapper extends BaseMapper<EmbyWatchSession> {
             """)
     Integer countRequiredStopPositionTicksColumn();
 
+    @Select("""
+            SELECT COUNT(*)
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'emby_watch_sessions'
+              AND COLUMN_NAME = 'season_number'
+            """)
+    Integer countSeasonNumberColumn();
+
+    @Update("""
+            ALTER TABLE emby_watch_sessions
+            ADD COLUMN season_number INT NULL AFTER series_name,
+            ADD COLUMN episode_number INT NULL AFTER season_number
+            """)
+    void addEpisodePositionColumns();
+
     @Update("""
             ALTER TABLE emby_watch_sessions
             MODIFY start_position_ticks BIGINT NULL
@@ -90,6 +108,8 @@ public interface EmbyWatchSessionMapper extends BaseMapper<EmbyWatchSession> {
                 item_name,
                 series_id,
                 series_name,
+                season_number,
+                episode_number,
                 runtime_ticks,
                 start_time,
                 stop_time,
@@ -109,6 +129,8 @@ public interface EmbyWatchSessionMapper extends BaseMapper<EmbyWatchSession> {
                 #{session.itemName},
                 #{session.seriesId},
                 #{session.seriesName},
+                #{session.seasonNumber},
+                #{session.episodeNumber},
                 #{session.runtimeTicks},
                 #{session.startTime},
                 #{session.stopTime},
@@ -133,6 +155,8 @@ public interface EmbyWatchSessionMapper extends BaseMapper<EmbyWatchSession> {
                    item_name,
                    series_id,
                    series_name,
+                   season_number,
+                   episode_number,
                    runtime_ticks,
                    start_time,
                    stop_time,
@@ -165,6 +189,8 @@ public interface EmbyWatchSessionMapper extends BaseMapper<EmbyWatchSession> {
                 item_name = #{session.itemName},
                 series_id = #{session.seriesId},
                 series_name = #{session.seriesName},
+                season_number = #{session.seasonNumber},
+                episode_number = #{session.episodeNumber},
                 runtime_ticks = #{session.runtimeTicks},
                 stop_time = #{session.stopTime},
                 start_position_ticks = #{session.startPositionTicks},
@@ -206,7 +232,19 @@ public interface EmbyWatchSessionMapper extends BaseMapper<EmbyWatchSession> {
                    COUNT(*) AS play_count,
                    MAX(sessions.stop_time) AS last_watched_at,
                    (
-                       SELECT COALESCE(NULLIF(latest.series_name, ''), latest.item_name)
+                       SELECT CASE
+                                  WHEN latest.item_type = 'Episode'
+                                      AND latest.season_number IS NOT NULL
+                                      AND latest.episode_number IS NOT NULL
+                                  THEN CONCAT(
+                                          COALESCE(NULLIF(latest.series_name, ''), latest.item_name, latest.item_id),
+                                          ' S',
+                                          LPAD(latest.season_number, 2, '0'),
+                                          'E',
+                                          LPAD(latest.episode_number, 2, '0')
+                                  )
+                                  ELSE COALESCE(NULLIF(latest.series_name, ''), latest.item_name)
+                              END
                        FROM emby_watch_sessions latest
                        WHERE latest.watch_date >= #{startDate}
                          AND latest.watch_date < #{endDate}
@@ -301,6 +339,8 @@ public interface EmbyWatchSessionMapper extends BaseMapper<EmbyWatchSession> {
                    item_name,
                    series_id,
                    series_name,
+                   season_number,
+                   episode_number,
                    runtime_ticks,
                    start_time,
                    stop_time,
