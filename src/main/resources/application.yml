@@ -57,6 +57,7 @@ medianexus:
   emby:
     base-url: ${MEDIANEXUS_EMBY_BASE_URL:}
     api-key: ${MEDIANEXUS_EMBY_API_KEY:}
+    adult-other-library-name: ${MEDIANEXUS_EMBY_ADULT_OTHER_LIBRARY_NAME:Adult - Other}
     webhook-secret: ${MEDIANEXUS_EMBY_WEBHOOK_SECRET:}
     timeout: ${MEDIANEXUS_EMBY_TIMEOUT:5s}
     metadata-cache-ttl: ${MEDIANEXUS_EMBY_METADATA_CACHE_TTL:12h}

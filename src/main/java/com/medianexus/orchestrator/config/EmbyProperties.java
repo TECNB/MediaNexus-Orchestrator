@@ -10,7 +10,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 public class EmbyProperties {
 
     /**
-     * Emby Server base URL used for lightweight item metadata lookups.
+     * Emby Server base URL used for lightweight item metadata lookups and Collection sync.
      */
     private String baseUrl;
 
@@ -33,6 +33,8 @@ public class EmbyProperties {
      * In-memory TTL for item metadata loaded from Emby.
      */
     private Duration metadataCacheTtl = Duration.ofHours(12);
+
+    private String adultOtherLibraryName = "Adult - Other";
 
     public String getBaseUrl() {
         return baseUrl;
@@ -72,5 +74,13 @@ public class EmbyProperties {
 
     public void setMetadataCacheTtl(Duration metadataCacheTtl) {
         this.metadataCacheTtl = metadataCacheTtl;
+    }
+
+    public String getAdultOtherLibraryName() {
+        return adultOtherLibraryName;
+    }
+
+    public void setAdultOtherLibraryName(String adultOtherLibraryName) {
+        this.adultOtherLibraryName = adultOtherLibraryName;
     }
 }

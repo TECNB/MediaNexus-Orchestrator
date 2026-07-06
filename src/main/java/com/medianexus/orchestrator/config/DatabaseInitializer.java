@@ -4,6 +4,9 @@ import com.medianexus.orchestrator.mapper.AnimeMagnetIngestTaskLogMapper;
 import com.medianexus.orchestrator.mapper.AnimeMagnetIngestTaskMapper;
 import com.medianexus.orchestrator.mapper.AdultMagnetIngestTaskLogMapper;
 import com.medianexus.orchestrator.mapper.AdultMagnetIngestTaskMapper;
+import com.medianexus.orchestrator.mapper.AdultOtherCollectionSyncGroupMapper;
+import com.medianexus.orchestrator.mapper.AdultOtherCollectionKnownItemMapper;
+import com.medianexus.orchestrator.mapper.AdultOtherCollectionSyncRunMapper;
 import com.medianexus.orchestrator.mapper.EmbyActivePlaybackSessionMapper;
 import com.medianexus.orchestrator.mapper.EmbyWatchSessionMapper;
 import com.medianexus.orchestrator.mapper.MovieMagnetIngestTaskLogMapper;
@@ -47,6 +50,9 @@ public class DatabaseInitializer implements ApplicationRunner {
     private final SubtitleUploadLogMapper subtitleUploadLogMapper;
     private final EmbyActivePlaybackSessionMapper embyActivePlaybackSessionMapper;
     private final EmbyWatchSessionMapper embyWatchSessionMapper;
+    private final AdultOtherCollectionSyncRunMapper adultOtherCollectionSyncRunMapper;
+    private final AdultOtherCollectionSyncGroupMapper adultOtherCollectionSyncGroupMapper;
+    private final AdultOtherCollectionKnownItemMapper adultOtherCollectionKnownItemMapper;
 
     public DatabaseInitializer(
             DatabaseSshTunnelLifecycle databaseSshTunnelLifecycle,
@@ -65,7 +71,10 @@ public class DatabaseInitializer implements ApplicationRunner {
             SubtitleUploadMapper subtitleUploadMapper,
             SubtitleUploadLogMapper subtitleUploadLogMapper,
             EmbyActivePlaybackSessionMapper embyActivePlaybackSessionMapper,
-            EmbyWatchSessionMapper embyWatchSessionMapper
+            EmbyWatchSessionMapper embyWatchSessionMapper,
+            AdultOtherCollectionSyncRunMapper adultOtherCollectionSyncRunMapper,
+            AdultOtherCollectionSyncGroupMapper adultOtherCollectionSyncGroupMapper,
+            AdultOtherCollectionKnownItemMapper adultOtherCollectionKnownItemMapper
     ) {
         this.databaseSshTunnelLifecycle = databaseSshTunnelLifecycle;
         this.userMapper = userMapper;
@@ -84,6 +93,9 @@ public class DatabaseInitializer implements ApplicationRunner {
         this.subtitleUploadLogMapper = subtitleUploadLogMapper;
         this.embyActivePlaybackSessionMapper = embyActivePlaybackSessionMapper;
         this.embyWatchSessionMapper = embyWatchSessionMapper;
+        this.adultOtherCollectionSyncRunMapper = adultOtherCollectionSyncRunMapper;
+        this.adultOtherCollectionSyncGroupMapper = adultOtherCollectionSyncGroupMapper;
+        this.adultOtherCollectionKnownItemMapper = adultOtherCollectionKnownItemMapper;
     }
 
     @Override
@@ -139,6 +151,10 @@ public class DatabaseInitializer implements ApplicationRunner {
         ensureEmbyActivePlaybackSessionColumns();
         embyWatchSessionMapper.createTableIfNotExists();
         ensureEmbyWatchSessionColumns();
+        adultOtherCollectionSyncRunMapper.createTableIfNotExists();
+        ensureAdultOtherCollectionSyncRunColumns();
+        adultOtherCollectionSyncGroupMapper.createTableIfNotExists();
+        adultOtherCollectionKnownItemMapper.createTableIfNotExists();
     }
 
     private void ensureUserQuotaOverrideColumn() {
@@ -259,6 +275,31 @@ public class DatabaseInitializer implements ApplicationRunner {
         Integer requiredYearColumnCount = subtitleUploadMapper.countRequiredYearColumn();
         if (requiredYearColumnCount != null && requiredYearColumnCount > 0) {
             subtitleUploadMapper.makeYearNullable();
+        }
+    }
+
+    private void ensureAdultOtherCollectionSyncRunColumns() {
+        Integer sourceFolderPathColumnCount = adultOtherCollectionSyncRunMapper.countSourceFolderPathColumn();
+        if (sourceFolderPathColumnCount == null || sourceFolderPathColumnCount == 0) {
+            adultOtherCollectionSyncRunMapper.addSourceFolderPathColumn();
+        }
+        Integer deletedCollectionCountColumnCount =
+                adultOtherCollectionSyncRunMapper.countDeletedCollectionCountColumn();
+        if (deletedCollectionCountColumnCount == null || deletedCollectionCountColumnCount == 0) {
+            adultOtherCollectionSyncRunMapper.addDeletedCollectionCountColumn();
+        }
+        Integer reviewCollectionCountColumnCount =
+                adultOtherCollectionSyncRunMapper.countReviewCollectionCountColumn();
+        if (reviewCollectionCountColumnCount == null || reviewCollectionCountColumnCount == 0) {
+            adultOtherCollectionSyncRunMapper.addReviewCollectionCountColumn();
+        }
+        Integer observedItemCountColumnCount = adultOtherCollectionSyncRunMapper.countObservedItemCountColumn();
+        if (observedItemCountColumnCount == null || observedItemCountColumnCount == 0) {
+            adultOtherCollectionSyncRunMapper.addObservedItemCountColumn();
+        }
+        Integer observedGroupCountColumnCount = adultOtherCollectionSyncRunMapper.countObservedGroupCountColumn();
+        if (observedGroupCountColumnCount == null || observedGroupCountColumnCount == 0) {
+            adultOtherCollectionSyncRunMapper.addObservedGroupCountColumn();
         }
     }
 

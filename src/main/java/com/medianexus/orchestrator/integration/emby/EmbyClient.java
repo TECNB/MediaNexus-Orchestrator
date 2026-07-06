@@ -1,0 +1,268 @@
+package com.medianexus.orchestrator.integration.emby;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.medianexus.orchestrator.config.EmbyProperties;
+import java.io.IOException;
+import java.net.URI;
+import java.net.URLEncoder;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.net.http.HttpTimeoutException;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import org.springframework.stereotype.Component;
+import org.springframework.util.StringUtils;
+
+@Component
+public class EmbyClient {
+
+    private final EmbyProperties properties;
+    private final ObjectMapper objectMapper;
+    private final HttpClient httpClient;
+
+    public EmbyClient(EmbyProperties properties, ObjectMapper objectMapper) {
+        this.properties = properties;
+        this.objectMapper = objectMapper;
+        this.httpClient = HttpClient.newBuilder()
+                .connectTimeout(timeout())
+                .build();
+    }
+
+    public List<EmbyLibrary> listLibraries() {
+        JsonNode root = get("/Library/VirtualFolders", Map.of());
+        if (!root.isArray()) {
+            return List.of();
+        }
+
+        List<EmbyLibrary> libraries = new ArrayList<>();
+        for (JsonNode item : root) {
+            List<String> locations = new ArrayList<>();
+            JsonNode locationNodes = item.path("Locations");
+            if (locationNodes.isArray()) {
+                for (JsonNode locationNode : locationNodes) {
+                    String location = locationNode.asText("");
+                    if (StringUtils.hasText(location)) {
+                        locations.add(location);
+                    }
+                }
+            }
+
+            libraries.add(new EmbyLibrary(
+                    text(item, "ItemId", "Id"),
+                    text(item, "Name"),
+                    locations
+            ));
+        }
+        return libraries;
+    }
+
+    public List<EmbyItem> listLibraryVideoItems(String libraryId) {
+        return items(Map.of(
+                "ParentId", libraryId,
+                "Recursive", "true",
+                "Fields", "Path,ParentId,DateCreated",
+                "IncludeItemTypes", "Movie,Video,Episode",
+                "GroupItemsIntoCollections", "false",
+                "Limit", "10000"
+        ));
+    }
+
+    public List<EmbyItem> listLibraryVideoItemsByDateCreated(
+            String libraryId,
+            int startIndex,
+            int limit
+    ) {
+        return items(Map.of(
+                "ParentId", libraryId,
+                "Recursive", "true",
+                "Fields", "Path,ParentId,DateCreated",
+                "IncludeItemTypes", "Movie,Video,Episode",
+                "GroupItemsIntoCollections", "false",
+                "SortBy", "DateCreated",
+                "SortOrder", "Descending",
+                "StartIndex", String.valueOf(Math.max(0, startIndex)),
+                "Limit", String.valueOf(Math.max(1, limit))
+        ));
+    }
+
+    public List<EmbyCollection> listCollections() {
+        return items(Map.of(
+                "IncludeItemTypes", "BoxSet",
+                "Recursive", "true",
+                "Fields", "Path,ParentId",
+                "Limit", "10000"
+        )).stream()
+                .map(item -> new EmbyCollection(item.id(), item.name()))
+                .toList();
+    }
+
+    public List<EmbyItem> listCollectionVideoItems(String collectionId) {
+        return items(Map.of(
+                "ParentId", collectionId,
+                "Recursive", "true",
+                "IncludeItemTypes", "Movie,Video,Episode",
+                "Limit", "10000"
+        ));
+    }
+
+    public String createCollection(String name, List<String> itemIds) {
+        JsonNode root = post("/Collections", Map.of(
+                "Name", name,
+                "Ids", String.join(",", itemIds)
+        ));
+        String id = text(root, "Id", "id");
+        if (StringUtils.hasText(id)) {
+            return id;
+        }
+        return listCollections().stream()
+                .filter(collection -> name.equals(collection.name()))
+                .map(EmbyCollection::id)
+                .findFirst()
+                .orElseThrow(() -> new EmbyClientException("Emby collection id missing after create"));
+    }
+
+    public void addItemsToCollection(String collectionId, List<String> itemIds) {
+        if (itemIds.isEmpty()) {
+            return;
+        }
+        post("/Collections/" + encodePath(collectionId) + "/Items", Map.of(
+                "Ids", String.join(",", itemIds)
+        ));
+    }
+
+    public void deleteCollection(String collectionId) {
+        delete("/Items", Map.of("Ids", collectionId));
+    }
+
+    private List<EmbyItem> items(Map<String, String> params) {
+        JsonNode root = get("/Items", params);
+        JsonNode items = root.path("Items");
+        if (!items.isArray()) {
+            return List.of();
+        }
+
+        List<EmbyItem> result = new ArrayList<>();
+        for (JsonNode item : items) {
+            result.add(new EmbyItem(
+                    text(item, "Id", "id"),
+                    text(item, "Name", "name"),
+                    text(item, "Type", "type"),
+                    text(item, "Path", "path"),
+                    text(item, "DateCreated", "dateCreated")
+            ));
+        }
+        return result;
+    }
+
+    private JsonNode get(String path, Map<String, String> params) {
+        return send("GET", path, params);
+    }
+
+    private JsonNode post(String path, Map<String, String> params) {
+        return send("POST", path, params);
+    }
+
+    private JsonNode delete(String path, Map<String, String> params) {
+        return send("DELETE", path, params);
+    }
+
+    private JsonNode send(String method, String path, Map<String, String> params) {
+        validateConfiguration();
+        URI uri = uri(path, params);
+        HttpRequest.Builder builder = HttpRequest.newBuilder(uri)
+                .timeout(timeout())
+                .header("Accept", "application/json")
+                .header("X-Emby-Token", cleanConfigValue(properties.getApiKey()));
+        HttpRequest request = switch (method) {
+            case "POST" -> builder.POST(HttpRequest.BodyPublishers.noBody()).build();
+            case "DELETE" -> builder.DELETE().build();
+            default -> builder.GET().build();
+        };
+
+        try {
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                throw new EmbyClientException("Emby returned non-success status " + response.statusCode());
+            }
+            String body = response.body();
+            if (!StringUtils.hasText(body)) {
+                return objectMapper.createObjectNode();
+            }
+            return objectMapper.readTree(body);
+        } catch (JsonProcessingException exception) {
+            throw new EmbyClientException("Emby response is not valid JSON", exception);
+        } catch (HttpTimeoutException exception) {
+            throw new EmbyClientException("Emby request timed out after " + timeoutHint(), exception);
+        } catch (IOException exception) {
+            throw new EmbyClientException("Emby request failed", exception);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new EmbyClientException("Emby request interrupted", exception);
+        }
+    }
+
+    private URI uri(String path, Map<String, String> params) {
+        Map<String, String> queryParams = new LinkedHashMap<>(params);
+        String query = queryParams.entrySet().stream()
+                .map(entry -> encode(entry.getKey()) + "=" + encode(entry.getValue()))
+                .reduce((left, right) -> left + "&" + right)
+                .orElse("");
+        String baseUrl = cleanConfigValue(properties.getBaseUrl()).replaceAll("/+$", "");
+        return URI.create(baseUrl + path + (query.isEmpty() ? "" : "?" + query));
+    }
+
+    private void validateConfiguration() {
+        if (!StringUtils.hasText(cleanConfigValue(properties.getBaseUrl()))
+                || !StringUtils.hasText(cleanConfigValue(properties.getApiKey()))) {
+            throw new EmbyClientException("Emby configuration is incomplete");
+        }
+    }
+
+    private Duration timeout() {
+        return properties.getTimeout() == null ? Duration.ofSeconds(10) : properties.getTimeout();
+    }
+
+    private String timeoutHint() {
+        Duration duration = timeout();
+        long millis = duration.toMillis();
+        return millis % 1000 == 0 ? duration.toSeconds() + "s" : millis + "ms";
+    }
+
+    private String text(JsonNode node, String... fields) {
+        for (String field : fields) {
+            JsonNode value = node.path(field);
+            if (!value.isMissingNode() && !value.isNull()) {
+                return value.asText();
+            }
+        }
+        return null;
+    }
+
+    private String encode(String value) {
+        return URLEncoder.encode(value == null ? "" : value, StandardCharsets.UTF_8);
+    }
+
+    private String encodePath(String value) {
+        return encode(value).replace("+", "%20");
+    }
+
+    private String cleanConfigValue(String value) {
+        if (value == null) {
+            return "";
+        }
+        String cleaned = value.trim();
+        if (cleaned.length() >= 2
+                && ((cleaned.startsWith("'") && cleaned.endsWith("'"))
+                || (cleaned.startsWith("\"") && cleaned.endsWith("\"")))) {
+            cleaned = cleaned.substring(1, cleaned.length() - 1).trim();
+        }
+        return cleaned;
+    }
+}
