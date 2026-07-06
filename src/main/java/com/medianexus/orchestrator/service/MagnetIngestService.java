@@ -38,6 +38,8 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -71,6 +73,34 @@ public class MagnetIngestService {
     private static final String ADMIN_ROLE = "ADMIN";
     private static final String SERIES_PRODUCT_TYPE = "SERIES";
     private static final String ANIME_PRODUCT_TYPE = "ANIME";
+    private static final Set<String> KNOWN_ANIME_AUXILIARY_DIRECTORY_NAMES = Set.of(
+            "cd",
+            "cds",
+            "scan",
+            "scans",
+            "sp",
+            "sps",
+            "pv",
+            "pvs",
+            "menu",
+            "menus",
+            "font",
+            "fonts",
+            "extra",
+            "extras",
+            "special",
+            "specials",
+            "ost",
+            "soundtrack",
+            "soundtracks",
+            "booklet",
+            "booklets",
+            "ncop",
+            "nced",
+            "特典",
+            "扫图",
+            "扫描"
+    );
 
     private final MovieMagnetIngestTaskMapper movieTaskMapper;
     private final MovieMagnetIngestTaskLogMapper movieTaskLogMapper;
@@ -467,6 +497,7 @@ public class MagnetIngestService {
                     taskId,
                     openListTaskId,
                     task.getTempPath(),
+                    false,
                     (level, stage, message, detail) -> writeMovieLog(taskId, level, stage, message, detail),
                     () -> refreshMovieTaskUpdatedAt(taskId)
             );
@@ -524,6 +555,7 @@ public class MagnetIngestService {
                 taskId,
                 openListTaskId,
                 task.getTempPath(),
+                ANIME_PRODUCT_TYPE.equals(task.getTaskProductType()),
                 (level, stage, message, detail) -> writeSeriesLog(taskId, level, stage, message, detail),
                 () -> refreshSeriesTaskUpdatedAt(taskId)
         );
@@ -707,6 +739,7 @@ public class MagnetIngestService {
             String taskId,
             String openListTaskId,
             String tempPath,
+            boolean animePrimaryLayerOnly,
             TaskLogWriter taskLogWriter,
             Runnable refreshTaskUpdatedAt
     ) {
@@ -725,7 +758,7 @@ public class MagnetIngestService {
             }
             if (state != null && state == 1
                     && Duration.between(startedAt, Instant.now()).compareTo(SAVING_FILES_VISIBLE_GRACE) >= 0
-                    && hasVideoFiles(tempPath)) {
+                    && hasVideoFiles(tempPath, animePrimaryLayerOnly)) {
                 taskLogWriter.write("WARN", "downloading", "OpenList 仍显示保存中但临时目录已有视频文件，尝试继续整理", openListTaskId);
                 return;
             }
@@ -733,7 +766,7 @@ public class MagnetIngestService {
                 throw new OpenListClientException("OpenList 离线任务已取消");
             }
             if (state != null && state >= 5) {
-                if (hasVideoFiles(tempPath)) {
+                if (hasVideoFiles(tempPath, animePrimaryLayerOnly)) {
                     taskLogWriter.write("WARN", "downloading", "OpenList 状态异常但发现视频文件，尝试继续整理", taskInfo.error());
                     safeDeleteOpenListTask(taskLogWriter, openListTaskId);
                     return;
@@ -841,9 +874,12 @@ public class MagnetIngestService {
         TaskLogWriter taskLogWriter = (level, stage, message, detail) ->
                 writeSeriesLog(task.getId(), level, stage, message, detail);
         taskLogWriter.write("INFO", "organizing", "正在扫描临时目录并生成整理计划", task.getTempPath());
-        List<OpenListFileInfo> files = openListClient.findFiles(task.getTempPath());
+        AnimeSeriesOrganizeSelection selection = ANIME_PRODUCT_TYPE.equals(task.getTaskProductType())
+                ? selectAnimeSeriesOrganizeFiles(taskLogWriter, task)
+                : AnimeSeriesOrganizeSelection.passthrough(openListClient.findFiles(task.getTempPath()));
+        List<OpenListFileInfo> files = selection.files();
         Set<String> targetNames = targetNames(task.getSavePath());
-        OrganizationPlan plan = new OrganizationPlan();
+        OrganizationPlan plan = new OrganizationPlan(selection.contentToDeleteByDir());
         Set<String> episodeQualityKeys = new HashSet<>();
         Map<Integer, String> mainQualityByEpisode = new HashMap<>();
         int organized = 0;
@@ -918,8 +954,115 @@ public class MagnetIngestService {
             }
         }
 
-        executeOrganizationPlan(taskLogWriter, task.getSavePath(), plan, organized, skipped);
+        executeOrganizationPlan(taskLogWriter, task.getSavePath(), plan, organized, skipped, selection.skippedDirectoryPaths());
         return new OrganizeResult(organized, skipped, videoCount);
+    }
+
+    private AnimeSeriesOrganizeSelection selectAnimeSeriesOrganizeFiles(
+            TaskLogWriter taskLogWriter,
+            SeriesMagnetIngestTask task
+    ) {
+        String rootPath = openListClient.normalizePath(task.getTempPath());
+        List<OpenListFileInfo> rootChildren = openListClient.listFiles(rootPath);
+        List<OpenListFileInfo> rootFiles = directFiles(rootChildren);
+        List<OpenListFileInfo> rootDirectories = directDirectories(rootChildren);
+        Map<String, List<String>> contentToDeleteByDir = new LinkedHashMap<>();
+        Set<String> skippedDirectoryPaths = new LinkedHashSet<>();
+
+        if (hasRecognizableAnimeSeriesVideo(rootFiles, task)) {
+            addAnimeDirectoriesToDelete(taskLogWriter, contentToDeleteByDir, skippedDirectoryPaths, rootPath, rootDirectories);
+            return new AnimeSeriesOrganizeSelection(rootFiles, contentToDeleteByDir, skippedDirectoryPaths);
+        }
+
+        List<OpenListFileInfo> knownAuxiliaryDirectories = rootDirectories.stream()
+                .filter(directory -> isKnownAnimeAuxiliaryDirectory(directory.name()))
+                .toList();
+        addAnimeDirectoriesToDelete(
+                taskLogWriter,
+                contentToDeleteByDir,
+                skippedDirectoryPaths,
+                rootPath,
+                knownAuxiliaryDirectories
+        );
+
+        List<OpenListFileInfo> selectedFiles = new ArrayList<>();
+        List<String> rootLooseFiles = rootFiles.stream().map(OpenListFileInfo::name).toList();
+        List<OpenListFileInfo> rootDirectoriesWithoutMedia = new ArrayList<>();
+        for (OpenListFileInfo directory : rootDirectories) {
+            if (isKnownAnimeAuxiliaryDirectory(directory.name())) {
+                continue;
+            }
+            String directoryPath = openListClient.joinPath(rootPath, directory.name());
+            List<OpenListFileInfo> children = openListClient.listFiles(directoryPath);
+            List<OpenListFileInfo> files = directFiles(children);
+            List<OpenListFileInfo> directories = directDirectories(children);
+            if (hasRecognizableAnimeSeriesVideo(files, task)) {
+                selectedFiles.addAll(files);
+                addAnimeDirectoriesToDelete(taskLogWriter, contentToDeleteByDir, skippedDirectoryPaths, directoryPath, directories);
+            } else {
+                rootDirectoriesWithoutMedia.add(directory);
+            }
+        }
+
+        if (!selectedFiles.isEmpty()) {
+            addAnimeContentToDelete(contentToDeleteByDir, rootPath, rootLooseFiles);
+            addAnimeDirectoriesToDelete(
+                    taskLogWriter,
+                    contentToDeleteByDir,
+                    skippedDirectoryPaths,
+                    rootPath,
+                    rootDirectoriesWithoutMedia
+            );
+        }
+        return new AnimeSeriesOrganizeSelection(selectedFiles, contentToDeleteByDir, skippedDirectoryPaths);
+    }
+
+    private List<OpenListFileInfo> directFiles(List<OpenListFileInfo> children) {
+        return children.stream()
+                .filter(child -> !Boolean.TRUE.equals(child.isDir()))
+                .toList();
+    }
+
+    private List<OpenListFileInfo> directDirectories(List<OpenListFileInfo> children) {
+        return children.stream()
+                .filter(child -> Boolean.TRUE.equals(child.isDir()))
+                .toList();
+    }
+
+    private boolean hasRecognizableAnimeSeriesVideo(List<OpenListFileInfo> files, SeriesMagnetIngestTask task) {
+        return files.stream().anyMatch(file -> renameService.isVideo(file.name())
+                && renameService.seriesVideo(
+                        file.name(),
+                        fileTitle(task.getTitle(), task.getOriginalTitle(), "剧集标题不能为空"),
+                        task.getSeasonNumber()
+                ).isPresent());
+    }
+
+    private void addAnimeDirectoriesToDelete(
+            TaskLogWriter taskLogWriter,
+            Map<String, List<String>> contentToDeleteByDir,
+            Set<String> skippedDirectoryPaths,
+            String parentPath,
+            List<OpenListFileInfo> directories
+    ) {
+        addAnimeContentToDelete(contentToDeleteByDir, parentPath, directories.stream().map(OpenListFileInfo::name).toList());
+        for (OpenListFileInfo directory : directories) {
+            String directoryPath = openListClient.normalizePath(openListClient.joinPath(parentPath, directory.name()));
+            skippedDirectoryPaths.add(directoryPath);
+            taskLogWriter.write("WARN", "organizing", "跳过辅助目录", directoryPath);
+        }
+    }
+
+    private void addAnimeContentToDelete(Map<String, List<String>> contentToDeleteByDir, String sourceDir, List<String> names) {
+        if (names.isEmpty()) {
+            return;
+        }
+        contentToDeleteByDir.computeIfAbsent(sourceDir, ignored -> new ArrayList<>()).addAll(names);
+    }
+
+    private boolean isKnownAnimeAuxiliaryDirectory(String name) {
+        String normalized = name == null ? "" : name.trim().toLowerCase(Locale.ROOT);
+        return KNOWN_ANIME_AUXILIARY_DIRECTORY_NAMES.contains(normalized);
     }
 
     private boolean planFile(
@@ -970,6 +1113,17 @@ public class MagnetIngestService {
             int organized,
             int skipped
     ) {
+        executeOrganizationPlan(taskLogWriter, savePath, plan, organized, skipped, Set.of());
+    }
+
+    private void executeOrganizationPlan(
+            TaskLogWriter taskLogWriter,
+            String savePath,
+            OrganizationPlan plan,
+            int organized,
+            int skipped,
+            Set<String> skippedDirectoryPaths
+    ) {
         int renameCount = countRenameOperations(plan.renameByDir());
         int moveCount = countFileOperations(plan.moveByDir());
         int deleteCount = countFileOperations(plan.deleteByDir());
@@ -1007,11 +1161,16 @@ public class MagnetIngestService {
         }
         String normalizedSavePath = openListClient.normalizePath(savePath);
         taskLogWriter.write("INFO", "organizing", "正在清理空目录", normalizedSavePath);
-        cleanupEmptyDirectories(taskLogWriter, normalizedSavePath, normalizedSavePath);
+        cleanupEmptyDirectories(taskLogWriter, normalizedSavePath, normalizedSavePath, skippedDirectoryPaths);
         taskLogWriter.write("INFO", "organizing", "空目录清理完成", normalizedSavePath);
     }
 
-    private void cleanupEmptyDirectories(TaskLogWriter taskLogWriter, String rootPath, String currentPath) {
+    private void cleanupEmptyDirectories(
+            TaskLogWriter taskLogWriter,
+            String rootPath,
+            String currentPath,
+            Set<String> skippedDirectoryPaths
+    ) {
         List<OpenListFileInfo> children;
         try {
             children = openListClient.listFiles(currentPath);
@@ -1022,7 +1181,11 @@ public class MagnetIngestService {
 
         for (OpenListFileInfo child : children) {
             if (Boolean.TRUE.equals(child.isDir())) {
-                cleanupEmptyDirectories(taskLogWriter, rootPath, openListClient.joinPath(currentPath, child.name()));
+                String childPath = openListClient.normalizePath(openListClient.joinPath(currentPath, child.name()));
+                if (skippedDirectoryPaths.contains(childPath)) {
+                    continue;
+                }
+                cleanupEmptyDirectories(taskLogWriter, rootPath, childPath, skippedDirectoryPaths);
             }
         }
 
@@ -1243,8 +1406,29 @@ public class MagnetIngestService {
         return String.join(", ", details);
     }
 
-    private boolean hasVideoFiles(String path) {
-        return openListClient.findFiles(path).stream().anyMatch(file -> renameService.isVideo(file.name()));
+    private boolean hasVideoFiles(String path, boolean animePrimaryLayerOnly) {
+        if (!animePrimaryLayerOnly) {
+            return openListClient.findFiles(path).stream().anyMatch(file -> renameService.isVideo(file.name()));
+        }
+
+        String rootPath = openListClient.normalizePath(path);
+        List<OpenListFileInfo> rootChildren = openListClient.listFiles(rootPath);
+        if (directFiles(rootChildren).stream().anyMatch(file -> renameService.isVideo(file.name()))) {
+            return true;
+        }
+
+        for (OpenListFileInfo directory : directDirectories(rootChildren)) {
+            if (isKnownAnimeAuxiliaryDirectory(directory.name())) {
+                continue;
+            }
+            String directoryPath = openListClient.joinPath(rootPath, directory.name());
+            boolean directoryHasVideo = directFiles(openListClient.listFiles(directoryPath)).stream()
+                    .anyMatch(file -> renameService.isVideo(file.name()));
+            if (directoryHasVideo) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void safeDeleteOpenListTask(TaskLogWriter taskLogWriter, String openListTaskId) {
@@ -1683,7 +1867,21 @@ public class MagnetIngestService {
             Set<String> plannedTargetNames
     ) {
         private OrganizationPlan() {
-            this(new HashMap<>(), new HashMap<>(), new HashMap<>(), new HashSet<>());
+            this(new HashMap<>(), new HashMap<>(), new LinkedHashMap<>(), new HashSet<>());
+        }
+
+        private OrganizationPlan(Map<String, List<String>> deleteByDir) {
+            this(new HashMap<>(), new HashMap<>(), new LinkedHashMap<>(deleteByDir), new HashSet<>());
+        }
+    }
+
+    private record AnimeSeriesOrganizeSelection(
+            List<OpenListFileInfo> files,
+            Map<String, List<String>> contentToDeleteByDir,
+            Set<String> skippedDirectoryPaths
+    ) {
+        private static AnimeSeriesOrganizeSelection passthrough(List<OpenListFileInfo> files) {
+            return new AnimeSeriesOrganizeSelection(files, Map.of(), Set.of());
         }
     }
 

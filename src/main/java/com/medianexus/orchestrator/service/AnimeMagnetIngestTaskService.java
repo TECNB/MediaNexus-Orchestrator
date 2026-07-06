@@ -26,6 +26,8 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -53,6 +55,34 @@ public class AnimeMagnetIngestTaskService {
     private static final Pattern MAGNET_HASH_PATTERN = Pattern.compile("xt=urn:btih:([a-zA-Z0-9]+)", Pattern.CASE_INSENSITIVE);
     private static final List<String> ACTIVE_STATUSES = List.of("PENDING", "SUBMITTED", "DOWNLOADING", "ORGANIZING");
     private static final List<String> UNFINISHED_STATUSES = List.of("PENDING", "SUBMITTED", "DOWNLOADING", "ORGANIZING");
+    private static final Set<String> KNOWN_ANIME_AUXILIARY_DIRECTORY_NAMES = Set.of(
+            "cd",
+            "cds",
+            "scan",
+            "scans",
+            "sp",
+            "sps",
+            "pv",
+            "pvs",
+            "menu",
+            "menus",
+            "font",
+            "fonts",
+            "extra",
+            "extras",
+            "special",
+            "specials",
+            "ost",
+            "soundtrack",
+            "soundtracks",
+            "booklet",
+            "booklets",
+            "ncop",
+            "nced",
+            "特典",
+            "扫图",
+            "扫描"
+    );
     private static final int DEFAULT_OFFSET = 0;
     private static final Duration SAVING_FILES_VISIBLE_GRACE = Duration.ofMinutes(5);
     private static final String ADMIN_ROLE = "ADMIN";
@@ -555,7 +585,8 @@ public class AnimeMagnetIngestTaskService {
      */
     private OrganizeResult organizeFiles(AnimeMagnetIngestTask task) {
         writeLog(task.getId(), "INFO", "organizing", "正在扫描临时目录并生成整理计划", task.getTempPath());
-        List<OpenListFileInfo> files = openListClient.findFiles(task.getTempPath());
+        AnimeOrganizeSelection selection = selectAnimeOrganizeFiles(task);
+        List<OpenListFileInfo> files = selection.files();
         // 目标目录已有文件优先保留，重复导入或补集时不能覆盖媒体库中已整理的剧集。
         Set<String> targetNames = openListClient.listFiles(task.getSavePath()).stream()
                 .map(OpenListFileInfo::name)
@@ -564,7 +595,7 @@ public class AnimeMagnetIngestTaskService {
         // OpenList 的重命名、移动和删除都依赖父目录参数，整理计划需要保留源目录上下文。
         Map<String, Map<String, String>> renameByDir = new HashMap<>();
         Map<String, List<String>> moveByDir = new HashMap<>();
-        Map<String, List<String>> deleteByDir = new HashMap<>();
+        Map<String, List<String>> deleteByDir = new LinkedHashMap<>(selection.contentToDeleteByDir());
         int skipped = 0;
         int organized = 0;
         // 本次整理计划内的目标文件名必须唯一，避免同一批文件识别成同一集后互相覆盖。
@@ -683,9 +714,108 @@ public class AnimeMagnetIngestTaskService {
             }
         }
         writeLog(task.getId(), "INFO", "organizing", "正在清理空目录", savePath);
-        cleanupEmptyDirectories(task.getId(), savePath, savePath);
+        cleanupEmptyDirectories(task.getId(), savePath, savePath, selection.skippedDirectoryPaths());
         writeLog(task.getId(), "INFO", "organizing", "空目录清理完成", savePath);
         return new OrganizeResult(organized, skipped);
+    }
+
+    private AnimeOrganizeSelection selectAnimeOrganizeFiles(AnimeMagnetIngestTask task) {
+        String rootPath = openListClient.normalizePath(task.getTempPath());
+        List<OpenListFileInfo> rootChildren = openListClient.listFiles(rootPath);
+        List<OpenListFileInfo> rootFiles = directFiles(rootChildren);
+        List<OpenListFileInfo> rootDirectories = directDirectories(rootChildren);
+        Map<String, List<String>> contentToDeleteByDir = new LinkedHashMap<>();
+        Set<String> skippedDirectoryPaths = new LinkedHashSet<>();
+
+        if (hasRecognizableAnimeVideo(rootFiles, task)) {
+            addContentToDelete(contentToDeleteByDir, rootPath, rootDirectories.stream().map(OpenListFileInfo::name).toList());
+            addSkippedDirectories(skippedDirectoryPaths, rootPath, rootDirectories);
+            return new AnimeOrganizeSelection(rootFiles, contentToDeleteByDir, skippedDirectoryPaths);
+        }
+
+        addContentToDelete(
+                contentToDeleteByDir,
+                rootPath,
+                rootDirectories.stream()
+                        .filter(directory -> isKnownAnimeAuxiliaryDirectory(directory.name()))
+                        .map(OpenListFileInfo::name)
+                        .toList()
+        );
+        addSkippedDirectories(
+                skippedDirectoryPaths,
+                rootPath,
+                rootDirectories.stream()
+                        .filter(directory -> isKnownAnimeAuxiliaryDirectory(directory.name()))
+                        .toList()
+        );
+
+        List<OpenListFileInfo> selectedFiles = new ArrayList<>();
+        List<String> rootLooseFiles = rootFiles.stream().map(OpenListFileInfo::name).toList();
+        List<String> rootDirectoriesWithoutMedia = new ArrayList<>();
+        for (OpenListFileInfo directory : rootDirectories) {
+            if (isKnownAnimeAuxiliaryDirectory(directory.name())) {
+                continue;
+            }
+            String directoryPath = openListClient.joinPath(rootPath, directory.name());
+            List<OpenListFileInfo> children = openListClient.listFiles(directoryPath);
+            List<OpenListFileInfo> files = directFiles(children);
+            List<OpenListFileInfo> directories = directDirectories(children);
+            if (hasRecognizableAnimeVideo(files, task)) {
+                selectedFiles.addAll(files);
+                addContentToDelete(contentToDeleteByDir, directoryPath, directories.stream().map(OpenListFileInfo::name).toList());
+                addSkippedDirectories(skippedDirectoryPaths, directoryPath, directories);
+            } else {
+                rootDirectoriesWithoutMedia.add(directory.name());
+            }
+        }
+
+        if (!selectedFiles.isEmpty()) {
+            addContentToDelete(contentToDeleteByDir, rootPath, rootLooseFiles);
+            addContentToDelete(contentToDeleteByDir, rootPath, rootDirectoriesWithoutMedia);
+            addSkippedDirectories(
+                    skippedDirectoryPaths,
+                    rootPath,
+                    rootDirectories.stream()
+                            .filter(directory -> rootDirectoriesWithoutMedia.contains(directory.name()))
+                            .toList()
+            );
+        }
+        return new AnimeOrganizeSelection(selectedFiles, contentToDeleteByDir, skippedDirectoryPaths);
+    }
+
+    private List<OpenListFileInfo> directFiles(List<OpenListFileInfo> children) {
+        return children.stream()
+                .filter(child -> !Boolean.TRUE.equals(child.isDir()))
+                .toList();
+    }
+
+    private List<OpenListFileInfo> directDirectories(List<OpenListFileInfo> children) {
+        return children.stream()
+                .filter(child -> Boolean.TRUE.equals(child.isDir()))
+                .toList();
+    }
+
+    private boolean hasRecognizableAnimeVideo(List<OpenListFileInfo> files, AnimeMagnetIngestTask task) {
+        return files.stream().anyMatch(file -> renameService.isVideo(file.name())
+                && renameService.rename(file.name(), task.getTitle(), task.getSeasonNumber(), DEFAULT_OFFSET).isPresent());
+    }
+
+    private void addContentToDelete(Map<String, List<String>> contentToDeleteByDir, String sourceDir, List<String> names) {
+        if (names.isEmpty()) {
+            return;
+        }
+        contentToDeleteByDir.computeIfAbsent(sourceDir, ignored -> new ArrayList<>()).addAll(names);
+    }
+
+    private void addSkippedDirectories(Set<String> skippedDirectoryPaths, String parentPath, List<OpenListFileInfo> directories) {
+        for (OpenListFileInfo directory : directories) {
+            skippedDirectoryPaths.add(openListClient.normalizePath(openListClient.joinPath(parentPath, directory.name())));
+        }
+    }
+
+    private boolean isKnownAnimeAuxiliaryDirectory(String name) {
+        String normalized = name == null ? "" : name.trim().toLowerCase(Locale.ROOT);
+        return KNOWN_ANIME_AUXILIARY_DIRECTORY_NAMES.contains(normalized);
     }
 
     private int countRenameOperations(Map<String, Map<String, String>> renameByDir) {
@@ -708,7 +838,7 @@ public class AnimeMagnetIngestTaskService {
         return "srcDir=" + sourceDir + ", dstDir=" + destinationDir + ", count=" + count;
     }
 
-    private void cleanupEmptyDirectories(String taskId, String rootPath, String currentPath) {
+    private void cleanupEmptyDirectories(String taskId, String rootPath, String currentPath, Set<String> skippedDirectoryPaths) {
         List<OpenListFileInfo> children;
         try {
             children = openListClient.listFiles(currentPath);
@@ -719,7 +849,11 @@ public class AnimeMagnetIngestTaskService {
 
         for (OpenListFileInfo child : children) {
             if (Boolean.TRUE.equals(child.isDir())) {
-                cleanupEmptyDirectories(taskId, rootPath, openListClient.joinPath(currentPath, child.name()));
+                String childPath = openListClient.normalizePath(openListClient.joinPath(currentPath, child.name()));
+                if (skippedDirectoryPaths.contains(childPath)) {
+                    continue;
+                }
+                cleanupEmptyDirectories(taskId, rootPath, childPath, skippedDirectoryPaths);
             }
         }
 
@@ -750,7 +884,24 @@ public class AnimeMagnetIngestTaskService {
     }
 
     private boolean hasVideoFiles(String path) {
-        return openListClient.findFiles(path).stream().anyMatch(file -> renameService.isVideo(file.name()));
+        String rootPath = openListClient.normalizePath(path);
+        List<OpenListFileInfo> rootChildren = openListClient.listFiles(rootPath);
+        if (directFiles(rootChildren).stream().anyMatch(file -> renameService.isVideo(file.name()))) {
+            return true;
+        }
+
+        for (OpenListFileInfo directory : directDirectories(rootChildren)) {
+            if (isKnownAnimeAuxiliaryDirectory(directory.name())) {
+                continue;
+            }
+            String directoryPath = openListClient.joinPath(rootPath, directory.name());
+            boolean directoryHasVideo = directFiles(openListClient.listFiles(directoryPath)).stream()
+                    .anyMatch(file -> renameService.isVideo(file.name()));
+            if (directoryHasVideo) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void safeDeleteOpenListTask(String taskId, String openListTaskId) {
@@ -977,6 +1128,13 @@ public class AnimeMagnetIngestTaskService {
     }
 
     private record OrganizeResult(int organizedCount, int skippedCount) {
+    }
+
+    private record AnimeOrganizeSelection(
+            List<OpenListFileInfo> files,
+            Map<String, List<String>> contentToDeleteByDir,
+            Set<String> skippedDirectoryPaths
+    ) {
     }
 
     private record AnimeTaskSeed(

@@ -1,0 +1,115 @@
+package com.medianexus.orchestrator.service;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+import com.medianexus.orchestrator.config.OpenListProperties;
+import com.medianexus.orchestrator.integration.openlist.OpenListClient;
+import com.medianexus.orchestrator.integration.openlist.OpenListFileInfo;
+import com.medianexus.orchestrator.mapper.MovieMagnetIngestTaskLogMapper;
+import com.medianexus.orchestrator.mapper.MovieMagnetIngestTaskMapper;
+import com.medianexus.orchestrator.mapper.SeriesMagnetIngestTaskLogMapper;
+import com.medianexus.orchestrator.mapper.SeriesMagnetIngestTaskMapper;
+import com.medianexus.orchestrator.model.SeriesMagnetIngestTask;
+import java.util.List;
+import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import org.springframework.test.util.ReflectionTestUtils;
+
+class MagnetIngestServiceTest {
+
+    @Test
+    void animeSeriesOrganizeDeletesAuxiliaryDirectoryWithoutScanningIt() {
+        OpenListClient openListClient = mock(OpenListClient.class);
+        stubPathHelpers(openListClient);
+        when(openListClient.listFiles("/anime/Show/Season 2")).thenReturn(List.of(
+                new OpenListFileInfo("[Release]", null, true, "/anime/Show/Season 2")
+        ));
+        when(openListClient.listFiles("/anime/Show/Season 2/[Release]")).thenReturn(List.of(
+                new OpenListFileInfo("[Group] Show - S02E01 1080p.mkv", 1024L, false, "/anime/Show/Season 2/[Release]"),
+                new OpenListFileInfo("Scans", null, true, "/anime/Show/Season 2/[Release]")
+        ));
+        MagnetIngestService service = service(openListClient);
+
+        ReflectionTestUtils.invokeMethod(service, "organizeSeriesFiles", animeSeriesTask());
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<String>> deletedNames = ArgumentCaptor.forClass(List.class);
+        verify(openListClient).remove(eq("/anime/Show/Season 2/[Release]"), deletedNames.capture());
+        assertThat(deletedNames.getValue()).containsExactly("Scans");
+        verify(openListClient, never()).findFiles(anyString());
+        verify(openListClient, never()).listFiles("/anime/Show/Season 2/[Release]/Scans");
+    }
+
+    @Test
+    void animeSeriesVideoVisibilityCheckDoesNotScanAuxiliaryDirectories() {
+        OpenListClient openListClient = mock(OpenListClient.class);
+        stubPathHelpers(openListClient);
+        when(openListClient.listFiles("/anime/Show/Season 2")).thenReturn(List.of(
+                new OpenListFileInfo("[Release]", null, true, "/anime/Show/Season 2"),
+                new OpenListFileInfo("Scans", null, true, "/anime/Show/Season 2")
+        ));
+        when(openListClient.listFiles("/anime/Show/Season 2/[Release]")).thenReturn(List.of(
+                new OpenListFileInfo("[Group] Show - S02E01 1080p.mkv", 1024L, false, "/anime/Show/Season 2/[Release]")
+        ));
+        MagnetIngestService service = service(openListClient);
+
+        Boolean hasVideoFiles = ReflectionTestUtils.invokeMethod(
+                service,
+                "hasVideoFiles",
+                "/anime/Show/Season 2",
+                true
+        );
+
+        assertThat(hasVideoFiles).isTrue();
+        verify(openListClient, never()).findFiles(anyString());
+        verify(openListClient, never()).listFiles("/anime/Show/Season 2/Scans");
+    }
+
+    private MagnetIngestService service(OpenListClient openListClient) {
+        return new MagnetIngestService(
+                mock(MovieMagnetIngestTaskMapper.class),
+                mock(MovieMagnetIngestTaskLogMapper.class),
+                mock(SeriesMagnetIngestTaskMapper.class),
+                mock(SeriesMagnetIngestTaskLogMapper.class),
+                openListClient,
+                new OpenListProperties(),
+                new MovieSeriesFileRenameService(),
+                null,
+                null,
+                null
+        );
+    }
+
+    private SeriesMagnetIngestTask animeSeriesTask() {
+        SeriesMagnetIngestTask task = new SeriesMagnetIngestTask();
+        task.setId("series-1");
+        task.setTaskProductType("ANIME");
+        task.setTitle("Show");
+        task.setSeasonNumber(2);
+        task.setSavePath("/anime/Show/Season 2");
+        task.setTempPath("/anime/Show/Season 2");
+        return task;
+    }
+
+    private void stubPathHelpers(OpenListClient openListClient) {
+        when(openListClient.normalizePath(anyString())).thenAnswer(invocation -> normalizePath(invocation.getArgument(0)));
+        when(openListClient.joinPath(anyString(), anyString())).thenAnswer(invocation ->
+                normalizePath(invocation.getArgument(0) + "/" + invocation.getArgument(1)));
+    }
+
+    private String normalizePath(String path) {
+        String normalized = path == null ? "" : path.trim().replaceAll("/{2,}", "/");
+        if (!normalized.startsWith("/")) {
+            normalized = "/" + normalized;
+        }
+        return normalized.length() > 1 && normalized.endsWith("/")
+                ? normalized.substring(0, normalized.length() - 1)
+                : normalized;
+    }
+}
