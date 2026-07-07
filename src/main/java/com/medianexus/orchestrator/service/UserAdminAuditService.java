@@ -11,6 +11,7 @@ public class UserAdminAuditService {
     public static final String ACTION_UPDATE_USER_QUOTA = "UPDATE_USER_QUOTA";
     public static final String ACTION_RESTORE_USER_QUOTA_DEFAULT = "RESTORE_USER_QUOTA_DEFAULT";
     public static final String ACTION_RESET_USER_USAGE_TODAY = "RESET_USER_USAGE_TODAY";
+    public static final String ACTION_GENERATE_REGISTRATION_CODE = "GENERATE_REGISTRATION_CODE";
 
     private final UserAdminAuditLogMapper auditLogMapper;
 

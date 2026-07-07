@@ -17,6 +17,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.Locale;
 import java.util.regex.Pattern;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DuplicateKeyException;
@@ -39,17 +40,26 @@ public class AuthService {
     private static final String LOGIN_FAILED_MESSAGE = "用户名或密码错误";
 
     private final UserMapper userMapper;
-    private final AuthProperties authProperties;
+    private final RegistrationCodeSettingsService registrationCodeSettingsService;
     private final PasswordEncoder passwordEncoder;
+
+    @Autowired
+    public AuthService(
+            UserMapper userMapper,
+            RegistrationCodeSettingsService registrationCodeSettingsService,
+            PasswordEncoder passwordEncoder
+    ) {
+        this.userMapper = userMapper;
+        this.registrationCodeSettingsService = registrationCodeSettingsService;
+        this.passwordEncoder = passwordEncoder;
+    }
 
     public AuthService(
             UserMapper userMapper,
             AuthProperties authProperties,
             PasswordEncoder passwordEncoder
     ) {
-        this.userMapper = userMapper;
-        this.authProperties = authProperties;
-        this.passwordEncoder = passwordEncoder;
+        this(userMapper, new RegistrationCodeSettingsService(null, authProperties), passwordEncoder);
     }
 
     public AuthSessionResponse register(AuthRegisterRequest request) {
@@ -167,26 +177,15 @@ public class AuthService {
     }
 
     private void validateRegistrationCode(String registrationCode) {
-        String expectedRegistrationCode = cleanConfigValue(authProperties.getRegistrationCode());
+        String expectedRegistrationCode = registrationCodeSettingsService
+                .resolveEffectiveRegistrationCode()
+                .registrationCode();
         if (!StringUtils.hasText(expectedRegistrationCode)) {
             throw new BusinessException(ErrorCode.FORBIDDEN, "注册暂未开放", HttpStatus.FORBIDDEN);
         }
         if (!registrationCode.trim().equals(expectedRegistrationCode)) {
             throw new BusinessException(ErrorCode.FORBIDDEN, "注册码无效", HttpStatus.FORBIDDEN);
         }
-    }
-
-    private String cleanConfigValue(String value) {
-        if (!StringUtils.hasText(value)) {
-            return value;
-        }
-        String trimmed = value.trim();
-        if (trimmed.length() >= 2
-                && ((trimmed.startsWith("'") && trimmed.endsWith("'"))
-                || (trimmed.startsWith("\"") && trimmed.endsWith("\"")))) {
-            return trimmed.substring(1, trimmed.length() - 1).trim();
-        }
-        return trimmed;
     }
 
     private String normalizeUsername(String username) {
