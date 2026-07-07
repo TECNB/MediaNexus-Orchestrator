@@ -59,8 +59,14 @@ public record OpenListIngestTaskCenterDetailResponse(
         @Schema(description = "最后一条 WARN 或 ERROR 日志；没有时为 null", nullable = true)
         @JsonProperty("last_warning_or_error_log")
         OpenListIngestTaskCenterLogResponse lastWarningOrErrorLog,
-        @Schema(description = "完整日志，按日志 id 升序排列")
+        @Schema(description = "首屏日志窗口，按日志 id 升序排列")
         List<OpenListIngestTaskCenterLogResponse> logs,
+        @Schema(description = "当前日志窗口之前是否还有更早日志")
+        @JsonProperty("logs_has_older")
+        Boolean logsHasOlder,
+        @Schema(description = "当前日志窗口之后是否还有更新日志")
+        @JsonProperty("logs_has_newer")
+        Boolean logsHasNewer,
         @Schema(description = "任务是否仍处于进行中状态")
         @JsonProperty("is_active")
         Boolean active,

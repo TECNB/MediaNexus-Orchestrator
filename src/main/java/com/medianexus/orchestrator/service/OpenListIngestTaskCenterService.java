@@ -3,6 +3,8 @@ package com.medianexus.orchestrator.service;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import com.baomidou.mybatisplus.core.toolkit.support.SFunction;
 import com.medianexus.orchestrator.common.exception.BusinessException;
 import com.medianexus.orchestrator.common.exception.ErrorCode;
 import com.medianexus.orchestrator.dto.magnet.response.AnimeMagnetIngestTaskResponse;
@@ -17,6 +19,7 @@ import com.medianexus.orchestrator.dto.taskcenter.response.OpenListIngestTaskCen
 import com.medianexus.orchestrator.dto.taskcenter.response.OpenListIngestTaskCenterItemResponse;
 import com.medianexus.orchestrator.dto.taskcenter.response.OpenListIngestTaskCenterListResponse;
 import com.medianexus.orchestrator.dto.taskcenter.response.OpenListIngestTaskCenterLogResponse;
+import com.medianexus.orchestrator.dto.taskcenter.response.OpenListIngestTaskCenterLogsResponse;
 import com.medianexus.orchestrator.dto.taskcenter.response.OpenListIngestTaskCenterProgressResponse;
 import com.medianexus.orchestrator.dto.taskcenter.response.OpenListManualMagnetRetryResponse;
 import com.medianexus.orchestrator.dto.taskcenter.response.OpenListReleaseRetryContextResponse;
@@ -41,6 +44,7 @@ import com.medianexus.orchestrator.model.User;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -49,7 +53,10 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.function.Function;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -75,6 +82,8 @@ public class OpenListIngestTaskCenterService {
     private static final String SUCCEEDED_VIEW = "SUCCEEDED";
     private static final int DEFAULT_PAGE = 1;
     private static final int DEFAULT_PAGE_SIZE = 10;
+    private static final int DEFAULT_LOG_LIMIT = 100;
+    private static final int MAX_LOG_LIMIT = 200;
     private static final Set<String> IN_PROGRESS_STATUSES = Set.of(
             "PENDING",
             "SUBMITTED",
@@ -153,10 +162,23 @@ public class OpenListIngestTaskCenterService {
             Integer pageSize
     ) {
         User user = authService.requireCurrentUser();
-        List<MovieMagnetIngestTask> movieTasks = movieTaskMapper.selectList(ownedMovieTasks(user));
-        List<SeriesMagnetIngestTask> seriesTasks = seriesTaskMapper.selectList(ownedSeriesTasks(user));
-        List<AnimeMagnetIngestTask> animeTasks = animeTaskMapper.selectList(ownedAnimeTasks(user));
-        List<AdultMagnetIngestTask> adultTasks = adultTasksVisibleTo(user);
+        String normalizedView = normalizeView(view);
+        String normalizedProductType = normalizeProductType(productType);
+        String normalizedSourceType = normalizeSourceType(sourceType);
+        String normalizedKeyword = normalizeKeyword(keyword);
+        int normalizedPageSize = normalizePageSize(pageSize);
+
+        boolean canUseFilteredListing = !StringUtils.hasText(normalizedKeyword)
+                && ALL_FILTER.equals(normalizedSourceType);
+        TaskListingFetches taskListingFetches = taskListingFetches(
+                user,
+                canUseFilteredListing ? normalizedView : ALL_FILTER,
+                canUseFilteredListing ? normalizedProductType : ALL_FILTER
+        );
+        List<MovieMagnetIngestTask> movieTasks = taskListingFetches.movieTasks();
+        List<SeriesMagnetIngestTask> seriesTasks = taskListingFetches.seriesTasks();
+        List<AnimeMagnetIngestTask> animeTasks = taskListingFetches.animeTasks();
+        List<AdultMagnetIngestTask> adultTasks = taskListingFetches.adultTasks();
         Map<Long, User> creatorsById = creatorsById(movieTasks, seriesTasks, animeTasks, adultTasks);
         List<TaskCenterListingCandidate> candidates = new ArrayList<>();
 
@@ -173,12 +195,6 @@ public class OpenListIngestTaskCenterService {
                 .map(task -> adultItem(task, creatorsById))
                 .toList());
         List<TaskCenterListingCandidate> latestAttemptCandidates = collapseAttemptChains(candidates);
-
-        String normalizedView = normalizeView(view);
-        String normalizedProductType = normalizeProductType(productType);
-        String normalizedSourceType = normalizeSourceType(sourceType);
-        String normalizedKeyword = normalizeKeyword(keyword);
-        int normalizedPageSize = normalizePageSize(pageSize);
 
         List<TaskCenterListingCandidate> searchableItems = latestAttemptCandidates.stream()
                 .filter(item -> matchesProductType(item, normalizedProductType))
@@ -214,13 +230,56 @@ public class OpenListIngestTaskCenterService {
             String taskType,
             String taskId
     ) {
+        return getOpenListIngestTaskDetail(taskType, taskId, DEFAULT_LOG_LIMIT);
+    }
+
+    public OpenListIngestTaskCenterDetailResponse getOpenListIngestTaskDetail(
+            String taskType,
+            String taskId,
+            Integer logLimit
+    ) {
         User user = authService.requireCurrentUser();
         String normalizedTaskType = normalizeTaskType(taskType);
+        int normalizedLogLimit = normalizeDetailLogLimit(logLimit);
         return switch (normalizedTaskType) {
-            case MOVIE_TASK_TYPE -> movieDetail(getAccessibleMovieTask(taskId, user), user);
-            case SERIES_TASK_TYPE -> seriesDetail(getAccessibleSeriesTask(taskId, user), user);
-            case ANIME_TASK_TYPE -> animeDetail(getAccessibleAnimeTask(taskId, user), user);
-            case ADULT_TASK_TYPE -> adultDetail(getAccessibleAdultTask(taskId, user), user);
+            case MOVIE_TASK_TYPE -> movieDetail(getAccessibleMovieTask(taskId, user), user, normalizedLogLimit);
+            case SERIES_TASK_TYPE -> seriesDetail(getAccessibleSeriesTask(taskId, user), user, normalizedLogLimit);
+            case ANIME_TASK_TYPE -> animeDetail(getAccessibleAnimeTask(taskId, user), user, normalizedLogLimit);
+            case ADULT_TASK_TYPE -> adultDetail(getAccessibleAdultTask(taskId, user), user, normalizedLogLimit);
+            default -> throw taskNotFoundException();
+        };
+    }
+
+    public OpenListIngestTaskCenterLogsResponse getOpenListIngestTaskLogs(
+            String taskType,
+            String taskId,
+            Long beforeId,
+            Long afterId,
+            Integer limit
+    ) {
+        if (beforeId != null && afterId != null) {
+            throw badRequest("before_id 和 after_id 不能同时使用");
+        }
+        User user = authService.requireCurrentUser();
+        String normalizedTaskType = normalizeTaskType(taskType);
+        int normalizedLimit = normalizeLogLimit(limit);
+        return switch (normalizedTaskType) {
+            case MOVIE_TASK_TYPE -> {
+                MovieMagnetIngestTask task = getAccessibleMovieTask(taskId, user);
+                yield toLogsResponse(movieLogWindow(task.getId(), beforeId, afterId, normalizedLimit));
+            }
+            case SERIES_TASK_TYPE -> {
+                SeriesMagnetIngestTask task = getAccessibleSeriesTask(taskId, user);
+                yield toLogsResponse(seriesLogWindow(task.getId(), beforeId, afterId, normalizedLimit));
+            }
+            case ANIME_TASK_TYPE -> {
+                AnimeMagnetIngestTask task = getAccessibleAnimeTask(taskId, user);
+                yield toLogsResponse(animeLogWindow(task.getId(), beforeId, afterId, normalizedLimit));
+            }
+            case ADULT_TASK_TYPE -> {
+                AdultMagnetIngestTask task = getAccessibleAdultTask(taskId, user);
+                yield toLogsResponse(adultLogWindow(task.getId(), beforeId, afterId, normalizedLimit));
+            }
             default -> throw taskNotFoundException();
         };
     }
@@ -594,14 +653,15 @@ public class OpenListIngestTaskCenterService {
         );
     }
 
-    private OpenListIngestTaskCenterDetailResponse movieDetail(MovieMagnetIngestTask task, User user) {
-        List<OpenListIngestTaskCenterLogResponse> logs = movieLogs(task.getId());
+    private OpenListIngestTaskCenterDetailResponse movieDetail(MovieMagnetIngestTask task, User user, int logLimit) {
+        Map<Long, User> creatorsById = currentUserById(user);
+        TaskLogWindow logs = movieLogWindow(task.getId(), null, null, logLimit);
         return new OpenListIngestTaskCenterDetailResponse(
                 MOVIE_TASK_TYPE,
                 task.getId(),
                 MOVIE_PRODUCT_TYPE,
                 task.getCreatedByUserId(),
-                creatorUsername(task.getCreatedByUserId()),
+                creatorUsername(creatorsById, task.getCreatedByUserId()),
                 movieDisplayTitle(task),
                 task.getStatus(),
                 task.getStage(),
@@ -615,26 +675,29 @@ public class OpenListIngestTaskCenterService {
                 progressSummary(task.getOrganizedCount(), task.getSkippedCount()),
                 organizedProgress(task.getOrganizedCount(), task.getSkippedCount()),
                 task.getErrorMessage(),
-                lastWarningOrErrorLog(logs),
-                logs,
+                logLimit <= 0 ? null : lastWarningOrErrorLog(logs.logs(), () -> movieLastWarningOrErrorLog(task.getId())),
+                logs.logs(),
+                logs.hasOlder(),
+                logs.hasNewer(),
                 isActive(task.getStatus()),
                 pendingExplanation(task.getStatus()),
                 null,
-                attemptChain(movieSnapshot(task), user),
+                attemptChain(movieSnapshot(task, creatorsById), user, creatorsById),
                 task.getCreatedAt(),
                 task.getUpdatedAt(),
                 task.getFinishedAt()
         );
     }
 
-    private OpenListIngestTaskCenterDetailResponse seriesDetail(SeriesMagnetIngestTask task, User user) {
-        List<OpenListIngestTaskCenterLogResponse> logs = seriesLogs(task.getId());
+    private OpenListIngestTaskCenterDetailResponse seriesDetail(SeriesMagnetIngestTask task, User user, int logLimit) {
+        Map<Long, User> creatorsById = currentUserById(user);
+        TaskLogWindow logs = seriesLogWindow(task.getId(), null, null, logLimit);
         return new OpenListIngestTaskCenterDetailResponse(
                 SERIES_TASK_TYPE,
                 task.getId(),
                 seriesProductType(task.getTaskProductType()),
                 task.getCreatedByUserId(),
-                creatorUsername(task.getCreatedByUserId()),
+                creatorUsername(creatorsById, task.getCreatedByUserId()),
                 seriesDisplayTitle(task),
                 task.getStatus(),
                 task.getStage(),
@@ -648,26 +711,29 @@ public class OpenListIngestTaskCenterService {
                 progressSummary(task.getOrganizedCount(), task.getSkippedCount()),
                 organizedProgress(task.getOrganizedCount(), task.getSkippedCount()),
                 task.getErrorMessage(),
-                lastWarningOrErrorLog(logs),
-                logs,
+                logLimit <= 0 ? null : lastWarningOrErrorLog(logs.logs(), () -> seriesLastWarningOrErrorLog(task.getId())),
+                logs.logs(),
+                logs.hasOlder(),
+                logs.hasNewer(),
                 isActive(task.getStatus()),
                 pendingExplanation(task.getStatus()),
                 null,
-                attemptChain(seriesSnapshot(task), user),
+                attemptChain(seriesSnapshot(task, creatorsById), user, creatorsById),
                 task.getCreatedAt(),
                 task.getUpdatedAt(),
                 task.getFinishedAt()
         );
     }
 
-    private OpenListIngestTaskCenterDetailResponse animeDetail(AnimeMagnetIngestTask task, User user) {
-        List<OpenListIngestTaskCenterLogResponse> logs = animeLogs(task.getId());
+    private OpenListIngestTaskCenterDetailResponse animeDetail(AnimeMagnetIngestTask task, User user, int logLimit) {
+        Map<Long, User> creatorsById = currentUserById(user);
+        TaskLogWindow logs = animeLogWindow(task.getId(), null, null, logLimit);
         return new OpenListIngestTaskCenterDetailResponse(
                 ANIME_TASK_TYPE,
                 task.getId(),
                 ANIME_PRODUCT_TYPE,
                 task.getCreatedByUserId(),
-                creatorUsername(task.getCreatedByUserId()),
+                creatorUsername(creatorsById, task.getCreatedByUserId()),
                 animeDisplayTitle(task),
                 task.getStatus(),
                 task.getStage(),
@@ -681,26 +747,29 @@ public class OpenListIngestTaskCenterService {
                 progressSummary(task.getOrganizedCount(), task.getSkippedCount()),
                 organizedProgress(task.getOrganizedCount(), task.getSkippedCount()),
                 task.getErrorMessage(),
-                lastWarningOrErrorLog(logs),
-                logs,
+                logLimit <= 0 ? null : lastWarningOrErrorLog(logs.logs(), () -> animeLastWarningOrErrorLog(task.getId())),
+                logs.logs(),
+                logs.hasOlder(),
+                logs.hasNewer(),
                 isActive(task.getStatus()),
                 pendingExplanation(task.getStatus()),
                 null,
-                attemptChain(animeSnapshot(task), user),
+                attemptChain(animeSnapshot(task, creatorsById), user, creatorsById),
                 task.getCreatedAt(),
                 task.getUpdatedAt(),
                 task.getFinishedAt()
         );
     }
 
-    private OpenListIngestTaskCenterDetailResponse adultDetail(AdultMagnetIngestTask task, User user) {
-        List<OpenListIngestTaskCenterLogResponse> logs = adultLogs(task.getId());
+    private OpenListIngestTaskCenterDetailResponse adultDetail(AdultMagnetIngestTask task, User user, int logLimit) {
+        Map<Long, User> creatorsById = currentUserById(user);
+        TaskLogWindow logs = adultLogWindow(task.getId(), null, null, logLimit);
         return new OpenListIngestTaskCenterDetailResponse(
                 ADULT_TASK_TYPE,
                 task.getId(),
                 ADULT_PRODUCT_TYPE,
                 task.getCreatedByUserId(),
-                creatorUsername(task.getCreatedByUserId()),
+                creatorUsername(creatorsById, task.getCreatedByUserId()),
                 adultTitle(task),
                 task.getStatus(),
                 task.getStage(),
@@ -714,12 +783,14 @@ public class OpenListIngestTaskCenterService {
                 adultProgressSummary(task),
                 adultProgress(task),
                 task.getErrorMessage(),
-                lastWarningOrErrorLog(logs),
-                logs,
+                logLimit <= 0 ? null : lastWarningOrErrorLog(logs.logs(), () -> adultLastWarningOrErrorLog(task.getId())),
+                logs.logs(),
+                logs.hasOlder(),
+                logs.hasNewer(),
                 isActive(task.getStatus()),
                 pendingExplanation(task.getStatus()),
                 adultDownloadLinks(task.getDownloadLinksJson()),
-                attemptChain(adultSnapshot(task), user),
+                attemptChain(adultSnapshot(task, creatorsById), user, creatorsById),
                 task.getCreatedAt(),
                 task.getUpdatedAt(),
                 task.getFinishedAt()
@@ -730,8 +801,16 @@ public class OpenListIngestTaskCenterService {
             TaskAttemptSnapshot current,
             User user
     ) {
+        return attemptChain(current, user, new LinkedHashMap<>());
+    }
+
+    private OpenListIngestTaskCenterAttemptChainResponse attemptChain(
+            TaskAttemptSnapshot current,
+            User user,
+            Map<Long, User> creatorsById
+    ) {
         Map<TaskAttemptKey, TaskAttemptSnapshot> uniqueSnapshots = new LinkedHashMap<>();
-        collectAttemptChainSnapshots(current, user).stream()
+        collectAttemptChainSnapshots(current, user, creatorsById).stream()
                 .sorted(attemptOrdering())
                 .forEach(snapshot -> uniqueSnapshots.putIfAbsent(snapshot.key(), snapshot));
 
@@ -759,13 +838,22 @@ public class OpenListIngestTaskCenterService {
     }
 
     private List<TaskAttemptSnapshot> collectAttemptChainSnapshots(TaskAttemptSnapshot current, User user) {
+        return collectAttemptChainSnapshots(current, user, new LinkedHashMap<>());
+    }
+
+    private List<TaskAttemptSnapshot> collectAttemptChainSnapshots(
+            TaskAttemptSnapshot current,
+            User user,
+            Map<Long, User> creatorsById
+    ) {
         Map<TaskAttemptKey, TaskAttemptSnapshot> uniqueSnapshots = new LinkedHashMap<>();
         List<TaskAttemptSnapshot> pendingSnapshots = new ArrayList<>();
+        Map<String, List<TaskAttemptSnapshot>> attemptSnapshotsByGroup = new LinkedHashMap<>();
         addAttemptSnapshot(uniqueSnapshots, pendingSnapshots, current, user);
         addAttemptSnapshots(
                 uniqueSnapshots,
                 pendingSnapshots,
-                accessibleAttemptSnapshots(current.attemptGroupId(), user),
+                accessibleAttemptSnapshots(current.attemptGroupId(), user, attemptSnapshotsByGroup, creatorsById),
                 user
         );
 
@@ -774,11 +862,12 @@ public class OpenListIngestTaskCenterService {
             addAttemptSnapshots(
                     uniqueSnapshots,
                     pendingSnapshots,
-                    accessibleAttemptSnapshots(snapshot.attemptGroupId(), user),
+                    accessibleAttemptSnapshots(snapshot.attemptGroupId(), user, attemptSnapshotsByGroup, creatorsById),
                     user
             );
             snapshot.retryOfKey()
-                    .flatMap(key -> accessibleAttemptSnapshot(key, user))
+                    .filter(key -> !uniqueSnapshots.containsKey(key))
+                    .flatMap(key -> accessibleAttemptSnapshot(key, user, creatorsById))
                     .ifPresent(source -> addAttemptSnapshot(uniqueSnapshots, pendingSnapshots, source, user));
         }
         return List.copyOf(uniqueSnapshots.values());
@@ -806,51 +895,88 @@ public class OpenListIngestTaskCenterService {
         pendingSnapshots.add(snapshot);
     }
 
-    private List<TaskAttemptSnapshot> accessibleAttemptSnapshots(String attemptGroupId, User user) {
+    private List<TaskAttemptSnapshot> accessibleAttemptSnapshots(
+            String attemptGroupId,
+            User user,
+            Map<Long, User> creatorsById
+    ) {
         if (!StringUtils.hasText(attemptGroupId)) {
             return List.of();
         }
+        CompletableFuture<List<MovieMagnetIngestTask>> movieTasksFuture =
+                CompletableFuture.supplyAsync(() -> selectMovieAttempts(attemptGroupId, user));
+        CompletableFuture<List<SeriesMagnetIngestTask>> seriesTasksFuture =
+                CompletableFuture.supplyAsync(() -> selectSeriesAttempts(attemptGroupId, user));
+        CompletableFuture<List<AnimeMagnetIngestTask>> animeTasksFuture =
+                CompletableFuture.supplyAsync(() -> selectAnimeAttempts(attemptGroupId, user));
+        CompletableFuture<List<AdultMagnetIngestTask>> adultTasksFuture =
+                CompletableFuture.supplyAsync(() -> isAdmin(user) ? selectAdultAttempts(attemptGroupId) : List.of());
+
+        List<MovieMagnetIngestTask> movieTasks = joinTaskList(movieTasksFuture);
+        List<SeriesMagnetIngestTask> seriesTasks = joinTaskList(seriesTasksFuture);
+        List<AnimeMagnetIngestTask> animeTasks = joinTaskList(animeTasksFuture);
+        List<AdultMagnetIngestTask> adultTasks = joinTaskList(adultTasksFuture);
+        addAttemptCreators(creatorsById, movieTasks, seriesTasks, animeTasks, adultTasks);
+
         List<TaskAttemptSnapshot> snapshots = new ArrayList<>();
-        snapshots.addAll(selectMovieAttempts(attemptGroupId, user).stream()
-                .map(this::movieSnapshot)
+        snapshots.addAll(movieTasks.stream()
+                .map(task -> movieSnapshot(task, creatorsById))
                 .toList());
-        snapshots.addAll(selectSeriesAttempts(attemptGroupId, user).stream()
-                .map(this::seriesSnapshot)
+        snapshots.addAll(seriesTasks.stream()
+                .map(task -> seriesSnapshot(task, creatorsById))
                 .toList());
-        snapshots.addAll(selectAnimeAttempts(attemptGroupId, user).stream()
-                .map(this::animeSnapshot)
+        snapshots.addAll(animeTasks.stream()
+                .map(task -> animeSnapshot(task, creatorsById))
                 .toList());
-        if (isAdmin(user)) {
-            snapshots.addAll(selectAdultAttempts(attemptGroupId).stream()
-                    .map(this::adultSnapshot)
-                    .toList());
-        }
+        snapshots.addAll(adultTasks.stream()
+                .map(task -> adultSnapshot(task, creatorsById))
+                .toList());
         return snapshots;
+    }
+
+    private List<TaskAttemptSnapshot> accessibleAttemptSnapshots(
+            String attemptGroupId,
+            User user,
+            Map<String, List<TaskAttemptSnapshot>> attemptSnapshotsByGroup,
+            Map<Long, User> creatorsById
+    ) {
+        if (!StringUtils.hasText(attemptGroupId)) {
+            return List.of();
+        }
+        return attemptSnapshotsByGroup.computeIfAbsent(
+                attemptGroupId,
+                key -> accessibleAttemptSnapshots(key, user, creatorsById)
+        );
     }
 
     private java.util.Optional<TaskAttemptSnapshot> accessibleAttemptSnapshot(
             TaskAttemptKey key,
-            User user
+            User user,
+            Map<Long, User> creatorsById
     ) {
         TaskAttemptSnapshot snapshot = switch (key.taskType()) {
             case MOVIE_TASK_TYPE -> {
                 MovieMagnetIngestTask task = movieTaskMapper.selectById(key.taskId());
-                yield task == null ? null : movieSnapshot(task);
+                addAttemptCreator(creatorsById, task == null ? null : task.getCreatedByUserId());
+                yield task == null ? null : movieSnapshot(task, creatorsById);
             }
             case SERIES_TASK_TYPE -> {
                 SeriesMagnetIngestTask task = seriesTaskMapper.selectById(key.taskId());
-                yield task == null ? null : seriesSnapshot(task);
+                addAttemptCreator(creatorsById, task == null ? null : task.getCreatedByUserId());
+                yield task == null ? null : seriesSnapshot(task, creatorsById);
             }
             case ANIME_TASK_TYPE -> {
                 AnimeMagnetIngestTask task = animeTaskMapper.selectById(key.taskId());
-                yield task == null ? null : animeSnapshot(task);
+                addAttemptCreator(creatorsById, task == null ? null : task.getCreatedByUserId());
+                yield task == null ? null : animeSnapshot(task, creatorsById);
             }
             case ADULT_TASK_TYPE -> {
                 if (!isAdmin(user)) {
                     yield null;
                 }
                 AdultMagnetIngestTask task = adultTaskMapper.selectById(key.taskId());
-                yield task == null ? null : adultSnapshot(task);
+                addAttemptCreator(creatorsById, task == null ? null : task.getCreatedByUserId());
+                yield task == null ? null : adultSnapshot(task, creatorsById);
             }
             default -> null;
         };
@@ -862,6 +988,21 @@ public class OpenListIngestTaskCenterService {
 
     private List<MovieMagnetIngestTask> selectMovieAttempts(String attemptGroupId, User user) {
         LambdaQueryWrapper<MovieMagnetIngestTask> queryWrapper = new LambdaQueryWrapper<MovieMagnetIngestTask>()
+                .select(
+                        MovieMagnetIngestTask::getId,
+                        MovieMagnetIngestTask::getStatus,
+                        MovieMagnetIngestTask::getStage,
+                        MovieMagnetIngestTask::getTitle,
+                        MovieMagnetIngestTask::getOriginalTitle,
+                        MovieMagnetIngestTask::getYear,
+                        MovieMagnetIngestTask::getSourceType,
+                        MovieMagnetIngestTask::getAttemptGroupId,
+                        MovieMagnetIngestTask::getRetryOfTaskType,
+                        MovieMagnetIngestTask::getRetryOfTaskId,
+                        MovieMagnetIngestTask::getCreatedByUserId,
+                        MovieMagnetIngestTask::getCreatedAt,
+                        MovieMagnetIngestTask::getUpdatedAt
+                )
                 .eq(MovieMagnetIngestTask::getAttemptGroupId, attemptGroupId);
         if (!isAdmin(user)) {
             queryWrapper.eq(MovieMagnetIngestTask::getCreatedByUserId, user.getId());
@@ -872,6 +1013,24 @@ public class OpenListIngestTaskCenterService {
 
     private List<SeriesMagnetIngestTask> selectSeriesAttempts(String attemptGroupId, User user) {
         LambdaQueryWrapper<SeriesMagnetIngestTask> queryWrapper = new LambdaQueryWrapper<SeriesMagnetIngestTask>()
+                .select(
+                        SeriesMagnetIngestTask::getId,
+                        SeriesMagnetIngestTask::getStatus,
+                        SeriesMagnetIngestTask::getStage,
+                        SeriesMagnetIngestTask::getTitle,
+                        SeriesMagnetIngestTask::getOriginalTitle,
+                        SeriesMagnetIngestTask::getSeasonNumber,
+                        SeriesMagnetIngestTask::getTaskProductType,
+                        SeriesMagnetIngestTask::getSourceType,
+                        SeriesMagnetIngestTask::getSeriesName,
+                        SeriesMagnetIngestTask::getSeasonFolder,
+                        SeriesMagnetIngestTask::getAttemptGroupId,
+                        SeriesMagnetIngestTask::getRetryOfTaskType,
+                        SeriesMagnetIngestTask::getRetryOfTaskId,
+                        SeriesMagnetIngestTask::getCreatedByUserId,
+                        SeriesMagnetIngestTask::getCreatedAt,
+                        SeriesMagnetIngestTask::getUpdatedAt
+                )
                 .eq(SeriesMagnetIngestTask::getAttemptGroupId, attemptGroupId);
         if (!isAdmin(user)) {
             queryWrapper.eq(SeriesMagnetIngestTask::getCreatedByUserId, user.getId());
@@ -882,6 +1041,22 @@ public class OpenListIngestTaskCenterService {
 
     private List<AnimeMagnetIngestTask> selectAnimeAttempts(String attemptGroupId, User user) {
         LambdaQueryWrapper<AnimeMagnetIngestTask> queryWrapper = new LambdaQueryWrapper<AnimeMagnetIngestTask>()
+                .select(
+                        AnimeMagnetIngestTask::getId,
+                        AnimeMagnetIngestTask::getStatus,
+                        AnimeMagnetIngestTask::getStage,
+                        AnimeMagnetIngestTask::getTitle,
+                        AnimeMagnetIngestTask::getNameCn,
+                        AnimeMagnetIngestTask::getName,
+                        AnimeMagnetIngestTask::getSeasonNumber,
+                        AnimeMagnetIngestTask::getSourceType,
+                        AnimeMagnetIngestTask::getAttemptGroupId,
+                        AnimeMagnetIngestTask::getRetryOfTaskType,
+                        AnimeMagnetIngestTask::getRetryOfTaskId,
+                        AnimeMagnetIngestTask::getCreatedByUserId,
+                        AnimeMagnetIngestTask::getCreatedAt,
+                        AnimeMagnetIngestTask::getUpdatedAt
+                )
                 .eq(AnimeMagnetIngestTask::getAttemptGroupId, attemptGroupId);
         if (!isAdmin(user)) {
             queryWrapper.eq(AnimeMagnetIngestTask::getCreatedByUserId, user.getId());
@@ -892,8 +1067,60 @@ public class OpenListIngestTaskCenterService {
 
     private List<AdultMagnetIngestTask> selectAdultAttempts(String attemptGroupId) {
         List<AdultMagnetIngestTask> tasks = adultTaskMapper.selectList(new LambdaQueryWrapper<AdultMagnetIngestTask>()
+                .select(
+                        AdultMagnetIngestTask::getId,
+                        AdultMagnetIngestTask::getCreatedByUserId,
+                        AdultMagnetIngestTask::getCategory,
+                        AdultMagnetIngestTask::getStatus,
+                        AdultMagnetIngestTask::getStage,
+                        AdultMagnetIngestTask::getDateFolder,
+                        AdultMagnetIngestTask::getAttemptGroupId,
+                        AdultMagnetIngestTask::getRetryOfTaskType,
+                        AdultMagnetIngestTask::getRetryOfTaskId,
+                        AdultMagnetIngestTask::getCreatedAt,
+                        AdultMagnetIngestTask::getUpdatedAt
+                )
                 .eq(AdultMagnetIngestTask::getAttemptGroupId, attemptGroupId));
         return tasks == null ? List.of() : tasks;
+    }
+
+    private void addAttemptCreators(
+            Map<Long, User> creatorsById,
+            List<MovieMagnetIngestTask> movieTasks,
+            List<SeriesMagnetIngestTask> seriesTasks,
+            List<AnimeMagnetIngestTask> animeTasks,
+            List<AdultMagnetIngestTask> adultTasks
+    ) {
+        Set<Long> creatorIds = new HashSet<>();
+        movieTasks.stream()
+                .map(MovieMagnetIngestTask::getCreatedByUserId)
+                .filter(id -> id != null && !creatorsById.containsKey(id))
+                .forEach(creatorIds::add);
+        seriesTasks.stream()
+                .map(SeriesMagnetIngestTask::getCreatedByUserId)
+                .filter(id -> id != null && !creatorsById.containsKey(id))
+                .forEach(creatorIds::add);
+        animeTasks.stream()
+                .map(AnimeMagnetIngestTask::getCreatedByUserId)
+                .filter(id -> id != null && !creatorsById.containsKey(id))
+                .forEach(creatorIds::add);
+        adultTasks.stream()
+                .map(AdultMagnetIngestTask::getCreatedByUserId)
+                .filter(id -> id != null && !creatorsById.containsKey(id))
+                .forEach(creatorIds::add);
+        if (!creatorIds.isEmpty()) {
+            userMapper.selectBatchIds(creatorIds).forEach(creator -> creatorsById.put(creator.getId(), creator));
+        }
+    }
+
+    private void addAttemptCreator(Map<Long, User> creatorsById, Long creatorId) {
+        if (creatorId == null || creatorsById.containsKey(creatorId)) {
+            return;
+        }
+        User creator = userMapper.selectById(creatorId);
+        if (creator != null) {
+            creatorsById.put(creator.getId(), creator);
+        }
     }
 
     private OpenListIngestTaskCenterAttemptResponse attemptResponse(
@@ -983,72 +1210,240 @@ public class OpenListIngestTaskCenterService {
         return isAdmin(user) || (createdByUserId != null && createdByUserId.equals(user.getId()));
     }
 
-    private List<OpenListIngestTaskCenterLogResponse> movieLogs(String taskId) {
-        return movieTaskLogMapper.selectList(new LambdaQueryWrapper<MovieMagnetIngestTaskLog>()
-                        .eq(MovieMagnetIngestTaskLog::getTaskId, taskId)
-                        .orderByAsc(MovieMagnetIngestTaskLog::getId))
-                .stream()
-                .map(log -> new OpenListIngestTaskCenterLogResponse(
-                        log.getId(),
-                        log.getTaskId(),
-                        log.getLevel(),
-                        log.getStage(),
-                        log.getMessage(),
-                        log.getDetail(),
-                        log.getCreatedAt()
-                ))
-                .toList();
+    private TaskLogWindow movieLogWindow(String taskId, Long beforeId, Long afterId, int limit) {
+        return logWindow(
+                movieTaskLogMapper,
+                taskId,
+                beforeId,
+                afterId,
+                limit,
+                MovieMagnetIngestTaskLog::getTaskId,
+                MovieMagnetIngestTaskLog::getId,
+                this::movieLogResponse
+        );
     }
 
-    private List<OpenListIngestTaskCenterLogResponse> seriesLogs(String taskId) {
-        return seriesTaskLogMapper.selectList(new LambdaQueryWrapper<SeriesMagnetIngestTaskLog>()
-                        .eq(SeriesMagnetIngestTaskLog::getTaskId, taskId)
-                        .orderByAsc(SeriesMagnetIngestTaskLog::getId))
-                .stream()
-                .map(log -> new OpenListIngestTaskCenterLogResponse(
-                        log.getId(),
-                        log.getTaskId(),
-                        log.getLevel(),
-                        log.getStage(),
-                        log.getMessage(),
-                        log.getDetail(),
-                        log.getCreatedAt()
-                ))
-                .toList();
+    private TaskLogWindow seriesLogWindow(String taskId, Long beforeId, Long afterId, int limit) {
+        return logWindow(
+                seriesTaskLogMapper,
+                taskId,
+                beforeId,
+                afterId,
+                limit,
+                SeriesMagnetIngestTaskLog::getTaskId,
+                SeriesMagnetIngestTaskLog::getId,
+                this::seriesLogResponse
+        );
     }
 
-    private List<OpenListIngestTaskCenterLogResponse> animeLogs(String taskId) {
-        return animeTaskLogMapper.selectList(new LambdaQueryWrapper<AnimeMagnetIngestTaskLog>()
-                        .eq(AnimeMagnetIngestTaskLog::getTaskId, taskId)
-                        .orderByAsc(AnimeMagnetIngestTaskLog::getId))
-                .stream()
-                .map(log -> new OpenListIngestTaskCenterLogResponse(
-                        log.getId(),
-                        log.getTaskId(),
-                        log.getLevel(),
-                        log.getStage(),
-                        log.getMessage(),
-                        log.getDetail(),
-                        log.getCreatedAt()
-                ))
-                .toList();
+    private TaskLogWindow animeLogWindow(String taskId, Long beforeId, Long afterId, int limit) {
+        return logWindow(
+                animeTaskLogMapper,
+                taskId,
+                beforeId,
+                afterId,
+                limit,
+                AnimeMagnetIngestTaskLog::getTaskId,
+                AnimeMagnetIngestTaskLog::getId,
+                this::animeLogResponse
+        );
     }
 
-    private List<OpenListIngestTaskCenterLogResponse> adultLogs(String taskId) {
-        return adultTaskLogMapper.selectList(new LambdaQueryWrapper<AdultMagnetIngestTaskLog>()
-                        .eq(AdultMagnetIngestTaskLog::getTaskId, taskId)
-                        .orderByAsc(AdultMagnetIngestTaskLog::getId))
-                .stream()
-                .map(log -> new OpenListIngestTaskCenterLogResponse(
-                        log.getId(),
-                        log.getTaskId(),
-                        log.getLevel(),
-                        log.getStage(),
-                        log.getMessage(),
-                        log.getDetail(),
-                        log.getCreatedAt()
-                ))
+    private TaskLogWindow adultLogWindow(String taskId, Long beforeId, Long afterId, int limit) {
+        return logWindow(
+                adultTaskLogMapper,
+                taskId,
+                beforeId,
+                afterId,
+                limit,
+                AdultMagnetIngestTaskLog::getTaskId,
+                AdultMagnetIngestTaskLog::getId,
+                this::adultLogResponse
+        );
+    }
+
+    private <T> TaskLogWindow logWindow(
+            BaseMapper<T> mapper,
+            String taskId,
+            Long beforeId,
+            Long afterId,
+            int limit,
+            SFunction<T, String> taskIdColumn,
+            SFunction<T, Long> idColumn,
+            Function<T, OpenListIngestTaskCenterLogResponse> responseMapper
+    ) {
+        if (limit <= 0) {
+            return new TaskLogWindow(List.of(), false, false);
+        }
+        boolean ascending = afterId != null;
+        LambdaQueryWrapper<T> query = new LambdaQueryWrapper<T>()
+                .eq(taskIdColumn, taskId);
+        if (beforeId != null) {
+            query.lt(idColumn, beforeId).orderByDesc(idColumn);
+        } else if (afterId != null) {
+            query.gt(idColumn, afterId).orderByAsc(idColumn);
+        } else {
+            query.orderByDesc(idColumn);
+        }
+        query.last("LIMIT " + (limit + 1));
+
+        List<T> rows = new ArrayList<>(mapper.selectList(query));
+        boolean hasExtra = rows.size() > limit;
+        if (hasExtra) {
+            rows = new ArrayList<>(rows.subList(0, limit));
+        }
+        if (!ascending) {
+            Collections.reverse(rows);
+        }
+        List<OpenListIngestTaskCenterLogResponse> logs = rows.stream()
+                .map(responseMapper)
                 .toList();
+        boolean hasOlder = beforeId != null || afterId == null ? hasExtra : false;
+        boolean hasNewer = afterId != null ? hasExtra : false;
+        return new TaskLogWindow(logs, hasOlder, hasNewer);
+    }
+
+    private OpenListIngestTaskCenterLogsResponse toLogsResponse(TaskLogWindow window) {
+        return new OpenListIngestTaskCenterLogsResponse(
+                window.logs(),
+                window.hasOlder(),
+                window.hasNewer(),
+                window.logs().isEmpty() ? null : window.logs().get(0).id(),
+                window.logs().isEmpty() ? null : window.logs().get(window.logs().size() - 1).id()
+        );
+    }
+
+    private Map<Long, User> currentUserById(User user) {
+        if (user == null || user.getId() == null) {
+            return new LinkedHashMap<>();
+        }
+        Map<Long, User> usersById = new LinkedHashMap<>();
+        usersById.put(user.getId(), user);
+        return usersById;
+    }
+
+    private OpenListIngestTaskCenterLogResponse lastWarningOrErrorLog(
+            List<OpenListIngestTaskCenterLogResponse> logs,
+            Supplier<OpenListIngestTaskCenterLogResponse> fallback
+    ) {
+        for (int index = logs.size() - 1; index >= 0; index--) {
+            OpenListIngestTaskCenterLogResponse log = logs.get(index);
+            if ("WARN".equalsIgnoreCase(log.level()) || "ERROR".equalsIgnoreCase(log.level())) {
+                return log;
+            }
+        }
+        return fallback.get();
+    }
+
+    private OpenListIngestTaskCenterLogResponse movieLastWarningOrErrorLog(String taskId) {
+        return lastWarningOrErrorLog(
+                movieTaskLogMapper,
+                taskId,
+                MovieMagnetIngestTaskLog::getTaskId,
+                MovieMagnetIngestTaskLog::getId,
+                MovieMagnetIngestTaskLog::getLevel,
+                this::movieLogResponse
+        );
+    }
+
+    private OpenListIngestTaskCenterLogResponse seriesLastWarningOrErrorLog(String taskId) {
+        return lastWarningOrErrorLog(
+                seriesTaskLogMapper,
+                taskId,
+                SeriesMagnetIngestTaskLog::getTaskId,
+                SeriesMagnetIngestTaskLog::getId,
+                SeriesMagnetIngestTaskLog::getLevel,
+                this::seriesLogResponse
+        );
+    }
+
+    private OpenListIngestTaskCenterLogResponse animeLastWarningOrErrorLog(String taskId) {
+        return lastWarningOrErrorLog(
+                animeTaskLogMapper,
+                taskId,
+                AnimeMagnetIngestTaskLog::getTaskId,
+                AnimeMagnetIngestTaskLog::getId,
+                AnimeMagnetIngestTaskLog::getLevel,
+                this::animeLogResponse
+        );
+    }
+
+    private OpenListIngestTaskCenterLogResponse adultLastWarningOrErrorLog(String taskId) {
+        return lastWarningOrErrorLog(
+                adultTaskLogMapper,
+                taskId,
+                AdultMagnetIngestTaskLog::getTaskId,
+                AdultMagnetIngestTaskLog::getId,
+                AdultMagnetIngestTaskLog::getLevel,
+                this::adultLogResponse
+        );
+    }
+
+    private <T> OpenListIngestTaskCenterLogResponse lastWarningOrErrorLog(
+            BaseMapper<T> mapper,
+            String taskId,
+            SFunction<T, String> taskIdColumn,
+            SFunction<T, Long> idColumn,
+            SFunction<T, String> levelColumn,
+            Function<T, OpenListIngestTaskCenterLogResponse> responseMapper
+    ) {
+        return mapper.selectList(new LambdaQueryWrapper<T>()
+                        .eq(taskIdColumn, taskId)
+                        .in(levelColumn, "WARN", "ERROR", "warn", "error")
+                        .orderByDesc(idColumn)
+                        .last("LIMIT 1"))
+                .stream()
+                .findFirst()
+                .map(responseMapper)
+                .orElse(null);
+    }
+
+    private OpenListIngestTaskCenterLogResponse movieLogResponse(MovieMagnetIngestTaskLog log) {
+        return new OpenListIngestTaskCenterLogResponse(
+                log.getId(),
+                log.getTaskId(),
+                log.getLevel(),
+                log.getStage(),
+                log.getMessage(),
+                log.getDetail(),
+                log.getCreatedAt()
+        );
+    }
+
+    private OpenListIngestTaskCenterLogResponse seriesLogResponse(SeriesMagnetIngestTaskLog log) {
+        return new OpenListIngestTaskCenterLogResponse(
+                log.getId(),
+                log.getTaskId(),
+                log.getLevel(),
+                log.getStage(),
+                log.getMessage(),
+                log.getDetail(),
+                log.getCreatedAt()
+        );
+    }
+
+    private OpenListIngestTaskCenterLogResponse animeLogResponse(AnimeMagnetIngestTaskLog log) {
+        return new OpenListIngestTaskCenterLogResponse(
+                log.getId(),
+                log.getTaskId(),
+                log.getLevel(),
+                log.getStage(),
+                log.getMessage(),
+                log.getDetail(),
+                log.getCreatedAt()
+        );
+    }
+
+    private OpenListIngestTaskCenterLogResponse adultLogResponse(AdultMagnetIngestTaskLog log) {
+        return new OpenListIngestTaskCenterLogResponse(
+                log.getId(),
+                log.getTaskId(),
+                log.getLevel(),
+                log.getStage(),
+                log.getMessage(),
+                log.getDetail(),
+                log.getCreatedAt()
+        );
     }
 
     private OpenListIngestTaskCenterProgressResponse organizedProgress(
@@ -1080,16 +1475,18 @@ public class OpenListIngestTaskCenterService {
         );
     }
 
-    private OpenListIngestTaskCenterLogResponse lastWarningOrErrorLog(
-            List<OpenListIngestTaskCenterLogResponse> logs
-    ) {
-        for (int index = logs.size() - 1; index >= 0; index--) {
-            OpenListIngestTaskCenterLogResponse log = logs.get(index);
-            if ("WARN".equalsIgnoreCase(log.level()) || "ERROR".equalsIgnoreCase(log.level())) {
-                return log;
-            }
+    private int normalizeDetailLogLimit(Integer limit) {
+        if (limit == null) {
+            return DEFAULT_LOG_LIMIT;
         }
-        return null;
+        return Math.max(0, Math.min(limit, MAX_LOG_LIMIT));
+    }
+
+    private int normalizeLogLimit(Integer limit) {
+        if (limit == null) {
+            return DEFAULT_LOG_LIMIT;
+        }
+        return Math.max(1, Math.min(limit, MAX_LOG_LIMIT));
     }
 
     private boolean isActive(String status) {
@@ -1146,12 +1543,118 @@ public class OpenListIngestTaskCenterService {
         return queryWrapper;
     }
 
+    private TaskListingFetches taskListingFetches(User user, String view, String productType) {
+        CompletableFuture<List<MovieMagnetIngestTask>> movieTasksFuture =
+                CompletableFuture.supplyAsync(() -> movieTasksForListing(user, view, productType));
+        CompletableFuture<List<SeriesMagnetIngestTask>> seriesTasksFuture =
+                CompletableFuture.supplyAsync(() -> seriesTasksForListing(user, view, productType));
+        CompletableFuture<List<AnimeMagnetIngestTask>> animeTasksFuture =
+                CompletableFuture.supplyAsync(() -> animeTasksForListing(user, view, productType));
+        CompletableFuture<List<AdultMagnetIngestTask>> adultTasksFuture =
+                CompletableFuture.supplyAsync(() -> adultTasksForListing(user, view, productType));
+
+        return new TaskListingFetches(
+                joinTaskList(movieTasksFuture),
+                joinTaskList(seriesTasksFuture),
+                joinTaskList(animeTasksFuture),
+                joinTaskList(adultTasksFuture)
+        );
+    }
+
+    private <T> List<T> joinTaskList(CompletableFuture<List<T>> future) {
+        try {
+            return future.join();
+        } catch (CompletionException exception) {
+            Throwable cause = exception.getCause();
+            if (cause instanceof RuntimeException runtimeException) {
+                throw runtimeException;
+            }
+            throw exception;
+        }
+    }
+
+    private List<MovieMagnetIngestTask> movieTasksForListing(
+            User user,
+            String view,
+            String productType
+    ) {
+        if (!ALL_FILTER.equals(productType) && !MOVIE_PRODUCT_TYPE.equals(productType)) {
+            return List.of();
+        }
+        LambdaQueryWrapper<MovieMagnetIngestTask> queryWrapper = ownedMovieTasks(user)
+                .select(
+                        MovieMagnetIngestTask::getId,
+                        MovieMagnetIngestTask::getStatus,
+                        MovieMagnetIngestTask::getStage,
+                        MovieMagnetIngestTask::getMagnetHash,
+                        MovieMagnetIngestTask::getTitle,
+                        MovieMagnetIngestTask::getOriginalTitle,
+                        MovieMagnetIngestTask::getYear,
+                        MovieMagnetIngestTask::getSourceType,
+                        MovieMagnetIngestTask::getReleaseTitle,
+                        MovieMagnetIngestTask::getAttemptGroupId,
+                        MovieMagnetIngestTask::getRetryOfTaskType,
+                        MovieMagnetIngestTask::getRetryOfTaskId,
+                        MovieMagnetIngestTask::getCreatedByUserId,
+                        MovieMagnetIngestTask::getOrganizedCount,
+                        MovieMagnetIngestTask::getSkippedCount,
+                        MovieMagnetIngestTask::getCreatedAt,
+                        MovieMagnetIngestTask::getUpdatedAt
+                );
+        applyViewFilter(queryWrapper, view, MovieMagnetIngestTask::getStatus);
+        return nullToEmpty(movieTaskMapper.selectList(queryWrapper));
+    }
+
     private LambdaQueryWrapper<SeriesMagnetIngestTask> ownedSeriesTasks(User user) {
         LambdaQueryWrapper<SeriesMagnetIngestTask> queryWrapper = new LambdaQueryWrapper<>();
         if (!isAdmin(user)) {
             queryWrapper.eq(SeriesMagnetIngestTask::getCreatedByUserId, user.getId());
         }
         return queryWrapper;
+    }
+
+    private List<SeriesMagnetIngestTask> seriesTasksForListing(
+            User user,
+            String view,
+            String productType
+    ) {
+        if (MOVIE_PRODUCT_TYPE.equals(productType) || ADULT_PRODUCT_TYPE.equals(productType)) {
+            return List.of();
+        }
+        LambdaQueryWrapper<SeriesMagnetIngestTask> queryWrapper = ownedSeriesTasks(user)
+                .select(
+                        SeriesMagnetIngestTask::getId,
+                        SeriesMagnetIngestTask::getStatus,
+                        SeriesMagnetIngestTask::getStage,
+                        SeriesMagnetIngestTask::getMagnetHash,
+                        SeriesMagnetIngestTask::getTitle,
+                        SeriesMagnetIngestTask::getOriginalTitle,
+                        SeriesMagnetIngestTask::getSeasonNumber,
+                        SeriesMagnetIngestTask::getTaskProductType,
+                        SeriesMagnetIngestTask::getSourceType,
+                        SeriesMagnetIngestTask::getReleaseTitle,
+                        SeriesMagnetIngestTask::getSeriesName,
+                        SeriesMagnetIngestTask::getSeasonFolder,
+                        SeriesMagnetIngestTask::getAttemptGroupId,
+                        SeriesMagnetIngestTask::getRetryOfTaskType,
+                        SeriesMagnetIngestTask::getRetryOfTaskId,
+                        SeriesMagnetIngestTask::getCreatedByUserId,
+                        SeriesMagnetIngestTask::getOrganizedCount,
+                        SeriesMagnetIngestTask::getSkippedCount,
+                        SeriesMagnetIngestTask::getCreatedAt,
+                        SeriesMagnetIngestTask::getUpdatedAt
+                );
+        applyViewFilter(queryWrapper, view, SeriesMagnetIngestTask::getStatus);
+        if (SERIES_PRODUCT_TYPE.equals(productType)) {
+            queryWrapper.and(wrapper -> wrapper
+                    .ne(SeriesMagnetIngestTask::getTaskProductType, ANIME_PRODUCT_TYPE)
+                    .or()
+                    .isNull(SeriesMagnetIngestTask::getTaskProductType)
+            );
+        } else if (ANIME_PRODUCT_TYPE.equals(productType)) {
+            queryWrapper.eq(SeriesMagnetIngestTask::getTaskProductType, ANIME_PRODUCT_TYPE);
+        }
+        return nullToEmpty(seriesTaskMapper.selectList(queryWrapper));
     }
 
     private LambdaQueryWrapper<AnimeMagnetIngestTask> ownedAnimeTasks(User user) {
@@ -1162,11 +1665,102 @@ public class OpenListIngestTaskCenterService {
         return queryWrapper;
     }
 
+    private List<AnimeMagnetIngestTask> animeTasksForListing(
+            User user,
+            String view,
+            String productType
+    ) {
+        if (!ALL_FILTER.equals(productType) && !ANIME_PRODUCT_TYPE.equals(productType)) {
+            return List.of();
+        }
+        LambdaQueryWrapper<AnimeMagnetIngestTask> queryWrapper = ownedAnimeTasks(user)
+                .select(
+                        AnimeMagnetIngestTask::getId,
+                        AnimeMagnetIngestTask::getStatus,
+                        AnimeMagnetIngestTask::getStage,
+                        AnimeMagnetIngestTask::getMagnetHash,
+                        AnimeMagnetIngestTask::getTitle,
+                        AnimeMagnetIngestTask::getNameCn,
+                        AnimeMagnetIngestTask::getName,
+                        AnimeMagnetIngestTask::getSeasonNumber,
+                        AnimeMagnetIngestTask::getSourceType,
+                        AnimeMagnetIngestTask::getReleaseTitle,
+                        AnimeMagnetIngestTask::getAttemptGroupId,
+                        AnimeMagnetIngestTask::getRetryOfTaskType,
+                        AnimeMagnetIngestTask::getRetryOfTaskId,
+                        AnimeMagnetIngestTask::getCreatedByUserId,
+                        AnimeMagnetIngestTask::getOrganizedCount,
+                        AnimeMagnetIngestTask::getSkippedCount,
+                        AnimeMagnetIngestTask::getCreatedAt,
+                        AnimeMagnetIngestTask::getUpdatedAt
+                );
+        applyViewFilter(queryWrapper, view, AnimeMagnetIngestTask::getStatus);
+        return nullToEmpty(animeTaskMapper.selectList(queryWrapper));
+    }
+
     private List<AdultMagnetIngestTask> adultTasksVisibleTo(User user) {
         if (!isAdmin(user)) {
             return List.of();
         }
         return adultTaskMapper.selectList(new LambdaQueryWrapper<>());
+    }
+
+    private List<AdultMagnetIngestTask> adultTasksForListing(
+            User user,
+            String view,
+            String productType
+    ) {
+        if (!isAdmin(user) || (!ALL_FILTER.equals(productType) && !ADULT_PRODUCT_TYPE.equals(productType))) {
+            return List.of();
+        }
+        LambdaQueryWrapper<AdultMagnetIngestTask> queryWrapper = new LambdaQueryWrapper<AdultMagnetIngestTask>()
+                .select(
+                        AdultMagnetIngestTask::getId,
+                        AdultMagnetIngestTask::getCreatedByUserId,
+                        AdultMagnetIngestTask::getCategory,
+                        AdultMagnetIngestTask::getStatus,
+                        AdultMagnetIngestTask::getStage,
+                        AdultMagnetIngestTask::getDateFolder,
+                        AdultMagnetIngestTask::getAttemptGroupId,
+                        AdultMagnetIngestTask::getRetryOfTaskType,
+                        AdultMagnetIngestTask::getRetryOfTaskId,
+                        AdultMagnetIngestTask::getSubmittedCount,
+                        AdultMagnetIngestTask::getSucceededCount,
+                        AdultMagnetIngestTask::getFailedCount,
+                        AdultMagnetIngestTask::getDuplicateCount,
+                        AdultMagnetIngestTask::getKeptCount,
+                        AdultMagnetIngestTask::getDeletedCount,
+                        AdultMagnetIngestTask::getCreatedAt,
+                        AdultMagnetIngestTask::getUpdatedAt
+                );
+        applyViewFilter(queryWrapper, view, AdultMagnetIngestTask::getStatus);
+        return nullToEmpty(adultTaskMapper.selectList(queryWrapper));
+    }
+
+    private record TaskListingFetches(
+            List<MovieMagnetIngestTask> movieTasks,
+            List<SeriesMagnetIngestTask> seriesTasks,
+            List<AnimeMagnetIngestTask> animeTasks,
+            List<AdultMagnetIngestTask> adultTasks
+    ) {
+    }
+
+    private <T> void applyViewFilter(
+            LambdaQueryWrapper<T> queryWrapper,
+            String view,
+            SFunction<T, String> statusColumn
+    ) {
+        switch (view) {
+            case IN_PROGRESS_VIEW -> queryWrapper.in(statusColumn, IN_PROGRESS_STATUSES);
+            case NEEDS_ATTENTION_VIEW -> queryWrapper.in(statusColumn, NEEDS_ATTENTION_STATUSES);
+            case SUCCEEDED_VIEW -> queryWrapper.eq(statusColumn, "SUCCEEDED");
+            default -> {
+            }
+        }
+    }
+
+    private <T> List<T> nullToEmpty(List<T> items) {
+        return items == null ? List.of() : items;
     }
 
     private TaskCenterListingCandidate movieItem(
@@ -1298,6 +1892,10 @@ public class OpenListIngestTaskCenterService {
     }
 
     private TaskAttemptSnapshot movieSnapshot(MovieMagnetIngestTask task) {
+        return movieSnapshot(task, null);
+    }
+
+    private TaskAttemptSnapshot movieSnapshot(MovieMagnetIngestTask task, Map<Long, User> creatorsById) {
         return new TaskAttemptSnapshot(
                 MOVIE_TASK_TYPE,
                 task.getId(),
@@ -1308,7 +1906,9 @@ public class OpenListIngestTaskCenterService {
                 task.getStage(),
                 sourceType(task.getSourceType()),
                 task.getCreatedByUserId(),
-                creatorUsername(task.getCreatedByUserId()),
+                creatorsById == null
+                        ? creatorUsername(task.getCreatedByUserId())
+                        : creatorUsername(creatorsById, task.getCreatedByUserId()),
                 normalizeTaskType(task.getRetryOfTaskType()),
                 task.getRetryOfTaskId(),
                 task.getCreatedAt(),
@@ -1317,6 +1917,10 @@ public class OpenListIngestTaskCenterService {
     }
 
     private TaskAttemptSnapshot seriesSnapshot(SeriesMagnetIngestTask task) {
+        return seriesSnapshot(task, null);
+    }
+
+    private TaskAttemptSnapshot seriesSnapshot(SeriesMagnetIngestTask task, Map<Long, User> creatorsById) {
         return new TaskAttemptSnapshot(
                 SERIES_TASK_TYPE,
                 task.getId(),
@@ -1327,7 +1931,9 @@ public class OpenListIngestTaskCenterService {
                 task.getStage(),
                 sourceType(task.getSourceType()),
                 task.getCreatedByUserId(),
-                creatorUsername(task.getCreatedByUserId()),
+                creatorsById == null
+                        ? creatorUsername(task.getCreatedByUserId())
+                        : creatorUsername(creatorsById, task.getCreatedByUserId()),
                 normalizeTaskType(task.getRetryOfTaskType()),
                 task.getRetryOfTaskId(),
                 task.getCreatedAt(),
@@ -1336,6 +1942,10 @@ public class OpenListIngestTaskCenterService {
     }
 
     private TaskAttemptSnapshot animeSnapshot(AnimeMagnetIngestTask task) {
+        return animeSnapshot(task, null);
+    }
+
+    private TaskAttemptSnapshot animeSnapshot(AnimeMagnetIngestTask task, Map<Long, User> creatorsById) {
         return new TaskAttemptSnapshot(
                 ANIME_TASK_TYPE,
                 task.getId(),
@@ -1346,7 +1956,9 @@ public class OpenListIngestTaskCenterService {
                 task.getStage(),
                 sourceType(task.getSourceType()),
                 task.getCreatedByUserId(),
-                creatorUsername(task.getCreatedByUserId()),
+                creatorsById == null
+                        ? creatorUsername(task.getCreatedByUserId())
+                        : creatorUsername(creatorsById, task.getCreatedByUserId()),
                 normalizeTaskType(task.getRetryOfTaskType()),
                 task.getRetryOfTaskId(),
                 task.getCreatedAt(),
@@ -1355,6 +1967,10 @@ public class OpenListIngestTaskCenterService {
     }
 
     private TaskAttemptSnapshot adultSnapshot(AdultMagnetIngestTask task) {
+        return adultSnapshot(task, null);
+    }
+
+    private TaskAttemptSnapshot adultSnapshot(AdultMagnetIngestTask task, Map<Long, User> creatorsById) {
         return new TaskAttemptSnapshot(
                 ADULT_TASK_TYPE,
                 task.getId(),
@@ -1365,7 +1981,9 @@ public class OpenListIngestTaskCenterService {
                 task.getStage(),
                 MANUAL_MAGNET_SOURCE,
                 task.getCreatedByUserId(),
-                creatorUsername(task.getCreatedByUserId()),
+                creatorsById == null
+                        ? creatorUsername(task.getCreatedByUserId())
+                        : creatorUsername(creatorsById, task.getCreatedByUserId()),
                 normalizeTaskType(task.getRetryOfTaskType()),
                 task.getRetryOfTaskId(),
                 task.getCreatedAt(),
@@ -1791,6 +2409,13 @@ public class OpenListIngestTaskCenterService {
         boolean matches(String otherTaskType, String otherTaskId) {
             return taskType.equals(otherTaskType) && taskId.equals(otherTaskId);
         }
+    }
+
+    private record TaskLogWindow(
+            List<OpenListIngestTaskCenterLogResponse> logs,
+            boolean hasOlder,
+            boolean hasNewer
+    ) {
     }
 
     private record ReleaseRetryTitles(

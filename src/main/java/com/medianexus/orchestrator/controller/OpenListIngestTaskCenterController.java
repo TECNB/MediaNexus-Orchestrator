@@ -6,6 +6,7 @@ import com.medianexus.orchestrator.dto.taskcenter.request.OpenListAdultBatchRetr
 import com.medianexus.orchestrator.dto.taskcenter.request.OpenListReleaseRetryRequest;
 import com.medianexus.orchestrator.dto.taskcenter.response.OpenListIngestTaskCenterDetailResponse;
 import com.medianexus.orchestrator.dto.taskcenter.response.OpenListIngestTaskCenterListResponse;
+import com.medianexus.orchestrator.dto.taskcenter.response.OpenListIngestTaskCenterLogsResponse;
 import com.medianexus.orchestrator.dto.taskcenter.response.OpenListManualMagnetRetryResponse;
 import com.medianexus.orchestrator.dto.taskcenter.response.OpenListReleaseRetryContextResponse;
 import com.medianexus.orchestrator.service.OpenListIngestTaskCenterService;
@@ -13,6 +14,7 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.Pattern;
 import org.springframework.validation.annotation.Validated;
@@ -68,15 +70,47 @@ public class OpenListIngestTaskCenterController {
     }
 
     @GetMapping("/tasks/{taskType}/{taskId}")
-    @Operation(summary = "读取 OpenList 入库任务详情", description = "统一返回电影、剧集、动漫整季和有权查看的 Adult 批量任务详情、失败证据和完整日志。")
+    @Operation(summary = "读取 OpenList 入库任务详情", description = "统一返回电影、剧集、动漫整季和有权查看的 Adult 批量任务详情、失败证据和首屏日志窗口。")
     public ApiResponse<OpenListIngestTaskCenterDetailResponse> getTaskDetail(
             @Parameter(description = "底层任务类型：movie、series、anime 或 adult")
             @Pattern(regexp = "(?i)movie|series|anime|adult", message = "任务类型无效")
             @PathVariable String taskType,
             @Parameter(description = "底层任务 id")
-            @PathVariable String taskId
+            @PathVariable String taskId,
+            @Parameter(description = "详情内返回的最新日志条数；默认 100，轮询摘要可传 0")
+            @Min(value = 0, message = "日志条数不能小于 0")
+            @Max(value = 200, message = "日志条数不能大于 200")
+            @RequestParam(name = "log_limit", required = false) Integer logLimit
     ) {
-        return ApiResponse.success(taskCenterService.getOpenListIngestTaskDetail(taskType, taskId));
+        return ApiResponse.success(taskCenterService.getOpenListIngestTaskDetail(taskType, taskId, logLimit));
+    }
+
+    @GetMapping("/tasks/{taskType}/{taskId}/logs")
+    @Operation(summary = "读取 OpenList 入库任务日志窗口", description = "按日志 id 游标读取最新日志、历史日志或新增日志。before_id 和 after_id 不能同时传。")
+    public ApiResponse<OpenListIngestTaskCenterLogsResponse> getTaskLogs(
+            @Parameter(description = "底层任务类型：movie、series、anime 或 adult")
+            @Pattern(regexp = "(?i)movie|series|anime|adult", message = "任务类型无效")
+            @PathVariable String taskType,
+            @Parameter(description = "底层任务 id")
+            @PathVariable String taskId,
+            @Parameter(description = "读取早于该日志 id 的历史日志")
+            @Min(value = 1, message = "before_id 必须大于 0")
+            @RequestParam(name = "before_id", required = false) Long beforeId,
+            @Parameter(description = "读取晚于该日志 id 的新增日志")
+            @Min(value = 1, message = "after_id 必须大于 0")
+            @RequestParam(name = "after_id", required = false) Long afterId,
+            @Parameter(description = "日志条数，默认 100，最大 200")
+            @Min(value = 1, message = "日志条数不能小于 1")
+            @Max(value = 200, message = "日志条数不能大于 200")
+            @RequestParam(name = "limit", required = false) Integer limit
+    ) {
+        return ApiResponse.success(taskCenterService.getOpenListIngestTaskLogs(
+                taskType,
+                taskId,
+                beforeId,
+                afterId,
+                limit
+        ));
     }
 
     @GetMapping("/tasks/{taskType}/{taskId}/release-retry-context")
