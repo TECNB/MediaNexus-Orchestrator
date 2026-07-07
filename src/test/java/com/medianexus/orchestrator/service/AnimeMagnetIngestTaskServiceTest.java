@@ -7,6 +7,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -22,7 +23,9 @@ import com.medianexus.orchestrator.model.User;
 import com.medianexus.orchestrator.model.UserActionType;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.AbstractExecutorService;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -182,6 +185,58 @@ class AnimeMagnetIngestTaskServiceTest {
 
         assertThat(hasVideoFiles).isTrue();
         verify(openListClient, never()).listFiles("/anime/Show/Season 01/Scans");
+    }
+
+    @Test
+    void animeOrganizeSplitsLargeRenameAndMoveBatches() {
+        OpenListProperties properties = new OpenListProperties();
+        properties.setAnimeRenameTemplate("{title} S{seasonFormat}E{episodeFormat}");
+        properties.setAnimeExcludePatterns("特别篇,\\d-\\d,总集");
+        OpenListClient openListClient = mock(OpenListClient.class);
+        when(openListClient.normalizePath(anyString())).thenAnswer(invocation -> normalizePath(invocation.getArgument(0)));
+        when(openListClient.joinPath(anyString(), anyString())).thenAnswer(invocation ->
+                normalizePath(invocation.getArgument(0) + "/" + invocation.getArgument(1)));
+        List<OpenListFileInfo> releaseFiles = new ArrayList<>();
+        for (int episode = 1; episode <= 25; episode++) {
+            releaseFiles.add(new OpenListFileInfo(
+                    String.format("[Group] Show - %02d.mkv", episode),
+                    1024L,
+                    false,
+                    "/anime/Show/Season 01/Release"
+            ));
+        }
+        when(openListClient.listFiles("/anime/Show/Season 01")).thenReturn(List.of(
+                new OpenListFileInfo("Release", null, true, "/anime/Show/Season 01")
+        ));
+        when(openListClient.listFiles("/anime/Show/Season 01/Release")).thenReturn(releaseFiles);
+
+        AnimeMagnetIngestTaskService service = new AnimeMagnetIngestTaskService(
+                taskMapper,
+                taskLogMapper,
+                openListClient,
+                properties,
+                new AnimeEpisodeRenameService(properties),
+                authService,
+                quotaService,
+                null,
+                taskExecutor
+        );
+
+        ReflectionTestUtils.invokeMethod(service, "organizeFiles", animeTask());
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, String>> renameBatches = ArgumentCaptor.forClass(Map.class);
+        verify(openListClient, times(3)).batchRename(eq("/anime/Show/Season 01/Release"), renameBatches.capture());
+        assertThat(renameBatches.getAllValues()).extracting(Map::size).containsExactly(10, 10, 5);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<String>> moveBatches = ArgumentCaptor.forClass(List.class);
+        verify(openListClient, times(3)).move(
+                eq("/anime/Show/Season 01/Release"),
+                eq("/anime/Show/Season 01"),
+                moveBatches.capture()
+        );
+        assertThat(moveBatches.getAllValues()).extracting(List::size).containsExactly(10, 10, 5);
     }
 
     private AnimeMagnetIngestTask originalTask() {

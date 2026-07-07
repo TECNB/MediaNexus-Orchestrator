@@ -84,6 +84,7 @@ public class AnimeMagnetIngestTaskService {
             "扫描"
     );
     private static final int DEFAULT_OFFSET = 0;
+    private static final int OPENLIST_ORGANIZE_BATCH_SIZE = 10;
     private static final Duration SAVING_FILES_VISIBLE_GRACE = Duration.ofMinutes(5);
     private static final String ADMIN_ROLE = "ADMIN";
 
@@ -654,63 +655,42 @@ public class AnimeMagnetIngestTaskService {
         );
 
         for (Map.Entry<String, Map<String, String>> entry : renameByDir.entrySet()) {
-            writeLog(
-                    task.getId(),
-                    "INFO",
-                    "organizing",
-                    "正在批量重命名文件",
-                    sourceBatchDetail(entry.getKey(), entry.getValue().size())
-            );
-            openListClient.batchRename(entry.getKey(), entry.getValue());
-            writeLog(
-                    task.getId(),
-                    "INFO",
-                    "organizing",
-                    "批量重命名完成",
-                    sourceBatchDetail(entry.getKey(), entry.getValue().size())
-            );
-            for (Map.Entry<String, String> renameEntry : entry.getValue().entrySet()) {
-                writeLog(task.getId(), "INFO", "organizing", "重命名文件", renameEntry.getKey() + " ==> " + renameEntry.getValue());
+            List<Map<String, String>> batches = chunkMap(entry.getValue());
+            for (int index = 0; index < batches.size(); index++) {
+                Map<String, String> batch = batches.get(index);
+                String detail = sourceBatchDetail(entry.getKey(), batch.size(), index + 1, batches.size());
+                writeLog(task.getId(), "INFO", "organizing", "正在批量重命名文件", detail);
+                openListClient.batchRename(entry.getKey(), batch);
+                writeLog(task.getId(), "INFO", "organizing", "批量重命名完成", detail);
+                for (Map.Entry<String, String> renameEntry : batch.entrySet()) {
+                    writeLog(task.getId(), "INFO", "organizing", "重命名文件", renameEntry.getKey() + " ==> " + renameEntry.getValue());
+                }
             }
         }
         for (Map.Entry<String, List<String>> entry : moveByDir.entrySet()) {
-            writeLog(
-                    task.getId(),
-                    "INFO",
-                    "organizing",
-                    "正在批量移动文件到 Season 目录",
-                    moveBatchDetail(entry.getKey(), task.getSavePath(), entry.getValue().size())
-            );
-            openListClient.move(entry.getKey(), task.getSavePath(), entry.getValue());
-            writeLog(
-                    task.getId(),
-                    "INFO",
-                    "organizing",
-                    "批量移动完成",
-                    moveBatchDetail(entry.getKey(), task.getSavePath(), entry.getValue().size())
-            );
-            for (String name : entry.getValue()) {
-                writeLog(task.getId(), "INFO", "organizing", "移动文件到 Season 目录", name);
+            List<List<String>> batches = chunkList(entry.getValue());
+            for (int index = 0; index < batches.size(); index++) {
+                List<String> batch = batches.get(index);
+                String detail = moveBatchDetail(entry.getKey(), task.getSavePath(), batch.size(), index + 1, batches.size());
+                writeLog(task.getId(), "INFO", "organizing", "正在批量移动文件到 Season 目录", detail);
+                openListClient.move(entry.getKey(), task.getSavePath(), batch);
+                writeLog(task.getId(), "INFO", "organizing", "批量移动完成", detail);
+                for (String name : batch) {
+                    writeLog(task.getId(), "INFO", "organizing", "移动文件到 Season 目录", name);
+                }
             }
         }
         for (Map.Entry<String, List<String>> entry : deleteByDir.entrySet()) {
-            writeLog(
-                    task.getId(),
-                    "INFO",
-                    "organizing",
-                    "正在删除跳过文件",
-                    sourceBatchDetail(entry.getKey(), entry.getValue().size())
-            );
-            openListClient.remove(entry.getKey(), entry.getValue());
-            writeLog(
-                    task.getId(),
-                    "INFO",
-                    "organizing",
-                    "跳过文件删除完成",
-                    sourceBatchDetail(entry.getKey(), entry.getValue().size())
-            );
-            for (String name : entry.getValue()) {
-                writeLog(task.getId(), "INFO", "organizing", "删除跳过文件", entry.getKey() + "/" + name);
+            List<List<String>> batches = chunkList(entry.getValue());
+            for (int index = 0; index < batches.size(); index++) {
+                List<String> batch = batches.get(index);
+                String detail = sourceBatchDetail(entry.getKey(), batch.size(), index + 1, batches.size());
+                writeLog(task.getId(), "INFO", "organizing", "正在删除跳过文件", detail);
+                openListClient.remove(entry.getKey(), batch);
+                writeLog(task.getId(), "INFO", "organizing", "跳过文件删除完成", detail);
+                for (String name : batch) {
+                    writeLog(task.getId(), "INFO", "organizing", "删除跳过文件", entry.getKey() + "/" + name);
+                }
             }
         }
         writeLog(task.getId(), "INFO", "organizing", "正在清理空目录", savePath);
@@ -834,8 +814,43 @@ public class AnimeMagnetIngestTaskService {
         return "srcDir=" + sourceDir + ", count=" + count;
     }
 
+    private String sourceBatchDetail(String sourceDir, int count, int batchNumber, int batchCount) {
+        return sourceBatchDetail(sourceDir, count) + ", batch=" + batchNumber + "/" + batchCount;
+    }
+
     private String moveBatchDetail(String sourceDir, String destinationDir, int count) {
         return "srcDir=" + sourceDir + ", dstDir=" + destinationDir + ", count=" + count;
+    }
+
+    private String moveBatchDetail(String sourceDir, String destinationDir, int count, int batchNumber, int batchCount) {
+        return moveBatchDetail(sourceDir, destinationDir, count) + ", batch=" + batchNumber + "/" + batchCount;
+    }
+
+    private List<Map<String, String>> chunkMap(Map<String, String> values) {
+        List<Map.Entry<String, String>> entries = new ArrayList<>(values.entrySet());
+        List<Map<String, String>> chunks = new ArrayList<>();
+        for (int start = 0; start < entries.size(); start += OPENLIST_ORGANIZE_BATCH_SIZE) {
+            Map<String, String> chunk = new LinkedHashMap<>();
+            for (Map.Entry<String, String> entry : entries.subList(
+                    start,
+                    Math.min(start + OPENLIST_ORGANIZE_BATCH_SIZE, entries.size())
+            )) {
+                chunk.put(entry.getKey(), entry.getValue());
+            }
+            chunks.add(chunk);
+        }
+        return chunks;
+    }
+
+    private List<List<String>> chunkList(List<String> values) {
+        List<List<String>> chunks = new ArrayList<>();
+        for (int start = 0; start < values.size(); start += OPENLIST_ORGANIZE_BATCH_SIZE) {
+            chunks.add(new ArrayList<>(values.subList(
+                    start,
+                    Math.min(start + OPENLIST_ORGANIZE_BATCH_SIZE, values.size())
+            )));
+        }
+        return chunks;
     }
 
     private void cleanupEmptyDirectories(String taskId, String rootPath, String currentPath, Set<String> skippedDirectoryPaths) {
