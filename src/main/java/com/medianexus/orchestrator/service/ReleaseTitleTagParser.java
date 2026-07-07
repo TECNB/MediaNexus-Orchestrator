@@ -1,9 +1,11 @@
 package com.medianexus.orchestrator.service;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.regex.Matcher;
@@ -42,6 +44,9 @@ public class ReleaseTitleTagParser {
     );
     private static final Pattern CJK_SEASON_TEXT_PATTERN = Pattern.compile(
             "第\\s*(?<season>[一二三四五六七八九十两]+)\\s*[季期]"
+    );
+    private static final Pattern ALIAS_CONTINUATION_NUMBER_PATTERN = Pattern.compile(
+            "(?<!\\d)(?<season>[2-9]|[1-9]\\d)\\s*$"
     );
     private static final Pattern FIRST_SEASON_PACK_PATTERN = Pattern.compile(
             "(?ix)(?:"
@@ -110,6 +115,9 @@ public class ReleaseTitleTagParser {
         addSeasonMatches(seasons, ORDINAL_SEASON_PATTERN.matcher(title));
         addSeasonMatches(seasons, CJK_SEASON_NUMBER_PATTERN.matcher(title));
         addCjkSeasonMatches(seasons, CJK_SEASON_TEXT_PATTERN.matcher(title));
+        if (seasons.isEmpty()) {
+            addRepeatedAliasContinuationSeasonMatches(seasons, title);
+        }
         if (seasons.isEmpty() && FIRST_SEASON_PACK_PATTERN.matcher(title).find()) {
             seasons.add(1);
         }
@@ -132,6 +140,30 @@ public class ReleaseTitleTagParser {
                 seasons.add(season);
             }
         }
+    }
+
+    private void addRepeatedAliasContinuationSeasonMatches(Set<Integer> seasons, String title) {
+        if (!FIRST_SEASON_PACK_PATTERN.matcher(title).find()) {
+            return;
+        }
+        String[] aliases = title.split("\\s+/\\s+");
+        if (aliases.length < 2) {
+            return;
+        }
+
+        Map<Integer, Integer> continuationCounts = new HashMap<>();
+        for (String alias : aliases) {
+            Matcher matcher = ALIAS_CONTINUATION_NUMBER_PATTERN.matcher(alias.trim());
+            if (matcher.find()) {
+                int season = Integer.parseInt(matcher.group("season"));
+                continuationCounts.merge(season, 1, Integer::sum);
+            }
+        }
+        continuationCounts.forEach((season, count) -> {
+            if (count >= 2) {
+                seasons.add(season);
+            }
+        });
     }
 
     private int parseCjkNumber(String value) {

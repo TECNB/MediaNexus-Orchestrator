@@ -42,6 +42,13 @@ class ReleaseTitleTagParserTest {
     }
 
     @Test
+    void parsesNumberedAnimeContinuationBeforeWholePackFallback() {
+        assertThat(parser.parse(
+                "[千夏字幕组&VCB-Studio] 吹响吧！上低音号 3 / Hibike! Euphonium 3 / 響け! ユーフォニアム3 10-bit 1080p HEVC BDRip [Fin]"
+        ).seasonTags()).containsExactly("S03");
+    }
+
+    @Test
     void doesNotTreatSingleEpisodesOrDatesAsFirstSeasonPacks() {
         assertThat(parser.parse("Show [04] 1080p").seasonTags()).isEmpty();
         assertThat(parser.parse("Show 2024-01-12 1080p").seasonTags()).isEmpty();
