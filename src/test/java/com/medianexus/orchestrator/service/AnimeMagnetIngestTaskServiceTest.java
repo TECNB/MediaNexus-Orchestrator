@@ -299,7 +299,7 @@ class AnimeMagnetIngestTaskServiceTest {
         private User currentUser;
 
         TestAuthService() {
-            super(null, null, null);
+            super(null, (RegistrationCodeSettingsService) null, null);
         }
 
         @Override

@@ -85,7 +85,7 @@ class MovieSeriesResourceSearchServiceTest {
 
     private static class TestAuthService extends AuthService {
         TestAuthService() {
-            super(null, null, null);
+            super(null, (RegistrationCodeSettingsService) null, null);
         }
 
         @Override

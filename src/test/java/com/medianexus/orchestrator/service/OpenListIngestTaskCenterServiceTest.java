@@ -1735,7 +1735,7 @@ class OpenListIngestTaskCenterServiceTest {
         private User currentUser;
 
         TestAuthService() {
-            super(null, null, null);
+            super(null, (RegistrationCodeSettingsService) null, null);
         }
 
         @Override
