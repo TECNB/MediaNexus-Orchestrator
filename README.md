@@ -1,55 +1,127 @@
-# MediaNexus Orchestrator
+# MediaNexus-Orchestrator Java 后端
 
-`MediaNexus-Orchestrator` is the new Java backend for MediaNexus. It will be used to introduce new backend capabilities independently and gradually replace selected parts of the existing `MediaNexus-Core` Python backend when those Java modules become mature.
+`MediaNexus-Orchestrator` 是 MediaNexus 的 Java 后端项目，用于承载新的资源搜索、发布资源选择、OpenList 入库编排、任务中心、失败恢复、字幕上传、动漫订阅和管理端能力。
 
-MediaNexus remains an upper-layer resource management and orchestration site for the Emby sharing workflow. It does not replace CD2, AutoSymlink, Emby, VidHub, Prowlarr, Sonarr, Radarr, OpenList, or PikPak.
+MediaNexus 本身是 Emby 分享工作流上层的管理与编排站点，不替代 CD2、AutoSymlink、Emby、VidHub、Prowlarr、Sonarr、Radarr、OpenList、PikPak、Ani-RSS 或外部资源网站。
 
-## Current Scope
+## 当前定位
 
-The backend currently provides the Spring Boot foundation, Anime orchestration
-APIs, and the first authentication endpoints for MediaNexus:
+Java 后端负责把前端用户动作转成稳定的后端编排能力：
 
-- Spring Boot 3.x + Java 17 + Maven
-- MySQL 8 configuration example
-- MyBatis-Plus dependency and base configuration
-- Sa-Token authentication with `Authorization: Bearer <token>`
-- BCrypt password storage
-- Knife4j/OpenAPI dependency and base configuration
-- Unified API response wrapper
-- Global exception handling
-- `GET /api/v1/health`
-- Optional SSH tunnel for connecting to the server-local MySQL container
-- `POST /api/v1/auth/register` for registration-code signup
-- `POST /api/v1/auth/login` for username/email login
-- `POST /api/v1/auth/logout`
-- `GET /api/v1/auth/me`
-- Daily usage quota for ordinary users:
-  `MAGNET_INGEST_CREATE` and `ANIME_SUBSCRIBE_CREATE` share one daily limit
-- `GET /api/v1/resources/anime/search` for Mikan search through ani-rss REST `/api/mikan`
+- 账号注册、登录、登出、当前用户会话。
+- 普通用户每日创建额度限制。
+- 电影和剧集目录搜索。
+- Prowlarr 发布资源搜索与推荐。
+- 电影、剧集、动漫整季 OpenList 入库任务创建。
+- 手动 magnet 入库和失败任务恢复。
+- 任务中心聚合查询、日志查询和任务尝试链。
+- 动漫 Mikan 搜索、字幕组预览和 Ani-RSS 追更订阅。
+- 字幕上传、上传日志和后续处理状态查询。
+- 部分管理端能力，例如用户、注册码、AutoSymlink 刷新、观看统计和 Adult 相关编排。
 
-Authentication and daily usage quota are intentionally still small in scope.
-Task ownership isolation, administrator management endpoints, user disabling,
-and approval workflows are not implemented yet.
+## 用户流程对应关系
 
-## Requirements
+### 资源搜索
 
-- JDK 17
-- Maven 3.9+
-- MySQL 8, if you want to run with a real local datasource
+前端先通过目录搜索确认电影或剧集条目，再进入推荐入库或查看更多。
 
-## Configuration
+![资源搜索结果](docs/images/resource-search-inception-results.jpg)
 
-The default configuration lives in `src/main/resources/application.yml`.
-Local secrets can be stored in `.env`; Spring Boot imports it automatically and
-`.gitignore` keeps it out of git.
+相关接口：
 
-Use `SPRING_PROFILES_ACTIVE=prod` for public deployment. The production profile
-disables Knife4j/OpenAPI endpoints and enables a startup guard that fails fast
-when dangerous datasource or SSH tunnel defaults are still present. A datasource
-pointing at the configured local tunnel endpoint is allowed when the built-in SSH
-tunnel is enabled. See `.env.production.example` for the expected variables.
+- `GET /api/v1/resources/movies/search`
+- `GET /api/v1/resources/series/search`
+- `GET /api/v1/resources/series/seasons`
+- `GET /api/v1/resources/anime/search`
 
-Useful environment variables:
+### 自动发布推荐
+
+用户点击卡片上的入库按钮后，后端会搜索并返回推荐发布资源。前端展示确认弹窗，用户确认后才创建 OpenList 入库任务。
+
+![剧集推荐弹窗](docs/images/resource-recommendation-series.jpg)
+
+相关接口：
+
+- `POST /api/v1/resources/movies/releases/recommendation`
+- `POST /api/v1/resources/series/releases/recommendation`
+- `POST /api/v1/resources/movies/releases/openlist-ingest`
+- `POST /api/v1/resources/series/releases/openlist-ingest`
+
+推荐结果会保留发布标题、分辨率标签、动态范围标签、季数标签、体积、做种、下载、抓取和索引器来源。推荐规则面向用户时只需要解释为：优先考虑标题相关、清晰度匹配、健康度较好、动态范围合适且更容易成功的发布资源。
+
+### 发布资源选择
+
+用户点击“查看更多”时，前端进入发布资源选择页，后端返回 Prowlarr 发布搜索结果。
+
+![发布资源选择](docs/images/resource-publish-results.jpg)
+
+相关接口：
+
+- `POST /api/v1/resources/movies/releases/search`
+- `POST /api/v1/resources/series/releases/search`
+- `GET /api/v1/resources/releases/search`
+
+发布搜索可能需要十几秒，慢时可能接近 30 秒。调用方不应因为几秒未返回就重复提交同一个搜索。
+
+### 任务中心和失败恢复
+
+任务中心聚合展示 OpenList 入库任务。失败、中断或部分完成任务可以通过重新选择发布资源、复用原 magnet 或替换 magnet 创建新的任务尝试。
+
+![任务中心](docs/images/task-center.jpg)
+
+相关接口：
+
+- `GET /api/v1/task-center/openlist-ingest/tasks`
+- `GET /api/v1/task-center/openlist-ingest/tasks/{taskType}/{taskId}`
+- `GET /api/v1/task-center/openlist-ingest/tasks/{taskType}/{taskId}/logs`
+- `GET /api/v1/task-center/openlist-ingest/tasks/{taskType}/{taskId}/release-retry-context`
+- `POST /api/v1/task-center/openlist-ingest/tasks/{taskType}/{taskId}/release-retries`
+- `POST /api/v1/task-center/openlist-ingest/tasks/{taskType}/{taskId}/manual-magnet-retries/reuse-original`
+- `POST /api/v1/task-center/openlist-ingest/tasks/{taskType}/{taskId}/manual-magnet-retries/replace-magnet`
+
+任务重试不会覆盖原任务日志，而是创建新的任务尝试。前端据此展示同一入库意图下的第一次、第二次和后续尝试。
+
+### 字幕上传
+
+资源入库只解决视频文件进入媒体库，不保证发布资源一定自带合适中文字幕。用户可以在播放后发现缺字幕、语言不对或时间轴不匹配时，再通过字幕管理上传字幕。
+
+![字幕管理](docs/images/subtitles.jpg)
+
+相关接口：
+
+- `POST /api/v1/subtitles/uploads`
+- `GET /api/v1/subtitles/uploads`
+- `GET /api/v1/subtitles/uploads/{uploadId}`
+- `GET /api/v1/subtitles/uploads/{uploadId}/logs`
+
+## 外部工具与来源边界
+
+- SeedHub：https://www.seedhub.cc/
+  可作为手动 magnet 来源之一。用户复制 magnet 前需要自行核对作品、年份、季集、清晰度、体积、字幕信息和做种情况。
+- SubHD：https://subhd.tv/
+  可作为字幕来源之一。用户下载字幕前需要自行核对片名、年份、季集、版本组、片长和帧率。
+- Prowlarr：用于发布资源搜索和索引器聚合。
+- OpenList：用于离线下载和入库执行。
+- Ani-RSS：用于动漫追更订阅。
+
+后端会保存或返回足够的来源上下文，例如发布标题、索引器、分辨率、动态范围和任务来源，但不会替外部资源站或字幕站保证内容正确。
+
+## 技术栈
+
+- Java 17
+- Spring Boot 3.x
+- Maven
+- MySQL 8
+- MyBatis-Plus
+- Sa-Token
+- BCrypt
+- Knife4j / OpenAPI
+
+## 配置
+
+默认配置位于 `src/main/resources/application.yml`。本地机密可以放在 `.env`，Spring Boot 会自动导入，且 `.gitignore` 已避免提交该文件。
+
+常用环境变量：
 
 ```bash
 MEDIANEXUS_DB_URL='jdbc:mysql://127.0.0.1:3307/medianexus_orchestrator?useUnicode=true&characterEncoding=utf8&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai'
@@ -58,63 +130,63 @@ MEDIANEXUS_DB_PASSWORD='...'
 MEDIANEXUS_ANI_RSS_BASE_URL='http://example.invalid:7789'
 MEDIANEXUS_ANI_RSS_API_KEY=''
 MEDIANEXUS_ANI_RSS_TIMEOUT='10s'
-MEDIANEXUS_AUTH_REGISTRATION_CODE=your-registration-code
+MEDIANEXUS_AUTH_REGISTRATION_CODE='your-registration-code'
 MEDIANEXUS_DAILY_CONTENT_CREATE_LIMIT=3
 ```
 
-The datasource points at a local forwarded port by default. Because the MySQL
-container publishes `127.0.0.1:3306:3306` on the server, local development must
-either start an SSH tunnel before the app starts:
+生产环境使用：
+
+```bash
+SPRING_PROFILES_ACTIVE=prod
+```
+
+生产 profile 会关闭 Knife4j/OpenAPI，并在启动时检查危险的默认 datasource 或 SSH tunnel 配置。
+
+## 数据库连接
+
+如果 MySQL 只在远端服务器本机环回地址暴露，可以先手动建立 SSH tunnel：
 
 ```bash
 ssh -L 3307:127.0.0.1:3306 root@YOUR_SERVER_HOST
 ```
 
-Or enable the built-in OpenSSH tunnel in `.env`. This uses the local `ssh`
-executable, so OpenSSH must be available in `PATH`:
+也可以在 `.env` 中启用内置 OpenSSH tunnel：
 
 ```bash
 MEDIANEXUS_DB_SSH_TUNNEL_ENABLED=true
 MEDIANEXUS_DB_SSH_HOST=YOUR_SERVER_HOST
 MEDIANEXUS_DB_SSH_USERNAME=root
-MEDIANEXUS_DB_SSH_PASSWORD=...
+MEDIANEXUS_DB_SSH_PASSWORD='...'
 ```
 
-For deployment with Docker-internal networking, keep the tunnel disabled and
-point the datasource at the MySQL service name instead:
+Docker 内部网络部署时通常关闭 tunnel，并把 datasource 指向 MySQL 服务名：
 
 ```bash
 MEDIANEXUS_DB_SSH_TUNNEL_ENABLED=false
 MEDIANEXUS_DB_URL='jdbc:mysql://mysql:3306/medianexus_orchestrator?useUnicode=true&characterEncoding=utf8&sslMode=REQUIRED&serverTimezone=Asia/Shanghai'
 ```
 
-For deployment where MySQL is only reachable from the server loopback address,
-enable the built-in SSH tunnel and point the datasource at its local endpoint:
-
-```bash
-MEDIANEXUS_DB_SSH_TUNNEL_ENABLED=true
-MEDIANEXUS_DB_SSH_STRICT_HOST_KEY_CHECKING=true
-MEDIANEXUS_DB_URL='jdbc:mysql://127.0.0.1:3307/medianexus_orchestrator?useUnicode=true&characterEncoding=utf8&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai'
-```
-
-If the deployment uses a different `MYSQL_DATABASE`, update the database name
-inside `MEDIANEXUS_DB_URL`.
-
-## Local Startup
+## 本地启动
 
 ```bash
 mvn spring-boot:run
 ```
 
-The application starts on port `8080` by default.
+默认端口为 `8080`。
 
-## Health Check
+项目约定：后端启动、停止通常由用户负责。需要看错误时，优先读取：
+
+```bash
+tail -n 200 logs/dev-run.log
+```
+
+## 健康检查
 
 ```bash
 curl http://localhost:8080/api/v1/health
 ```
 
-Expected response:
+期望响应：
 
 ```json
 {
@@ -127,23 +199,17 @@ Expected response:
 }
 ```
 
-## Auth API
+## 认证 API
 
-All `/api/**` endpoints require `Authorization: Bearer YOUR_TOKEN` except
-`POST /api/v1/auth/register`, `POST /api/v1/auth/login`, and
-`GET /api/v1/health`. `OPTIONS` requests are allowed for browser preflight.
+除 `POST /api/v1/auth/register`、`POST /api/v1/auth/login` 和 `GET /api/v1/health` 外，`/api/**` 默认需要：
+
+```text
+Authorization: Bearer YOUR_TOKEN
+```
+
+示例：
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/auth/register \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "username": "tengen",
-    "email": "tengen@example.com",
-    "password": "ChangeMe123",
-    "confirm_password": "ChangeMe123",
-    "registration_code": "your-registration-code"
-  }'
-
 curl -X POST http://localhost:8080/api/v1/auth/login \
   -H 'Content-Type: application/json' \
   -d '{"account":"tengen","password":"ChangeMe123"}'
@@ -155,7 +221,7 @@ curl -X POST http://localhost:8080/api/v1/auth/logout \
   -H 'Authorization: Bearer YOUR_TOKEN'
 ```
 
-Register and login return:
+注册和登录返回：
 
 ```json
 {
@@ -174,46 +240,27 @@ Register and login return:
 }
 ```
 
-Passwords are stored as BCrypt hashes. To prepare an administrator account
-manually, generate a BCrypt hash locally:
+密码以 BCrypt hash 存储。需要手动准备管理员账号时，可以生成 hash 后写入数据库：
 
 ```bash
 htpasswd -bnBC 10 "" 'ChangeMe123' | tr -d ':\n'
 ```
-
-Then insert the administrator user with the generated hash:
 
 ```sql
 INSERT INTO users (username, email, password_hash, user_role)
 VALUES ('admin', 'admin@example.com', '<BCrypt hash from htpasswd>', 'ADMIN');
 ```
 
-## Input Boundaries
+## 每日额度
 
-Public API requests keep only lightweight business-shape validation in Java:
-
-- Request DTOs declare required body fields with `@NotBlank`.
-- Numeric quota fields use `@Min(0)` / `@Max(9)`, and user quota overrides may
-  remain `null` to restore the default quota.
-- Magnet task `season_number` uses `@Min(0)`.
-- Services still keep business checks such as extracting the `btih` hash,
-  requiring a final anime title, and returning existing business errors.
-- URL host/scheme checks and global request size/query limits are intentionally
-  left to the frontend and deployment layer, such as Nginx.
-
-## Daily Usage Quota
-
-Ordinary users must log in before creating Ani-RSS subscriptions or anime
-magnet ingest tasks. The following two actions share one daily limit:
+普通用户创建内容相关任务前需要登录。以下动作共享每日额度：
 
 - `MAGNET_INGEST_CREATE`
 - `ANIME_SUBSCRIBE_CREATE`
 
-The default limit is 3 total creates per user per day. Change it with
-`MEDIANEXUS_DAILY_CONTENT_CREATE_LIMIT`. Administrators are not limited and do
-not consume quota.
+默认每人每天 3 次，可通过 `MEDIANEXUS_DAILY_CONTENT_CREATE_LIMIT` 调整。管理员不受限制。
 
-When an ordinary user reaches the limit, the API returns HTTP 429:
+达到上限时返回 HTTP 429：
 
 ```json
 {
@@ -223,59 +270,21 @@ When an ordinary user reaches the limit, the API returns HTTP 429:
 }
 ```
 
-## Anime Mikan Search
+## API 文档
 
-```bash
-curl 'http://localhost:8080/api/v1/resources/anime/search?term=anime'
-```
-
-Expected response shape:
-
-```json
-{
-  "code": 200,
-  "message": "success",
-  "data": {
-    "items": [
-      {
-        "id": "mikan:1234",
-        "title": "Anime Title",
-        "cover": "https://...",
-        "source_url": "https://mikanime.tv/Home/Bangumi/1234",
-        "score": 8.1,
-        "exists": false,
-        "week_label": "Search"
-      }
-    ],
-    "total": 1
-  }
-}
-```
-
-## API Docs
-
-Knife4j/OpenAPI is enabled for local development. After startup, try:
+本地开发默认启用 Knife4j/OpenAPI：
 
 - `http://localhost:8080/doc.html`
 - `http://localhost:8080/swagger-ui.html`
 
-After calling `POST /api/v1/auth/login`, copy the returned `token` value into
-the docs page's `Authorize` / `BearerAuth` dialog. Enter the raw token only; the
-docs UI sends it as `Authorization: Bearer <token>`.
-Protected operations also expose an `Authorization` request header field in the
-debug panel; when using that field, enter the full value: `Bearer <token>`.
+登录后把返回的 `token` 填入 docs 页面的 `Authorize` / `BearerAuth`。该输入框只填原始 token；如果使用调试面板里的 `Authorization` 请求头字段，则填写完整值：
 
-Under the `prod` or `production` profile, API docs are disabled by default and
-the application refuses to start if they are re-enabled.
+```text
+Bearer <token>
+```
 
-## Excluded From This Phase
+`prod` 或 `production` profile 下默认禁用 API 文档。
 
-- PostgreSQL
-- JPA
-- Flyway
-- Actuator
-- Testcontainers
-- Spring Cloud
-- Message queues
-- WebFlux
-- Multi-module project structure
+## 验证约定
+
+本仓库默认不运行全项目构建、全量测试或全量校验。改动文档时无需启动后端；改动接口或编排逻辑时，优先做最小相关验证，并先查看 `logs/dev-run.log` 中的现有启动和错误输出。
