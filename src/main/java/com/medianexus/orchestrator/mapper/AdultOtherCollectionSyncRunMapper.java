@@ -96,8 +96,8 @@ public interface AdultOtherCollectionSyncRunMapper extends BaseMapper<AdultOther
                    started_at,
                    finished_at
             FROM adult_other_collection_sync_runs
-            WHERE source_folder_path = #{sourceFolderPath}
-              AND mode = 'APPLY'
+            WHERE source_folder_path <=> #{sourceFolderPath}
+              AND mode IN ('APPLY', 'AUTO_WEBHOOK')
               AND status = 'SUCCEEDED'
             ORDER BY COALESCE(finished_at, started_at) DESC,
                      started_at DESC

@@ -58,6 +58,14 @@ medianexus:
     base-url: ${MEDIANEXUS_EMBY_BASE_URL:}
     api-key: ${MEDIANEXUS_EMBY_API_KEY:}
     adult-other-library-name: ${MEDIANEXUS_EMBY_ADULT_OTHER_LIBRARY_NAME:Adult - Other}
+    adult-other-automation-enabled: ${MEDIANEXUS_EMBY_ADULT_OTHER_AUTOMATION_ENABLED:true}
+    adult-other-refresh-concurrency: ${MEDIANEXUS_EMBY_ADULT_OTHER_REFRESH_CONCURRENCY:8}
+    adult-other-collection-read-concurrency: ${MEDIANEXUS_EMBY_ADULT_OTHER_COLLECTION_READ_CONCURRENCY:8}
+    adult-other-new-event-debounce: ${MEDIANEXUS_EMBY_ADULT_OTHER_NEW_EVENT_DEBOUNCE:2s}
+    adult-other-delete-event-debounce: ${MEDIANEXUS_EMBY_ADULT_OTHER_DELETE_EVENT_DEBOUNCE:5s}
+    adult-other-primary-poll-interval: ${MEDIANEXUS_EMBY_ADULT_OTHER_PRIMARY_POLL_INTERVAL:10s}
+    adult-other-primary-quiet-period: ${MEDIANEXUS_EMBY_ADULT_OTHER_PRIMARY_QUIET_PERIOD:30s}
+    adult-other-refresh-timeout: ${MEDIANEXUS_EMBY_ADULT_OTHER_REFRESH_TIMEOUT:5m}
     webhook-secret: ${MEDIANEXUS_EMBY_WEBHOOK_SECRET:}
     timeout: ${MEDIANEXUS_EMBY_TIMEOUT:5s}
     metadata-cache-ttl: ${MEDIANEXUS_EMBY_METADATA_CACHE_TTL:12h}

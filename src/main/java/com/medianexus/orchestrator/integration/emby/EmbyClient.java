@@ -14,6 +14,7 @@ import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -112,6 +113,68 @@ public class EmbyClient {
         ));
     }
 
+    public List<EmbyItemState> listItemStates(Collection<String> itemIds) {
+        List<String> distinctItemIds = itemIds.stream()
+                .filter(StringUtils::hasText)
+                .distinct()
+                .toList();
+        if (distinctItemIds.isEmpty()) {
+            return List.of();
+        }
+
+        JsonNode root = get("/Items", Map.of(
+                "Ids", String.join(",", distinctItemIds),
+                "Fields", "Path,ImageTags,MediaSources,MediaStreams"
+        ));
+        JsonNode items = root.path("Items");
+        if (!items.isArray()) {
+            return List.of();
+        }
+
+        List<EmbyItemState> states = new ArrayList<>();
+        for (JsonNode item : items) {
+            JsonNode mediaStreams = item.path("MediaStreams");
+            states.add(new EmbyItemState(
+                    text(item, "Id", "id"),
+                    text(item, "Name", "name"),
+                    text(item, "Type", "type"),
+                    text(item, "Path", "path"),
+                    StringUtils.hasText(item.path("ImageTags").path("Primary").asText(null)),
+                    mediaStreams.isArray() ? mediaStreams.size() : 0
+            ));
+        }
+        return states;
+    }
+
+    public boolean hasPrimaryImage(String itemId) {
+        return listItemStates(List.of(itemId)).stream()
+                .anyMatch(EmbyItemState::hasPrimaryImage);
+    }
+
+    public void refreshItemImages(String itemId) {
+        postJson("/Items/" + encodePath(itemId) + "/Refresh", Map.of(
+                "Recursive", "false",
+                "ImageRefreshMode", "FullRefresh",
+                "MetadataRefreshMode", "FullRefresh",
+                "ReplaceAllImages", "true",
+                "ReplaceAllMetadata", "false"
+        ), "{\"ReplaceThumbnailImages\":true}");
+    }
+
+    public void refreshCollectionImages(String collectionId) {
+        post("/Items/" + encodePath(collectionId) + "/Refresh", Map.of(
+                "Recursive", "false",
+                "MetadataRefreshMode", "Default",
+                "ImageRefreshMode", "FullRefresh",
+                "ReplaceAllImages", "false",
+                "ReplaceAllMetadata", "false"
+        ));
+    }
+
+    public void materializePrimaryImage(String itemId) {
+        sendDiscarding("GET", "/Items/" + encodePath(itemId) + "/Images/Primary", Map.of());
+    }
+
     public String createCollection(String name, List<String> itemIds) {
         JsonNode root = post("/Collections", Map.of(
                 "Name", name,
@@ -169,11 +232,19 @@ public class EmbyClient {
         return send("POST", path, params);
     }
 
+    private JsonNode postJson(String path, Map<String, String> params, String body) {
+        return send("POST_JSON", path, params, body);
+    }
+
     private JsonNode delete(String path, Map<String, String> params) {
         return send("DELETE", path, params);
     }
 
     private JsonNode send(String method, String path, Map<String, String> params) {
+        return send(method, path, params, null);
+    }
+
+    private JsonNode send(String method, String path, Map<String, String> params, String body) {
         validateConfiguration();
         URI uri = uri(path, params);
         HttpRequest.Builder builder = HttpRequest.newBuilder(uri)
@@ -181,6 +252,10 @@ public class EmbyClient {
                 .header("Accept", "application/json")
                 .header("X-Emby-Token", cleanConfigValue(properties.getApiKey()));
         HttpRequest request = switch (method) {
+            case "POST_JSON" -> builder
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(body == null ? "{}" : body))
+                    .build();
             case "POST" -> builder.POST(HttpRequest.BodyPublishers.noBody()).build();
             case "DELETE" -> builder.DELETE().build();
             default -> builder.GET().build();
@@ -191,13 +266,37 @@ public class EmbyClient {
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
                 throw new EmbyClientException("Emby returned non-success status " + response.statusCode());
             }
-            String body = response.body();
-            if (!StringUtils.hasText(body)) {
+            String responseBody = response.body();
+            if (!StringUtils.hasText(responseBody)) {
                 return objectMapper.createObjectNode();
             }
-            return objectMapper.readTree(body);
+            return objectMapper.readTree(responseBody);
         } catch (JsonProcessingException exception) {
             throw new EmbyClientException("Emby response is not valid JSON", exception);
+        } catch (HttpTimeoutException exception) {
+            throw new EmbyClientException("Emby request timed out after " + timeoutHint(), exception);
+        } catch (IOException exception) {
+            throw new EmbyClientException("Emby request failed", exception);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new EmbyClientException("Emby request interrupted", exception);
+        }
+    }
+
+    private void sendDiscarding(String method, String path, Map<String, String> params) {
+        validateConfiguration();
+        URI uri = uri(path, params);
+        HttpRequest.Builder builder = HttpRequest.newBuilder(uri)
+                .timeout(timeout())
+                .header("X-Emby-Token", cleanConfigValue(properties.getApiKey()));
+        HttpRequest request = "GET".equals(method)
+                ? builder.GET().build()
+                : builder.method(method, HttpRequest.BodyPublishers.noBody()).build();
+        try {
+            HttpResponse<Void> response = httpClient.send(request, HttpResponse.BodyHandlers.discarding());
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                throw new EmbyClientException("Emby returned non-success status " + response.statusCode());
+            }
         } catch (HttpTimeoutException exception) {
             throw new EmbyClientException("Emby request timed out after " + timeoutHint(), exception);
         } catch (IOException exception) {

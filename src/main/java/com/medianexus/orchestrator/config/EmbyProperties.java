@@ -36,6 +36,22 @@ public class EmbyProperties {
 
     private String adultOtherLibraryName = "Adult - Other";
 
+    private boolean adultOtherAutomationEnabled = true;
+
+    private int adultOtherRefreshConcurrency = 8;
+
+    private int adultOtherCollectionReadConcurrency = 8;
+
+    private Duration adultOtherNewEventDebounce = Duration.ofSeconds(2);
+
+    private Duration adultOtherDeleteEventDebounce = Duration.ofSeconds(5);
+
+    private Duration adultOtherPrimaryPollInterval = Duration.ofSeconds(10);
+
+    private Duration adultOtherPrimaryQuietPeriod = Duration.ofSeconds(30);
+
+    private Duration adultOtherRefreshTimeout = Duration.ofMinutes(5);
+
     public String getBaseUrl() {
         return baseUrl;
     }
@@ -82,5 +98,69 @@ public class EmbyProperties {
 
     public void setAdultOtherLibraryName(String adultOtherLibraryName) {
         this.adultOtherLibraryName = adultOtherLibraryName;
+    }
+
+    public boolean isAdultOtherAutomationEnabled() {
+        return adultOtherAutomationEnabled;
+    }
+
+    public void setAdultOtherAutomationEnabled(boolean adultOtherAutomationEnabled) {
+        this.adultOtherAutomationEnabled = adultOtherAutomationEnabled;
+    }
+
+    public int getAdultOtherRefreshConcurrency() {
+        return adultOtherRefreshConcurrency;
+    }
+
+    public void setAdultOtherRefreshConcurrency(int adultOtherRefreshConcurrency) {
+        this.adultOtherRefreshConcurrency = adultOtherRefreshConcurrency;
+    }
+
+    public int getAdultOtherCollectionReadConcurrency() {
+        return adultOtherCollectionReadConcurrency;
+    }
+
+    public void setAdultOtherCollectionReadConcurrency(int adultOtherCollectionReadConcurrency) {
+        this.adultOtherCollectionReadConcurrency = adultOtherCollectionReadConcurrency;
+    }
+
+    public Duration getAdultOtherNewEventDebounce() {
+        return adultOtherNewEventDebounce;
+    }
+
+    public void setAdultOtherNewEventDebounce(Duration adultOtherNewEventDebounce) {
+        this.adultOtherNewEventDebounce = adultOtherNewEventDebounce;
+    }
+
+    public Duration getAdultOtherDeleteEventDebounce() {
+        return adultOtherDeleteEventDebounce;
+    }
+
+    public void setAdultOtherDeleteEventDebounce(Duration adultOtherDeleteEventDebounce) {
+        this.adultOtherDeleteEventDebounce = adultOtherDeleteEventDebounce;
+    }
+
+    public Duration getAdultOtherPrimaryPollInterval() {
+        return adultOtherPrimaryPollInterval;
+    }
+
+    public void setAdultOtherPrimaryPollInterval(Duration adultOtherPrimaryPollInterval) {
+        this.adultOtherPrimaryPollInterval = adultOtherPrimaryPollInterval;
+    }
+
+    public Duration getAdultOtherPrimaryQuietPeriod() {
+        return adultOtherPrimaryQuietPeriod;
+    }
+
+    public void setAdultOtherPrimaryQuietPeriod(Duration adultOtherPrimaryQuietPeriod) {
+        this.adultOtherPrimaryQuietPeriod = adultOtherPrimaryQuietPeriod;
+    }
+
+    public Duration getAdultOtherRefreshTimeout() {
+        return adultOtherRefreshTimeout;
+    }
+
+    public void setAdultOtherRefreshTimeout(Duration adultOtherRefreshTimeout) {
+        this.adultOtherRefreshTimeout = adultOtherRefreshTimeout;
     }
 }

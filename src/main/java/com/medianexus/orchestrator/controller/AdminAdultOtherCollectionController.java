@@ -2,14 +2,17 @@ package com.medianexus.orchestrator.controller;
 
 import com.medianexus.orchestrator.common.response.ApiResponse;
 import com.medianexus.orchestrator.dto.emby.request.AdultOtherCollectionSyncRequest;
-import com.medianexus.orchestrator.dto.emby.response.AdultOtherCollectionSourceFolderResponse;
+import com.medianexus.orchestrator.dto.emby.response.AdultOtherAutomationRunResponse;
+import com.medianexus.orchestrator.dto.emby.response.AdultOtherCollectionInventoryResponse;
 import com.medianexus.orchestrator.dto.emby.response.AdultOtherCollectionSyncRunResponse;
 import com.medianexus.orchestrator.service.AdultOtherCollectionSyncService;
+import com.medianexus.orchestrator.service.AdultOtherAutomationRunRecorder;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import java.util.List;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -21,9 +24,14 @@ import org.springframework.web.bind.annotation.RestController;
 public class AdminAdultOtherCollectionController {
 
     private final AdultOtherCollectionSyncService syncService;
+    private final AdultOtherAutomationRunRecorder automationRunRecorder;
 
-    public AdminAdultOtherCollectionController(AdultOtherCollectionSyncService syncService) {
+    public AdminAdultOtherCollectionController(
+            AdultOtherCollectionSyncService syncService,
+            AdultOtherAutomationRunRecorder automationRunRecorder
+    ) {
         this.syncService = syncService;
+        this.automationRunRecorder = automationRunRecorder;
     }
 
     @GetMapping("/runs/latest")
@@ -32,10 +40,18 @@ public class AdminAdultOtherCollectionController {
         return ApiResponse.success(syncService.latestRun());
     }
 
+    @GetMapping("/automation/runs")
+    @Operation(summary = "读取 Adult-Other 最近自动化运行记录")
+    public ApiResponse<List<AdultOtherAutomationRunResponse>> getAutomationRuns(
+            @RequestParam(defaultValue = "10") int limit
+    ) {
+        return ApiResponse.success(automationRunRecorder.recent(limit));
+    }
+
     @GetMapping("/source-folders")
     @Operation(summary = "读取 Adult-Other 可同步文件夹")
-    public ApiResponse<List<AdultOtherCollectionSourceFolderResponse>> getSourceFolders() {
-        return ApiResponse.success(syncService.sourceFolders());
+    public ApiResponse<AdultOtherCollectionInventoryResponse> getSourceFolders() {
+        return ApiResponse.success(syncService.collectionInventory());
     }
 
     @PostMapping("/preview")

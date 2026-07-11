@@ -8,6 +8,7 @@ import com.medianexus.orchestrator.common.exception.ErrorCode;
 import com.medianexus.orchestrator.config.EmbyProperties;
 import com.medianexus.orchestrator.dto.emby.request.AdultOtherCollectionSyncRequest;
 import com.medianexus.orchestrator.dto.emby.response.AdultOtherCollectionSourceFolderResponse;
+import com.medianexus.orchestrator.dto.emby.response.AdultOtherCollectionInventoryResponse;
 import com.medianexus.orchestrator.dto.emby.response.AdultOtherCollectionSyncGroupResponse;
 import com.medianexus.orchestrator.dto.emby.response.AdultOtherCollectionSyncRunResponse;
 import com.medianexus.orchestrator.integration.emby.EmbyClient;
@@ -17,11 +18,11 @@ import com.medianexus.orchestrator.integration.emby.EmbyLibrary;
 import com.medianexus.orchestrator.mapper.AdultOtherCollectionSyncGroupMapper;
 import com.medianexus.orchestrator.mapper.AdultOtherCollectionKnownItemMapper;
 import com.medianexus.orchestrator.mapper.AdultOtherCollectionSyncRunMapper;
-import com.medianexus.orchestrator.model.AdultOtherCollectionFolderRunSummary;
 import com.medianexus.orchestrator.model.AdultOtherCollectionKnownItem;
 import com.medianexus.orchestrator.model.AdultOtherCollectionSyncGroup;
 import com.medianexus.orchestrator.model.AdultOtherCollectionSyncRun;
 import com.medianexus.orchestrator.model.User;
+import jakarta.annotation.PreDestroy;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -32,7 +33,13 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -59,6 +66,7 @@ public class AdultOtherCollectionSyncService {
     private final AdultOtherCollectionSyncGroupMapper groupMapper;
     private final AdultOtherCollectionKnownItemMapper knownItemMapper;
     private final ObjectMapper objectMapper;
+    private final ExecutorService collectionReadExecutor;
 
     public AdultOtherCollectionSyncService(
             AuthService authService,
@@ -76,6 +84,10 @@ public class AdultOtherCollectionSyncService {
         this.groupMapper = groupMapper;
         this.knownItemMapper = knownItemMapper;
         this.objectMapper = objectMapper;
+        this.collectionReadExecutor = Executors.newFixedThreadPool(
+                Math.max(1, embyProperties.getAdultOtherCollectionReadConcurrency()),
+                new CollectionReadThreadFactory()
+        );
     }
 
     public AdultOtherCollectionSyncRunResponse preview(AdultOtherCollectionSyncRequest request) {
@@ -102,13 +114,26 @@ public class AdultOtherCollectionSyncService {
         return executeCleanup(admin.getId(), cleanupSourceFolderPath(request), true);
     }
 
-    public List<AdultOtherCollectionSourceFolderResponse> sourceFolders() {
-        authService.requireAdminUser();
+    public AdultOtherCollectionSyncRunResponse reconcileAutomatic() {
         ensureSyncTablesReady();
+        return execute(null, "AUTO_WEBHOOK", DEFAULT_MIN_ITEM_COUNT, null, true);
+    }
+
+    public AdultOtherCollectionSyncRunResponse cleanupAutomatic() {
+        ensureSyncTablesReady();
+        return executeCleanup(null, null, true);
+    }
+
+    String collectionNameForPath(String itemPath, List<String> libraryLocations) {
+        GroupIdentity identity = groupIdentity(itemPath, libraryLocations);
+        return identity == null ? null : identity.collectionName();
+    }
+
+    public AdultOtherCollectionInventoryResponse collectionInventory() {
+        authService.requireAdminUser();
         EmbyLibrary library = adultOtherLibrary();
         List<EmbyItem> items = embyClient.listLibraryVideoItems(library.id());
-        Map<String, AdultOtherCollectionFolderRunSummary> runSummariesByPath = folderRunSummariesByPath();
-        Map<String, SourceFolderStats> statsByPath = new LinkedHashMap<>();
+        Map<String, SourceFolderInventory> foldersByPath = new LinkedHashMap<>();
 
         for (EmbyItem item : items) {
             if (!StringUtils.hasText(item.id())) {
@@ -118,25 +143,41 @@ public class AdultOtherCollectionSyncService {
             List<String> paths = sourceFolderOptionPaths(parts);
             GroupIdentity identity = groupIdentity(item.path(), library.locations());
             for (String path : paths) {
-                SourceFolderStats stats = statsByPath.computeIfAbsent(path, SourceFolderStats::new);
-                stats.addItem(identity == null ? null : identity.collectionName());
+                SourceFolderInventory folder = foldersByPath.computeIfAbsent(path, SourceFolderInventory::new);
+                folder.addItem(identity, item.id());
             }
         }
 
-        for (Map.Entry<String, AdultOtherCollectionFolderRunSummary> entry : runSummariesByPath.entrySet()) {
-            if (statsByPath.containsKey(entry.getKey()) || entry.getValue().getLatestSyncAt() == null) {
-                continue;
-            }
-            SourceFolderStats stats = statsByPath.computeIfAbsent(entry.getKey(), SourceFolderStats::new);
-            stats.markMissing();
-        }
+        Map<String, CandidateGroup> globalGroups = candidateGroups(items, library.locations());
+        Map<String, EmbyCollection> collectionsByName = existingCollectionsByName();
+        Map<String, Set<String>> memberIdsByCollectionId = loadCollectionMemberIds(
+                globalGroups.keySet(),
+                collectionsByName
+        );
 
-        return statsByPath.values().stream()
-                .peek(stats -> stats.applyRunSummary(runSummariesByPath.get(stats.path())))
-                .sorted(Comparator.comparingInt((SourceFolderStats stats) -> pathDepth(stats.path()))
-                        .thenComparing(SourceFolderStats::path))
-                .map(SourceFolderStats::toResponse)
+        InventoryHealth totalHealth = assessGroups(
+                globalGroups.values().stream().collect(Collectors.toMap(
+                        CandidateGroup::collectionName,
+                        group -> new LinkedHashSet<>(group.itemIds()),
+                        (left, right) -> left,
+                        LinkedHashMap::new
+                )),
+                collectionsByName,
+                memberIdsByCollectionId
+        );
+        List<AdultOtherCollectionSourceFolderResponse> folders = foldersByPath.values().stream()
+                .sorted(Comparator.comparing(SourceFolderInventory::path))
+                .map(folder -> folder.toResponse(collectionsByName, memberIdsByCollectionId))
                 .toList();
+        return new AdultOtherCollectionInventoryResponse(
+                folders.size(),
+                globalGroups.size(),
+                totalHealth.healthy(),
+                totalHealth.pendingCreate(),
+                totalHealth.pendingMembers(),
+                totalHealth.skipped(),
+                folders
+        );
     }
 
     public AdultOtherCollectionSyncRunResponse latestRun() {
@@ -175,16 +216,6 @@ public class AdultOtherCollectionSyncService {
         knownItemMapper.createTableIfNotExists();
     }
 
-    private Map<String, AdultOtherCollectionFolderRunSummary> folderRunSummariesByPath() {
-        Map<String, AdultOtherCollectionFolderRunSummary> summariesByPath = new LinkedHashMap<>();
-        for (AdultOtherCollectionFolderRunSummary summary : runMapper.selectFolderRunSummaries()) {
-            if (StringUtils.hasText(summary.getSourceFolderPath())) {
-                summariesByPath.put(summary.getSourceFolderPath(), summary);
-            }
-        }
-        return summariesByPath;
-    }
-
     private AdultOtherCollectionSyncRunResponse execute(
             Long createdByUserId,
             String mode,
@@ -206,6 +237,10 @@ public class AdultOtherCollectionSyncService {
             List<EmbyItem> scopedItems = scopedItems(items, library.locations(), sourceFolderPath);
             Map<String, CandidateGroup> candidateGroups = candidateGroups(scopedItems, library.locations());
             Map<String, EmbyCollection> existingCollections = existingCollectionsByName();
+            Map<String, Set<String>> memberIdsByCollectionId = loadCollectionMemberIds(
+                    candidateGroups.keySet(),
+                    existingCollections
+            );
 
             int skippedItemCount = scopedItems.size() - candidateGroups.values().stream()
                     .mapToInt(group -> group.items().size())
@@ -215,7 +250,14 @@ public class AdultOtherCollectionSyncService {
                     .sorted(Comparator.comparingInt((CandidateGroup group) -> group.items().size()).reversed()
                             .thenComparing(CandidateGroup::collectionName))
                     .toList()) {
-                AdultOtherCollectionSyncGroup groupRecord = evaluateGroup(group, existingCollections, minItemCount, apply);
+                AdultOtherCollectionSyncGroup groupRecord = evaluateGroup(
+                        group,
+                        existingCollections,
+                        memberIdsByCollectionId,
+                        minItemCount,
+                        apply,
+                        "AUTO_WEBHOOK".equals(mode)
+                );
                 groupRecords.add(groupRecord);
                 counters.add(groupRecord);
             }
@@ -262,6 +304,10 @@ public class AdultOtherCollectionSyncService {
 
             Map<String, CandidateGroup> candidateGroups = candidateGroups(candidateItems, library.locations());
             Map<String, EmbyCollection> existingCollections = existingCollectionsByName();
+            Map<String, Set<String>> memberIdsByCollectionId = loadCollectionMemberIds(
+                    candidateGroups.keySet(),
+                    existingCollections
+            );
 
             int skippedItemCount = candidateItems.size() - candidateGroups.values().stream()
                     .mapToInt(group -> group.items().size())
@@ -274,6 +320,7 @@ public class AdultOtherCollectionSyncService {
                 AdultOtherCollectionSyncGroup groupRecord = evaluateGroup(
                         group,
                         existingCollections,
+                        memberIdsByCollectionId,
                         minItemCount,
                         apply,
                         true
@@ -442,15 +489,7 @@ public class AdultOtherCollectionSyncService {
     private AdultOtherCollectionSyncGroup evaluateGroup(
             CandidateGroup group,
             Map<String, EmbyCollection> existingCollections,
-            int minItemCount,
-            boolean apply
-    ) {
-        return evaluateGroup(group, existingCollections, minItemCount, apply, false);
-    }
-
-    private AdultOtherCollectionSyncGroup evaluateGroup(
-            CandidateGroup group,
-            Map<String, EmbyCollection> existingCollections,
+            Map<String, Set<String>> memberIdsByCollectionId,
             int minItemCount,
             boolean apply,
             boolean allowExistingCollectionBelowMinItemCount
@@ -484,10 +523,7 @@ public class AdultOtherCollectionSyncService {
         }
 
         record.setEmbyCollectionId(existing.id());
-        Set<String> currentItemIds = new LinkedHashSet<>(embyClient.listCollectionVideoItems(existing.id()).stream()
-                .map(EmbyItem::id)
-                .filter(StringUtils::hasText)
-                .toList());
+        Set<String> currentItemIds = memberIdsByCollectionId.getOrDefault(existing.id(), Set.of());
         List<String> missingItemIds = group.itemIds().stream()
                 .filter(itemId -> !currentItemIds.contains(itemId))
                 .toList();
@@ -497,6 +533,36 @@ public class AdultOtherCollectionSyncService {
             embyClient.addItemsToCollection(existing.id(), missingItemIds);
         }
         return record;
+    }
+
+    private Map<String, Set<String>> loadCollectionMemberIds(
+            Set<String> candidateCollectionNames,
+            Map<String, EmbyCollection> collectionsByName
+    ) {
+        Map<String, CompletableFuture<Set<String>>> futuresByCollectionId = new LinkedHashMap<>();
+        for (String collectionName : candidateCollectionNames) {
+            EmbyCollection collection = collectionsByName.get(collectionName);
+            if (collection == null || !StringUtils.hasText(collection.id())) {
+                continue;
+            }
+            futuresByCollectionId.computeIfAbsent(collection.id(), collectionId -> CompletableFuture.supplyAsync(
+                    () -> embyClient.listCollectionVideoItems(collectionId).stream()
+                            .map(EmbyItem::id)
+                            .filter(StringUtils::hasText)
+                            .collect(Collectors.toCollection(LinkedHashSet::new)),
+                    collectionReadExecutor
+            ));
+        }
+
+        Map<String, Set<String>> memberIdsByCollectionId = new LinkedHashMap<>();
+        futuresByCollectionId.forEach((collectionId, future) ->
+                memberIdsByCollectionId.put(collectionId, future.join()));
+        return memberIdsByCollectionId;
+    }
+
+    @PreDestroy
+    public void shutdownCollectionReadExecutor() {
+        collectionReadExecutor.shutdownNow();
     }
 
     private Map<String, CandidateGroup> candidateGroups(List<EmbyItem> items, List<String> libraryLocations) {
@@ -1055,21 +1121,42 @@ public class AdultOtherCollectionSyncService {
     private record SourceSnapshot(int itemCount, int groupCount, Set<String> collectionNames) {
     }
 
-    private static class SourceFolderStats {
+    private static InventoryHealth assessGroups(
+            Map<String, Set<String>> desiredItemIdsByGroup,
+            Map<String, EmbyCollection> collectionsByName,
+            Map<String, Set<String>> memberIdsByCollectionId
+    ) {
+        int healthy = 0;
+        int pendingCreate = 0;
+        int pendingMembers = 0;
+        int skipped = 0;
+        for (Map.Entry<String, Set<String>> entry : desiredItemIdsByGroup.entrySet()) {
+            EmbyCollection collection = collectionsByName.get(entry.getKey());
+            if (collection == null || !StringUtils.hasText(collection.id())) {
+                if (entry.getValue().size() < DEFAULT_MIN_ITEM_COUNT) {
+                    skipped++;
+                } else {
+                    pendingCreate++;
+                }
+                continue;
+            }
+            Set<String> currentMemberIds = memberIdsByCollectionId.getOrDefault(collection.id(), Set.of());
+            if (currentMemberIds.containsAll(entry.getValue())) {
+                healthy++;
+            } else {
+                pendingMembers++;
+            }
+        }
+        return new InventoryHealth(healthy, pendingCreate, pendingMembers, skipped);
+    }
+
+    private static class SourceFolderInventory {
 
         private final String path;
-        private final Set<String> groupNames = new LinkedHashSet<>();
+        private final Map<String, Set<String>> itemIdsByGroup = new LinkedHashMap<>();
         private int itemCount;
-        private LocalDateTime latestPreviewAt;
-        private LocalDateTime latestSyncAt;
-        private Integer lastSyncedItemCount;
-        private Integer lastSyncedGroupCount;
-        private LocalDateTime latestEmptyCleanupAt;
-        private Integer cleanupObservedItemCount;
-        private Integer cleanupObservedGroupCount;
-        private boolean missing;
 
-        SourceFolderStats(String path) {
+        SourceFolderInventory(String path) {
             this.path = path;
         }
 
@@ -1077,94 +1164,46 @@ public class AdultOtherCollectionSyncService {
             return path;
         }
 
-        void addItem(String groupName) {
+        void addItem(GroupIdentity identity, String itemId) {
             itemCount++;
-            if (StringUtils.hasText(groupName)) {
-                groupNames.add(groupName);
-            }
-        }
-
-        void markMissing() {
-            missing = true;
-        }
-
-        void applyRunSummary(AdultOtherCollectionFolderRunSummary summary) {
-            if (summary == null) {
+            if (identity == null || !StringUtils.hasText(itemId)) {
                 return;
             }
-            latestPreviewAt = summary.getLatestPreviewAt();
-            latestSyncAt = summary.getLatestSyncAt();
-            lastSyncedItemCount = summary.getLastSyncedItemCount();
-            lastSyncedGroupCount = summary.getLastSyncedGroupCount();
-            latestEmptyCleanupAt = summary.getLatestEmptyCleanupAt();
-            cleanupObservedItemCount = summary.getCleanupObservedItemCount();
-            cleanupObservedGroupCount = summary.getCleanupObservedGroupCount();
+            itemIdsByGroup.computeIfAbsent(identity.collectionName(), ignored -> new LinkedHashSet<>()).add(itemId);
         }
 
-        AdultOtherCollectionSourceFolderResponse toResponse() {
-            int currentGroupCount = groupNames.size();
-            boolean deletionAcknowledged = deletionAcknowledged(currentGroupCount);
-            Integer effectiveLastSyncedItemCount = deletionAcknowledged
-                    ? Integer.valueOf(itemCount)
-                    : lastSyncedItemCount;
-            Integer effectiveLastSyncedGroupCount = deletionAcknowledged
-                    ? Integer.valueOf(currentGroupCount)
-                    : lastSyncedGroupCount;
-            Integer itemDelta = latestSyncAt == null || effectiveLastSyncedItemCount == null
-                    ? null
-                    : itemCount - effectiveLastSyncedItemCount;
-            Integer groupDelta = latestSyncAt == null || effectiveLastSyncedGroupCount == null
-                    ? null
-                    : currentGroupCount - effectiveLastSyncedGroupCount;
+        AdultOtherCollectionSourceFolderResponse toResponse(
+                Map<String, EmbyCollection> collectionsByName,
+                Map<String, Set<String>> memberIdsByCollectionId
+        ) {
+            InventoryHealth health = assessGroups(itemIdsByGroup, collectionsByName, memberIdsByCollectionId);
             return new AdultOtherCollectionSourceFolderResponse(
                     path,
                     path,
                     itemCount,
-                    currentGroupCount,
-                    latestPreviewAt,
-                    latestSyncAt,
-                    effectiveLastSyncedItemCount,
-                    effectiveLastSyncedGroupCount,
-                    itemDelta,
-                    groupDelta,
-                    changeStatus(itemDelta, groupDelta)
+                    itemIdsByGroup.size(),
+                    health.healthy(),
+                    health.pendingCreate(),
+                    health.pendingMembers(),
+                    health.skipped(),
+                    health.status()
             );
         }
+    }
 
-        private boolean deletionAcknowledged(int currentGroupCount) {
-            if (latestSyncAt == null || latestEmptyCleanupAt == null || !latestEmptyCleanupAt.isAfter(latestSyncAt)) {
-                return false;
-            }
-            if (cleanupObservedItemCount == null || cleanupObservedGroupCount == null) {
-                return false;
-            }
-            if (cleanupObservedItemCount != itemCount || cleanupObservedGroupCount != currentGroupCount) {
-                return false;
-            }
-            int itemDelta = lastSyncedItemCount == null ? 0 : itemCount - lastSyncedItemCount;
-            int groupDelta = lastSyncedGroupCount == null ? 0 : currentGroupCount - lastSyncedGroupCount;
-            return itemDelta <= 0 && groupDelta <= 0 && (itemDelta < 0 || groupDelta < 0 || missing);
-        }
+    private record InventoryHealth(int healthy, int pendingCreate, int pendingMembers, int skipped) {
 
-        private String changeStatus(Integer itemDelta, Integer groupDelta) {
-            int safeItemDelta = itemDelta == null ? 0 : itemDelta;
-            int safeGroupDelta = groupDelta == null ? 0 : groupDelta;
-            if (latestSyncAt == null) {
-                return "NEVER_SYNCED";
+        String status() {
+            if (pendingCreate > 0 && pendingMembers > 0) {
+                return "MIXED";
             }
-            if (safeItemDelta == 0 && safeGroupDelta == 0) {
-                return "UNCHANGED";
+            if (pendingCreate > 0) {
+                return "PENDING_CREATE";
             }
-            if (missing) {
-                return "MISSING";
+            if (pendingMembers > 0) {
+                return "PENDING_MEMBERS";
             }
-            if (safeItemDelta >= 0 && safeGroupDelta >= 0) {
-                return "INCREASED";
-            }
-            if (safeItemDelta <= 0 && safeGroupDelta <= 0) {
-                return "DECREASED";
-            }
-            return "CHANGED";
+            return "HEALTHY";
         }
     }
 
@@ -1230,6 +1269,18 @@ public class AdultOtherCollectionSyncService {
 
         int itemAddCount() {
             return itemAddCount;
+        }
+    }
+
+    private static class CollectionReadThreadFactory implements ThreadFactory {
+
+        private final AtomicInteger sequence = new AtomicInteger();
+
+        @Override
+        public Thread newThread(Runnable runnable) {
+            Thread thread = new Thread(runnable, "adult-other-collection-read-" + sequence.incrementAndGet());
+            thread.setDaemon(true);
+            return thread;
         }
     }
 }
