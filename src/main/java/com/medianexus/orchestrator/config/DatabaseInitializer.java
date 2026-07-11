@@ -7,6 +7,9 @@ import com.medianexus.orchestrator.mapper.AdultMagnetIngestTaskMapper;
 import com.medianexus.orchestrator.mapper.AdultOtherCollectionSyncGroupMapper;
 import com.medianexus.orchestrator.mapper.AdultOtherCollectionKnownItemMapper;
 import com.medianexus.orchestrator.mapper.AdultOtherCollectionSyncRunMapper;
+import com.medianexus.orchestrator.mapper.AdultOtherAutomationRunCollectionMapper;
+import com.medianexus.orchestrator.mapper.AdultOtherAutomationRunItemMapper;
+import com.medianexus.orchestrator.mapper.AdultOtherAutomationRunMapper;
 import com.medianexus.orchestrator.mapper.EmbyActivePlaybackSessionMapper;
 import com.medianexus.orchestrator.mapper.EmbyWatchSessionMapper;
 import com.medianexus.orchestrator.mapper.MovieMagnetIngestTaskLogMapper;
@@ -53,6 +56,9 @@ public class DatabaseInitializer implements ApplicationRunner {
     private final AdultOtherCollectionSyncRunMapper adultOtherCollectionSyncRunMapper;
     private final AdultOtherCollectionSyncGroupMapper adultOtherCollectionSyncGroupMapper;
     private final AdultOtherCollectionKnownItemMapper adultOtherCollectionKnownItemMapper;
+    private final AdultOtherAutomationRunMapper adultOtherAutomationRunMapper;
+    private final AdultOtherAutomationRunItemMapper adultOtherAutomationRunItemMapper;
+    private final AdultOtherAutomationRunCollectionMapper adultOtherAutomationRunCollectionMapper;
 
     public DatabaseInitializer(
             DatabaseSshTunnelLifecycle databaseSshTunnelLifecycle,
@@ -74,7 +80,10 @@ public class DatabaseInitializer implements ApplicationRunner {
             EmbyWatchSessionMapper embyWatchSessionMapper,
             AdultOtherCollectionSyncRunMapper adultOtherCollectionSyncRunMapper,
             AdultOtherCollectionSyncGroupMapper adultOtherCollectionSyncGroupMapper,
-            AdultOtherCollectionKnownItemMapper adultOtherCollectionKnownItemMapper
+            AdultOtherCollectionKnownItemMapper adultOtherCollectionKnownItemMapper,
+            AdultOtherAutomationRunMapper adultOtherAutomationRunMapper,
+            AdultOtherAutomationRunItemMapper adultOtherAutomationRunItemMapper,
+            AdultOtherAutomationRunCollectionMapper adultOtherAutomationRunCollectionMapper
     ) {
         this.databaseSshTunnelLifecycle = databaseSshTunnelLifecycle;
         this.userMapper = userMapper;
@@ -96,6 +105,9 @@ public class DatabaseInitializer implements ApplicationRunner {
         this.adultOtherCollectionSyncRunMapper = adultOtherCollectionSyncRunMapper;
         this.adultOtherCollectionSyncGroupMapper = adultOtherCollectionSyncGroupMapper;
         this.adultOtherCollectionKnownItemMapper = adultOtherCollectionKnownItemMapper;
+        this.adultOtherAutomationRunMapper = adultOtherAutomationRunMapper;
+        this.adultOtherAutomationRunItemMapper = adultOtherAutomationRunItemMapper;
+        this.adultOtherAutomationRunCollectionMapper = adultOtherAutomationRunCollectionMapper;
     }
 
     @Override
@@ -155,6 +167,9 @@ public class DatabaseInitializer implements ApplicationRunner {
         ensureAdultOtherCollectionSyncRunColumns();
         adultOtherCollectionSyncGroupMapper.createTableIfNotExists();
         adultOtherCollectionKnownItemMapper.createTableIfNotExists();
+        adultOtherAutomationRunMapper.createTableIfNotExists();
+        adultOtherAutomationRunItemMapper.createTableIfNotExists();
+        adultOtherAutomationRunCollectionMapper.createTableIfNotExists();
     }
 
     private void ensureUserQuotaOverrideColumn() {

@@ -1,5 +1,6 @@
 package com.medianexus.orchestrator.service;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -8,6 +9,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.medianexus.orchestrator.config.EmbyProperties;
+import com.medianexus.orchestrator.dto.emby.response.AdultOtherAutomationCollectionResponse;
 import com.medianexus.orchestrator.dto.emby.response.AdultOtherCollectionSyncGroupResponse;
 import com.medianexus.orchestrator.dto.emby.response.AdultOtherCollectionSyncRunResponse;
 import com.medianexus.orchestrator.integration.emby.EmbyClient;
@@ -19,6 +21,7 @@ import java.util.Set;
 import java.util.concurrent.AbstractExecutorService;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 class AdultOtherLibraryAutomationRunnerTest {
 
@@ -65,6 +68,29 @@ class AdultOtherLibraryAutomationRunnerTest {
         verify(automationRunRecorder).completeNewItems(
                 "automation-1", 0, 0, 1, 1
         );
+        verify(automationRunRecorder).recordScopedItems(
+                "automation-1",
+                Set.of("item-1", "item-2"),
+                List.of(missing, ready),
+                Set.of("item-1", "item-2"),
+                java.util.Map.of("item-1", "Creator", "item-2", "Creator")
+        );
+        verify(automationRunRecorder).recordItemResults(
+                "automation-1",
+                List.of(missing, ready),
+                Set.of("item-1"),
+                List.of(state("item-1", true, missing.path()), ready)
+        );
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<AdultOtherAutomationCollectionResponse>> collections =
+                ArgumentCaptor.forClass(List.class);
+        verify(automationRunRecorder).recordCollections(
+                org.mockito.ArgumentMatchers.eq("automation-1"),
+                collections.capture()
+        );
+        assertEquals(1, collections.getValue().size());
+        assertEquals("Creator", collections.getValue().get(0).collectionName());
+        assertEquals("IMAGE_READY", collections.getValue().get(0).status());
     }
 
     @Test

@@ -1,6 +1,7 @@
 package com.medianexus.orchestrator.dto.emby.response;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 public record AdultOtherAutomationRunResponse(
         String id,
@@ -20,6 +21,8 @@ public record AdultOtherAutomationRunResponse(
         Integer deletedCollectionCount,
         String message,
         LocalDateTime startedAt,
-        LocalDateTime finishedAt
+        LocalDateTime finishedAt,
+        List<AdultOtherAutomationItemResponse> items,
+        List<AdultOtherAutomationCollectionResponse> collections
 ) {
 }

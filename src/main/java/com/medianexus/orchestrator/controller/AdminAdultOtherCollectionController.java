@@ -12,6 +12,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import java.util.List;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -46,6 +47,14 @@ public class AdminAdultOtherCollectionController {
             @RequestParam(defaultValue = "10") int limit
     ) {
         return ApiResponse.success(automationRunRecorder.recent(limit));
+    }
+
+    @GetMapping("/automation/runs/{runId}")
+    @Operation(summary = "读取 Adult-Other 自动化运行媒体与合集明细")
+    public ApiResponse<AdultOtherAutomationRunResponse> getAutomationRunDetails(
+            @PathVariable String runId
+    ) {
+        return ApiResponse.success(automationRunRecorder.details(runId));
     }
 
     @GetMapping("/source-folders")
