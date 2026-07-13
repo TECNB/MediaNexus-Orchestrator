@@ -27,6 +27,9 @@ public class MovieSeriesFileRenameService {
     private static final Pattern EPISODE_PREFIX_PATTERN = Pattern.compile("(?i)(?:^|[^a-z0-9])(?:ep|e)\\s*(\\d{1,3})(?:[^a-z0-9]|$)");
     private static final Pattern CHINESE_EPISODE_PATTERN = Pattern.compile("第\\s*(\\d{1,3})\\s*[集话話]");
     private static final Pattern BRACKET_EPISODE_PATTERN = Pattern.compile("[\\[【]\\s*(\\d{1,3})\\s*[\\]】]");
+    private static final Pattern BARE_ANIME_EPISODE_PATTERN = Pattern.compile(
+            "(?i)\\s+-\\s+(\\d{1,3})(?:v\\d+)?(?=\\s*(?:\\[|【|$))"
+    );
 
     private static final List<String> VIDEO_EXTENSIONS = List.of(
             "mp4", "mkv", "avi", "mov", "wmv", "flv", "m2ts", "ts", "webm", "rmvb"
@@ -214,6 +217,14 @@ public class MovieSeriesFileRenameService {
                 if (episode > 0) {
                     return Optional.of(episode);
                 }
+            }
+        }
+
+        Matcher bareAnimeEpisode = BARE_ANIME_EPISODE_PATTERN.matcher(mainName(sourceName));
+        if (bareAnimeEpisode.find()) {
+            int episode = Integer.parseInt(bareAnimeEpisode.group(1));
+            if (episode > 0) {
+                return Optional.of(episode);
             }
         }
         return Optional.empty();
