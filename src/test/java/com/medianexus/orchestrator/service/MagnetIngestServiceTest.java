@@ -11,6 +11,7 @@ import static org.mockito.Mockito.when;
 
 import com.medianexus.orchestrator.config.OpenListProperties;
 import com.medianexus.orchestrator.integration.openlist.OpenListClient;
+import com.medianexus.orchestrator.integration.openlist.OpenListLibraryOrganizer;
 import com.medianexus.orchestrator.integration.openlist.OpenListFileInfo;
 import com.medianexus.orchestrator.mapper.MovieMagnetIngestTaskLogMapper;
 import com.medianexus.orchestrator.mapper.MovieMagnetIngestTaskMapper;
@@ -110,6 +111,41 @@ class MagnetIngestServiceTest {
         assertThat(moveBatches.getAllValues()).extracting(List::size).containsExactly(10, 10, 5);
     }
 
+    @Test
+    void animeSeriesOrganizeUsesChineseLibraryTitleInsteadOfOriginalTitle() {
+        OpenListClient openListClient = mock(OpenListClient.class);
+        stubPathHelpers(openListClient);
+        String seasonPath = "/anime/无职转生：到了异世界就拿出真本事/Season 1";
+        when(openListClient.listFiles(seasonPath)).thenReturn(List.of(
+                new OpenListFileInfo(
+                        "[Group] Mushoku Tensei - S01E01 1080p.mkv",
+                        1024L,
+                        false,
+                        seasonPath
+                )
+        ));
+        MagnetIngestService service = service(openListClient);
+        SeriesMagnetIngestTask task = new SeriesMagnetIngestTask();
+        task.setId("mushoku-tensei-season-1");
+        task.setTaskProductType("ANIME");
+        task.setTitle("无职转生：到了异世界就拿出真本事");
+        task.setOriginalTitle("無職転生 ～異世界行ったら本気だす～");
+        task.setSeasonNumber(1);
+        task.setSavePath(seasonPath);
+        task.setTempPath(seasonPath);
+
+        ReflectionTestUtils.invokeMethod(service, "organizeSeriesFiles", task);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, String>> renames = ArgumentCaptor.forClass(Map.class);
+        verify(openListClient).batchRename(eq(seasonPath), renames.capture());
+        assertThat(renames.getValue())
+                .containsEntry(
+                        "[Group] Mushoku Tensei - S01E01 1080p.mkv",
+                        "无职转生：到了异世界就拿出真本事 - S01E01 1080p.mkv"
+                );
+    }
+
     private MagnetIngestService service(OpenListClient openListClient) {
         return new MagnetIngestService(
                 mock(MovieMagnetIngestTaskMapper.class),
@@ -119,6 +155,7 @@ class MagnetIngestServiceTest {
                 openListClient,
                 new OpenListProperties(),
                 new MovieSeriesFileRenameService(),
+                new OpenListLibraryOrganizer(openListClient),
                 null,
                 null,
                 null

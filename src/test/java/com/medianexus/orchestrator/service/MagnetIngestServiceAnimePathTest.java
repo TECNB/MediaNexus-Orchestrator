@@ -1,12 +1,12 @@
 package com.medianexus.orchestrator.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
-
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.medianexus.orchestrator.config.OpenListProperties;
 import com.medianexus.orchestrator.dto.magnet.request.MovieMagnetIngestRequest;
 import com.medianexus.orchestrator.dto.magnet.request.SeriesMagnetIngestRequest;
 import com.medianexus.orchestrator.integration.openlist.OpenListClient;
+import com.medianexus.orchestrator.integration.openlist.OpenListLibraryOrganizer;
 import java.lang.reflect.Method;
 import java.time.Duration;
 import org.junit.jupiter.api.Test;
@@ -94,6 +94,7 @@ class MagnetIngestServiceAnimePathTest {
                 openListClient,
                 properties,
                 new MovieSeriesFileRenameService(),
+                new OpenListLibraryOrganizer(openListClient),
                 null,
                 null,
                 null

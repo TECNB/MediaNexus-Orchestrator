@@ -815,7 +815,7 @@ class ProwlarrReleaseIngestServiceTest {
         private TaskRetryReference retryReference;
 
         FakeAnimeMagnetIngestTaskService() {
-            super(null, null, null, null, null, null, null, null);
+            super(null, null, null, null, null, null, null, null, null);
         }
 
         @Override
@@ -862,7 +862,7 @@ class ProwlarrReleaseIngestServiceTest {
         private TaskRetryReference retryReference;
 
         FakeMagnetIngestService() {
-            super(null, null, null, null, null, null, null, null, null, null);
+            super(null, null, null, null, null, null, null, null, null, null, null);
         }
 
         @Override

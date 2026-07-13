@@ -16,12 +16,15 @@ import com.medianexus.orchestrator.integration.openlist.OpenListClient;
 import com.medianexus.orchestrator.integration.openlist.OpenListClientException;
 import com.medianexus.orchestrator.integration.openlist.OpenListDirectoryPrepareException;
 import com.medianexus.orchestrator.integration.openlist.OpenListFileInfo;
+import com.medianexus.orchestrator.integration.openlist.OpenListLibraryOrganizer;
 import com.medianexus.orchestrator.integration.openlist.OpenListOfflineTaskInfo;
 import com.medianexus.orchestrator.mapper.AdultMagnetIngestTaskLogMapper;
 import com.medianexus.orchestrator.mapper.AdultMagnetIngestTaskMapper;
 import com.medianexus.orchestrator.model.AdultMagnetIngestTask;
 import com.medianexus.orchestrator.model.AdultMagnetIngestTaskLog;
 import com.medianexus.orchestrator.model.User;
+import com.medianexus.orchestrator.service.organization.LibraryOrganizer;
+import com.medianexus.orchestrator.service.organization.LibraryOrganizationPlan;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -39,6 +42,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -50,6 +54,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.event.EventListener;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -77,6 +82,7 @@ public class AdultMagnetIngestService {
     private final OpenListClient openListClient;
     private final OpenListProperties openListProperties;
     private final MovieSeriesFileRenameService renameService;
+    private final LibraryOrganizer adultLibraryOrganizer;
     private final AuthService authService;
     private final AutoSymlinkRefreshService autoSymlinkRefreshService;
     private final ObjectMapper objectMapper;
@@ -84,6 +90,7 @@ public class AdultMagnetIngestService {
     private final ExecutorService prepareExecutorService;
     private final ExecutorService organizeExecutorService;
     private final Object countLock = new Object();
+    private final Map<String, Object> promotionLocks = new ConcurrentHashMap<>();
     private volatile boolean tablesReady;
 
     @Autowired
@@ -93,6 +100,7 @@ public class AdultMagnetIngestService {
             OpenListClient openListClient,
             OpenListProperties openListProperties,
             MovieSeriesFileRenameService renameService,
+            @Qualifier("adultLibraryOrganizer") LibraryOrganizer adultLibraryOrganizer,
             AuthService authService,
             AutoSymlinkRefreshService autoSymlinkRefreshService,
             ObjectMapper objectMapper
@@ -102,12 +110,64 @@ public class AdultMagnetIngestService {
         this.openListClient = openListClient;
         this.openListProperties = openListProperties;
         this.renameService = renameService;
+        this.adultLibraryOrganizer = adultLibraryOrganizer;
         this.authService = authService;
         this.autoSymlinkRefreshService = autoSymlinkRefreshService;
         this.objectMapper = objectMapper;
         this.executorService = Executors.newSingleThreadExecutor(new AdultWorkerThreadFactory());
         this.prepareExecutorService = Executors.newFixedThreadPool(PREPARE_PARALLELISM, new AdultPrepareThreadFactory());
         this.organizeExecutorService = Executors.newFixedThreadPool(ORGANIZE_PARALLELISM, new AdultOrganizeThreadFactory());
+    }
+
+    AdultMagnetIngestService(
+            AdultMagnetIngestTaskMapper taskMapper,
+            AdultMagnetIngestTaskLogMapper taskLogMapper,
+            OpenListClient openListClient,
+            OpenListProperties openListProperties,
+            MovieSeriesFileRenameService renameService,
+            LibraryOrganizer adultLibraryOrganizer,
+            AuthService authService,
+            AutoSymlinkRefreshService autoSymlinkRefreshService,
+            ObjectMapper objectMapper,
+            ExecutorService executorService,
+            ExecutorService prepareExecutorService,
+            ExecutorService organizeExecutorService
+    ) {
+        this.taskMapper = taskMapper;
+        this.taskLogMapper = taskLogMapper;
+        this.openListClient = openListClient;
+        this.openListProperties = openListProperties;
+        this.renameService = renameService;
+        this.adultLibraryOrganizer = adultLibraryOrganizer;
+        this.authService = authService;
+        this.autoSymlinkRefreshService = autoSymlinkRefreshService;
+        this.objectMapper = objectMapper;
+        this.executorService = executorService;
+        this.prepareExecutorService = prepareExecutorService;
+        this.organizeExecutorService = organizeExecutorService;
+    }
+
+    AdultMagnetIngestService(
+            AdultMagnetIngestTaskMapper taskMapper,
+            AdultMagnetIngestTaskLogMapper taskLogMapper,
+            OpenListClient openListClient,
+            OpenListProperties openListProperties,
+            MovieSeriesFileRenameService renameService,
+            AuthService authService,
+            AutoSymlinkRefreshService autoSymlinkRefreshService,
+            ObjectMapper objectMapper
+    ) {
+        this(
+                taskMapper,
+                taskLogMapper,
+                openListClient,
+                openListProperties,
+                renameService,
+                new OpenListLibraryOrganizer(openListClient),
+                authService,
+                autoSymlinkRefreshService,
+                objectMapper
+        );
     }
 
     AdultMagnetIngestService(
@@ -123,17 +183,20 @@ public class AdultMagnetIngestService {
             ExecutorService prepareExecutorService,
             ExecutorService organizeExecutorService
     ) {
-        this.taskMapper = taskMapper;
-        this.taskLogMapper = taskLogMapper;
-        this.openListClient = openListClient;
-        this.openListProperties = openListProperties;
-        this.renameService = renameService;
-        this.authService = authService;
-        this.autoSymlinkRefreshService = autoSymlinkRefreshService;
-        this.objectMapper = objectMapper;
-        this.executorService = executorService;
-        this.prepareExecutorService = prepareExecutorService;
-        this.organizeExecutorService = organizeExecutorService;
+        this(
+                taskMapper,
+                taskLogMapper,
+                openListClient,
+                openListProperties,
+                renameService,
+                new OpenListLibraryOrganizer(openListClient),
+                authService,
+                autoSymlinkRefreshService,
+                objectMapper,
+                executorService,
+                prepareExecutorService,
+                organizeExecutorService
+        );
     }
 
     @EventListener(ApplicationReadyEvent.class)
@@ -542,47 +605,81 @@ public class AdultMagnetIngestService {
             deleteNamesByPath.computeIfAbsent(file.path(), ignored -> new ArrayList<>()).add(file.name());
         }
 
-        int deletedCount = 0;
-        for (Map.Entry<String, List<String>> entry : deleteNamesByPath.entrySet()) {
-            openListClient.remove(entry.getKey(), entry.getValue());
-            deletedCount += entry.getValue().size();
-            writeLog(
-                    taskId,
-                    "INFO",
-                    "organizing",
-                    "批量删除不合格文件",
-                    "dir=" + entry.getKey() + ", count=" + entry.getValue().size()
-                            + ", names=" + String.join(", ", entry.getValue())
-            );
+        int deletedCount = deleteNamesByPath.values().stream().mapToInt(List::size).sum();
+        LibraryOrganizationPlan cleanupPlan = LibraryOrganizationPlan.fromGroupedOperations(
+                item.tempPath(),
+                Map.of(),
+                Map.of(),
+                deleteNamesByPath,
+                Set.of(),
+                Set.of()
+        );
+        adultLibraryOrganizer.organize(cleanupPlan, (message, detail) ->
+                writeLog(taskId, "INFO", "organizing", message, detail));
+        if (deletedCount > 0) {
+            writeLog(taskId, "INFO", "organizing", "不合格文件删除完成", "count=" + deletedCount);
         }
 
-        cleanupEmptyDirectories(taskId, item.tempPath(), item.tempPath());
-        AdultDuplicateCleanupResult duplicateCleanupResult = removeDuplicateTopLevelContent(taskId, item, qualifiedFiles);
+        AdultDuplicateCleanupResult duplicateCleanupResult = planDuplicateTopLevelContent(item, qualifiedFiles);
         int removedDuplicateDirectoryCount = duplicateCleanupResult.removedDirectoryCount();
         int keptCount = duplicateCleanupResult.keptQualifiedVideoCount();
 
-        Set<String> targetNames = targetNames(item.targetPath());
-        List<String> promoteNames = new ArrayList<>();
-        int skippedDuplicateCount = 0;
-        for (OpenListFileInfo child : openListClient.listFiles(item.tempPath(), true)) {
-            if (targetNames.contains(child.name())) {
-                skippedDuplicateCount++;
-                writeLog(taskId, "WARN", "organizing", "目标同名内容已存在，跳过提升", child.name());
-                continue;
+        String normalizedTargetPath = openListClient.normalizePath(item.targetPath());
+        synchronized (promotionLocks.computeIfAbsent(normalizedTargetPath, ignored -> new Object())) {
+            Set<String> targetNames = targetNames(item.targetPath());
+            List<String> promoteNames = new ArrayList<>();
+            int skippedDuplicateCount = 0;
+            List<String> duplicateNames = duplicateCleanupResult.duplicateTopLevelNames();
+            List<OpenListFileInfo> currentChildren = openListClient.listFiles(item.tempPath(), true);
+            for (OpenListFileInfo child : currentChildren) {
+                if (duplicateNames.contains(child.name())) {
+                    continue;
+                }
+                if (targetNames.contains(child.name())) {
+                    skippedDuplicateCount++;
+                    writeLog(taskId, "WARN", "organizing", "目标同名内容已存在，跳过提升", child.name());
+                    continue;
+                }
+                promoteNames.add(child.name());
             }
-            promoteNames.add(child.name());
-        }
 
-        if (!promoteNames.isEmpty()) {
-            openListClient.move(item.tempPath(), item.targetPath(), promoteNames);
-            writeLog(taskId, "INFO", "organizing", "临时目录内容已提升到日期目录", "count=" + promoteNames.size());
+            Map<String, List<String>> moveByDirectory = promoteNames.isEmpty()
+                    ? Map.of()
+                    : Map.of(item.tempPath(), promoteNames);
+            Map<String, List<String>> deleteByDirectory = new LinkedHashMap<>();
+            if (!duplicateNames.isEmpty()) {
+                deleteByDirectory.put(item.tempPath(), duplicateNames);
+            }
+            if (currentChildren.isEmpty()) {
+                deleteByDirectory.put(item.targetPath(), List.of(pathName(item.tempPath())));
+            }
+            LibraryOrganizationPlan promotionPlan = LibraryOrganizationPlan.fromGroupedOperations(
+                    item.targetPath(),
+                    Map.of(),
+                    moveByDirectory,
+                    deleteByDirectory,
+                    new HashSet<>(promoteNames),
+                    Set.of()
+            );
+            adultLibraryOrganizer.organize(promotionPlan, (message, detail) ->
+                    writeLog(taskId, "INFO", "organizing", message, detail));
+            for (String duplicateName : duplicateNames) {
+                writeLog(taskId, "WARN", "organizing", "删除重复下载目录", duplicateName);
+            }
+            if (!promoteNames.isEmpty()) {
+                writeLog(taskId, "INFO", "organizing", "临时目录内容已提升到日期目录", "count=" + promoteNames.size());
+            }
+            return new AdultOrganizeResult(
+                    keptCount,
+                    deletedCount,
+                    promoteNames.size(),
+                    skippedDuplicateCount,
+                    removedDuplicateDirectoryCount
+            );
         }
-        removeDirectoryIfEmpty(taskId, item.tempPath());
-        return new AdultOrganizeResult(keptCount, deletedCount, promoteNames.size(), skippedDuplicateCount, removedDuplicateDirectoryCount);
     }
 
-    private AdultDuplicateCleanupResult removeDuplicateTopLevelContent(
-            String taskId,
+    private AdultDuplicateCleanupResult planDuplicateTopLevelContent(
             AdultMagnetItem item,
             List<OpenListFileInfo> qualifiedFiles
     ) {
@@ -595,6 +692,7 @@ public class AdultMagnetIngestService {
         Map<String, String> keptNameBySignature = new LinkedHashMap<>();
         int removedCount = 0;
         int keptQualifiedVideoCount = 0;
+        List<String> duplicateTopLevelNames = new ArrayList<>();
         for (OpenListFileInfo child : children) {
             List<OpenListFileInfo> childQualifiedFiles = qualifiedFilesByTopLevelName.getOrDefault(child.name(), List.of());
             String signature = qualifiedVideoSignature(childQualifiedFiles);
@@ -606,17 +704,10 @@ public class AdultMagnetIngestService {
                 keptQualifiedVideoCount += childQualifiedFiles.size();
                 continue;
             }
-            openListClient.remove(item.tempPath(), List.of(child.name()));
+            duplicateTopLevelNames.add(child.name());
             removedCount++;
-            writeLog(
-                    taskId,
-                    "WARN",
-                    "organizing",
-                    "删除重复下载目录",
-                    "kept=" + keptName + ", removed=" + child.name()
-            );
         }
-        return new AdultDuplicateCleanupResult(removedCount, keptQualifiedVideoCount);
+        return new AdultDuplicateCleanupResult(removedCount, keptQualifiedVideoCount, duplicateTopLevelNames);
     }
 
     private Map<String, List<OpenListFileInfo>> qualifiedFilesByTopLevelName(
@@ -1120,7 +1211,8 @@ public class AdultMagnetIngestService {
 
     private record AdultDuplicateCleanupResult(
             int removedDirectoryCount,
-            int keptQualifiedVideoCount
+            int keptQualifiedVideoCount,
+            List<String> duplicateTopLevelNames
     ) {
     }
 

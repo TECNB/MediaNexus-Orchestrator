@@ -30,6 +30,8 @@ import com.medianexus.orchestrator.model.SeriesMagnetIngestTask;
 import com.medianexus.orchestrator.model.SeriesMagnetIngestTaskLog;
 import com.medianexus.orchestrator.model.User;
 import com.medianexus.orchestrator.model.UserActionType;
+import com.medianexus.orchestrator.service.organization.LibraryOrganizer;
+import com.medianexus.orchestrator.service.organization.LibraryOrganizationPlan;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -53,6 +55,8 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.http.HttpStatus;
@@ -110,11 +114,15 @@ public class MagnetIngestService {
     private final OpenListClient openListClient;
     private final OpenListProperties openListProperties;
     private final MovieSeriesFileRenameService renameService;
+    private final LibraryOrganizer animeLibraryOrganizer;
+    private final LibraryOrganizer movieLibraryOrganizer;
+    private final LibraryOrganizer seriesLibraryOrganizer;
     private final AuthService authService;
     private final UserActionQuotaService userActionQuotaService;
     private final AutoSymlinkRefreshService autoSymlinkRefreshService;
     private final ExecutorService executorService;
 
+    @Autowired
     public MagnetIngestService(
             MovieMagnetIngestTaskMapper movieTaskMapper,
             MovieMagnetIngestTaskLogMapper movieTaskLogMapper,
@@ -123,6 +131,9 @@ public class MagnetIngestService {
             OpenListClient openListClient,
             OpenListProperties openListProperties,
             MovieSeriesFileRenameService renameService,
+            @Qualifier("animeLibraryOrganizer") LibraryOrganizer animeLibraryOrganizer,
+            @Qualifier("movieLibraryOrganizer") LibraryOrganizer movieLibraryOrganizer,
+            @Qualifier("seriesLibraryOrganizer") LibraryOrganizer seriesLibraryOrganizer,
             AuthService authService,
             UserActionQuotaService userActionQuotaService,
             AutoSymlinkRefreshService autoSymlinkRefreshService
@@ -134,10 +145,43 @@ public class MagnetIngestService {
         this.openListClient = openListClient;
         this.openListProperties = openListProperties;
         this.renameService = renameService;
+        this.animeLibraryOrganizer = animeLibraryOrganizer;
+        this.movieLibraryOrganizer = movieLibraryOrganizer;
+        this.seriesLibraryOrganizer = seriesLibraryOrganizer;
         this.authService = authService;
         this.userActionQuotaService = userActionQuotaService;
         this.autoSymlinkRefreshService = autoSymlinkRefreshService;
         this.executorService = Executors.newSingleThreadExecutor(new WorkerThreadFactory());
+    }
+
+    MagnetIngestService(
+            MovieMagnetIngestTaskMapper movieTaskMapper,
+            MovieMagnetIngestTaskLogMapper movieTaskLogMapper,
+            SeriesMagnetIngestTaskMapper seriesTaskMapper,
+            SeriesMagnetIngestTaskLogMapper seriesTaskLogMapper,
+            OpenListClient openListClient,
+            OpenListProperties openListProperties,
+            MovieSeriesFileRenameService renameService,
+            LibraryOrganizer libraryOrganizer,
+            AuthService authService,
+            UserActionQuotaService userActionQuotaService,
+            AutoSymlinkRefreshService autoSymlinkRefreshService
+    ) {
+        this(
+                movieTaskMapper,
+                movieTaskLogMapper,
+                seriesTaskMapper,
+                seriesTaskLogMapper,
+                openListClient,
+                openListProperties,
+                renameService,
+                libraryOrganizer,
+                libraryOrganizer,
+                libraryOrganizer,
+                authService,
+                userActionQuotaService,
+                autoSymlinkRefreshService
+        );
     }
 
     @EventListener(ApplicationReadyEvent.class)
@@ -867,7 +911,7 @@ public class MagnetIngestService {
             }
         }
 
-        executeOrganizationPlan(taskLogWriter, task.getSavePath(), plan, organized, skipped);
+        executeOrganizationPlan(movieLibraryOrganizer, taskLogWriter, task.getSavePath(), plan, organized, skipped, Set.of());
         return new OrganizeResult(organized, skipped, videoCount);
     }
 
@@ -893,7 +937,7 @@ public class MagnetIngestService {
             }
             Optional<MovieSeriesFileRenameService.RenameResult> rename = renameService.seriesVideo(
                     file.name(),
-                    fileTitle(task.getTitle(), task.getOriginalTitle(), "剧集标题不能为空"),
+                    seriesFileTitle(task),
                     task.getSeasonNumber()
             );
             if (rename.isEmpty()) {
@@ -924,7 +968,7 @@ public class MagnetIngestService {
             String sourceQuality = renameService.qualityFull(file.name());
             Optional<MovieSeriesFileRenameService.RenameResult> detected = renameService.seriesSubtitle(
                     file.name(),
-                    fileTitle(task.getTitle(), task.getOriginalTitle(), "剧集标题不能为空"),
+                    seriesFileTitle(task),
                     task.getSeasonNumber(),
                     sourceQuality
             );
@@ -944,7 +988,7 @@ public class MagnetIngestService {
             }
             MovieSeriesFileRenameService.RenameResult result = renameService.seriesSubtitle(
                     file.name(),
-                    fileTitle(task.getTitle(), task.getOriginalTitle(), "剧集标题不能为空"),
+                    seriesFileTitle(task),
                     task.getSeasonNumber(),
                     matchedQuality
             ).orElseThrow();
@@ -955,7 +999,27 @@ public class MagnetIngestService {
             }
         }
 
-        executeOrganizationPlan(taskLogWriter, task.getSavePath(), plan, organized, skipped, selection.skippedDirectoryPaths());
+        if (ANIME_PRODUCT_TYPE.equals(task.getTaskProductType())) {
+            executeOrganizationPlan(
+                    animeLibraryOrganizer,
+                    taskLogWriter,
+                    task.getSavePath(),
+                    plan,
+                    organized,
+                    skipped,
+                    selection.skippedDirectoryPaths()
+            );
+        } else {
+            executeOrganizationPlan(
+                    seriesLibraryOrganizer,
+                    taskLogWriter,
+                    task.getSavePath(),
+                    plan,
+                    organized,
+                    skipped,
+                    Set.of()
+            );
+        }
         return new OrganizeResult(organized, skipped, videoCount);
     }
 
@@ -1034,9 +1098,16 @@ public class MagnetIngestService {
         return files.stream().anyMatch(file -> renameService.isVideo(file.name())
                 && renameService.seriesVideo(
                         file.name(),
-                        fileTitle(task.getTitle(), task.getOriginalTitle(), "剧集标题不能为空"),
+                        seriesFileTitle(task),
                         task.getSeasonNumber()
                 ).isPresent());
+    }
+
+    private String seriesFileTitle(SeriesMagnetIngestTask task) {
+        if (ANIME_PRODUCT_TYPE.equals(task.getTaskProductType())) {
+            return displayTitle(task.getTitle(), task.getOriginalTitle(), "动漫标题不能为空");
+        }
+        return fileTitle(task.getTitle(), task.getOriginalTitle(), "剧集标题不能为空");
     }
 
     private void addAnimeDirectoriesToDelete(
@@ -1179,6 +1250,39 @@ public class MagnetIngestService {
         taskLogWriter.write("INFO", "organizing", "正在清理空目录", normalizedSavePath);
         cleanupEmptyDirectories(taskLogWriter, normalizedSavePath, normalizedSavePath, skippedDirectoryPaths);
         taskLogWriter.write("INFO", "organizing", "空目录清理完成", normalizedSavePath);
+    }
+
+    private void executeOrganizationPlan(
+            LibraryOrganizer libraryOrganizer,
+            TaskLogWriter taskLogWriter,
+            String savePath,
+            OrganizationPlan plan,
+            int organized,
+            int skipped,
+            Set<String> cleanupExcludedDirectories
+    ) {
+        int renameCount = countRenameOperations(plan.renameByDir());
+        int moveCount = countFileOperations(plan.moveByDir());
+        int deleteCount = countFileOperations(plan.deleteByDir());
+        taskLogWriter.write(
+                "INFO",
+                "organizing",
+                "整理计划已生成",
+                "rename=" + renameCount + ", move=" + moveCount + ", delete=" + deleteCount
+                        + ", organized=" + organized + ", skipped=" + skipped
+        );
+        LibraryOrganizationPlan organizationPlan = LibraryOrganizationPlan.fromGroupedOperations(
+                savePath,
+                plan.renameByDir(),
+                plan.moveByDir(),
+                plan.deleteByDir(),
+                plan.plannedTargetNames(),
+                cleanupExcludedDirectories
+        );
+        libraryOrganizer.organize(
+                organizationPlan,
+                (message, detail) -> taskLogWriter.write("INFO", "organizing", message, detail)
+        );
     }
 
     private void cleanupEmptyDirectories(

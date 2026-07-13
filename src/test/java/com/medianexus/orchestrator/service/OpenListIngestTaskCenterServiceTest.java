@@ -1780,7 +1780,7 @@ class OpenListIngestTaskCenterServiceTest {
         private final MovieSeriesRetryRecorder recorder;
 
         RecordingMagnetIngestService(MovieSeriesRetryRecorder recorder) {
-            super(null, null, null, null, null, null, null, null, null, null);
+            super(null, null, null, null, null, null, null, null, null, null, null);
             this.recorder = recorder;
         }
 
@@ -1815,7 +1815,7 @@ class OpenListIngestTaskCenterServiceTest {
         private final AnimeRetryRecorder recorder;
 
         RecordingAnimeMagnetIngestTaskService(AnimeRetryRecorder recorder) {
-            super(null, null, null, null, null, null, null, null);
+            super(null, null, null, null, null, null, null, null, null);
             this.recorder = recorder;
         }
 

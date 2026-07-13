@@ -15,6 +15,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.medianexus.orchestrator.config.OpenListProperties;
 import com.medianexus.orchestrator.dto.magnet.request.AnimeMagnetIngestTaskCreateRequest;
 import com.medianexus.orchestrator.integration.openlist.OpenListClient;
+import com.medianexus.orchestrator.integration.openlist.OpenListLibraryOrganizer;
 import com.medianexus.orchestrator.integration.openlist.OpenListFileInfo;
 import com.medianexus.orchestrator.mapper.AnimeMagnetIngestTaskLogMapper;
 import com.medianexus.orchestrator.mapper.AnimeMagnetIngestTaskMapper;
@@ -47,6 +48,7 @@ class AnimeMagnetIngestTaskServiceTest {
     private final AnimeMagnetIngestTaskService service = new AnimeMagnetIngestTaskService(
             taskMapper,
             taskLogMapper,
+            null,
             null,
             null,
             null,
@@ -137,6 +139,7 @@ class AnimeMagnetIngestTaskServiceTest {
                 openListClient,
                 properties,
                 new AnimeEpisodeRenameService(properties),
+                new OpenListLibraryOrganizer(openListClient),
                 authService,
                 quotaService,
                 null,
@@ -175,6 +178,7 @@ class AnimeMagnetIngestTaskServiceTest {
                 openListClient,
                 properties,
                 new AnimeEpisodeRenameService(properties),
+                new OpenListLibraryOrganizer(openListClient),
                 authService,
                 quotaService,
                 null,
@@ -216,6 +220,7 @@ class AnimeMagnetIngestTaskServiceTest {
                 openListClient,
                 properties,
                 new AnimeEpisodeRenameService(properties),
+                new OpenListLibraryOrganizer(openListClient),
                 authService,
                 quotaService,
                 null,
@@ -287,6 +292,7 @@ class AnimeMagnetIngestTaskServiceTest {
                 openListClient,
                 properties,
                 new AnimeEpisodeRenameService(properties),
+                new OpenListLibraryOrganizer(openListClient),
                 authService,
                 quotaService,
                 null,
