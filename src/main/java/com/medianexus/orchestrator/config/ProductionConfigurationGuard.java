@@ -19,6 +19,7 @@ public class ProductionConfigurationGuard implements InitializingBean {
     private final DatabaseSshTunnelProperties sshTunnelProperties;
     private final AuthProperties authProperties;
     private final AniRssProperties aniRssProperties;
+    private final CloudDrive2Properties cloudDrive2Properties;
     private final OpenListProperties openListProperties;
     private final ProwlarrProperties prowlarrProperties;
     private final RadarrProperties radarrProperties;
@@ -33,6 +34,7 @@ public class ProductionConfigurationGuard implements InitializingBean {
             DatabaseSshTunnelProperties sshTunnelProperties,
             AuthProperties authProperties,
             AniRssProperties aniRssProperties,
+            CloudDrive2Properties cloudDrive2Properties,
             OpenListProperties openListProperties,
             ProwlarrProperties prowlarrProperties,
             RadarrProperties radarrProperties,
@@ -46,6 +48,7 @@ public class ProductionConfigurationGuard implements InitializingBean {
         this.sshTunnelProperties = sshTunnelProperties;
         this.authProperties = authProperties;
         this.aniRssProperties = aniRssProperties;
+        this.cloudDrive2Properties = cloudDrive2Properties;
         this.openListProperties = openListProperties;
         this.prowlarrProperties = prowlarrProperties;
         this.radarrProperties = radarrProperties;
@@ -67,6 +70,7 @@ public class ProductionConfigurationGuard implements InitializingBean {
         validateDatasource(violations);
         validateSshTunnel(violations);
         validateSecretPlaceholders(violations);
+        validateCloudDrive2(violations);
 
         if (!violations.isEmpty()) {
             throw new IllegalStateException(
@@ -164,6 +168,22 @@ public class ProductionConfigurationGuard implements InitializingBean {
         rejectPlaceholder("medianexus.radarr.api-key", radarrProperties.getApiKey(), violations);
         rejectPlaceholder("medianexus.sonarr.api-key", sonarrProperties.getApiKey(), violations);
         rejectPlaceholder("medianexus.tmdb.api-token", tmdbProperties.getApiToken(), violations);
+    }
+
+    private void validateCloudDrive2(List<String> violations) {
+        if (!cloudDrive2Properties.isOrganizationEnabled()) {
+            return;
+        }
+        if (!StringUtils.hasText(cloudDrive2Properties.getHost())) {
+            violations.add("medianexus.clouddrive2.host must be configured when CD2 organization is enabled");
+        } else {
+            rejectPlaceholder("medianexus.clouddrive2.host", cloudDrive2Properties.getHost(), violations);
+        }
+        if (!StringUtils.hasText(cloudDrive2Properties.getApiToken())) {
+            violations.add("medianexus.clouddrive2.api-token must be configured when CD2 organization is enabled");
+        } else {
+            rejectPlaceholder("medianexus.clouddrive2.api-token", cloudDrive2Properties.getApiToken(), violations);
+        }
     }
 
     private void rejectPlaceholder(String propertyName, String value, List<String> violations) {

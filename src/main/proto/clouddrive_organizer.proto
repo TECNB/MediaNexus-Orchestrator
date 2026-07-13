@@ -1,0 +1,74 @@
+syntax = "proto3";
+
+package clouddrive;
+
+option java_multiple_files = true;
+option java_package = "com.medianexus.orchestrator.integration.clouddrive.proto";
+option java_outer_classname = "CloudDriveOrganizerProto";
+
+// CloudDrive2 官方 proto 的整理链路最小子集。消息字段号和 RPC 名称必须保持兼容。
+service CloudDriveFileSrv {
+  rpc GetSubFiles(ListSubFileRequest) returns (stream SubFilesReply) {}
+  rpc RenameFiles(RenameFilesRequest) returns (FileOperationResult) {}
+  rpc MoveFile(MoveFileRequest) returns (FileOperationResult) {}
+  rpc DeleteFiles(MultiFileRequest) returns (FileOperationResult) {}
+}
+
+message ListSubFileRequest {
+  string path = 1;
+  bool forceRefresh = 2;
+  optional bool checkExpires = 3;
+}
+
+message SubFilesReply {
+  repeated CloudDriveFile subFiles = 1;
+}
+
+message CloudDriveFile {
+  string id = 1;
+  string name = 2;
+  string fullPathName = 3;
+  int64 size = 4;
+
+  enum FileType {
+    Directory = 0;
+    File = 1;
+    Other = 2;
+  }
+
+  FileType fileType = 5;
+  bool isDirectory = 30;
+}
+
+message RenameFileRequest {
+  string theFilePath = 1;
+  string newName = 2;
+}
+
+message RenameFilesRequest {
+  repeated RenameFileRequest renameFiles = 1;
+}
+
+message MoveFileRequest {
+  enum ConflictPolicy {
+    Overwrite = 0;
+    Rename = 1;
+    Skip = 2;
+  }
+
+  repeated string theFilePaths = 1;
+  string destPath = 2;
+  optional ConflictPolicy conflictPolicy = 3;
+  optional bool moveAcrossClouds = 4;
+  optional bool handleConflictRecursively = 5;
+}
+
+message MultiFileRequest {
+  repeated string path = 1;
+}
+
+message FileOperationResult {
+  bool success = 1;
+  string errorMessage = 2;
+  repeated string resultFilePaths = 3;
+}

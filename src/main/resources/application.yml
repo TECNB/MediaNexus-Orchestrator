@@ -86,6 +86,20 @@ medianexus:
     offline-timeout: ${MEDIANEXUS_OPENLIST_OFFLINE_TIMEOUT:10m}
     adult-offline-timeout: ${MEDIANEXUS_ADULT_OPENLIST_OFFLINE_TIMEOUT:2m}
     retry-limit: ${MEDIANEXUS_OPENLIST_RETRY_LIMIT:5}
+  clouddrive2:
+    organization-enabled: ${MEDIANEXUS_CLOUDDRIVE2_ORGANIZATION_ENABLED:false}
+    anime-organization-enabled: ${MEDIANEXUS_CLOUDDRIVE2_ANIME_ORGANIZATION_ENABLED:false}
+    movie-organization-enabled: ${MEDIANEXUS_CLOUDDRIVE2_MOVIE_ORGANIZATION_ENABLED:false}
+    series-organization-enabled: ${MEDIANEXUS_CLOUDDRIVE2_SERIES_ORGANIZATION_ENABLED:false}
+    adult-organization-enabled: ${MEDIANEXUS_CLOUDDRIVE2_ADULT_ORGANIZATION_ENABLED:false}
+    host: ${MEDIANEXUS_CLOUDDRIVE2_HOST:}
+    port: ${MEDIANEXUS_CLOUDDRIVE2_PORT:19798}
+    api-token: ${MEDIANEXUS_CLOUDDRIVE2_API_TOKEN:}
+    ingest-path-prefix: ${MEDIANEXUS_CLOUDDRIVE2_INGEST_PATH_PREFIX:/pikpak}
+    cloud-drive-path-prefix: ${MEDIANEXUS_CLOUDDRIVE2_PATH_PREFIX:/WebDAV}
+    operation-timeout: ${MEDIANEXUS_CLOUDDRIVE2_OPERATION_TIMEOUT:120s}
+    visibility-timeout: ${MEDIANEXUS_CLOUDDRIVE2_VISIBILITY_TIMEOUT:120s}
+    visibility-poll-interval: ${MEDIANEXUS_CLOUDDRIVE2_VISIBILITY_POLL_INTERVAL:1s}
   subtitle-upload:
     allowed-extensions: ${MEDIANEXUS_SUBTITLE_UPLOAD_ALLOWED_EXTENSIONS:.ass,.srt,.sup}
     max-upload-size: ${MEDIANEXUS_SUBTITLE_UPLOAD_MAX_UPLOAD_SIZE:50MB}
