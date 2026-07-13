@@ -510,8 +510,8 @@ public class MagnetIngestService {
                 return;
             }
 
-            markMovieSucceeded(taskId, openListTaskId, result);
             refreshMovieAutoSymlink(taskId);
+            markMovieSucceeded(taskId, openListTaskId, result);
         } catch (Exception exception) {
             log.warn("Movie magnet ingest task failed id={}", taskId, exception);
             markMovieFailed(taskId, safeMessage(exception));
@@ -534,19 +534,15 @@ public class MagnetIngestService {
 
     private void runTelevisionSeriesTask(SeriesMagnetIngestTask task) {
         prepareTelevisionSeriesDownloadRoot(task);
-        if (downloadAndOrganizeSeriesTask(task)) {
-            refreshSeriesAutoSymlink(task.getId());
-        }
+        executePreparedSeriesTask(task);
     }
 
     private void runAnimeSeasonSeriesTask(SeriesMagnetIngestTask task) {
         prepareAnimeSeasonDownloadRoot(task);
-        if (downloadAndOrganizeSeriesTask(task)) {
-            refreshAnimeAutoSymlink(task.getId());
-        }
+        executePreparedSeriesTask(task);
     }
 
-    private boolean downloadAndOrganizeSeriesTask(SeriesMagnetIngestTask task) {
+    private void executePreparedSeriesTask(SeriesMagnetIngestTask task) {
         String taskId = task.getId();
         markSeriesSubmitted(task);
         String openListTaskId = openListClient.addOfflineDownload(task.getTempPath(), task.getMagnet());
@@ -565,11 +561,15 @@ public class MagnetIngestService {
         OrganizeResult result = organizeSeriesFiles(getExistingSeriesTask(taskId));
         if (result.videoCount() < 1) {
             markSeriesNoOrganizedFiles(taskId, openListTaskId, result);
-            return false;
+            return;
         }
 
+        if (ANIME_PRODUCT_TYPE.equals(task.getTaskProductType())) {
+            refreshAnimeAutoSymlink(taskId);
+        } else {
+            refreshSeriesAutoSymlink(taskId);
+        }
         markSeriesSucceeded(taskId, openListTaskId, result);
-        return true;
     }
 
     private void prepareMovieDownloadRoot(MovieMagnetIngestTask task) {
@@ -635,17 +635,16 @@ public class MagnetIngestService {
     }
 
     private void markMovieNoOrganizedFiles(String taskId, String openListTaskId, OrganizeResult result) {
-        updateMovieTask(taskId, "FAILED", "failed", openListTaskId, result, "没有识别到可入库的视频文件");
         writeMovieLog(taskId, "ERROR", "failed", "没有识别到可入库的视频文件", null);
+        updateMovieTask(taskId, "FAILED", "failed", openListTaskId, result, "没有识别到可入库的视频文件");
     }
 
     private void markSeriesNoOrganizedFiles(String taskId, String openListTaskId, OrganizeResult result) {
-        updateSeriesTask(taskId, "FAILED", "failed", openListTaskId, result, "没有识别到可入库的视频文件");
         writeSeriesLog(taskId, "ERROR", "failed", "没有识别到可入库的视频文件", null);
+        updateSeriesTask(taskId, "FAILED", "failed", openListTaskId, result, "没有识别到可入库的视频文件");
     }
 
     private void markMovieSucceeded(String taskId, String openListTaskId, OrganizeResult result) {
-        updateMovieTask(taskId, "SUCCEEDED", "succeeded", openListTaskId, result, null);
         writeMovieLog(
                 taskId,
                 "INFO",
@@ -653,12 +652,12 @@ public class MagnetIngestService {
                 "任务完成",
                 "organized=" + result.organizedCount() + ", skipped=" + result.skippedCount()
         );
+        updateMovieTask(taskId, "SUCCEEDED", "succeeded", openListTaskId, result, null);
         log.info("Movie magnet ingest task succeeded taskId={} openListTaskId={} organized={} skipped={}",
                 taskId, openListTaskId, result.organizedCount(), result.skippedCount());
     }
 
     private void markSeriesSucceeded(String taskId, String openListTaskId, OrganizeResult result) {
-        updateSeriesTask(taskId, "SUCCEEDED", "succeeded", openListTaskId, result, null);
         writeSeriesLog(
                 taskId,
                 "INFO",
@@ -666,6 +665,7 @@ public class MagnetIngestService {
                 "任务完成",
                 "organized=" + result.organizedCount() + ", skipped=" + result.skippedCount()
         );
+        updateSeriesTask(taskId, "SUCCEEDED", "succeeded", openListTaskId, result, null);
         log.info("Series magnet ingest task succeeded taskId={} openListTaskId={} organized={} skipped={}",
                 taskId, openListTaskId, result.organizedCount(), result.skippedCount());
     }
@@ -727,13 +727,13 @@ public class MagnetIngestService {
     }
 
     private void markMovieFailed(String taskId, String errorMessage) {
-        updateMovieTask(taskId, "FAILED", "failed", null, null, errorMessage);
         writeMovieLog(taskId, "ERROR", "failed", "任务失败", errorMessage);
+        updateMovieTask(taskId, "FAILED", "failed", null, null, errorMessage);
     }
 
     private void markSeriesFailed(String taskId, String errorMessage) {
-        updateSeriesTask(taskId, "FAILED", "failed", null, null, errorMessage);
         writeSeriesLog(taskId, "ERROR", "failed", "任务失败", errorMessage);
+        updateSeriesTask(taskId, "FAILED", "failed", null, null, errorMessage);
     }
 
     private void waitForOfflineTask(

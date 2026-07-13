@@ -414,8 +414,8 @@ public class AnimeMagnetIngestTaskService {
                 return;
             }
 
-            markSucceeded(taskId, openListTaskId, result);
             refreshAutoSymlink(taskId);
+            markSucceeded(taskId, openListTaskId, result);
         } catch (Exception exception) {
             log.warn("Anime magnet ingest task failed id={}", taskId, exception);
             markFailed(taskId, safeMessage(exception));
@@ -444,13 +444,13 @@ public class AnimeMagnetIngestTaskService {
     }
 
     private void markNoOrganizedFiles(String taskId, String openListTaskId, OrganizeResult result) {
-        updateTask(taskId, "FAILED", "failed", openListTaskId, result, "没有识别到可入库的视频文件");
         writeLog(taskId, "ERROR", "failed", "没有识别到可入库的视频文件", null);
+        updateTask(taskId, "FAILED", "failed", openListTaskId, result, "没有识别到可入库的视频文件");
     }
 
     private void markSucceeded(String taskId, String openListTaskId, OrganizeResult result) {
-        updateTask(taskId, "SUCCEEDED", "succeeded", openListTaskId, result, null);
         writeLog(taskId, "INFO", "succeeded", "任务完成", "organized=" + result.organizedCount() + ", skipped=" + result.skippedCount());
+        updateTask(taskId, "SUCCEEDED", "succeeded", openListTaskId, result, null);
         log.info(
                 "Anime magnet ingest task succeeded taskId={} openListTaskId={} organized={} skipped={}",
                 taskId,
@@ -485,8 +485,8 @@ public class AnimeMagnetIngestTaskService {
     }
 
     private void markFailed(String taskId, String errorMessage) {
-        updateTask(taskId, "FAILED", "failed", null, null, errorMessage);
         writeLog(taskId, "ERROR", "failed", "任务失败", errorMessage);
+        updateTask(taskId, "FAILED", "failed", null, null, errorMessage);
     }
 
     /**

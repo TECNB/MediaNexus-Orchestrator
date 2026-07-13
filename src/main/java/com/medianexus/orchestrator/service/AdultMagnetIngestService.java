@@ -294,8 +294,8 @@ public class AdultMagnetIngestService {
             int failedCount = safeInt(finishedTask.getFailedCount());
             int keptCount = safeInt(finishedTask.getKeptCount());
             if (succeededCount > 0 && failedCount == 0 && keptCount > 0) {
-                markFinished(taskId, "SUCCEEDED", "succeeded", null);
                 refreshAutoSymlink(taskId, "succeeded");
+                markFinished(taskId, "SUCCEEDED", "succeeded", null);
             } else if (keptCount > 0) {
                 markFinished(taskId, "PARTIAL_SUCCESS", "partial_success", "部分 Adult 下载链接未成功完成");
             } else {
@@ -925,6 +925,13 @@ public class AdultMagnetIngestService {
     }
 
     private void markFinished(String taskId, String status, String stage, String errorMessage) {
+        writeLog(
+                taskId,
+                TERMINAL_STATUSES.contains(status) && "FAILED".equals(status) ? "ERROR" : "INFO",
+                stage,
+                "Adult 批量任务结束",
+                "status=" + status + (errorMessage == null ? "" : ", message=" + errorMessage)
+        );
         LambdaUpdateWrapper<AdultMagnetIngestTask> updateWrapper = new LambdaUpdateWrapper<AdultMagnetIngestTask>()
                 .eq(AdultMagnetIngestTask::getId, taskId)
                 .set(AdultMagnetIngestTask::getStatus, status)
@@ -934,13 +941,6 @@ public class AdultMagnetIngestService {
             updateWrapper.set(AdultMagnetIngestTask::getErrorMessage, truncate(errorMessage, 1000));
         }
         taskMapper.update(updateWrapper);
-        writeLog(
-                taskId,
-                TERMINAL_STATUSES.contains(status) && "FAILED".equals(status) ? "ERROR" : "INFO",
-                stage,
-                "Adult 批量任务结束",
-                "status=" + status + (errorMessage == null ? "" : ", message=" + errorMessage)
-        );
     }
 
     private void refreshAutoSymlink(String taskId, String stage) {
