@@ -26,6 +26,7 @@ import java.lang.reflect.Method;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.AbstractExecutorService;
 import java.util.concurrent.RejectedExecutionException;
@@ -55,7 +56,6 @@ class AdultMagnetIngestServiceTest {
             null,
             objectMapper,
             taskExecutor,
-            new ControlledExecutor(),
             new ControlledExecutor()
     );
 
@@ -119,9 +119,60 @@ class AdultMagnetIngestServiceTest {
     }
 
     @Test
+    void preparesAdultTempDirectoriesAsOneOpenListBatch() throws Exception {
+        String targetPath = "/adult/JAV/7.15";
+        String firstTempPath = targetPath + "/adult-task-batch-01";
+        String secondTempPath = targetPath + "/adult-task-batch-02";
+        OpenListClient client = mock(OpenListClient.class);
+        when(client.normalizePath(anyString())).thenAnswer(invocation -> invocation.getArgument(0));
+        AdultMagnetIngestService directoryService = new AdultMagnetIngestService(
+                taskMapper,
+                taskLogMapper,
+                client,
+                openListProperties,
+                new MovieSeriesFileRenameService(),
+                new RecordingLibraryOrganizer(),
+                authService,
+                null,
+                objectMapper,
+                new ControlledExecutor(),
+                new ControlledExecutor()
+        );
+        AdultMagnetIngestTask task = new AdultMagnetIngestTask();
+        task.setId("task-1");
+        task.setTargetPath(targetPath);
+        Class<?> itemType = Class.forName(AdultMagnetIngestService.class.getName() + "$AdultMagnetItem");
+        Constructor<?> itemConstructor = itemType.getDeclaredConstructor(
+                int.class,
+                String.class,
+                String.class,
+                String.class,
+                String.class
+        );
+        itemConstructor.setAccessible(true);
+        Object firstItem = itemConstructor.newInstance(1, "magnet:?xt=urn:btih:first", "first", targetPath, firstTempPath);
+        Object secondItem = itemConstructor.newInstance(2, "magnet:?xt=urn:btih:second", "second", targetPath, secondTempPath);
+        Method prepareTargetDirectories = AdultMagnetIngestService.class.getDeclaredMethod(
+                "prepareTargetDirectories",
+                AdultMagnetIngestTask.class,
+                List.class,
+                String.class
+        );
+        prepareTargetDirectories.setAccessible(true);
+
+        prepareTargetDirectories.invoke(directoryService, task, List.of(firstItem, secondItem), "/adult");
+
+        verify(client).ensureDirectoryReady(targetPath, "/adult");
+        verify(client).ensureChildDirectoriesReady(
+                targetPath,
+                List.of("adult-task-batch-01", "adult-task-batch-02")
+        );
+    }
+
+    @Test
     void plansAdultCleanupBeforeTopLevelPromotionAndKeepsExactHundredMibVideo() throws Exception {
         String targetPath = "/adult/JAV/7.13";
-        String tempPath = targetPath + "/.adult-task-test";
+        String tempPath = targetPath + "/adult-task-test";
         RecordingLibraryOrganizer organizer = new RecordingLibraryOrganizer();
         FakeAdultOpenListClient client = new FakeAdultOpenListClient(openListProperties, objectMapper, targetPath, tempPath);
         AdultMagnetIngestService planningService = new AdultMagnetIngestService(
@@ -135,7 +186,6 @@ class AdultMagnetIngestServiceTest {
                 null,
                 objectMapper,
                 new ControlledExecutor(),
-                new ControlledExecutor(),
                 new ControlledExecutor()
         );
         Class<?> itemType = Class.forName(AdultMagnetIngestService.class.getName() + "$AdultMagnetItem");
@@ -148,23 +198,180 @@ class AdultMagnetIngestServiceTest {
         );
         itemConstructor.setAccessible(true);
         Object item = itemConstructor.newInstance(1, "magnet:?xt=urn:btih:test", "test", targetPath, tempPath);
-        Method organize = AdultMagnetIngestService.class.getDeclaredMethod(
-                "cleanAndPromoteTempDirectory",
+        Class<?> preparedType = Class.forName(AdultMagnetIngestService.class.getName() + "$AdultPreparedItem");
+        Method prepare = AdultMagnetIngestService.class.getDeclaredMethod(
+                "prepareTempDirectory",
                 String.class,
                 itemType
         );
-        organize.setAccessible(true);
+        prepare.setAccessible(true);
+        Method markPrepared = itemType.getDeclaredMethod("markPrepared", preparedType);
+        markPrepared.setAccessible(true);
+        Method planPromotionBatch = AdultMagnetIngestService.class.getDeclaredMethod(
+                "planPromotionBatch",
+                String.class,
+                String.class,
+                List.class
+        );
+        planPromotionBatch.setAccessible(true);
 
-        organize.invoke(planningService, "task-1", item);
+        Object prepared = prepare.invoke(planningService, "task-1", item);
+        markPrepared.invoke(item, prepared);
+        Object batch = planPromotionBatch.invoke(planningService, "task-1", targetPath, List.of(item));
+        Method batchPlan = batch.getClass().getDeclaredMethod("plan");
+        batchPlan.setAccessible(true);
+        LibraryOrganizationPlan promotionPlan = (LibraryOrganizationPlan) batchPlan.invoke(batch);
 
-        assertThat(organizer.plans).hasSize(2);
+        assertThat(organizer.plans).hasSize(1);
         assertThat(organizer.plans.get(0).deletions())
                 .extracting(LibraryOrganizationPlan.DeleteOperation::path)
                 .containsExactly(tempPath + "/Release/small.mkv");
-        assertThat(organizer.plans.get(1).moves())
+        assertThat(promotionPlan.moves())
                 .extracting(LibraryOrganizationPlan.MoveOperation::sourcePath)
                 .containsExactly(tempPath + "/Release");
-        assertThat(organizer.plans.get(1).expectedTargetNames()).containsExactly("Release");
+        assertThat(promotionPlan.expectedTargetNames()).containsExactly("Release");
+    }
+
+    @Test
+    void publishesPreparedItemsFromDifferentTempDirectoriesInOnePlan() throws Exception {
+        String targetPath = "/adult/JAV/7.15";
+        String firstTempPath = targetPath + "/adult-task-batch-01";
+        String secondTempPath = targetPath + "/adult-task-batch-02";
+        RecordingLibraryOrganizer organizer = new RecordingLibraryOrganizer();
+        FakeAdultOpenListClient client = new FakeAdultOpenListClient(
+                openListProperties,
+                objectMapper,
+                targetPath,
+                Map.of(firstTempPath, "Release-A", secondTempPath, "Release-B"),
+                List.of("adult-task-batch-01", "adult-task-batch-02")
+        );
+        AdultMagnetIngestService planningService = new AdultMagnetIngestService(
+                taskMapper,
+                taskLogMapper,
+                client,
+                openListProperties,
+                new MovieSeriesFileRenameService(),
+                organizer,
+                authService,
+                null,
+                objectMapper,
+                new ControlledExecutor(),
+                new ControlledExecutor()
+        );
+        Class<?> itemType = Class.forName(AdultMagnetIngestService.class.getName() + "$AdultMagnetItem");
+        Class<?> preparedType = Class.forName(AdultMagnetIngestService.class.getName() + "$AdultPreparedItem");
+        Constructor<?> itemConstructor = itemType.getDeclaredConstructor(
+                int.class,
+                String.class,
+                String.class,
+                String.class,
+                String.class
+        );
+        itemConstructor.setAccessible(true);
+        Object firstItem = itemConstructor.newInstance(1, "magnet:?xt=urn:btih:first", "first", targetPath, firstTempPath);
+        Object secondItem = itemConstructor.newInstance(2, "magnet:?xt=urn:btih:second", "second", targetPath, secondTempPath);
+        Method prepare = AdultMagnetIngestService.class.getDeclaredMethod("prepareTempDirectory", String.class, itemType);
+        prepare.setAccessible(true);
+        Method markPrepared = itemType.getDeclaredMethod("markPrepared", preparedType);
+        markPrepared.setAccessible(true);
+        markPrepared.invoke(firstItem, prepare.invoke(planningService, "task-1", firstItem));
+        markPrepared.invoke(secondItem, prepare.invoke(planningService, "task-1", secondItem));
+        Method planPromotionBatch = AdultMagnetIngestService.class.getDeclaredMethod(
+                "planPromotionBatch",
+                String.class,
+                String.class,
+                List.class
+        );
+        planPromotionBatch.setAccessible(true);
+
+        Object batch = planPromotionBatch.invoke(
+                planningService,
+                "task-1",
+                targetPath,
+                List.of(firstItem, secondItem)
+        );
+        Method batchPlan = batch.getClass().getDeclaredMethod("plan");
+        batchPlan.setAccessible(true);
+        LibraryOrganizationPlan batchPlanValue = (LibraryOrganizationPlan) batchPlan.invoke(batch);
+
+        assertThat(organizer.plans).hasSize(2);
+        assertThat(batchPlanValue.moves())
+                .extracting(LibraryOrganizationPlan.MoveOperation::sourcePath)
+                .containsExactlyInAnyOrder(firstTempPath + "/Release-A", secondTempPath + "/Release-B");
+        assertThat(batchPlanValue.expectedTargetNames()).containsExactlyInAnyOrder("Release-A", "Release-B");
+    }
+
+    @Test
+    void keepsLaterSourceWhenPreparedItemsContainTheSameTopLevelName() throws Exception {
+        String targetPath = "/adult/JAV/7.15";
+        String firstTempPath = targetPath + "/adult-task-batch-01";
+        String secondTempPath = targetPath + "/adult-task-batch-02";
+        FakeAdultOpenListClient client = new FakeAdultOpenListClient(
+                openListProperties,
+                objectMapper,
+                targetPath,
+                Map.of(firstTempPath, "Same-Release", secondTempPath, "Same-Release"),
+                List.of("adult-task-batch-01", "adult-task-batch-02")
+        );
+        AdultMagnetIngestService planningService = new AdultMagnetIngestService(
+                taskMapper,
+                taskLogMapper,
+                client,
+                openListProperties,
+                new MovieSeriesFileRenameService(),
+                new RecordingLibraryOrganizer(),
+                authService,
+                null,
+                objectMapper,
+                new ControlledExecutor(),
+                new ControlledExecutor()
+        );
+        Class<?> itemType = Class.forName(AdultMagnetIngestService.class.getName() + "$AdultMagnetItem");
+        Class<?> preparedType = Class.forName(AdultMagnetIngestService.class.getName() + "$AdultPreparedItem");
+        Constructor<?> itemConstructor = itemType.getDeclaredConstructor(
+                int.class,
+                String.class,
+                String.class,
+                String.class,
+                String.class
+        );
+        itemConstructor.setAccessible(true);
+        Constructor<?> preparedConstructor = preparedType.getDeclaredConstructor(
+                int.class,
+                int.class,
+                int.class,
+                List.class
+        );
+        preparedConstructor.setAccessible(true);
+        Method markPrepared = itemType.getDeclaredMethod("markPrepared", preparedType);
+        markPrepared.setAccessible(true);
+        Object firstItem = itemConstructor.newInstance(1, "magnet:?xt=urn:btih:first", "first", targetPath, firstTempPath);
+        Object secondItem = itemConstructor.newInstance(2, "magnet:?xt=urn:btih:second", "second", targetPath, secondTempPath);
+        markPrepared.invoke(firstItem, preparedConstructor.newInstance(1, 0, 0, List.of()));
+        markPrepared.invoke(secondItem, preparedConstructor.newInstance(1, 0, 0, List.of()));
+        Method planPromotionBatch = AdultMagnetIngestService.class.getDeclaredMethod(
+                "planPromotionBatch",
+                String.class,
+                String.class,
+                List.class
+        );
+        planPromotionBatch.setAccessible(true);
+
+        Object batch = planPromotionBatch.invoke(
+                planningService,
+                "task-1",
+                targetPath,
+                List.of(firstItem, secondItem)
+        );
+        Method batchPlan = batch.getClass().getDeclaredMethod("plan");
+        batchPlan.setAccessible(true);
+        LibraryOrganizationPlan plan = (LibraryOrganizationPlan) batchPlan.invoke(batch);
+
+        assertThat(plan.moves())
+                .extracting(LibraryOrganizationPlan.MoveOperation::sourcePath)
+                .containsExactly(firstTempPath + "/Same-Release");
+        assertThat(plan.deletions()).isEmpty();
+        assertThat(plan.expectedTargetNames()).containsExactly("Same-Release");
     }
 
     private static class TestAuthService extends AuthService {
@@ -198,7 +405,8 @@ class AdultMagnetIngestServiceTest {
 
         private static final long HUNDRED_MIB = 100L * 1024L * 1024L;
         private final String targetPath;
-        private final String tempPath;
+        private final Map<String, String> releaseNameByTempPath;
+        private final List<String> targetNames;
 
         FakeAdultOpenListClient(
                 OpenListProperties properties,
@@ -206,26 +414,40 @@ class AdultMagnetIngestServiceTest {
                 String targetPath,
                 String tempPath
         ) {
+            this(properties, objectMapper, targetPath, Map.of(tempPath, "Release"), List.of("adult-task-test"));
+        }
+
+        FakeAdultOpenListClient(
+                OpenListProperties properties,
+                ObjectMapper objectMapper,
+                String targetPath,
+                Map<String, String> releaseNameByTempPath,
+                List<String> targetNames
+        ) {
             super(properties, objectMapper);
             this.targetPath = targetPath;
-            this.tempPath = tempPath;
+            this.releaseNameByTempPath = releaseNameByTempPath;
+            this.targetNames = targetNames;
         }
 
         @Override
         public List<OpenListFileInfo> findFiles(String path, boolean refresh) {
+            String releaseName = releaseNameByTempPath.get(path);
             return List.of(
-                    new OpenListFileInfo("kept.mkv", HUNDRED_MIB, false, tempPath + "/Release"),
-                    new OpenListFileInfo("small.mkv", HUNDRED_MIB - 1, false, tempPath + "/Release")
+                    new OpenListFileInfo("kept.mkv", HUNDRED_MIB, false, path + "/" + releaseName),
+                    new OpenListFileInfo("small.mkv", HUNDRED_MIB - 1, false, path + "/" + releaseName)
             );
         }
 
         @Override
         public List<OpenListFileInfo> listFiles(String path, boolean refresh) {
-            if (path.equals(tempPath)) {
-                return List.of(new OpenListFileInfo("Release", 0L, true, tempPath));
+            if (releaseNameByTempPath.containsKey(path)) {
+                return List.of(new OpenListFileInfo(releaseNameByTempPath.get(path), 0L, true, path));
             }
             if (path.equals(targetPath)) {
-                return List.of(new OpenListFileInfo(".adult-task-test", 0L, true, targetPath));
+                return targetNames.stream()
+                        .map(name -> new OpenListFileInfo(name, 0L, true, targetPath))
+                        .toList();
             }
             return List.of();
         }

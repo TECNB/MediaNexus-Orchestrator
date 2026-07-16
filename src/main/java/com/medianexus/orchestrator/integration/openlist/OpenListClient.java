@@ -18,8 +18,15 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -38,6 +45,7 @@ public class OpenListClient {
     private static final Logger log = LoggerFactory.getLogger(OpenListClient.class);
     private static final int MAX_LOG_BODY_LENGTH = 500;
     private static final int MAX_UPLOAD_DNS_ATTEMPTS = 3;
+    private static final int DIRECTORY_CREATE_PARALLELISM = 4;
     private static final List<String> NOT_FOUND_KEYWORDS = List.of(
             "not found",
             "does not exist",
@@ -221,6 +229,109 @@ public class OpenListClient {
                 );
             }
         }
+    }
+
+    /**
+     * 在已知父目录下准备一批直接子目录，并通过父目录清单统一确认全部可见。
+     */
+    public void ensureChildDirectoriesReady(String parentPath, List<String> childNames) {
+        String normalizedParentPath = normalizePath(parentPath);
+        Set<String> requiredNames = normalizeChildDirectoryNames(childNames);
+        if (requiredNames.isEmpty()) {
+            return;
+        }
+
+        try {
+            createChildDirectories(normalizedParentPath, List.copyOf(requiredNames));
+            if (waitUntilChildDirectoriesVisible(normalizedParentPath, requiredNames)) {
+                return;
+            }
+            throw new OpenListDirectoryPrepareException(
+                    Reason.TARGET_CREATE_FAILED,
+                    "OpenList child directories did not become visible under: " + normalizedParentPath
+            );
+        } catch (OpenListDirectoryPrepareException exception) {
+            throw exception;
+        } catch (OpenListClientException exception) {
+            throw new OpenListDirectoryPrepareException(
+                    Reason.TARGET_CREATE_FAILED,
+                    "OpenList child directory prepare failed under: " + normalizedParentPath,
+                    exception
+            );
+        }
+    }
+
+    private Set<String> normalizeChildDirectoryNames(List<String> childNames) {
+        Set<String> normalizedNames = new LinkedHashSet<>();
+        for (String childName : childNames) {
+            String normalizedName = childName == null ? "" : childName.trim();
+            if (!StringUtils.hasText(normalizedName)
+                    || normalizedName.contains("/")
+                    || normalizedName.contains("\\")
+                    || normalizedName.equals(".")
+                    || normalizedName.equals("..")) {
+                throw new OpenListDirectoryPrepareException(
+                        Reason.PATH_OUTSIDE_ROOT,
+                        "OpenList child directory name is invalid: " + childName
+                );
+            }
+            normalizedNames.add(normalizedName);
+        }
+        return normalizedNames;
+    }
+
+    private void createChildDirectories(String parentPath, List<String> childNames) {
+        ExecutorService executor = Executors.newFixedThreadPool(
+                Math.min(DIRECTORY_CREATE_PARALLELISM, childNames.size())
+        );
+        try {
+            List<Future<Void>> futures = executor.invokeAll(childNames.stream()
+                    .<Callable<Void>>map(name -> () -> {
+                        mkdir(joinPath(parentPath, name));
+                        return null;
+                    })
+                    .toList());
+            for (Future<Void> future : futures) {
+                try {
+                    future.get();
+                } catch (ExecutionException exception) {
+                    Throwable cause = exception.getCause();
+                    if (cause instanceof OpenListClientException clientException) {
+                        throw clientException;
+                    }
+                    throw new OpenListClientException("OpenList child directory create failed", cause);
+                }
+            }
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new OpenListDirectoryPrepareException(
+                    Reason.TARGET_CREATE_FAILED,
+                    "OpenList child directory prepare interrupted",
+                    exception
+            );
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    private boolean waitUntilChildDirectoriesVisible(String parentPath, Set<String> requiredNames) {
+        int attempts = 3;
+        for (int index = 0; index < attempts; index++) {
+            if (visibleDirectoryNames(parentPath).containsAll(requiredNames)) {
+                return true;
+            }
+            if (index < attempts - 1) {
+                sleep(Duration.ofMillis(300));
+            }
+        }
+        return false;
+    }
+
+    private Set<String> visibleDirectoryNames(String parentPath) {
+        return listFiles(parentPath, true).stream()
+                .filter(file -> Boolean.TRUE.equals(file.isDir()))
+                .map(OpenListFileInfo::name)
+                .collect(LinkedHashSet::new, Set::add, Set::addAll);
     }
 
     /**

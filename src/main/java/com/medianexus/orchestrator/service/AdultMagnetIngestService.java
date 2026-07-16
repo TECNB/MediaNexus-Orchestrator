@@ -74,7 +74,6 @@ public class AdultMagnetIngestService {
     private static final List<String> TERMINAL_STATUSES = List.of("SUCCEEDED", "PARTIAL_SUCCESS", "FAILED", "INTERRUPTED");
     private static final long MIN_VIDEO_BYTES = 100L * 1024L * 1024L;
     private static final int MAX_MAGNETS_PER_BATCH = 50;
-    private static final int PREPARE_PARALLELISM = 4;
     private static final int ORGANIZE_PARALLELISM = 3;
 
     private final AdultMagnetIngestTaskMapper taskMapper;
@@ -87,7 +86,6 @@ public class AdultMagnetIngestService {
     private final AutoSymlinkRefreshService autoSymlinkRefreshService;
     private final ObjectMapper objectMapper;
     private final ExecutorService executorService;
-    private final ExecutorService prepareExecutorService;
     private final ExecutorService organizeExecutorService;
     private final Object countLock = new Object();
     private final Map<String, Object> promotionLocks = new ConcurrentHashMap<>();
@@ -115,7 +113,6 @@ public class AdultMagnetIngestService {
         this.autoSymlinkRefreshService = autoSymlinkRefreshService;
         this.objectMapper = objectMapper;
         this.executorService = Executors.newSingleThreadExecutor(new AdultWorkerThreadFactory());
-        this.prepareExecutorService = Executors.newFixedThreadPool(PREPARE_PARALLELISM, new AdultPrepareThreadFactory());
         this.organizeExecutorService = Executors.newFixedThreadPool(ORGANIZE_PARALLELISM, new AdultOrganizeThreadFactory());
     }
 
@@ -130,7 +127,6 @@ public class AdultMagnetIngestService {
             AutoSymlinkRefreshService autoSymlinkRefreshService,
             ObjectMapper objectMapper,
             ExecutorService executorService,
-            ExecutorService prepareExecutorService,
             ExecutorService organizeExecutorService
     ) {
         this.taskMapper = taskMapper;
@@ -143,7 +139,6 @@ public class AdultMagnetIngestService {
         this.autoSymlinkRefreshService = autoSymlinkRefreshService;
         this.objectMapper = objectMapper;
         this.executorService = executorService;
-        this.prepareExecutorService = prepareExecutorService;
         this.organizeExecutorService = organizeExecutorService;
     }
 
@@ -180,7 +175,6 @@ public class AdultMagnetIngestService {
             AutoSymlinkRefreshService autoSymlinkRefreshService,
             ObjectMapper objectMapper,
             ExecutorService executorService,
-            ExecutorService prepareExecutorService,
             ExecutorService organizeExecutorService
     ) {
         this(
@@ -194,7 +188,6 @@ public class AdultMagnetIngestService {
                 autoSymlinkRefreshService,
                 objectMapper,
                 executorService,
-                prepareExecutorService,
                 organizeExecutorService
         );
     }
@@ -374,7 +367,6 @@ public class AdultMagnetIngestService {
         writeLog(task.getId(), "INFO", "created", "正在准备 Adult 保存目录: " + task.getTargetPath(), task.getTargetPath());
         try {
             openListClient.ensureDirectoryReady(task.getTargetPath(), rootPath);
-            List<Future<?>> prepareFutures = new ArrayList<>();
             for (AdultMagnetItem item : items) {
                 writeLog(
                         task.getId(),
@@ -383,37 +375,15 @@ public class AdultMagnetIngestService {
                         "正在准备 Adult 临时目录: " + item.tempPath(),
                         "index=" + item.index() + ", hash=" + item.magnetHash()
                 );
-                prepareFutures.add(prepareExecutorService.submit(() -> openListClient.ensureDirectoryReady(item.tempPath(), rootPath)));
             }
-            waitForPrepareFutures(prepareFutures);
+            openListClient.ensureChildDirectoriesReady(
+                    task.getTargetPath(),
+                    items.stream().map(item -> pathName(item.tempPath())).toList()
+            );
         } catch (OpenListDirectoryPrepareException exception) {
             throw mapDirectoryPrepareException(exception);
         }
         writeLog(task.getId(), "INFO", "created", "Adult 保存目录准备完成: " + task.getTargetPath(), task.getTargetPath());
-    }
-
-    private void waitForPrepareFutures(List<Future<?>> prepareFutures) {
-        for (Future<?> future : prepareFutures) {
-            try {
-                future.get();
-            } catch (InterruptedException exception) {
-                Thread.currentThread().interrupt();
-                throw new OpenListDirectoryPrepareException(
-                        OpenListDirectoryPrepareException.Reason.TARGET_CREATE_FAILED,
-                        "Adult temp directory prepare interrupted",
-                        exception
-                );
-            } catch (ExecutionException exception) {
-                Throwable cause = exception.getCause();
-                if (cause instanceof OpenListDirectoryPrepareException directoryPrepareException) {
-                    throw directoryPrepareException;
-                }
-                if (cause instanceof RuntimeException runtimeException) {
-                    throw runtimeException;
-                }
-                throw new OpenListClientException("Adult temp directory prepare failed", exception);
-            }
-        }
     }
 
     private void submitItems(AdultMagnetIngestTask task, List<AdultMagnetItem> items) {
@@ -462,7 +432,7 @@ public class AdultMagnetIngestService {
     private void waitAndOrganizeItems(String taskId, List<AdultMagnetItem> items) {
         Duration timeout = openListProperties.getAdultOfflineTimeout();
         Duration pollInterval = openListProperties.getPollInterval();
-        List<Future<?>> organizeFutures = new ArrayList<>();
+        List<Future<?>> preparationFutures = new ArrayList<>();
 
         while (items.stream().anyMatch(AdultMagnetItem::pending)) {
             for (AdultMagnetItem item : items) {
@@ -475,7 +445,7 @@ public class AdultMagnetIngestService {
                 if (state != null && state == 2) {
                     writeLog(taskId, "INFO", "downloading", "Adult 下载链接下载完成", itemDetail(item, taskInfo));
                     safeDeleteOpenListTask(taskId, item.openListTaskId());
-                    submitOrganizeItem(taskId, item, organizeFutures);
+                    submitPreparation(taskId, item, preparationFutures);
                     continue;
                 }
                 if (state != null && List.of(3, 4).contains(state)) {
@@ -494,7 +464,7 @@ public class AdultMagnetIngestService {
                                 itemDetail(item, taskInfo)
                         );
                         safeDeleteOpenListTask(taskId, item.openListTaskId());
-                        submitOrganizeItem(taskId, item, organizeFutures);
+                        submitPreparation(taskId, item, preparationFutures);
                         continue;
                     }
                     item.markFailed();
@@ -512,7 +482,7 @@ public class AdultMagnetIngestService {
                                 itemDetail(item, taskInfo) + ", " + timeoutDetail(item, timeout)
                         );
                         safeDeleteOpenListTask(taskId, item.openListTaskId());
-                        submitOrganizeItem(taskId, item, organizeFutures);
+                        submitPreparation(taskId, item, preparationFutures);
                         continue;
                     }
                     item.markFailed();
@@ -533,31 +503,32 @@ public class AdultMagnetIngestService {
                 sleep(pollInterval);
             }
         }
-        waitForOrganizeFutures(taskId, organizeFutures);
+        waitForPreparationFutures(taskId, preparationFutures);
+        promotePreparedItems(taskId, items);
     }
 
-    private void submitOrganizeItem(String taskId, AdultMagnetItem item, List<Future<?>> organizeFutures) {
+    private void submitPreparation(String taskId, AdultMagnetItem item, List<Future<?>> preparationFutures) {
         item.markOrganizing();
-        organizeFutures.add(organizeExecutorService.submit(() -> organizeCompletedItemSafely(taskId, item)));
+        preparationFutures.add(organizeExecutorService.submit(() -> prepareCompletedItemSafely(taskId, item)));
     }
 
-    private void waitForOrganizeFutures(String taskId, List<Future<?>> organizeFutures) {
-        for (Future<?> future : organizeFutures) {
+    private void waitForPreparationFutures(String taskId, List<Future<?>> preparationFutures) {
+        for (Future<?> future : preparationFutures) {
             try {
                 future.get();
             } catch (InterruptedException exception) {
                 Thread.currentThread().interrupt();
-                throw new OpenListClientException("Adult organize task interrupted", exception);
+                throw new OpenListClientException("Adult preparation task interrupted", exception);
             } catch (ExecutionException exception) {
-                writeLog(taskId, "ERROR", "organizing", "Adult 整理线程异常", safeMessage(exception));
-                throw new OpenListClientException("Adult organize task failed", exception);
+                writeLog(taskId, "ERROR", "organizing", "Adult 清理线程异常", safeMessage(exception));
+                throw new OpenListClientException("Adult preparation task failed", exception);
             }
         }
     }
 
-    private void organizeCompletedItemSafely(String taskId, AdultMagnetItem item) {
+    private void prepareCompletedItemSafely(String taskId, AdultMagnetItem item) {
         try {
-            organizeCompletedItem(taskId, item);
+            prepareCompletedItem(taskId, item);
         } catch (RuntimeException exception) {
             item.markFailed();
             incrementFailed(taskId);
@@ -565,7 +536,7 @@ public class AdultMagnetIngestService {
                     taskId,
                     "ERROR",
                     "organizing",
-                    "Adult 临时目录整理失败",
+                    "Adult 临时目录清理失败",
                     "index=" + item.index() + ", hash=" + item.magnetHash()
                             + ", tempPath=" + item.tempPath()
                             + ", error=" + safeMessage(exception)
@@ -573,27 +544,22 @@ public class AdultMagnetIngestService {
         }
     }
 
-    private void organizeCompletedItem(String taskId, AdultMagnetItem item) {
-        updateStatus(taskId, "ORGANIZING", "organizing", null);
-        writeLog(taskId, "INFO", "organizing", "开始整理 Adult 临时目录", item.tempPath());
-        AdultOrganizeResult result = cleanAndPromoteTempDirectory(taskId, item);
-        item.markSucceeded();
-        incrementSucceeded(taskId, result);
+    private void prepareCompletedItem(String taskId, AdultMagnetItem item) {
+        writeLog(taskId, "INFO", "organizing", "开始清理 Adult 临时目录", item.tempPath());
+        AdultPreparedItem preparedItem = prepareTempDirectory(taskId, item);
+        item.markPrepared(preparedItem);
         writeLog(
                 taskId,
                 "INFO",
                 "organizing",
-                "Adult 临时目录整理完成",
-                "index=" + item.index() + ", kept=" + result.keptCount() + ", deleted=" + result.deletedCount()
-                        + ", promoted=" + result.promotedCount() + ", skippedDuplicates=" + result.skippedDuplicateCount()
-                        + ", removedDuplicateDirectories=" + result.removedDuplicateDirectoryCount()
+                "Adult 临时目录清理完成，等待批量发布",
+                "index=" + item.index() + ", kept=" + preparedItem.keptCount()
+                        + ", deleted=" + preparedItem.deletedCount()
+                        + ", removedDuplicateDirectories=" + preparedItem.removedDuplicateDirectoryCount()
         );
-        if (getExistingTask(taskId).getStatus().equals("ORGANIZING")) {
-            updateStatus(taskId, "DOWNLOADING", "downloading", null);
-        }
     }
 
-    private AdultOrganizeResult cleanAndPromoteTempDirectory(String taskId, AdultMagnetItem item) {
+    private AdultPreparedItem prepareTempDirectory(String taskId, AdultMagnetItem item) {
         List<OpenListFileInfo> files = openListClient.findFiles(item.tempPath(), true);
         List<OpenListFileInfo> qualifiedFiles = new ArrayList<>();
         Map<String, List<String>> deleteNamesByPath = new LinkedHashMap<>();
@@ -621,60 +587,150 @@ public class AdultMagnetIngestService {
         }
 
         AdultDuplicateCleanupResult duplicateCleanupResult = planDuplicateTopLevelContent(item, qualifiedFiles);
-        int removedDuplicateDirectoryCount = duplicateCleanupResult.removedDirectoryCount();
-        int keptCount = duplicateCleanupResult.keptQualifiedVideoCount();
+        return new AdultPreparedItem(
+                duplicateCleanupResult.keptQualifiedVideoCount(),
+                deletedCount,
+                duplicateCleanupResult.removedDirectoryCount(),
+                duplicateCleanupResult.duplicateTopLevelNames()
+        );
+    }
 
-        String normalizedTargetPath = openListClient.normalizePath(item.targetPath());
+    private void promotePreparedItems(String taskId, List<AdultMagnetItem> items) {
+        List<AdultMagnetItem> preparedItems = items.stream()
+                .filter(AdultMagnetItem::preparedForPromotion)
+                .sorted(Comparator.comparingInt(AdultMagnetItem::index))
+                .toList();
+        if (preparedItems.isEmpty()) {
+            return;
+        }
+
+        String targetPath = preparedItems.get(0).targetPath();
+        String normalizedTargetPath = openListClient.normalizePath(targetPath);
         synchronized (promotionLocks.computeIfAbsent(normalizedTargetPath, ignored -> new Object())) {
-            Set<String> targetNames = targetNames(item.targetPath());
+            updateStatus(taskId, "ORGANIZING", "organizing", null);
+            writeLog(
+                    taskId,
+                    "INFO",
+                    "organizing",
+                    "开始批量发布 Adult 临时目录",
+                    "items=" + preparedItems.size() + ", targetPath=" + targetPath
+            );
+            AdultPromotionBatch batch;
+            try {
+                batch = planPromotionBatch(taskId, targetPath, preparedItems);
+                if (!batch.plan().moves().isEmpty() || !batch.plan().deletions().isEmpty()) {
+                    adultLibraryOrganizer.organize(batch.plan(), (message, detail) ->
+                            writeLog(taskId, "INFO", "organizing", message, detail));
+                }
+            } catch (RuntimeException exception) {
+                failPromotionBatch(taskId, preparedItems, exception);
+                return;
+            }
+            completePromotedItems(taskId, batch.decisions());
+        }
+    }
+
+    private AdultPromotionBatch planPromotionBatch(
+            String taskId,
+            String targetPath,
+            List<AdultMagnetItem> preparedItems
+    ) {
+        Set<String> reservedNames = targetNames(targetPath);
+        Set<String> expectedTargetNames = new HashSet<>();
+        Map<String, List<String>> moveByDirectory = new LinkedHashMap<>();
+        Map<String, List<String>> deleteByDirectory = new LinkedHashMap<>();
+        List<AdultPromotionDecision> decisions = new ArrayList<>();
+
+        for (AdultMagnetItem item : preparedItems) {
+            AdultPreparedItem preparedItem = item.preparedItem();
+            List<String> duplicateNames = preparedItem.duplicateTopLevelNames();
+            List<OpenListFileInfo> currentChildren = openListClient.listFiles(item.tempPath(), true);
             List<String> promoteNames = new ArrayList<>();
             int skippedDuplicateCount = 0;
-            List<String> duplicateNames = duplicateCleanupResult.duplicateTopLevelNames();
-            List<OpenListFileInfo> currentChildren = openListClient.listFiles(item.tempPath(), true);
             for (OpenListFileInfo child : currentChildren) {
                 if (duplicateNames.contains(child.name())) {
                     continue;
                 }
-                if (targetNames.contains(child.name())) {
+                if (!reservedNames.add(child.name())) {
                     skippedDuplicateCount++;
-                    writeLog(taskId, "WARN", "organizing", "目标同名内容已存在，跳过提升", child.name());
+                    writeLog(
+                            taskId,
+                            "WARN",
+                            "organizing",
+                            "目标同名内容已存在，跳过提升并保留源内容",
+                            "index=" + item.index() + ", name=" + child.name()
+                    );
                     continue;
                 }
                 promoteNames.add(child.name());
+                expectedTargetNames.add(child.name());
             }
-
-            Map<String, List<String>> moveByDirectory = promoteNames.isEmpty()
-                    ? Map.of()
-                    : Map.of(item.tempPath(), promoteNames);
-            Map<String, List<String>> deleteByDirectory = new LinkedHashMap<>();
+            if (!promoteNames.isEmpty()) {
+                moveByDirectory.put(item.tempPath(), promoteNames);
+            }
             if (!duplicateNames.isEmpty()) {
                 deleteByDirectory.put(item.tempPath(), duplicateNames);
             }
             if (currentChildren.isEmpty()) {
-                deleteByDirectory.put(item.targetPath(), List.of(pathName(item.tempPath())));
+                deleteByDirectory
+                        .computeIfAbsent(targetPath, ignored -> new ArrayList<>())
+                        .add(pathName(item.tempPath()));
             }
-            LibraryOrganizationPlan promotionPlan = LibraryOrganizationPlan.fromGroupedOperations(
-                    item.targetPath(),
-                    Map.of(),
-                    moveByDirectory,
-                    deleteByDirectory,
-                    new HashSet<>(promoteNames),
-                    Set.of()
+            decisions.add(new AdultPromotionDecision(item, promoteNames, skippedDuplicateCount));
+        }
+
+        LibraryOrganizationPlan plan = LibraryOrganizationPlan.fromGroupedOperations(
+                targetPath,
+                Map.of(),
+                moveByDirectory,
+                deleteByDirectory,
+                expectedTargetNames,
+                Set.of()
+        );
+        return new AdultPromotionBatch(plan, decisions);
+    }
+
+    private void completePromotedItems(String taskId, List<AdultPromotionDecision> decisions) {
+        for (AdultPromotionDecision decision : decisions) {
+            AdultMagnetItem item = decision.item();
+            AdultPreparedItem preparedItem = item.preparedItem();
+            AdultOrganizeResult result = new AdultOrganizeResult(
+                    preparedItem.keptCount(),
+                    preparedItem.deletedCount(),
+                    decision.promoteNames().size(),
+                    decision.skippedDuplicateCount(),
+                    preparedItem.removedDuplicateDirectoryCount()
             );
-            adultLibraryOrganizer.organize(promotionPlan, (message, detail) ->
-                    writeLog(taskId, "INFO", "organizing", message, detail));
-            for (String duplicateName : duplicateNames) {
+            item.markSucceeded();
+            incrementSucceeded(taskId, result);
+            for (String duplicateName : preparedItem.duplicateTopLevelNames()) {
                 writeLog(taskId, "WARN", "organizing", "删除重复下载目录", duplicateName);
             }
-            if (!promoteNames.isEmpty()) {
-                writeLog(taskId, "INFO", "organizing", "临时目录内容已提升到日期目录", "count=" + promoteNames.size());
-            }
-            return new AdultOrganizeResult(
-                    keptCount,
-                    deletedCount,
-                    promoteNames.size(),
-                    skippedDuplicateCount,
-                    removedDuplicateDirectoryCount
+            writeLog(
+                    taskId,
+                    "INFO",
+                    "organizing",
+                    "Adult 临时目录批量发布完成",
+                    "index=" + item.index() + ", kept=" + result.keptCount() + ", deleted=" + result.deletedCount()
+                            + ", promoted=" + result.promotedCount()
+                            + ", skippedDuplicates=" + result.skippedDuplicateCount()
+                            + ", removedDuplicateDirectories=" + result.removedDuplicateDirectoryCount()
+            );
+        }
+    }
+
+    private void failPromotionBatch(String taskId, List<AdultMagnetItem> preparedItems, RuntimeException exception) {
+        for (AdultMagnetItem item : preparedItems) {
+            item.markFailed();
+            incrementFailed(taskId);
+            writeLog(
+                    taskId,
+                    "ERROR",
+                    "organizing",
+                    "Adult 批量发布失败，未自动重放",
+                    "index=" + item.index() + ", hash=" + item.magnetHash()
+                            + ", tempPath=" + item.tempPath()
+                            + ", error=" + safeMessage(exception)
             );
         }
     }
@@ -786,7 +842,7 @@ public class AdultMagnetIngestService {
         String taskShortId = taskId.replace("-", "").substring(0, 8);
         for (Map.Entry<String, String> entry : magnetByHash.entrySet()) {
             String shortHash = shortDownloadKey(entry.getKey());
-            String tempName = ".adult-task-" + taskShortId + "-" + String.format(Locale.ROOT, "%02d", index) + "-" + shortHash;
+            String tempName = "adult-task-" + taskShortId + "-" + String.format(Locale.ROOT, "%02d", index) + "-" + shortHash;
             items.add(new AdultMagnetItem(index, entry.getValue(), entry.getKey(), targetPath, openListClient.joinPath(targetPath, tempName)));
             index++;
         }
@@ -1209,6 +1265,36 @@ public class AdultMagnetIngestService {
     ) {
     }
 
+    private record AdultPreparedItem(
+            int keptCount,
+            int deletedCount,
+            int removedDuplicateDirectoryCount,
+            List<String> duplicateTopLevelNames
+    ) {
+        private AdultPreparedItem {
+            duplicateTopLevelNames = List.copyOf(duplicateTopLevelNames);
+        }
+    }
+
+    private record AdultPromotionDecision(
+            AdultMagnetItem item,
+            List<String> promoteNames,
+            int skippedDuplicateCount
+    ) {
+        private AdultPromotionDecision {
+            promoteNames = List.copyOf(promoteNames);
+        }
+    }
+
+    private record AdultPromotionBatch(
+            LibraryOrganizationPlan plan,
+            List<AdultPromotionDecision> decisions
+    ) {
+        private AdultPromotionBatch {
+            decisions = List.copyOf(decisions);
+        }
+    }
+
     private record AdultDuplicateCleanupResult(
             int removedDirectoryCount,
             int keptQualifiedVideoCount,
@@ -1228,6 +1314,7 @@ public class AdultMagnetIngestService {
         private boolean organizing;
         private boolean succeeded;
         private boolean failed;
+        private AdultPreparedItem preparedItem;
 
         AdultMagnetItem(int index, String magnet, String magnetHash, String targetPath, String tempPath) {
             this.index = index;
@@ -1273,6 +1360,14 @@ public class AdultMagnetIngestService {
             return submitted && !organizing && !succeeded && !failed;
         }
 
+        boolean preparedForPromotion() {
+            return preparedItem != null && !succeeded && !failed;
+        }
+
+        AdultPreparedItem preparedItem() {
+            return preparedItem;
+        }
+
         void markSubmitted(String openListTaskId) {
             this.openListTaskId = openListTaskId;
             this.submittedAt = Instant.now();
@@ -1281,6 +1376,10 @@ public class AdultMagnetIngestService {
 
         void markOrganizing() {
             this.organizing = true;
+        }
+
+        void markPrepared(AdultPreparedItem preparedItem) {
+            this.preparedItem = preparedItem;
         }
 
         void markSucceeded() {
@@ -1297,16 +1396,6 @@ public class AdultMagnetIngestService {
         public Thread newThread(Runnable runnable) {
             Thread thread = new Thread(runnable);
             thread.setName("adult-magnet-ingest-worker");
-            thread.setDaemon(true);
-            return thread;
-        }
-    }
-
-    private static class AdultPrepareThreadFactory implements ThreadFactory {
-        @Override
-        public Thread newThread(Runnable runnable) {
-            Thread thread = new Thread(runnable);
-            thread.setName("adult-magnet-prepare-worker");
             thread.setDaemon(true);
             return thread;
         }
