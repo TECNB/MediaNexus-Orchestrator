@@ -11,9 +11,11 @@ import com.medianexus.orchestrator.service.organization.LibraryOrganizationPlan;
 import com.medianexus.orchestrator.service.organization.LibraryOrganizationPlan.DeleteOperation;
 import com.medianexus.orchestrator.service.organization.LibraryOrganizationPlan.MoveOperation;
 import com.medianexus.orchestrator.service.organization.LibraryOrganizationPlan.RenameOperation;
+import io.grpc.Status;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -21,6 +23,60 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.support.StaticListableBeanFactory;
 
 class CloudDrive2LibraryOrganizerTest {
+
+    @Test
+    void checksKnownParentDirectlyWithoutRefreshingItsAncestorChain() {
+        FakeFileOperations fileOperations = new FakeFileOperations();
+        String target = "/WebDAV/Media/Adult/JAV/7.15";
+        fileOperations.addFile(target, "DVAJ-749", 1024L);
+        CloudDrive2LibraryOrganizer organizer = new CloudDrive2LibraryOrganizer(
+                fileOperations,
+                properties()
+        );
+        LibraryOrganizationPlan plan = new LibraryOrganizationPlan(
+                "/pikpak/Media/Adult/JAV/7.15",
+                List.of(),
+                List.of(),
+                List.of(),
+                Set.of("DVAJ-749"),
+                Set.of()
+        );
+
+        organizer.organize(plan, (message, detail) -> { });
+
+        assertThat(fileOperations.listedPaths).containsExactly(target);
+    }
+
+    @Test
+    void refreshesAncestorChainAndRetriesWhenDirectParentIsNotFound() {
+        FakeFileOperations fileOperations = new FakeFileOperations();
+        String target = "/WebDAV/Media/Adult/JAV/7.15";
+        fileOperations.addFile(target, "DVAJ-749", 1024L);
+        fileOperations.failNotFound(target, 1);
+        CloudDrive2LibraryOrganizer organizer = new CloudDrive2LibraryOrganizer(
+                fileOperations,
+                properties()
+        );
+        LibraryOrganizationPlan plan = new LibraryOrganizationPlan(
+                "/pikpak/Media/Adult/JAV/7.15",
+                List.of(),
+                List.of(),
+                List.of(),
+                Set.of("DVAJ-749"),
+                Set.of()
+        );
+
+        organizer.organize(plan, (message, detail) -> { });
+
+        assertThat(fileOperations.listedPaths).containsExactly(
+                target,
+                "/WebDAV",
+                "/WebDAV/Media",
+                "/WebDAV/Media/Adult",
+                "/WebDAV/Media/Adult/JAV",
+                target
+        );
+    }
 
     @Test
     void executesOneBatchPerOperationTypeAndWaitsForTargetManifest() {
@@ -70,16 +126,113 @@ class CloudDrive2LibraryOrganizerTest {
         assertThat(fileOperations.renameCalls.get(0)).hasSize(2);
         assertThat(fileOperations.moveCalls).hasSize(1);
         assertThat(fileOperations.moveCalls.get(0).sourcePaths()).hasSize(2);
-        assertThat(fileOperations.listedPaths).containsSubsequence(
-                "/WebDAV",
-                "/WebDAV/Media",
-                target,
-                release
-        );
+        assertThat(fileOperations.listedPaths)
+                .contains(target, release)
+                .doesNotContain("/WebDAV", "/WebDAV/Media");
         assertThat(fileOperations.children(target))
                 .extracting(CloudDrive2FileEntry::name)
                 .containsExactlyInAnyOrder("Show S01E01.mkv", "Show S01E02.mkv");
         assertThat(progressMessages).contains("CD2 已看见完整源文件", "CD2 整理结果已完整可见");
+    }
+
+    @Test
+    void sendsSeparateMoveRequestsForSourcesFromDifferentParentDirectories() {
+        FakeFileOperations fileOperations = new FakeFileOperations();
+        fileOperations.rejectMixedSourceParents();
+        String target = "/WebDAV/Media/Adult/JAV/7.15";
+        String firstSourceDirectory = target + "/adult-task-01";
+        String secondSourceDirectory = target + "/adult-task-02";
+        fileOperations.addDirectory(target, "adult-task-01");
+        fileOperations.addDirectory(target, "adult-task-02");
+        fileOperations.addDirectory(firstSourceDirectory, "DVAJ-749");
+        fileOperations.addDirectory(secondSourceDirectory, "PRED-877-U");
+        CloudDrive2LibraryOrganizer organizer = new CloudDrive2LibraryOrganizer(
+                fileOperations,
+                properties()
+        );
+        LibraryOrganizationPlan plan = new LibraryOrganizationPlan(
+                "/pikpak/Media/Adult/JAV/7.15",
+                List.of(),
+                List.of(
+                        new MoveOperation(
+                                "/pikpak/Media/Adult/JAV/7.15/adult-task-01/DVAJ-749",
+                                "/pikpak/Media/Adult/JAV/7.15"
+                        ),
+                        new MoveOperation(
+                                "/pikpak/Media/Adult/JAV/7.15/adult-task-02/PRED-877-U",
+                                "/pikpak/Media/Adult/JAV/7.15"
+                        )
+                ),
+                List.of(),
+                Set.of("DVAJ-749", "PRED-877-U"),
+                Set.of()
+        );
+
+        organizer.organize(plan, (message, detail) -> { });
+
+        assertThat(fileOperations.moveCalls).hasSize(2);
+        assertThat(fileOperations.moveCalls)
+                .allSatisfy(call -> assertThat(call.sourcePaths()).hasSize(1));
+        assertThat(fileOperations.children(target))
+                .extracting(CloudDrive2FileEntry::name)
+                .containsExactlyInAnyOrder("DVAJ-749", "PRED-877-U");
+    }
+
+    @Test
+    void readsFinalTargetManifestFromCd2MoveCacheBeforeFallingBackToForcedRefresh() {
+        FakeFileOperations fileOperations = new FakeFileOperations();
+        String target = "/WebDAV/Media/Adult/JAV/7.15";
+        String sourceDirectory = target + "/adult-task-01";
+        fileOperations.addDirectory(target, "adult-task-01");
+        fileOperations.addDirectory(sourceDirectory, "DVAJ-749");
+        fileOperations.hideNameFromForcedListings(target, "DVAJ-749");
+        CloudDrive2Properties properties = properties();
+        properties.setVisibilityTimeout(Duration.ofMillis(10));
+        CloudDrive2LibraryOrganizer organizer = new CloudDrive2LibraryOrganizer(
+                fileOperations,
+                properties
+        );
+        LibraryOrganizationPlan plan = new LibraryOrganizationPlan(
+                "/pikpak/Media/Adult/JAV/7.15",
+                List.of(),
+                List.of(new MoveOperation(
+                        "/pikpak/Media/Adult/JAV/7.15/adult-task-01/DVAJ-749",
+                        "/pikpak/Media/Adult/JAV/7.15"
+                )),
+                List.of(),
+                Set.of("DVAJ-749"),
+                Set.of()
+        );
+
+        organizer.organize(plan, (message, detail) -> { });
+
+        assertThat(fileOperations.cachedListedPaths).contains(target);
+        assertThat(fileOperations.forcedListedPaths).doesNotContain(target);
+    }
+
+    @Test
+    void fallsBackToForcedRefreshWhenFinalTargetIsMissingFromCd2Cache() {
+        FakeFileOperations fileOperations = new FakeFileOperations();
+        String target = "/WebDAV/Media/Adult/JAV/7.15";
+        fileOperations.addDirectory(target, "DVAJ-749");
+        fileOperations.hideNameFromCachedListings(target, "DVAJ-749");
+        CloudDrive2LibraryOrganizer organizer = new CloudDrive2LibraryOrganizer(
+                fileOperations,
+                properties()
+        );
+        LibraryOrganizationPlan plan = new LibraryOrganizationPlan(
+                "/pikpak/Media/Adult/JAV/7.15",
+                List.of(),
+                List.of(),
+                List.of(),
+                Set.of("DVAJ-749"),
+                Set.of()
+        );
+
+        organizer.organize(plan, (message, detail) -> { });
+
+        assertThat(fileOperations.cachedListedPaths).contains(target);
+        assertThat(fileOperations.forcedListedPaths).contains(target);
     }
 
     @Test
@@ -203,18 +356,36 @@ class CloudDrive2LibraryOrganizerTest {
     private static final class FakeFileOperations implements CloudDrive2FileOperations {
 
         private final Map<String, LinkedHashMap<String, CloudDrive2FileEntry>> entries = new LinkedHashMap<>();
+        private final Map<String, Integer> notFoundCallsRemaining = new LinkedHashMap<>();
         private final List<List<CloudDrive2RenameOperation>> renameCalls = new ArrayList<>();
         private final List<MoveCall> moveCalls = new ArrayList<>();
         private final List<String> listedPaths = new ArrayList<>();
+        private final List<String> cachedListedPaths = new ArrayList<>();
+        private final List<String> forcedListedPaths = new ArrayList<>();
         private final List<String> events = new ArrayList<>();
+        private final Map<String, Set<String>> hiddenNamesFromCachedListings = new LinkedHashMap<>();
+        private final Map<String, Set<String>> hiddenNamesFromForcedListings = new LinkedHashMap<>();
         private int listCalls;
+        private boolean rejectMixedSourceParents;
 
         @Override
         public List<CloudDrive2FileEntry> list(String path, boolean forceRefresh) {
             listCalls++;
             listedPaths.add(path);
+            (forceRefresh ? forcedListedPaths : cachedListedPaths).add(path);
             events.add("list:" + path);
-            return children(path);
+            int notFoundCalls = notFoundCallsRemaining.getOrDefault(path, 0);
+            if (notFoundCalls > 0) {
+                notFoundCallsRemaining.put(path, notFoundCalls - 1);
+                throw new CloudDrive2ClientException("not found: " + path, Status.Code.NOT_FOUND, null);
+            }
+            Map<String, Set<String>> hiddenNamesByPath = forceRefresh
+                    ? hiddenNamesFromForcedListings
+                    : hiddenNamesFromCachedListings;
+            Set<String> hiddenNames = hiddenNamesByPath.getOrDefault(path, Set.of());
+            return children(path).stream()
+                    .filter(entry -> !hiddenNames.contains(entry.name()))
+                    .toList();
         }
 
         @Override
@@ -234,6 +405,9 @@ class CloudDrive2LibraryOrganizerTest {
 
         @Override
         public void move(List<String> sourcePaths, String targetDirectory) {
+            if (rejectMixedSourceParents && sourcePaths.stream().map(FakeFileOperations::parent).distinct().count() > 1) {
+                throw new CloudDrive2ClientException("CloudDrive2 move failed");
+            }
             moveCalls.add(new MoveCall(List.copyOf(sourcePaths), targetDirectory));
             entries.computeIfAbsent(targetDirectory, ignored -> new LinkedHashMap<>());
             for (String sourcePath : sourcePaths) {
@@ -269,6 +443,24 @@ class CloudDrive2LibraryOrganizerTest {
         void addFile(String parent, String name, long size) {
             entries.computeIfAbsent(parent, ignored -> new LinkedHashMap<>())
                     .put(name, new CloudDrive2FileEntry(name, parent + "/" + name, size, false));
+        }
+
+        void failNotFound(String path, int calls) {
+            notFoundCallsRemaining.put(path, calls);
+        }
+
+        void rejectMixedSourceParents() {
+            rejectMixedSourceParents = true;
+        }
+
+        void hideNameFromForcedListings(String path, String name) {
+            hiddenNamesFromForcedListings.computeIfAbsent(path, ignored -> new LinkedHashSet<>())
+                    .add(name);
+        }
+
+        void hideNameFromCachedListings(String path, String name) {
+            hiddenNamesFromCachedListings.computeIfAbsent(path, ignored -> new LinkedHashSet<>())
+                    .add(name);
         }
 
         List<CloudDrive2FileEntry> children(String path) {

@@ -63,19 +63,25 @@ public class CloudDrive2LibraryOrganizer implements LibraryOrganizer {
             progressObserver.record("CD2 批量重命名完成", "count=" + plan.renames().size());
         }
 
-        Map<String, List<String>> movesByTarget = new LinkedHashMap<>();
+        Map<MoveRequestGroup, List<String>> movePathsByRequestGroup = new LinkedHashMap<>();
         for (MoveOperation operation : plan.moves()) {
-            movesByTarget.computeIfAbsent(operation.targetDirectory(), ignored -> new ArrayList<>())
+            MoveRequestGroup requestGroup = new MoveRequestGroup(
+                    parentPath(operation.sourcePath()),
+                    operation.targetDirectory()
+            );
+            movePathsByRequestGroup.computeIfAbsent(requestGroup, ignored -> new ArrayList<>())
                     .add(operation.sourcePath());
         }
-        for (Map.Entry<String, List<String>> entry : movesByTarget.entrySet()) {
+        for (Map.Entry<MoveRequestGroup, List<String>> entry : movePathsByRequestGroup.entrySet()) {
             progressObserver.record(
                     "正在通过 CD2 批量移动文件到目标目录",
-                    "dstDir=" + entry.getKey() + ", count=" + entry.getValue().size()
+                    "srcDir=" + entry.getKey().sourceDirectory()
+                            + ", dstDir=" + entry.getKey().targetDirectory()
+                            + ", count=" + entry.getValue().size()
             );
             fileOperations.move(
                     entry.getValue().stream().map(this::toCloudDrivePath).toList(),
-                    toCloudDrivePath(entry.getKey())
+                    toCloudDrivePath(entry.getKey().targetDirectory())
             );
             progressObserver.record("CD2 批量移动完成", "count=" + entry.getValue().size());
         }
@@ -120,7 +126,7 @@ public class CloudDrive2LibraryOrganizer implements LibraryOrganizer {
         for (String expectedTargetName : plan.expectedTargetNames()) {
             expectedTargetPaths.add(join(plan.targetDirectory(), expectedTargetName));
         }
-        awaitPathsPresent(expectedTargetPaths, "CD2 目标文件完整性校验超时");
+        awaitFinalTargetPathsPresent(expectedTargetPaths);
 
         Set<String> deletedPaths = new LinkedHashSet<>();
         plan.deletions().forEach(operation -> deletedPaths.add(operation.path()));
@@ -167,9 +173,16 @@ public class CloudDrive2LibraryOrganizer implements LibraryOrganizer {
         Set<String> missing = new LinkedHashSet<>();
         awaitCondition(() -> {
             missing.clear();
-            missing.addAll(missingPaths(ingestPaths, true));
+            missing.addAll(missingPathsAfterForcedRefresh(ingestPaths));
             return missing.isEmpty();
         }, timeoutMessage, missing);
+    }
+
+    private void awaitFinalTargetPathsPresent(Set<String> ingestPaths) {
+        if (ingestPaths.isEmpty() || missingPathsFromCache(ingestPaths).isEmpty()) {
+            return;
+        }
+        awaitPathsPresent(ingestPaths, "CD2 目标文件完整性校验超时");
     }
 
     private void awaitPathsAbsent(Set<String> ingestPaths, String timeoutMessage) {
@@ -184,30 +197,93 @@ public class CloudDrive2LibraryOrganizer implements LibraryOrganizer {
         }, timeoutMessage, remaining);
     }
 
-    private Set<String> missingPaths(Set<String> ingestPaths, boolean forceRefresh) {
+    private Set<String> missingPathsAfterForcedRefresh(Set<String> ingestPaths) {
         Set<String> missing = new LinkedHashSet<>();
         for (Map.Entry<String, Set<String>> entry : namesByParent(ingestPaths).entrySet()) {
-            refreshAncestorDirectories(entry.getKey());
-            String cloudDriveParent = toCloudDrivePath(entry.getKey());
-            Set<String> visibleNames;
-            try {
-                visibleNames = fileOperations.list(cloudDriveParent, forceRefresh).stream()
-                        .map(CloudDrive2FileEntry::name)
-                        .collect(LinkedHashSet::new, Set::add, Set::addAll);
-            } catch (CloudDrive2ClientException exception) {
-                if (exception.getStatusCode() == Status.Code.NOT_FOUND) {
-                    entry.getValue().forEach(name -> missing.add(join(entry.getKey(), name)));
-                    continue;
-                }
-                throw exception;
-            }
-            for (String name : entry.getValue()) {
-                if (!visibleNames.contains(name)) {
-                    missing.add(join(entry.getKey(), name));
-                }
-            }
+            Set<String> visibleNames = forcedVisibleNamesWithAncestorRecovery(entry.getKey());
+            addMissingPaths(missing, entry, visibleNames);
         }
         return missing;
+    }
+
+    private Set<String> missingPathsFromCache(Set<String> ingestPaths) {
+        Set<String> missing = new LinkedHashSet<>();
+        for (Map.Entry<String, Set<String>> entry : namesByParent(ingestPaths).entrySet()) {
+            Set<String> visibleNames = cachedVisibleNamesWithAncestorRecovery(entry.getKey());
+            addMissingPaths(missing, entry, visibleNames);
+        }
+        return missing;
+    }
+
+    private void addMissingPaths(
+            Set<String> missing,
+            Map.Entry<String, Set<String>> expectedNamesByDirectory,
+            Set<String> visibleNames
+    ) {
+        if (visibleNames == null) {
+            expectedNamesByDirectory.getValue().forEach(name ->
+                    missing.add(join(expectedNamesByDirectory.getKey(), name)));
+            return;
+        }
+        for (String name : expectedNamesByDirectory.getValue()) {
+            if (!visibleNames.contains(name)) {
+                missing.add(join(expectedNamesByDirectory.getKey(), name));
+            }
+        }
+    }
+
+    private Set<String> forcedVisibleNamesWithAncestorRecovery(String ingestDirectory) {
+        String cloudDriveDirectory = toCloudDrivePath(ingestDirectory);
+        try {
+            return forcedVisibleNames(cloudDriveDirectory);
+        } catch (CloudDrive2ClientException exception) {
+            if (exception.getStatusCode() != Status.Code.NOT_FOUND) {
+                throw exception;
+            }
+        }
+
+        refreshAncestorDirectories(ingestDirectory);
+        try {
+            return forcedVisibleNames(cloudDriveDirectory);
+        } catch (CloudDrive2ClientException exception) {
+            if (exception.getStatusCode() == Status.Code.NOT_FOUND) {
+                return null;
+            }
+            throw exception;
+        }
+    }
+
+    private Set<String> cachedVisibleNamesWithAncestorRecovery(String ingestDirectory) {
+        String cloudDriveDirectory = toCloudDrivePath(ingestDirectory);
+        try {
+            return cachedVisibleNames(cloudDriveDirectory);
+        } catch (CloudDrive2ClientException exception) {
+            if (exception.getStatusCode() != Status.Code.NOT_FOUND) {
+                throw exception;
+            }
+        }
+
+        refreshAncestorDirectories(ingestDirectory);
+        try {
+            return cachedVisibleNames(cloudDriveDirectory);
+        } catch (CloudDrive2ClientException exception) {
+            if (exception.getStatusCode() == Status.Code.NOT_FOUND) {
+                return null;
+            }
+            throw exception;
+        }
+    }
+
+    private Set<String> forcedVisibleNames(String cloudDriveDirectory) {
+        return fileOperations.list(cloudDriveDirectory, true).stream()
+                .map(CloudDrive2FileEntry::name)
+                .collect(LinkedHashSet::new, Set::add, Set::addAll);
+    }
+
+    private Set<String> cachedVisibleNames(String cloudDriveDirectory) {
+        return fileOperations.list(cloudDriveDirectory, false).stream()
+                .map(CloudDrive2FileEntry::name)
+                .collect(LinkedHashSet::new, Set::add, Set::addAll);
     }
 
     private void refreshAncestorDirectories(String ingestDirectory) {
@@ -298,5 +374,8 @@ public class CloudDrive2LibraryOrganizer implements LibraryOrganizer {
             throw new CloudDrive2ClientException("入库路径不在已配置的映射前缀下: " + normalizedPath);
         }
         return normalizePath(cloudDrivePrefix + normalizedPath.substring(ingestPrefix.length()));
+    }
+
+    private record MoveRequestGroup(String sourceDirectory, String targetDirectory) {
     }
 }
