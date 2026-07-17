@@ -131,6 +131,29 @@ class ProwlarrReleaseIngestServiceTest {
     }
 
     @Test
+    void fallsBackTo1080pMovieCandidatesFromTheSameSearchResults() {
+        prowlarrClient.respondWith("千与千寻 2001", List.of(
+                release("千与千寻.2001.2160p.BluRay.x265", 0, 40_000_000_000L),
+                release("千与千寻.2001.1080p.BluRay.x265", 8, 12_000_000_000L)
+        ));
+        prowlarrClient.respondWith("Spirited Away 2001", List.of());
+
+        ProwlarrReleaseRecommendationResponse response = service.recommendMovieRelease(
+                request(null, null, "千与千寻", "Spirited Away", 2001, "2160p")
+        );
+
+        assertThat(response.requestedQuality()).isEqualTo("2160p");
+        assertThat(response.selectedQuality()).isEqualTo("1080p");
+        assertThat(response.items()).allSatisfy(release ->
+                assertThat(release.resolutionTags()).contains("1080p")
+        );
+        assertThat(prowlarrClient.calls()).containsExactlyInAnyOrder(
+                "千与千寻 2001",
+                "Spirited Away 2001"
+        );
+    }
+
+    @Test
     void selectedSeriesReleaseRetryResolvesMagnetAndKeepsReleaseMetadata() {
         SeriesMagnetIngestTask originalTask = new SeriesMagnetIngestTask();
         originalTask.setId("series-anime-1");
@@ -367,6 +390,30 @@ class ProwlarrReleaseIngestServiceTest {
                 "绝命毒师",
                 "Breaking Bad S01",
                 "Breaking Bad"
+        );
+    }
+
+    @Test
+    void fallsBackTo1080pSeriesCandidatesFromTheSameSearchResults() {
+        prowlarrClient.respondWith("失忆投捕 S01", List.of(
+                release("失忆投捕.S01.2160p.BluRay.x265", 0, 32_000_000_000L),
+                release("失忆投捕.S01.1080p.BluRay.x265", 12, 10_000_000_000L)
+        ));
+
+        ProwlarrReleaseRecommendationResponse response = service.recommendSeriesRelease(
+                seriesRequest(null, null, null, "失忆投捕", "Boukyaku Battery", 1, "2160p")
+        );
+
+        assertThat(response.requestedQuality()).isEqualTo("2160p");
+        assertThat(response.selectedQuality()).isEqualTo("1080p");
+        assertThat(response.items()).allSatisfy(release ->
+                assertThat(release.resolutionTags()).contains("1080p")
+        );
+        assertThat(prowlarrClient.calls()).containsExactlyInAnyOrder(
+                "失忆投捕 S01",
+                "失忆投捕",
+                "Boukyaku Battery S01",
+                "Boukyaku Battery"
         );
     }
 

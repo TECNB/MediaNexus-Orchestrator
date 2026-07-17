@@ -109,12 +109,14 @@ public class ProwlarrReleaseIngestService {
         authService.requireCurrentUser();
         MovieReleaseIdentity movie = movieReleaseIdentity(request);
         String quality = normalizeQuality(request.quality());
-        List<RecommendedRelease> recommendedReleases = recommendMovieReleases(movie, quality);
-        RecommendedRelease recommendedRelease = recommendedReleases.get(0);
+        ReleaseRecommendation recommendation = recommendMovieReleases(movie, quality);
+        RecommendedRelease recommendedRelease = recommendation.releases().get(0);
         return new ProwlarrReleaseRecommendationResponse(
                 recommendedRelease.query().query(),
+                recommendation.requestedQuality(),
+                recommendation.selectedQuality(),
                 toReleaseItem(recommendedRelease.release(), recommendedRelease.tags(), recommendedRelease.query()),
-                recommendedReleases.stream()
+                recommendation.releases().stream()
                         .map(candidate -> toReleaseItem(candidate.release(), candidate.tags(), candidate.query()))
                         .toList()
         );
@@ -143,12 +145,14 @@ public class ProwlarrReleaseIngestService {
         authService.requireCurrentUser();
         SeriesReleaseIdentity series = seriesReleaseIdentity(request);
         String quality = normalizeQuality(request.quality());
-        List<RecommendedRelease> recommendedReleases = recommendSeriesReleases(series, quality);
-        RecommendedRelease recommendedRelease = recommendedReleases.get(0);
+        ReleaseRecommendation recommendation = recommendSeriesReleases(series, quality);
+        RecommendedRelease recommendedRelease = recommendation.releases().get(0);
         return new ProwlarrReleaseRecommendationResponse(
                 recommendedRelease.query().query(),
+                recommendation.requestedQuality(),
+                recommendation.selectedQuality(),
                 toReleaseItem(recommendedRelease.release(), recommendedRelease.tags(), recommendedRelease.query()),
-                recommendedReleases.stream()
+                recommendation.releases().stream()
                         .map(candidate -> toReleaseItem(candidate.release(), candidate.tags(), candidate.query()))
                         .toList()
         );
@@ -332,13 +336,12 @@ public class ProwlarrReleaseIngestService {
      * seeder checks, and stable-reference de-duplication keeps one explainable
      * match source for the confirmation UI and manual release list.
      */
-    private List<RecommendedRelease> recommendMovieReleases(MovieReleaseIdentity movie, String quality) {
+    private ReleaseRecommendation recommendMovieReleases(MovieReleaseIdentity movie, String quality) {
         List<SearchTitleTerm> titleTerms = titleTerms(movie);
         Map<String, RecommendedRelease> releasesByReference = new LinkedHashMap<>();
         for (MovieReleaseSearchResult searchResult : searchQueriesInParallel(movieReleaseSearchPlan(movie))) {
             for (RecommendedRelease candidate : movieReleaseSearchCandidates(List.of(searchResult)).stream()
                     .filter(release -> hasActivePeers(release.release()))
-                    .filter(release -> release.tags().resolutionTags().contains(quality))
                     .filter(release -> matchesAnyTitle(release.release().title(), titleTerms))
                     .toList()) {
                 releasesByReference.putIfAbsent(releaseReference(candidate.release()), candidate);
@@ -346,20 +349,35 @@ public class ProwlarrReleaseIngestService {
         }
 
         List<RecommendedRelease> candidates = List.copyOf(releasesByReference.values());
-        List<RecommendedRelease> recommendedReleases = selectRecommendedMovieReleases(movie, candidates);
+        List<RecommendedRelease> recommendedReleases = selectRecommendedMovieReleases(
+                movie,
+                candidates,
+                quality
+        );
         if (!recommendedReleases.isEmpty()) {
-            return recommendedReleases;
+            return new ReleaseRecommendation(quality, quality, recommendedReleases);
+        }
+
+        String fallbackQualityTag = fallbackQuality(quality);
+        if (fallbackQualityTag != null) {
+            List<RecommendedRelease> fallbackRecommendations = selectRecommendedMovieReleases(
+                    movie,
+                    candidates,
+                    fallbackQualityTag
+            );
+            if (!fallbackRecommendations.isEmpty()) {
+                return new ReleaseRecommendation(quality, fallbackQualityTag, fallbackRecommendations);
+            }
         }
         throw badRequest("未找到匹配分辨率且有做种的电影发布资源");
     }
 
-    private List<RecommendedRelease> recommendSeriesReleases(SeriesReleaseIdentity series, String quality) {
+    private ReleaseRecommendation recommendSeriesReleases(SeriesReleaseIdentity series, String quality) {
         List<SearchTitleTerm> titleTerms = titleTerms(series);
         Map<String, RecommendedRelease> releasesByReference = new LinkedHashMap<>();
         for (MovieReleaseSearchResult searchResult : searchQueriesInParallel(seriesReleaseSearchPlan(series))) {
             for (RecommendedRelease candidate : movieReleaseSearchCandidates(List.of(searchResult)).stream()
                     .filter(release -> hasActivePeers(release.release()))
-                    .filter(release -> release.tags().resolutionTags().contains(quality))
                     .filter(release -> matchesSeriesSearchCandidate(series, titleTerms, release))
                     .toList()) {
                 releasesByReference.putIfAbsent(releaseReference(candidate.release()), candidate);
@@ -367,9 +385,25 @@ public class ProwlarrReleaseIngestService {
         }
 
         List<RecommendedRelease> candidates = List.copyOf(releasesByReference.values());
-        List<RecommendedRelease> recommendedReleases = selectRecommendedSeriesReleases(series, candidates);
+        List<RecommendedRelease> recommendedReleases = selectRecommendedSeriesReleases(
+                series,
+                candidates,
+                quality
+        );
         if (!recommendedReleases.isEmpty()) {
-            return recommendedReleases;
+            return new ReleaseRecommendation(quality, quality, recommendedReleases);
+        }
+
+        String fallbackQualityTag = fallbackQuality(quality);
+        if (fallbackQualityTag != null) {
+            List<RecommendedRelease> fallbackRecommendations = selectRecommendedSeriesReleases(
+                    series,
+                    candidates,
+                    fallbackQualityTag
+            );
+            if (!fallbackRecommendations.isEmpty()) {
+                return new ReleaseRecommendation(quality, fallbackQualityTag, fallbackRecommendations);
+            }
         }
         throw badRequest("未找到匹配分辨率且有做种的剧集发布资源");
     }
@@ -490,20 +524,24 @@ public class ProwlarrReleaseIngestService {
 
     private List<RecommendedRelease> selectRecommendedMovieReleases(
             MovieReleaseIdentity movie,
-            List<RecommendedRelease> candidates
+            List<RecommendedRelease> candidates,
+            String quality
     ) {
+        List<RecommendedRelease> qualityMatchedCandidates = candidates.stream()
+                .filter(candidate -> candidate.tags().resolutionTags().contains(quality))
+                .toList();
         List<RecommendedRelease> recommendations = new ArrayList<>();
         LinkedHashSet<String> selectedReferences = new LinkedHashSet<>();
         addBucketRecommendations(
                 recommendations,
                 selectedReferences,
-                titleMatchedCandidates(candidates, movie.title())
+                titleMatchedCandidates(qualityMatchedCandidates, movie.title())
         );
         if (!normalizeSearchText(movie.title()).equals(normalizeSearchText(movie.originalTitle()))) {
             addBucketRecommendations(
                     recommendations,
                     selectedReferences,
-                    titleMatchedCandidates(candidates, movie.originalTitle())
+                    titleMatchedCandidates(qualityMatchedCandidates, movie.originalTitle())
             );
         }
         return recommendations;
@@ -511,20 +549,24 @@ public class ProwlarrReleaseIngestService {
 
     private List<RecommendedRelease> selectRecommendedSeriesReleases(
             SeriesReleaseIdentity series,
-            List<RecommendedRelease> candidates
+            List<RecommendedRelease> candidates,
+            String quality
     ) {
+        List<RecommendedRelease> qualityMatchedCandidates = candidates.stream()
+                .filter(candidate -> candidate.tags().resolutionTags().contains(quality))
+                .toList();
         List<RecommendedRelease> recommendations = new ArrayList<>();
         LinkedHashSet<String> selectedReferences = new LinkedHashSet<>();
         addBucketRecommendations(
                 recommendations,
                 selectedReferences,
-                titleMatchedCandidates(candidates, series.title())
+                titleMatchedCandidates(qualityMatchedCandidates, series.title())
         );
         if (!normalizeSearchText(series.title()).equals(normalizeSearchText(series.originalTitle()))) {
             addBucketRecommendations(
                     recommendations,
                     selectedReferences,
-                    titleMatchedCandidates(candidates, series.originalTitle())
+                    titleMatchedCandidates(qualityMatchedCandidates, series.originalTitle())
             );
         }
         return recommendations;
@@ -1051,6 +1093,10 @@ public class ProwlarrReleaseIngestService {
         return normalizeQuality(quality);
     }
 
+    private String fallbackQuality(String requestedQuality) {
+        return "2160p".equals(requestedQuality) ? "1080p" : null;
+    }
+
     private int validateYear(Integer year) {
         if (year == null || year < 1888) {
             throw badRequest("电影年份无效");
@@ -1138,6 +1184,13 @@ public class ProwlarrReleaseIngestService {
             MovieReleaseSearchQuery query,
             ProwlarrRelease release,
             ReleaseTitleTags tags
+    ) {
+    }
+
+    private record ReleaseRecommendation(
+            String requestedQuality,
+            String selectedQuality,
+            List<RecommendedRelease> releases
     ) {
     }
 
