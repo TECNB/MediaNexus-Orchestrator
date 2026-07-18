@@ -331,10 +331,11 @@ public class ProwlarrReleaseIngestService {
 
     /**
      * Movie release search is anchored to the selected catalog movie instead of
-     * the user's outer search term. ID and title queries are only candidate
-     * sources: every release still has to pass title relevance, quality and
-     * seeder checks, and stable-reference de-duplication keeps one explainable
-     * match source for the confirmation UI and manual release list.
+     * the user's outer search term. Display and original titles are searched
+     * across all enabled indexers; every release still has to pass title
+     * relevance, quality and seeder checks, and stable-reference de-duplication
+     * keeps one explainable match source for the confirmation UI and manual
+     * release list.
      */
     private ReleaseRecommendation recommendMovieReleases(MovieReleaseIdentity movie, String quality) {
         List<SearchTitleTerm> titleTerms = titleTerms(movie);
@@ -516,10 +517,7 @@ public class ProwlarrReleaseIngestService {
         if ("原始标题".equals(query.source())) {
             return 1;
         }
-        if ("TVDB ID".equals(query.source())) {
-            return 2;
-        }
-        return 3;
+        return 2;
     }
 
     private List<RecommendedRelease> selectRecommendedMovieReleases(
@@ -629,17 +627,6 @@ public class ProwlarrReleaseIngestService {
                 .thenComparing((RecommendedRelease candidate) -> leechersValue(candidate.release()), Comparator.reverseOrder());
     }
 
-    private List<MovieReleaseSearchQuery> idSearchQueries(MovieReleaseIdentity movie) {
-        List<MovieReleaseSearchQuery> queries = new ArrayList<>();
-        if (StringUtils.hasText(movie.imdbId())) {
-            queries.add(new MovieReleaseSearchQuery("IMDB ID", "{ImdbId:" + movie.imdbId() + "}"));
-        }
-        if (movie.tmdbId() != null) {
-            queries.add(new MovieReleaseSearchQuery("TMDB ID", "{TmdbId:" + movie.tmdbId() + "}"));
-        }
-        return queries;
-    }
-
     private List<MovieReleaseSearchQuery> titleSearchQueries(MovieReleaseIdentity movie) {
         LinkedHashSet<String> seenTitles = new LinkedHashSet<>();
         List<MovieReleaseSearchQuery> queries = new ArrayList<>();
@@ -663,33 +650,7 @@ public class ProwlarrReleaseIngestService {
     }
 
     private List<MovieReleaseSearchQuery> movieReleaseSearchPlan(MovieReleaseIdentity movie) {
-        List<MovieReleaseSearchQuery> queries = new ArrayList<>();
-        queries.addAll(idSearchQueries(movie));
-        queries.addAll(titleSearchQueries(movie));
-        return queries;
-    }
-
-    private List<MovieReleaseSearchQuery> seriesIdSearchQueries(SeriesReleaseIdentity series) {
-        List<MovieReleaseSearchQuery> queries = new ArrayList<>();
-        if (series.tvdbId() != null) {
-            queries.add(new MovieReleaseSearchQuery(
-                    "TVDB ID",
-                    releaseSearchQueryForSeason("{TvdbId:" + series.tvdbId() + "}", series.seasonNumber())
-            ));
-        }
-        if (StringUtils.hasText(series.imdbId())) {
-            queries.add(new MovieReleaseSearchQuery(
-                    "IMDB ID",
-                    releaseSearchQueryForSeason("{ImdbId:" + series.imdbId() + "}", series.seasonNumber())
-            ));
-        }
-        if (series.tmdbId() != null) {
-            queries.add(new MovieReleaseSearchQuery(
-                    "TMDB ID",
-                    releaseSearchQueryForSeason("{TmdbId:" + series.tmdbId() + "}", series.seasonNumber())
-            ));
-        }
-        return queries;
+        return titleSearchQueries(movie);
     }
 
     private List<MovieReleaseSearchQuery> seriesTitleSearchQueries(SeriesReleaseIdentity series) {
@@ -726,10 +687,7 @@ public class ProwlarrReleaseIngestService {
     }
 
     private List<MovieReleaseSearchQuery> seriesReleaseSearchPlan(SeriesReleaseIdentity series) {
-        List<MovieReleaseSearchQuery> queries = new ArrayList<>();
-        queries.addAll(seriesIdSearchQueries(series));
-        queries.addAll(seriesTitleSearchQueries(series));
-        return queries;
+        return seriesTitleSearchQueries(series);
     }
 
     private List<SearchTitleTerm> titleTerms(MovieReleaseIdentity movie) {
@@ -793,14 +751,38 @@ public class ProwlarrReleaseIngestService {
 
     private List<MovieReleaseSearchResult> searchQueriesInParallel(List<MovieReleaseSearchQuery> queries) {
         List<CompletableFuture<MovieReleaseSearchResult>> futures = queries.stream()
-                .map(query -> CompletableFuture.supplyAsync(() -> {
-                    log.info("Prowlarr release search source={} query={}", query.source(), logValue(query.query()));
-                    return new MovieReleaseSearchResult(query, search(query.query()));
-                }))
+                .map(query -> CompletableFuture.supplyAsync(() -> executeReleaseSearch(query)))
                 .toList();
         return futures.stream()
                 .map(this::joinSearchResult)
                 .toList();
+    }
+
+    private MovieReleaseSearchResult executeReleaseSearch(MovieReleaseSearchQuery query) {
+        long startedAt = System.nanoTime();
+        try {
+            List<ProwlarrRelease> releases = search(query.query());
+            log.info(
+                    "Prowlarr release search completed source={} query={} elapsedMs={} resultCount={}",
+                    query.source(),
+                    logValue(query.query()),
+                    elapsedMillis(startedAt),
+                    releases.size()
+            );
+            return new MovieReleaseSearchResult(query, releases);
+        } catch (RuntimeException exception) {
+            log.warn(
+                    "Prowlarr release search failed source={} query={} elapsedMs={}",
+                    query.source(),
+                    logValue(query.query()),
+                    elapsedMillis(startedAt)
+            );
+            throw exception;
+        }
+    }
+
+    private long elapsedMillis(long startedAt) {
+        return (System.nanoTime() - startedAt) / 1_000_000;
     }
 
     private MovieReleaseSearchResult joinSearchResult(CompletableFuture<MovieReleaseSearchResult> future) {
@@ -1068,10 +1050,6 @@ public class ProwlarrReleaseIngestService {
 
     private String seriesQuery(String term, int seasonNumber) {
         return requiredText(term, "搜索关键词不能为空") + " " + seasonQuerySuffix(seasonNumber);
-    }
-
-    private String releaseSearchQueryForSeason(String query, int seasonNumber) {
-        return seasonNumber == 1 ? query : query + " " + seasonQuerySuffix(seasonNumber);
     }
 
     private String seasonQuerySuffix(int seasonNumber) {

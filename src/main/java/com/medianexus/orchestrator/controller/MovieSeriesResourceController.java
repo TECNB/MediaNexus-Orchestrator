@@ -71,7 +71,7 @@ public class MovieSeriesResourceController {
     }
 
     @PostMapping("/movies/releases/recommendation")
-    @Operation(summary = "推荐电影发布资源", description = "基于已选电影实体优先执行 TMDB/IMDB ID 搜索，必要时回退到标题搜索，并返回可确认的推荐发布。")
+    @Operation(summary = "推荐电影发布资源", description = "使用已选电影的展示标题和原始标题加年份搜索全部启用索引器，并返回可确认的推荐发布。")
     public ApiResponse<ProwlarrReleaseRecommendationResponse> recommendMovieRelease(
             @Valid @RequestBody MovieReleaseRecommendationRequest request
     ) {
@@ -79,7 +79,7 @@ public class MovieSeriesResourceController {
     }
 
     @PostMapping("/movies/releases/search")
-    @Operation(summary = "搜索电影发布资源", description = "基于已选电影实体执行与快速添加一致的 ID 和标题搜索计划，合并并去重发布列表。")
+    @Operation(summary = "搜索电影发布资源", description = "使用与快速添加一致的展示标题和原始标题搜索计划，合并并去重发布列表。")
     public ApiResponse<ProwlarrReleaseSearchResponse> searchMovieReleases(
             @Valid @RequestBody MovieReleaseSearchRequest request
     ) {
@@ -123,7 +123,7 @@ public class MovieSeriesResourceController {
     }
 
     @PostMapping("/series/releases/recommendation")
-    @Operation(summary = "推荐剧集发布资源", description = "基于已选剧集实体和目标季执行 TVDB/TMDB/IMDB ID 与标题搜索计划，并返回可确认的推荐发布。")
+    @Operation(summary = "推荐剧集发布资源", description = "使用已选剧集的展示标题、原始标题及目标季搜索全部启用索引器，并返回可确认的推荐发布。")
     public ApiResponse<ProwlarrReleaseRecommendationResponse> recommendSeriesRelease(
             @Valid @RequestBody SeriesReleaseRecommendationRequest request
     ) {
@@ -131,7 +131,7 @@ public class MovieSeriesResourceController {
     }
 
     @PostMapping("/series/releases/search")
-    @Operation(summary = "搜索剧集发布资源", description = "基于已选剧集实体和目标季执行与快速添加一致的 ID 和标题搜索计划，合并并去重发布列表。")
+    @Operation(summary = "搜索剧集发布资源", description = "使用与快速添加一致的标题季度搜索计划，合并并去重发布列表。")
     public ApiResponse<ProwlarrReleaseSearchResponse> searchSeriesReleases(
             @Valid @RequestBody SeriesReleaseSearchRequest request
     ) {

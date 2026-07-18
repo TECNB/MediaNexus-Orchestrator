@@ -54,13 +54,7 @@ class ProwlarrReleaseIngestServiceTest {
     }
 
     @Test
-    void recommendsDisplayTitleCandidatesBeforeIdentifierMatches() {
-        prowlarrClient.respondWith("{TmdbId:129}", List.of(
-                release("Spirited.Away.2001.1080p.BluRay.x264", 5, 20_000_000_000L)
-        ));
-        prowlarrClient.respondWith("{ImdbId:tt0245429}", List.of(
-                release("Spirited.Away.2001.1080p.WEB-DL.x265", 4, 12_000_000_000L)
-        ));
+    void recommendsDisplayTitleCandidatesWithoutIdentifierSearches() {
         prowlarrClient.respondWith("千与千寻 2001", List.of(
                 release("千与千寻.2001.1080p.BluRay.x265", 6, 30_000_000_000L),
                 release("千与千寻.2001.1080p.WEB-DL.x264", 30, 8_000_000_000L)
@@ -77,13 +71,9 @@ class ProwlarrReleaseIngestServiceTest {
                 .extracting("title")
                 .containsExactly(
                         "千与千寻.2001.1080p.BluRay.x265",
-                        "千与千寻.2001.1080p.WEB-DL.x264",
-                        "Spirited.Away.2001.1080p.BluRay.x264",
-                        "Spirited.Away.2001.1080p.WEB-DL.x265"
+                        "千与千寻.2001.1080p.WEB-DL.x264"
                 );
         assertThat(prowlarrClient.calls()).containsExactlyInAnyOrder(
-                "{ImdbId:tt0245429}",
-                "{TmdbId:129}",
                 "Spirited Away 2001",
                 "千与千寻 2001"
         );
@@ -91,13 +81,10 @@ class ProwlarrReleaseIngestServiceTest {
 
     @Test
     void recommendsOriginalTitleCandidatesBySizeAndSeedersWhenDisplayTitleHasNoMatch() {
-        prowlarrClient.respondWith("{TmdbId:129}", List.of(
-                release("Spirited.Away.2001.1080p.BluRay.x264", 8, 8_000_000_000L)
-        ));
-        prowlarrClient.respondWith("{ImdbId:tt0245429}", List.of());
         prowlarrClient.respondWith("千与千寻 2001", List.of());
         prowlarrClient.respondWith("Spirited Away 2001", List.of(
-                release("Spirited.Away.2001.1080p.BluRay.x265", 6, 14_000_000_000L)
+                release("Spirited.Away.2001.1080p.BluRay.x265", 6, 14_000_000_000L),
+                release("Spirited.Away.2001.1080p.BluRay.x264", 8, 8_000_000_000L)
         ));
 
         ProwlarrReleaseRecommendationResponse response = service.recommendMovieRelease(
@@ -264,8 +251,6 @@ class ProwlarrReleaseIngestServiceTest {
 
     @Test
     void originalTitleCanFindReleaseWhenAsciiTitleOmitsStopWords() {
-        prowlarrClient.respondWith("{TmdbId:1489456}", List.of());
-        prowlarrClient.respondWith("{ImdbId:tt37436610}", List.of());
         prowlarrClient.respondWith("我住在凡尔赛的日子 2025", List.of());
         prowlarrClient.respondWith("La Vie de château : Mon enfance à Versailles 2025", List.of(
                 release("Www UIndex org Vie chateau Mon enfance Versailles 2025 FRENCH 1080p WEB DL 264 Slay3R", 3, 4_300_000_000L)
@@ -288,7 +273,7 @@ class ProwlarrReleaseIngestServiceTest {
 
     @Test
     void movieReleaseSearchSortsLikeRecommendationAndDeduplicatesReleaseReferences() {
-        ProwlarrRelease duplicateFromTmdb = release(
+        ProwlarrRelease duplicateFromDisplayTitle = release(
                 "La.Vie.de.Chateau.Mon.Enfance.a.Versailles.2025.1080p.WEB-DL.x264",
                 4,
                 9_000_000_000L
@@ -297,11 +282,10 @@ class ProwlarrReleaseIngestServiceTest {
                 "La Vie de chateau Mon enfance a Versailles 2025 FRENCH 1080p WEB DL H 264 Slay3R",
                 7,
                 8_800_000_000L,
-                duplicateFromTmdb.downloadRef()
+                duplicateFromDisplayTitle.downloadRef()
         );
-        prowlarrClient.respondWith("{TmdbId:1489456}", List.of(duplicateFromTmdb));
-        prowlarrClient.respondWith("{ImdbId:tt37436610}", List.of());
         prowlarrClient.respondWith("我住在凡尔赛的日子 2025", List.of(
+                duplicateFromDisplayTitle,
                 release("我住在凡尔赛的日子.2025.720p.WEB-DL.x264", 2, 5_000_000_000L)
         ));
         prowlarrClient.respondWith("La Vie de château : Mon enfance à Versailles 2025", List.of(
@@ -321,8 +305,6 @@ class ProwlarrReleaseIngestServiceTest {
         );
 
         assertThat(prowlarrClient.calls()).containsExactlyInAnyOrder(
-                "{TmdbId:1489456}",
-                "{ImdbId:tt37436610}",
                 "我住在凡尔赛的日子 2025",
                 "La Vie de château : Mon enfance à Versailles 2025"
         );
@@ -333,12 +315,13 @@ class ProwlarrReleaseIngestServiceTest {
                 .containsExactly(
                         "La.Vie.de.Chateau.Mon.Enfance.a.Versailles.2025.2160p.WEB-DL.x265",
                         "我住在凡尔赛的日子.2025.720p.WEB-DL.x264",
-                        "La Vie de chateau Mon enfance a Versailles 2025 FRENCH 1080p WEB DL H 264 Slay3R"
+                        "La.Vie.de.Chateau.Mon.Enfance.a.Versailles.2025.1080p.WEB-DL.x264"
                 );
         assertThat(response.items().get(0).matchSource()).isEqualTo("原始标题");
         assertThat(response.items().get(0).matchQuery())
                 .isEqualTo("La Vie de château : Mon enfance à Versailles 2025");
-        assertThat(response.items().get(2).matchSource()).isEqualTo("原始标题");
+        assertThat(response.items().get(2).matchSource()).isEqualTo("展示标题");
+        assertThat(response.items().get(2).matchQuery()).isEqualTo("我住在凡尔赛的日子 2025");
     }
 
     @Test
@@ -347,7 +330,7 @@ class ProwlarrReleaseIngestServiceTest {
         prowlarrClient.respondWith("F1 2025", List.of());
 
         assertThatThrownBy(() -> service.recommendMovieRelease(
-                request(null, null, "F1：狂飙飞车", "F1", 2025, "2160p")
+                request(1234821, "tt16311594", "F1：狂飙飞车", "F1", 2025, "2160p")
         ))
                 .isInstanceOf(BusinessException.class)
                 .hasMessage("未找到匹配分辨率且有做种的电影发布资源");
@@ -360,9 +343,6 @@ class ProwlarrReleaseIngestServiceTest {
 
     @Test
     void recommendsSeriesOriginalTitleCandidatesWhenDisplayTitleHasNoMatch() {
-        prowlarrClient.respondWith("{TvdbId:81189}", List.of());
-        prowlarrClient.respondWith("{ImdbId:tt0903747}", List.of());
-        prowlarrClient.respondWith("{TmdbId:1396}", List.of());
         prowlarrClient.respondWith("绝命毒师", List.of());
         prowlarrClient.respondWith("Breaking Bad", List.of(
                 release("Breaking.Bad.S01.1080p.BluRay.x265", 7, 26_000_000_000L),
@@ -383,9 +363,6 @@ class ProwlarrReleaseIngestServiceTest {
                         "Breaking.Bad.S01.1080p.WEB-DL.x264"
                 );
         assertThat(prowlarrClient.calls()).containsExactlyInAnyOrder(
-                "{TvdbId:81189}",
-                "{ImdbId:tt0903747}",
-                "{TmdbId:1396}",
                 "绝命毒师 S01",
                 "绝命毒师",
                 "Breaking Bad S01",
@@ -418,37 +395,29 @@ class ProwlarrReleaseIngestServiceTest {
     }
 
     @Test
-    void recommendsTmdbSeriesWithoutTvdbAndKeepsBothTitlesInSearchPlan() {
-        prowlarrClient.respondWith("{ImdbId:tt27981453} S02", List.of());
-        prowlarrClient.respondWith("{TmdbId:281449} S02", List.of(
+    void recommendsOriginalTitleForTmdbSeriesWithoutIdentifierSearches() {
+        prowlarrClient.respondWith("Spider-Noir S02", List.of(
                 release("Spider-Noir.S02.1080p.WEB-DL.x265", 8, 12_000_000_000L)
         ));
         prowlarrClient.respondWith("暗影蜘蛛侠 S02", List.of());
-        prowlarrClient.respondWith("Spider-Noir S02", List.of());
 
         ProwlarrReleaseRecommendationResponse response = service.recommendSeriesRelease(
                 seriesRequest(null, 281449, "tt27981453", "暗影蜘蛛侠", "Spider-Noir", 2, "1080p")
         );
 
-        assertThat(response.query()).isEqualTo("{TmdbId:281449} S02");
-        assertThat(response.item().matchSource()).isEqualTo("TMDB ID");
-        assertThat(response.item().matchQuery()).isEqualTo("{TmdbId:281449} S02");
+        assertThat(response.query()).isEqualTo("Spider-Noir S02");
+        assertThat(response.item().matchSource()).isEqualTo("原始标题");
+        assertThat(response.item().matchQuery()).isEqualTo("Spider-Noir S02");
         assertThat(prowlarrClient.calls()).containsExactlyInAnyOrder(
-                "{ImdbId:tt27981453} S02",
-                "{TmdbId:281449} S02",
                 "暗影蜘蛛侠 S02",
                 "暗影蜘蛛侠",
                 "Spider-Noir S02",
                 "Spider-Noir"
         );
-        assertThat(prowlarrClient.calls()).noneMatch(query -> query.contains("TvdbId"));
     }
 
     @Test
     void firstSeasonSearchMergesQualifiedAndUnqualifiedTitleQueries() {
-        prowlarrClient.respondWith("{TmdbId:231873}", List.of(
-                release("失忆投捕.S02.1080p.WEB-DL.x265", 8, 8_000_000_000L)
-        ));
         prowlarrClient.respondWith("失忆投捕 S01", List.of(
                 release("失忆投捕.S01.1080p.BluRay.x265", 18, 15_000_000_000L)
         ));
@@ -488,7 +457,6 @@ class ProwlarrReleaseIngestServiceTest {
         assertThat(response.items().get(0).matchQuery()).isEqualTo("失忆投捕 S01");
         assertThat(response.items().get(1).matchQuery()).isEqualTo("失忆投捕");
         assertThat(prowlarrClient.calls()).containsExactlyInAnyOrder(
-                "{TmdbId:231873}",
                 "失忆投捕 S01",
                 "失忆投捕",
                 "Boukyaku Battery S01",
@@ -537,10 +505,7 @@ class ProwlarrReleaseIngestServiceTest {
     }
 
     @Test
-    void listsTmdbSeriesReleasesWithIdAndTitleMatchSourcesWhenTvdbIsMissing() {
-        prowlarrClient.respondWith("{TmdbId:281449} S02", List.of(
-                release("Spider-Noir.S02.2160p.WEB-DL.x265", 5, 24_000_000_000L)
-        ));
+    void listsTmdbSeriesReleasesWithTitleMatchSourcesWhenTvdbIsMissing() {
         prowlarrClient.respondWith("暗影蜘蛛侠 S02", List.of(
                 release("暗影蜘蛛侠.S02.1080p.WEB-DL.x265", 7, 12_000_000_000L)
         ));
@@ -560,14 +525,13 @@ class ProwlarrReleaseIngestServiceTest {
                 )
         );
 
-        assertThat(response.items()).hasSize(3);
+        assertThat(response.items()).hasSize(2);
         assertThat(response.items())
                 .extracting("matchSource")
-                .containsExactlyInAnyOrder("TMDB ID", "展示标题", "原始标题");
+                .containsExactlyInAnyOrder("展示标题", "原始标题");
         assertThat(response.items())
                 .extracting("matchQuery")
                 .containsExactlyInAnyOrder(
-                        "{TmdbId:281449} S02",
                         "暗影蜘蛛侠 S02",
                         "Spider-Noir S02"
                 );
@@ -575,7 +539,6 @@ class ProwlarrReleaseIngestServiceTest {
 
     @Test
     void filtersUnrelatedSeriesResultsAndLabelsDuplicateTitleAsDisplayTitle() {
-        prowlarrClient.respondWith("{TmdbId:93370}", List.of());
         prowlarrClient.respondWith("杀不死", List.of(
                 release("Tunshi.Xingkong.S01-S04.2160p.UHDTV.H265", 10, 480_000_000_000L),
                 release("The.Agency.S02.2160p.WEB-DL.H265", 15, 89_000_000_000L),
@@ -637,7 +600,7 @@ class ProwlarrReleaseIngestServiceTest {
 
     @Test
     void seriesReleaseSearchSortsLikeRecommendationAndDeduplicatesReleaseReferences() {
-        ProwlarrRelease duplicateFromTvdb = release(
+        ProwlarrRelease duplicateFromDisplayTitle = release(
                 "Breaking.Bad.S01.1080p.WEB-DL.x264",
                 4,
                 12_000_000_000L
@@ -646,12 +609,10 @@ class ProwlarrReleaseIngestServiceTest {
                 "Breaking Bad Season 01 1080p WEB DL x264",
                 8,
                 14_000_000_000L,
-                duplicateFromTvdb.downloadRef()
+                duplicateFromDisplayTitle.downloadRef()
         );
-        prowlarrClient.respondWith("{TvdbId:81189}", List.of(duplicateFromTvdb));
-        prowlarrClient.respondWith("{ImdbId:tt0903747}", List.of());
-        prowlarrClient.respondWith("{TmdbId:1396}", List.of());
         prowlarrClient.respondWith("绝命毒师", List.of(
+                duplicateFromDisplayTitle,
                 release("绝命毒师.S01.720p.WEB-DL.x264", 3, 7_000_000_000L)
         ));
         prowlarrClient.respondWith("Breaking Bad", List.of(
@@ -687,8 +648,6 @@ class ProwlarrReleaseIngestServiceTest {
 
     @Test
     void reportsClearFailureWhenNoLayerHasSelectableRelease() {
-        prowlarrClient.respondWith("{TmdbId:129}", List.of());
-        prowlarrClient.respondWith("{ImdbId:tt0245429}", List.of());
         prowlarrClient.respondWith("千与千寻 2001", List.of());
         prowlarrClient.respondWith("Spirited Away 2001", List.of(
                 release("Spirited.Away.2001.1080p.BluRay.x264", 0, 12_000_000_000L)
