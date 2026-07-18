@@ -1,5 +1,6 @@
 package com.medianexus.orchestrator.config;
 
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
 import java.time.Duration;
 import org.hibernate.validator.constraints.time.DurationMin;
@@ -17,6 +18,13 @@ public class ProwlarrProperties {
     @NotNull
     @DurationMin(seconds = 1)
     private Duration timeout;
+
+    @NotNull
+    @DurationMin(seconds = 1)
+    private Duration searchCacheTtl = Duration.ofMinutes(30);
+
+    @Min(1)
+    private long searchCacheMaxWeightBytes = 32L * 1024 * 1024;
 
     public String getBaseUrl() {
         return baseUrl;
@@ -40,5 +48,21 @@ public class ProwlarrProperties {
 
     public void setTimeout(Duration timeout) {
         this.timeout = timeout;
+    }
+
+    public Duration getSearchCacheTtl() {
+        return searchCacheTtl;
+    }
+
+    public void setSearchCacheTtl(Duration searchCacheTtl) {
+        this.searchCacheTtl = searchCacheTtl;
+    }
+
+    public long getSearchCacheMaxWeightBytes() {
+        return searchCacheMaxWeightBytes;
+    }
+
+    public void setSearchCacheMaxWeightBytes(long searchCacheMaxWeightBytes) {
+        this.searchCacheMaxWeightBytes = searchCacheMaxWeightBytes;
     }
 }

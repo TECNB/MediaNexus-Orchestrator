@@ -18,15 +18,19 @@ import com.medianexus.orchestrator.dto.resources.response.ProwlarrReleaseRecomme
 import com.medianexus.orchestrator.dto.resources.response.ProwlarrReleaseSearchResponse;
 import com.medianexus.orchestrator.dto.taskcenter.request.OpenListReleaseRetryRequest;
 import com.medianexus.orchestrator.integration.prowlarr.ProwlarrClient;
+import com.medianexus.orchestrator.integration.prowlarr.ProwlarrClientException;
 import com.medianexus.orchestrator.integration.prowlarr.ProwlarrRelease;
 import com.medianexus.orchestrator.model.AnimeMagnetIngestTask;
 import com.medianexus.orchestrator.model.User;
 import com.medianexus.orchestrator.model.SeriesMagnetIngestTask;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -47,6 +51,7 @@ class ProwlarrReleaseIngestServiceTest {
         service = new ProwlarrReleaseIngestService(
                 new TestAuthService(),
                 prowlarrClient,
+                new ProwlarrReleaseSearchCache(prowlarrClient, new ProwlarrProperties()),
                 new ReleaseTitleTagParser(),
                 magnetIngestService,
                 animeMagnetIngestTaskService
@@ -77,6 +82,110 @@ class ProwlarrReleaseIngestServiceTest {
                 "Spirited Away 2001",
                 "千与千寻 2001"
         );
+    }
+
+    @Test
+    void reusesQueriesAcrossRecommendationAndReleaseSearchRegardlessOfQuality() {
+        prowlarrClient.respondWith("千与千寻 2001", List.of(
+                release("千与千寻.2001.1080p.BluRay.x265", 6, 30_000_000_000L)
+        ));
+        prowlarrClient.respondWith("Spirited Away 2001", List.of());
+
+        service.recommendMovieRelease(
+                request(129, "tt0245429", "千与千寻", "Spirited Away", 2001, "1080p")
+        );
+        service.searchMovieReleases(
+                new MovieReleaseSearchRequest(
+                        129,
+                        "tt0245429",
+                        "千与千寻",
+                        "Spirited Away",
+                        2001,
+                        "2160p"
+                )
+        );
+
+        assertThat(prowlarrClient.calls()).containsExactlyInAnyOrder(
+                "Spirited Away 2001",
+                "千与千寻 2001"
+        );
+    }
+
+    @Test
+    void refreshesWholeMovieSearchPlanAndReplacesCachedQueries() {
+        MovieReleaseSearchRequest request = new MovieReleaseSearchRequest(
+                129,
+                "tt0245429",
+                "千与千寻",
+                "Spirited Away",
+                2001,
+                "1080p"
+        );
+        prowlarrClient.respondWith("千与千寻 2001", List.of(
+                release("千与千寻.2001.1080p.WEB-DL.old", 3, 8_000_000_000L)
+        ));
+        prowlarrClient.respondWith("Spirited Away 2001", List.of());
+        service.searchMovieReleases(request);
+
+        prowlarrClient.respondWith("千与千寻 2001", List.of(
+                release("千与千寻.2001.1080p.BluRay.new", 30, 20_000_000_000L)
+        ));
+        prowlarrClient.respondWith("Spirited Away 2001", List.of(
+                release("Spirited.Away.2001.1080p.BluRay.new", 20, 18_000_000_000L)
+        ));
+
+        ProwlarrReleaseSearchResponse refreshed = service.refreshMovieReleases(request);
+        ProwlarrReleaseSearchResponse cached = service.searchMovieReleases(request);
+
+        assertThat(refreshed.items()).extracting("title")
+                .containsExactlyElementsOf(cached.items().stream().map(item -> item.title()).toList());
+        assertThat(cached.items()).extracting("title")
+                .contains("千与千寻.2001.1080p.BluRay.new", "Spirited.Away.2001.1080p.BluRay.new")
+                .doesNotContain("千与千寻.2001.1080p.WEB-DL.old");
+        assertThat(prowlarrClient.calls()).containsOnly(
+                "千与千寻 2001",
+                "Spirited Away 2001"
+        );
+        assertThat(Collections.frequency(prowlarrClient.calls(), "千与千寻 2001")).isEqualTo(2);
+        assertThat(Collections.frequency(prowlarrClient.calls(), "Spirited Away 2001")).isEqualTo(2);
+    }
+
+    @Test
+    void failedRefreshPreservesEveryCachedQueryFromThePreviousSearchPlan() {
+        MovieReleaseSearchRequest request = new MovieReleaseSearchRequest(
+                129,
+                "tt0245429",
+                "千与千寻",
+                "Spirited Away",
+                2001,
+                "1080p"
+        );
+        prowlarrClient.respondWith("千与千寻 2001", List.of(
+                release("千与千寻.2001.1080p.WEB-DL.old", 3, 8_000_000_000L)
+        ));
+        prowlarrClient.respondWith("Spirited Away 2001", List.of(
+                release("Spirited.Away.2001.1080p.WEB-DL.old", 4, 9_000_000_000L)
+        ));
+        ProwlarrReleaseSearchResponse original = service.searchMovieReleases(request);
+
+        prowlarrClient.respondWith("千与千寻 2001", List.of(
+                release("千与千寻.2001.1080p.BluRay.new", 30, 20_000_000_000L)
+        ));
+        prowlarrClient.failSearch("Spirited Away 2001");
+
+        assertThatThrownBy(() -> service.refreshMovieReleases(request))
+                .isInstanceOf(BusinessException.class)
+                .hasMessage("Prowlarr 刷新失败，请稍后重试");
+
+        prowlarrClient.resumeSearch("Spirited Away 2001");
+        ProwlarrReleaseSearchResponse cached = service.searchMovieReleases(request);
+
+        assertThat(cached.items()).extracting("title")
+                .containsExactlyElementsOf(original.items().stream().map(item -> item.title()).toList());
+        assertThat(cached.items()).extracting("title")
+                .doesNotContain("千与千寻.2001.1080p.BluRay.new");
+        assertThat(Collections.frequency(prowlarrClient.calls(), "千与千寻 2001")).isEqualTo(2);
+        assertThat(Collections.frequency(prowlarrClient.calls(), "Spirited Away 2001")).isEqualTo(2);
     }
 
     @Test
@@ -781,7 +890,8 @@ class ProwlarrReleaseIngestServiceTest {
 
     private static class FakeProwlarrClient extends ProwlarrClient {
         private final Map<String, List<ProwlarrRelease>> responses = new HashMap<>();
-        private final List<String> calls = new ArrayList<>();
+        private final List<String> calls = Collections.synchronizedList(new ArrayList<>());
+        private final Set<String> failedQueries = ConcurrentHashMap.newKeySet();
 
         FakeProwlarrClient() {
             super(prowlarrProperties(), new ObjectMapper());
@@ -790,6 +900,12 @@ class ProwlarrReleaseIngestServiceTest {
         @Override
         public List<ProwlarrRelease> search(String query) {
             calls.add(query);
+            if (failedQueries.contains(query)) {
+                throw new ProwlarrClientException(
+                        ProwlarrClientException.Reason.UPSTREAM,
+                        "simulated upstream failure"
+                );
+            }
             return responses.getOrDefault(query, List.of());
         }
 
@@ -800,6 +916,14 @@ class ProwlarrReleaseIngestServiceTest {
 
         void respondWith(String query, List<ProwlarrRelease> releases) {
             responses.put(query, releases);
+        }
+
+        void failSearch(String query) {
+            failedQueries.add(query);
+        }
+
+        void resumeSearch(String query) {
+            failedQueries.remove(query);
         }
 
         List<String> calls() {

@@ -112,6 +112,8 @@ medianexus:
     base-url: ${MEDIANEXUS_PROWLARR_BASE_URL:}
     api-key: ${MEDIANEXUS_PROWLARR_API_KEY:}
     timeout: ${MEDIANEXUS_PROWLARR_TIMEOUT:120s}
+    search-cache-ttl: ${MEDIANEXUS_PROWLARR_SEARCH_CACHE_TTL:30m}
+    search-cache-max-weight-bytes: ${MEDIANEXUS_PROWLARR_SEARCH_CACHE_MAX_WEIGHT_BYTES:33554432}
   radarr:
     scheme: ${MEDIANEXUS_RADARR_SCHEME:http}
     host: ${MEDIANEXUS_RADARR_HOST:}

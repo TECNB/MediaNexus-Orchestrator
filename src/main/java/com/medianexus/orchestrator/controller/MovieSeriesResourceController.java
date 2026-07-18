@@ -78,12 +78,28 @@ public class MovieSeriesResourceController {
         return ApiResponse.success(prowlarrReleaseIngestService.recommendMovieRelease(request));
     }
 
+    @PostMapping("/movies/releases/recommendation/refresh")
+    @Operation(summary = "刷新电影发布资源推荐", description = "绕过搜索缓存重新执行完整电影发布搜索计划，全部成功后替换缓存并返回新推荐。")
+    public ApiResponse<ProwlarrReleaseRecommendationResponse> refreshMovieReleaseRecommendation(
+            @Valid @RequestBody MovieReleaseRecommendationRequest request
+    ) {
+        return ApiResponse.success(prowlarrReleaseIngestService.refreshMovieReleaseRecommendation(request));
+    }
+
     @PostMapping("/movies/releases/search")
     @Operation(summary = "搜索电影发布资源", description = "使用与快速添加一致的展示标题和原始标题搜索计划，合并并去重发布列表。")
     public ApiResponse<ProwlarrReleaseSearchResponse> searchMovieReleases(
             @Valid @RequestBody MovieReleaseSearchRequest request
     ) {
         return ApiResponse.success(prowlarrReleaseIngestService.searchMovieReleases(request));
+    }
+
+    @PostMapping("/movies/releases/search/refresh")
+    @Operation(summary = "刷新电影发布资源列表", description = "绕过搜索缓存重新执行完整电影发布搜索计划，全部成功后替换缓存。")
+    public ApiResponse<ProwlarrReleaseSearchResponse> refreshMovieReleases(
+            @Valid @RequestBody MovieReleaseSearchRequest request
+    ) {
+        return ApiResponse.success(prowlarrReleaseIngestService.refreshMovieReleases(request));
     }
 
     @GetMapping("/series/search")
@@ -130,12 +146,28 @@ public class MovieSeriesResourceController {
         return ApiResponse.success(prowlarrReleaseIngestService.recommendSeriesRelease(request));
     }
 
+    @PostMapping("/series/releases/recommendation/refresh")
+    @Operation(summary = "刷新剧集发布资源推荐", description = "绕过搜索缓存重新执行完整剧集发布搜索计划，全部成功后替换缓存并返回新推荐。")
+    public ApiResponse<ProwlarrReleaseRecommendationResponse> refreshSeriesReleaseRecommendation(
+            @Valid @RequestBody SeriesReleaseRecommendationRequest request
+    ) {
+        return ApiResponse.success(prowlarrReleaseIngestService.refreshSeriesReleaseRecommendation(request));
+    }
+
     @PostMapping("/series/releases/search")
     @Operation(summary = "搜索剧集发布资源", description = "使用与快速添加一致的标题季度搜索计划，合并并去重发布列表。")
     public ApiResponse<ProwlarrReleaseSearchResponse> searchSeriesReleases(
             @Valid @RequestBody SeriesReleaseSearchRequest request
     ) {
         return ApiResponse.success(prowlarrReleaseIngestService.searchSeriesReleases(request));
+    }
+
+    @PostMapping("/series/releases/search/refresh")
+    @Operation(summary = "刷新剧集发布资源列表", description = "绕过搜索缓存重新执行完整剧集发布搜索计划，全部成功后替换缓存。")
+    public ApiResponse<ProwlarrReleaseSearchResponse> refreshSeriesReleases(
+            @Valid @RequestBody SeriesReleaseSearchRequest request
+    ) {
+        return ApiResponse.success(prowlarrReleaseIngestService.refreshSeriesReleases(request));
     }
 
     @GetMapping("/releases/search")

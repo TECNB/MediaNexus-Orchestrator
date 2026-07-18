@@ -61,6 +61,7 @@ public class ProwlarrReleaseIngestService {
 
     private final AuthService authService;
     private final ProwlarrClient prowlarrClient;
+    private final ProwlarrReleaseSearchCache releaseSearchCache;
     private final ReleaseTitleTagParser tagParser;
     private final MagnetIngestService magnetIngestService;
     private final AnimeMagnetIngestTaskService animeMagnetIngestTaskService;
@@ -68,12 +69,14 @@ public class ProwlarrReleaseIngestService {
     public ProwlarrReleaseIngestService(
             AuthService authService,
             ProwlarrClient prowlarrClient,
+            ProwlarrReleaseSearchCache releaseSearchCache,
             ReleaseTitleTagParser tagParser,
             MagnetIngestService magnetIngestService,
             AnimeMagnetIngestTaskService animeMagnetIngestTaskService
     ) {
         this.authService = authService;
         this.prowlarrClient = prowlarrClient;
+        this.releaseSearchCache = releaseSearchCache;
         this.tagParser = tagParser;
         this.magnetIngestService = magnetIngestService;
         this.animeMagnetIngestTaskService = animeMagnetIngestTaskService;
@@ -109,7 +112,32 @@ public class ProwlarrReleaseIngestService {
         authService.requireCurrentUser();
         MovieReleaseIdentity movie = movieReleaseIdentity(request);
         String quality = normalizeQuality(request.quality());
-        ReleaseRecommendation recommendation = recommendMovieReleases(movie, quality);
+        return movieRecommendationResponse(
+                movie,
+                quality,
+                searchQueriesInParallel(movieReleaseSearchPlan(movie))
+        );
+    }
+
+    public ProwlarrReleaseRecommendationResponse refreshMovieReleaseRecommendation(
+            MovieReleaseRecommendationRequest request
+    ) {
+        authService.requireCurrentUser();
+        MovieReleaseIdentity movie = movieReleaseIdentity(request);
+        String quality = normalizeQuality(request.quality());
+        return movieRecommendationResponse(
+                movie,
+                quality,
+                refreshQueriesInParallel(movieReleaseSearchPlan(movie))
+        );
+    }
+
+    private ProwlarrReleaseRecommendationResponse movieRecommendationResponse(
+            MovieReleaseIdentity movie,
+            String quality,
+            List<MovieReleaseSearchResult> searchResults
+    ) {
+        ReleaseRecommendation recommendation = recommendMovieReleases(movie, quality, searchResults);
         RecommendedRelease recommendedRelease = recommendation.releases().get(0);
         return new ProwlarrReleaseRecommendationResponse(
                 recommendedRelease.query().query(),
@@ -126,10 +154,31 @@ public class ProwlarrReleaseIngestService {
         authService.requireCurrentUser();
         MovieReleaseIdentity movie = movieReleaseIdentity(request);
         String quality = normalizeOptionalQuality(request.quality());
-        Map<String, ProwlarrReleaseItemResponse> releasesByReference = new LinkedHashMap<>();
-        List<RecommendedRelease> candidates = movieReleaseSearchCandidates(
+        return movieReleaseSearchResponse(
+                movie,
+                quality,
                 searchQueriesInParallel(movieReleaseSearchPlan(movie))
         );
+    }
+
+    public ProwlarrReleaseSearchResponse refreshMovieReleases(MovieReleaseSearchRequest request) {
+        authService.requireCurrentUser();
+        MovieReleaseIdentity movie = movieReleaseIdentity(request);
+        String quality = normalizeOptionalQuality(request.quality());
+        return movieReleaseSearchResponse(
+                movie,
+                quality,
+                refreshQueriesInParallel(movieReleaseSearchPlan(movie))
+        );
+    }
+
+    private ProwlarrReleaseSearchResponse movieReleaseSearchResponse(
+            MovieReleaseIdentity movie,
+            String quality,
+            List<MovieReleaseSearchResult> searchResults
+    ) {
+        Map<String, ProwlarrReleaseItemResponse> releasesByReference = new LinkedHashMap<>();
+        List<RecommendedRelease> candidates = movieReleaseSearchCandidates(searchResults);
 
         for (RecommendedRelease candidate : sortMovieReleaseSearchCandidates(movie, quality, candidates)) {
             releasesByReference.putIfAbsent(
@@ -145,7 +194,32 @@ public class ProwlarrReleaseIngestService {
         authService.requireCurrentUser();
         SeriesReleaseIdentity series = seriesReleaseIdentity(request);
         String quality = normalizeQuality(request.quality());
-        ReleaseRecommendation recommendation = recommendSeriesReleases(series, quality);
+        return seriesRecommendationResponse(
+                series,
+                quality,
+                searchQueriesInParallel(seriesReleaseSearchPlan(series))
+        );
+    }
+
+    public ProwlarrReleaseRecommendationResponse refreshSeriesReleaseRecommendation(
+            SeriesReleaseRecommendationRequest request
+    ) {
+        authService.requireCurrentUser();
+        SeriesReleaseIdentity series = seriesReleaseIdentity(request);
+        String quality = normalizeQuality(request.quality());
+        return seriesRecommendationResponse(
+                series,
+                quality,
+                refreshQueriesInParallel(seriesReleaseSearchPlan(series))
+        );
+    }
+
+    private ProwlarrReleaseRecommendationResponse seriesRecommendationResponse(
+            SeriesReleaseIdentity series,
+            String quality,
+            List<MovieReleaseSearchResult> searchResults
+    ) {
+        ReleaseRecommendation recommendation = recommendSeriesReleases(series, quality, searchResults);
         RecommendedRelease recommendedRelease = recommendation.releases().get(0);
         return new ProwlarrReleaseRecommendationResponse(
                 recommendedRelease.query().query(),
@@ -162,11 +236,32 @@ public class ProwlarrReleaseIngestService {
         authService.requireCurrentUser();
         SeriesReleaseIdentity series = seriesReleaseIdentity(request);
         String quality = normalizeOptionalQuality(request.quality());
+        return seriesReleaseSearchResponse(
+                series,
+                quality,
+                searchQueriesInParallel(seriesReleaseSearchPlan(series))
+        );
+    }
+
+    public ProwlarrReleaseSearchResponse refreshSeriesReleases(SeriesReleaseSearchRequest request) {
+        authService.requireCurrentUser();
+        SeriesReleaseIdentity series = seriesReleaseIdentity(request);
+        String quality = normalizeOptionalQuality(request.quality());
+        return seriesReleaseSearchResponse(
+                series,
+                quality,
+                refreshQueriesInParallel(seriesReleaseSearchPlan(series))
+        );
+    }
+
+    private ProwlarrReleaseSearchResponse seriesReleaseSearchResponse(
+            SeriesReleaseIdentity series,
+            String quality,
+            List<MovieReleaseSearchResult> searchResults
+    ) {
         List<SearchTitleTerm> titleTerms = titleTerms(series);
         Map<String, ProwlarrReleaseItemResponse> releasesByReference = new LinkedHashMap<>();
-        List<RecommendedRelease> candidates = movieReleaseSearchCandidates(
-                searchQueriesInParallel(seriesReleaseSearchPlan(series))
-        ).stream()
+        List<RecommendedRelease> candidates = movieReleaseSearchCandidates(searchResults).stream()
                 .filter(candidate -> matchesSeriesSearchCandidate(series, titleTerms, candidate))
                 .toList();
 
@@ -337,10 +432,14 @@ public class ProwlarrReleaseIngestService {
      * keeps one explainable match source for the confirmation UI and manual
      * release list.
      */
-    private ReleaseRecommendation recommendMovieReleases(MovieReleaseIdentity movie, String quality) {
+    private ReleaseRecommendation recommendMovieReleases(
+            MovieReleaseIdentity movie,
+            String quality,
+            List<MovieReleaseSearchResult> searchResults
+    ) {
         List<SearchTitleTerm> titleTerms = titleTerms(movie);
         Map<String, RecommendedRelease> releasesByReference = new LinkedHashMap<>();
-        for (MovieReleaseSearchResult searchResult : searchQueriesInParallel(movieReleaseSearchPlan(movie))) {
+        for (MovieReleaseSearchResult searchResult : searchResults) {
             for (RecommendedRelease candidate : movieReleaseSearchCandidates(List.of(searchResult)).stream()
                     .filter(release -> hasActivePeers(release.release()))
                     .filter(release -> matchesAnyTitle(release.release().title(), titleTerms))
@@ -373,10 +472,14 @@ public class ProwlarrReleaseIngestService {
         throw badRequest("未找到匹配分辨率且有做种的电影发布资源");
     }
 
-    private ReleaseRecommendation recommendSeriesReleases(SeriesReleaseIdentity series, String quality) {
+    private ReleaseRecommendation recommendSeriesReleases(
+            SeriesReleaseIdentity series,
+            String quality,
+            List<MovieReleaseSearchResult> searchResults
+    ) {
         List<SearchTitleTerm> titleTerms = titleTerms(series);
         Map<String, RecommendedRelease> releasesByReference = new LinkedHashMap<>();
-        for (MovieReleaseSearchResult searchResult : searchQueriesInParallel(seriesReleaseSearchPlan(series))) {
+        for (MovieReleaseSearchResult searchResult : searchResults) {
             for (RecommendedRelease candidate : movieReleaseSearchCandidates(List.of(searchResult)).stream()
                     .filter(release -> hasActivePeers(release.release()))
                     .filter(release -> matchesSeriesSearchCandidate(series, titleTerms, release))
@@ -736,7 +839,7 @@ public class ProwlarrReleaseIngestService {
 
     private List<ProwlarrRelease> search(String query) {
         try {
-            return prowlarrClient.search(query);
+            return releaseSearchCache.search(query);
         } catch (ProwlarrClientException exception) {
             if (exception.getReason() == ProwlarrClientException.Reason.CONFIGURATION) {
                 throw serviceUnavailable("Prowlarr 服务尚未配置");
@@ -756,6 +859,26 @@ public class ProwlarrReleaseIngestService {
         return futures.stream()
                 .map(this::joinSearchResult)
                 .toList();
+    }
+
+    private List<MovieReleaseSearchResult> refreshQueriesInParallel(List<MovieReleaseSearchQuery> queries) {
+        try {
+            Map<String, List<ProwlarrRelease>> refreshedReleases = releaseSearchCache.refreshQueries(
+                    queries.stream().map(MovieReleaseSearchQuery::query).toList()
+            );
+            return queries.stream()
+                    .map(query -> new MovieReleaseSearchResult(query, refreshedReleases.get(query.query())))
+                    .toList();
+        } catch (ProwlarrClientException exception) {
+            if (exception.getReason() == ProwlarrClientException.Reason.CONFIGURATION) {
+                throw serviceUnavailable("Prowlarr 服务尚未配置");
+            }
+            log.warn("Prowlarr release refresh failed reason={}", exception.getMessage(), exception);
+            throw internalError("Prowlarr 刷新失败，请稍后重试");
+        } catch (IllegalArgumentException exception) {
+            log.warn("Prowlarr release refresh configuration has invalid URI", exception);
+            throw serviceUnavailable("Prowlarr 服务尚未配置");
+        }
     }
 
     private MovieReleaseSearchResult executeReleaseSearch(MovieReleaseSearchQuery query) {
