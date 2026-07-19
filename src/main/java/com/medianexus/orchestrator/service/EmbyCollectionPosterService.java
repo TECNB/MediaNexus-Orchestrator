@@ -8,8 +8,13 @@ import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.HexFormat;
 import java.util.List;
+import java.util.Set;
 import javax.imageio.IIOImage;
 import javax.imageio.ImageIO;
 import javax.imageio.ImageWriteParam;
@@ -55,6 +60,7 @@ public class EmbyCollectionPosterService {
 
     private List<BufferedImage> sourcePosters(String collectionId) {
         List<BufferedImage> images = new ArrayList<>();
+        Set<String> imageHashes = new HashSet<>();
         for (EmbyItem item : embyClient.listCollectionVideoItems(collectionId)) {
             if (images.size() == MAX_SOURCE_POSTERS) {
                 break;
@@ -63,10 +69,9 @@ public class EmbyCollectionPosterService {
                 continue;
             }
             try {
-                BufferedImage image = ImageIO.read(new ByteArrayInputStream(
-                        embyClient.getPrimaryImage(item.id())
-                ));
-                if (image != null) {
+                byte[] imageBytes = embyClient.getPrimaryImage(item.id());
+                BufferedImage image = ImageIO.read(new ByteArrayInputStream(imageBytes));
+                if (image != null && imageHashes.add(sha256(imageBytes))) {
                     images.add(image);
                 }
             } catch (RuntimeException | IOException exception) {
@@ -75,6 +80,16 @@ public class EmbyCollectionPosterService {
             }
         }
         return images;
+    }
+
+    private String sha256(byte[] imageBytes) {
+        try {
+            return HexFormat.of().formatHex(
+                    MessageDigest.getInstance("SHA-256").digest(imageBytes)
+            );
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 is not available", exception);
+        }
     }
 
     private BufferedImage compose(List<BufferedImage> sourcePosters) {

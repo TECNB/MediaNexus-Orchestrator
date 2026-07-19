@@ -53,6 +53,36 @@ class EmbyCollectionPosterServiceTest {
         assertPixelNear(image, 750, 1125, Color.YELLOW);
     }
 
+    @Test
+    void skipsDuplicateMemberImagesAndContinuesToTheNextDistinctPoster() throws IOException {
+        when(embyClient.listCollectionVideoItems("collection-1")).thenReturn(List.of(
+                item("item-1"),
+                item("item-2"),
+                item("item-3"),
+                item("item-4"),
+                item("item-5")
+        ));
+        byte[] duplicate = solidImage(Color.RED);
+        when(embyClient.getPrimaryImage("item-1")).thenReturn(duplicate);
+        when(embyClient.getPrimaryImage("item-2")).thenReturn(duplicate);
+        when(embyClient.getPrimaryImage("item-3")).thenReturn(duplicate);
+        when(embyClient.getPrimaryImage("item-4")).thenReturn(duplicate);
+        when(embyClient.getPrimaryImage("item-5")).thenReturn(solidImage(Color.BLUE));
+
+        boolean ready = service.refreshCollectionPoster("collection-1");
+
+        assertThat(ready).isTrue();
+        verify(embyClient).getPrimaryImage("item-5");
+        ArgumentCaptor<byte[]> poster = ArgumentCaptor.forClass(byte[].class);
+        verify(embyClient).uploadPrimaryImage(
+                org.mockito.ArgumentMatchers.eq("collection-1"),
+                poster.capture()
+        );
+        BufferedImage image = ImageIO.read(new ByteArrayInputStream(poster.getValue()));
+        assertPixelNear(image, 250, 750, Color.RED);
+        assertPixelNear(image, 750, 750, Color.BLUE);
+    }
+
     private EmbyItem item(String id) {
         return new EmbyItem(id, id, "Movie", null, null);
     }
