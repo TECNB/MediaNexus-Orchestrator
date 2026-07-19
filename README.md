@@ -163,8 +163,12 @@ Docker 内部网络部署时通常关闭 tunnel，并把 datasource 指向 MySQL
 
 ```bash
 MEDIANEXUS_DB_SSH_TUNNEL_ENABLED=false
-MEDIANEXUS_DB_URL='jdbc:mysql://mysql:3306/medianexus_orchestrator?useUnicode=true&characterEncoding=utf8&sslMode=REQUIRED&serverTimezone=Asia/Shanghai'
+MEDIANEXUS_DB_URL='jdbc:mysql://mysql:3306/medianexus_orchestrator?useUnicode=true&characterEncoding=utf8&sslMode=DISABLED&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai'
 ```
+
+这里的 MySQL 服务仅通过受信任的 Docker 内部网络访问。非 TLS 连接使用
+`caching_sha2_password` 时，Connector/J 需要通过
+`allowPublicKeyRetrieval=true` 获取服务端 RSA 公钥完成密码交换。
 
 ## 本地启动
 
