@@ -118,6 +118,22 @@ class AdultOtherLibraryAutomationRunnerTest {
         verify(collectionSyncService).cleanupAutomatic();
     }
 
+    @Test
+    void refreshesSurvivingCollectionPosterAfterMemberDeletion() {
+        when(automationRunRecorder.start("DELETIONS", 1)).thenReturn("automation-3");
+        when(embyClient.listLibraries()).thenReturn(List.of(adultOtherLibrary()));
+        when(collectionSyncService.collectionNameForPath(any(), any())).thenReturn("Creator");
+        when(collectionSyncService.cleanupAutomatic())
+                .thenReturn(syncResponse("collection-1", "Creator"));
+        when(collectionPosterService.refreshCollectionPoster("collection-1")).thenReturn(true);
+
+        runner.processDeletedPaths(Set.of(
+                "/srv/media/STRM/Adult/Other/7.11/Creator/deleted.strm"
+        ));
+
+        verify(collectionPosterService).refreshCollectionPoster("collection-1");
+    }
+
     private EmbyProperties properties() {
         EmbyProperties result = new EmbyProperties();
         result.setAdultOtherLibraryName("Adult - Other");

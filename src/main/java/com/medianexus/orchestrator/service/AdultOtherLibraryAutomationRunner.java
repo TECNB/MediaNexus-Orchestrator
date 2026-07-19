@@ -233,20 +233,51 @@ public class AdultOtherLibraryAutomationRunner {
             return;
         }
 
+        Set<String> affectedCollectionNames = deletedPaths.stream()
+                .map(path -> collectionSyncService.collectionNameForPath(path, library.locations()))
+                .filter(StringUtils::hasText)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
         String automationRunId = automationRunRecorder.start("DELETIONS", deletedPaths.size());
         try {
             automationRunRecorder.recordDeletionStarted(automationRunId);
             AdultOtherCollectionSyncRunResponse cleanup = collectionSyncService.cleanupAutomatic();
+            int refreshedPosterCount = refreshSurvivingCollectionsAfterDeletion(
+                    affectedCollectionNames,
+                    cleanup
+            );
             automationRunRecorder.completeDeletion(automationRunId, cleanup);
-            log.info("Adult Other delete reconciliation completed deletedCollections={} reviewCollections={} paths={}",
+            log.info("Adult Other delete reconciliation completed deletedCollections={} "
+                            + "reviewCollections={} refreshedPosters={} paths={}",
                     cleanup.deletedCollectionCount(),
                     cleanup.reviewCollectionCount(),
+                    refreshedPosterCount,
                     deletedPaths.size()
             );
         } catch (RuntimeException exception) {
             automationRunRecorder.fail(automationRunId, exception);
             throw exception;
         }
+    }
+
+    private int refreshSurvivingCollectionsAfterDeletion(
+            Set<String> affectedCollectionNames,
+            AdultOtherCollectionSyncRunResponse cleanup
+    ) {
+        Map<String, AdultOtherCollectionSyncGroupResponse> groups = groupsByName(cleanup);
+        int refreshedCount = 0;
+        for (String collectionName : affectedCollectionNames) {
+            AdultOtherCollectionSyncGroupResponse group = groups.get(collectionName);
+            if (group == null
+                    || !Boolean.TRUE.equals(group.eligible())
+                    || "DELETE".equals(group.action())
+                    || !StringUtils.hasText(group.embyCollectionId())) {
+                continue;
+            }
+            if (refreshCollectionArtwork(group.embyCollectionId(), collectionName)) {
+                refreshedCount++;
+            }
+        }
+        return refreshedCount;
     }
 
     private List<EmbyItemState> observeNormalPrimaryProgress(
