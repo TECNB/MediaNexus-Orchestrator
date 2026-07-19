@@ -93,11 +93,12 @@ public class EmbyClient {
         ));
     }
 
-    public List<EmbyCollection> listCollections() {
+    public List<EmbyCollection> listCollections(String parentId) {
         return items(Map.of(
                 "IncludeItemTypes", "BoxSet",
                 "Recursive", "true",
                 "Fields", "Path,ParentId",
+                "ParentId", parentId,
                 "Limit", "10000"
         )).stream()
                 .map(item -> new EmbyCollection(item.id(), item.name()))
@@ -185,16 +186,17 @@ public class EmbyClient {
         sendDiscarding("GET", "/Items/" + encodePath(itemId) + "/Images/Primary", Map.of());
     }
 
-    public String createCollection(String name, List<String> itemIds) {
+    public String createCollection(String name, List<String> itemIds, String parentId) {
         JsonNode root = post("/Collections", Map.of(
                 "Name", name,
-                "Ids", String.join(",", itemIds)
+                "Ids", String.join(",", itemIds),
+                "ParentId", parentId
         ));
         String id = text(root, "Id", "id");
         if (StringUtils.hasText(id)) {
             return id;
         }
-        return listCollections().stream()
+        return listCollections(parentId).stream()
                 .filter(collection -> name.equals(collection.name()))
                 .map(EmbyCollection::id)
                 .findFirst()

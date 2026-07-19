@@ -9,6 +9,7 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.time.Duration;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
@@ -60,6 +61,70 @@ class EmbyClientTest {
                 "ImageRefreshMode=Default",
                 "ReplaceAllMetadata=false",
                 "ReplaceAllImages=false"
+        );
+    }
+
+    @Test
+    void scopesCollectionCreationToTheSelectedLibrary() {
+        AtomicReference<String> method = new AtomicReference<>();
+        AtomicReference<String> query = new AtomicReference<>();
+        server.createContext("/Collections", exchange -> {
+            method.set(exchange.getRequestMethod());
+            query.set(exchange.getRequestURI().getRawQuery());
+            byte[] body = "{\"Id\":\"collection-id\"}".getBytes();
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.start();
+
+        EmbyProperties properties = new EmbyProperties();
+        properties.setBaseUrl("http://127.0.0.1:" + server.getAddress().getPort());
+        properties.setApiKey("emby-token");
+        properties.setTimeout(Duration.ofSeconds(2));
+        EmbyClient client = new EmbyClient(properties, new ObjectMapper());
+
+        String collectionId = client.createCollection(
+                "Private",
+                List.of("item-a", "item-b"),
+                "adult-library"
+        );
+
+        assertThat(collectionId).isEqualTo("collection-id");
+        assertThat(method.get()).isEqualTo("POST");
+        assertThat(queryParameters(query.get())).containsExactlyInAnyOrder(
+                "Name=Private",
+                "Ids=item-a%2Citem-b",
+                "ParentId=adult-library"
+        );
+    }
+
+    @Test
+    void scopesCollectionListingToTheSelectedLibrary() {
+        AtomicReference<String> query = new AtomicReference<>();
+        server.createContext("/Items", exchange -> {
+            query.set(exchange.getRequestURI().getRawQuery());
+            byte[] body = """
+                    {"Items":[{"Id":"collection-id","Name":"Private","Type":"BoxSet"}]}
+                    """.getBytes();
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.start();
+
+        EmbyProperties properties = new EmbyProperties();
+        properties.setBaseUrl("http://127.0.0.1:" + server.getAddress().getPort());
+        properties.setApiKey("emby-token");
+        properties.setTimeout(Duration.ofSeconds(2));
+        EmbyClient client = new EmbyClient(properties, new ObjectMapper());
+
+        List<EmbyCollection> collections = client.listCollections("adult-library");
+
+        assertThat(collections).containsExactly(new EmbyCollection("collection-id", "Private"));
+        assertThat(queryParameters(query.get())).contains(
+                "IncludeItemTypes=BoxSet",
+                "ParentId=adult-library"
         );
     }
 

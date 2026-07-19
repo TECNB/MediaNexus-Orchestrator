@@ -50,7 +50,7 @@ class AdultOtherCollectionInventoryTest {
                 item("b-1", "/adult/7.11/B/a.strm"),
                 item("b-2", "/adult/7.11/B/b.strm")
         ));
-        when(embyClient.listCollections()).thenReturn(List.of(
+        when(embyClient.listCollections("library-1")).thenReturn(List.of(
                 new EmbyCollection("collection-a", "A"),
                 new EmbyCollection("collection-b", "B")
         ));
@@ -96,7 +96,8 @@ class AdultOtherCollectionInventoryTest {
                 item("d-1", "/adult/7.11/D/a.strm"),
                 item("d-2", "/adult/7.11/D/b.strm")
         ));
-        when(embyClient.listCollections()).thenReturn(List.of(new EmbyCollection("collection-a", "A")));
+        when(embyClient.listCollections("library-1"))
+                .thenReturn(List.of(new EmbyCollection("collection-a", "A")));
         when(embyClient.listCollectionVideoItems("collection-a")).thenReturn(List.of(
                 item("a-1", "/adult/7.11/A/a.strm")
         ));

@@ -149,7 +149,7 @@ public class AdultOtherCollectionSyncService {
         }
 
         Map<String, CandidateGroup> globalGroups = candidateGroups(items, library.locations());
-        Map<String, EmbyCollection> collectionsByName = existingCollectionsByName();
+        Map<String, EmbyCollection> collectionsByName = existingCollectionsByName(library.id());
         Map<String, Set<String>> memberIdsByCollectionId = loadCollectionMemberIds(
                 globalGroups.keySet(),
                 collectionsByName
@@ -236,7 +236,7 @@ public class AdultOtherCollectionSyncService {
             List<EmbyItem> items = embyClient.listLibraryVideoItems(library.id());
             List<EmbyItem> scopedItems = scopedItems(items, library.locations(), sourceFolderPath);
             Map<String, CandidateGroup> candidateGroups = candidateGroups(scopedItems, library.locations());
-            Map<String, EmbyCollection> existingCollections = existingCollectionsByName();
+            Map<String, EmbyCollection> existingCollections = existingCollectionsByName(library.id());
             Map<String, Set<String>> memberIdsByCollectionId = loadCollectionMemberIds(
                     candidateGroups.keySet(),
                     existingCollections
@@ -254,6 +254,7 @@ public class AdultOtherCollectionSyncService {
                         group,
                         existingCollections,
                         memberIdsByCollectionId,
+                        library.id(),
                         minItemCount,
                         apply,
                         "AUTO_WEBHOOK".equals(mode)
@@ -303,7 +304,7 @@ public class AdultOtherCollectionSyncService {
             candidateItems = deduplicateItems(candidateItems);
 
             Map<String, CandidateGroup> candidateGroups = candidateGroups(candidateItems, library.locations());
-            Map<String, EmbyCollection> existingCollections = existingCollectionsByName();
+            Map<String, EmbyCollection> existingCollections = existingCollectionsByName(library.id());
             Map<String, Set<String>> memberIdsByCollectionId = loadCollectionMemberIds(
                     candidateGroups.keySet(),
                     existingCollections
@@ -321,6 +322,7 @@ public class AdultOtherCollectionSyncService {
                         group,
                         existingCollections,
                         memberIdsByCollectionId,
+                        library.id(),
                         minItemCount,
                         apply,
                         true
@@ -390,7 +392,7 @@ public class AdultOtherCollectionSyncService {
             List<AdultOtherCollectionSyncGroup> baselineGroups = groupMapper.selectByRunId(baselineRun.getId());
             Map<String, EmbyCollection> collectionsById = new LinkedHashMap<>();
             Map<String, EmbyCollection> collectionsByName = new LinkedHashMap<>();
-            for (EmbyCollection collection : embyClient.listCollections()) {
+            for (EmbyCollection collection : embyClient.listCollections(library.id())) {
                 if (StringUtils.hasText(collection.id())) {
                     collectionsById.put(collection.id(), collection);
                 }
@@ -490,6 +492,7 @@ public class AdultOtherCollectionSyncService {
             CandidateGroup group,
             Map<String, EmbyCollection> existingCollections,
             Map<String, Set<String>> memberIdsByCollectionId,
+            String parentLibraryId,
             int minItemCount,
             boolean apply,
             boolean allowExistingCollectionBelowMinItemCount
@@ -515,7 +518,11 @@ public class AdultOtherCollectionSyncService {
             record.setAction("CREATE");
             record.setAddedItemCount(group.items().size());
             if (apply) {
-                String collectionId = embyClient.createCollection(group.collectionName(), group.itemIds());
+                String collectionId = embyClient.createCollection(
+                        group.collectionName(),
+                        group.itemIds(),
+                        parentLibraryId
+                );
                 existingCollections.put(group.collectionName(), new EmbyCollection(collectionId, group.collectionName()));
                 record.setEmbyCollectionId(collectionId);
             }
@@ -821,9 +828,9 @@ public class AdultOtherCollectionSyncService {
                 ));
     }
 
-    private Map<String, EmbyCollection> existingCollectionsByName() {
+    private Map<String, EmbyCollection> existingCollectionsByName(String parentLibraryId) {
         Map<String, EmbyCollection> collectionsByName = new LinkedHashMap<>();
-        for (EmbyCollection collection : embyClient.listCollections()) {
+        for (EmbyCollection collection : embyClient.listCollections(parentLibraryId)) {
             if (StringUtils.hasText(collection.name())) {
                 collectionsByName.putIfAbsent(collection.name(), collection);
             }
