@@ -9,6 +9,7 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.time.Duration;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
@@ -126,6 +127,44 @@ class EmbyClientTest {
                 "IncludeItemTypes=BoxSet",
                 "ParentId=adult-library"
         );
+    }
+
+    @Test
+    void downloadsAndUploadsPrimaryImageThroughTheEmbyImageApi() throws IOException {
+        byte[] sourceImage = new byte[]{1, 2, 3, 4};
+        byte[] uploadedImage = new byte[]{5, 6, 7, 8};
+        AtomicReference<String> uploadMethod = new AtomicReference<>();
+        AtomicReference<String> uploadContentType = new AtomicReference<>();
+        AtomicReference<String> uploadToken = new AtomicReference<>();
+        AtomicReference<byte[]> uploadBody = new AtomicReference<>();
+        server.createContext("/Items/item-id/Images/Primary", exchange -> {
+            if ("GET".equals(exchange.getRequestMethod())) {
+                exchange.sendResponseHeaders(200, sourceImage.length);
+                exchange.getResponseBody().write(sourceImage);
+            } else {
+                uploadMethod.set(exchange.getRequestMethod());
+                uploadContentType.set(exchange.getRequestHeaders().getFirst("Content-Type"));
+                uploadToken.set(exchange.getRequestHeaders().getFirst("X-Emby-Token"));
+                uploadBody.set(exchange.getRequestBody().readAllBytes());
+                exchange.sendResponseHeaders(204, -1);
+            }
+            exchange.close();
+        });
+        server.start();
+
+        EmbyProperties properties = new EmbyProperties();
+        properties.setBaseUrl("http://127.0.0.1:" + server.getAddress().getPort());
+        properties.setApiKey("emby-token");
+        properties.setTimeout(Duration.ofSeconds(2));
+        EmbyClient client = new EmbyClient(properties, new ObjectMapper());
+
+        assertThat(client.getPrimaryImage("item-id")).containsExactly(sourceImage);
+        client.uploadPrimaryImage("item-id", uploadedImage);
+
+        assertThat(uploadMethod.get()).isEqualTo("POST");
+        assertThat(uploadContentType.get()).isEqualTo("image/jpeg");
+        assertThat(uploadToken.get()).isEqualTo("emby-token");
+        assertThat(uploadBody.get()).containsExactly(Base64.getEncoder().encode(uploadedImage));
     }
 
     private Set<String> queryParameters(String query) {

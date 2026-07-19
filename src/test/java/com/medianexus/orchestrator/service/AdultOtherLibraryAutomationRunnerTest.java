@@ -28,6 +28,8 @@ class AdultOtherLibraryAutomationRunnerTest {
     private final EmbyClient embyClient = mock(EmbyClient.class);
     private final AdultOtherCollectionSyncService collectionSyncService =
             mock(AdultOtherCollectionSyncService.class);
+    private final EmbyCollectionPosterService collectionPosterService =
+            mock(EmbyCollectionPosterService.class);
     private final AdultOtherAutomationRunRecorder automationRunRecorder =
             mock(AdultOtherAutomationRunRecorder.class);
     private final EmbyProperties properties = properties();
@@ -35,6 +37,7 @@ class AdultOtherLibraryAutomationRunnerTest {
             properties,
             embyClient,
             collectionSyncService,
+            collectionPosterService,
             automationRunRecorder,
             new SameThreadExecutorService(),
             duration -> {
@@ -55,7 +58,7 @@ class AdultOtherLibraryAutomationRunnerTest {
                 .thenReturn(syncResponse("collection-1", "Creator"));
         when(collectionSyncService.collectionNameForPath(any(), any()))
                 .thenReturn("Creator");
-        when(embyClient.hasPrimaryImage("collection-1")).thenReturn(true);
+        when(collectionPosterService.refreshCollectionPoster("collection-1")).thenReturn(true);
 
         runner.processNewItems(Set.of("item-1", "item-2"));
 
@@ -63,8 +66,7 @@ class AdultOtherLibraryAutomationRunnerTest {
         verify(embyClient, never()).refreshItemImages("item-2");
         verify(embyClient, times(3)).listItemStates(Set.of("item-1", "item-2"));
         verify(collectionSyncService, times(2)).reconcileAutomatic();
-        verify(embyClient).refreshCollectionImages("collection-1");
-        verify(embyClient).materializePrimaryImage("collection-1");
+        verify(collectionPosterService).refreshCollectionPoster("collection-1");
         verify(automationRunRecorder).completeNewItems(
                 "automation-1", 0, 0, 1, 1
         );

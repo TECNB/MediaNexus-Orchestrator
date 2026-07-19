@@ -14,6 +14,7 @@ import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -186,6 +187,39 @@ public class EmbyClient {
         sendDiscarding("GET", "/Items/" + encodePath(itemId) + "/Images/Primary", Map.of());
     }
 
+    public byte[] getPrimaryImage(String itemId) {
+        return sendBytes(
+                HttpRequest.newBuilder(uri(
+                                "/Items/" + encodePath(itemId) + "/Images/Primary",
+                                Map.of()
+                        ))
+                        .timeout(timeout())
+                        .header("Accept", "image/*")
+                        .header("X-Emby-Token", cleanConfigValue(properties.getApiKey()))
+                        .GET()
+                        .build()
+        );
+    }
+
+    public void uploadPrimaryImage(String itemId, byte[] imageBytes) {
+        if (imageBytes == null || imageBytes.length == 0) {
+            throw new EmbyClientException("Emby Primary image is empty");
+        }
+        byte[] encodedImage = Base64.getEncoder().encode(imageBytes);
+        sendBytes(
+                HttpRequest.newBuilder(uri(
+                                "/Items/" + encodePath(itemId) + "/Images/Primary",
+                                Map.of()
+                        ))
+                        .timeout(timeout())
+                        .header("Accept", "application/json")
+                        .header("Content-Type", "image/jpeg")
+                        .header("X-Emby-Token", cleanConfigValue(properties.getApiKey()))
+                        .POST(HttpRequest.BodyPublishers.ofByteArray(encodedImage))
+                        .build()
+        );
+    }
+
     public String createCollection(String name, List<String> itemIds, String parentId) {
         JsonNode root = post("/Collections", Map.of(
                 "Name", name,
@@ -309,6 +343,27 @@ public class EmbyClient {
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
                 throw new EmbyClientException("Emby returned non-success status " + response.statusCode());
             }
+        } catch (HttpTimeoutException exception) {
+            throw new EmbyClientException("Emby request timed out after " + timeoutHint(), exception);
+        } catch (IOException exception) {
+            throw new EmbyClientException("Emby request failed", exception);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new EmbyClientException("Emby request interrupted", exception);
+        }
+    }
+
+    private byte[] sendBytes(HttpRequest request) {
+        validateConfiguration();
+        try {
+            HttpResponse<byte[]> response = httpClient.send(
+                    request,
+                    HttpResponse.BodyHandlers.ofByteArray()
+            );
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                throw new EmbyClientException("Emby returned non-success status " + response.statusCode());
+            }
+            return response.body();
         } catch (HttpTimeoutException exception) {
             throw new EmbyClientException("Emby request timed out after " + timeoutHint(), exception);
         } catch (IOException exception) {

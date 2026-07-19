@@ -36,6 +36,7 @@ public class AdultOtherLibraryAutomationRunner {
     private final EmbyProperties properties;
     private final EmbyClient embyClient;
     private final AdultOtherCollectionSyncService collectionSyncService;
+    private final EmbyCollectionPosterService collectionPosterService;
     private final AdultOtherAutomationRunRecorder automationRunRecorder;
     private final ExecutorService refreshExecutor;
     private final Sleeper sleeper;
@@ -46,12 +47,14 @@ public class AdultOtherLibraryAutomationRunner {
             EmbyProperties properties,
             EmbyClient embyClient,
             AdultOtherCollectionSyncService collectionSyncService,
+            EmbyCollectionPosterService collectionPosterService,
             AdultOtherAutomationRunRecorder automationRunRecorder
     ) {
         this(
                 properties,
                 embyClient,
                 collectionSyncService,
+                collectionPosterService,
                 automationRunRecorder,
                 Executors.newFixedThreadPool(
                         Math.max(1, properties.getAdultOtherRefreshConcurrency()),
@@ -66,17 +69,28 @@ public class AdultOtherLibraryAutomationRunner {
             EmbyProperties properties,
             EmbyClient embyClient,
             AdultOtherCollectionSyncService collectionSyncService,
+            EmbyCollectionPosterService collectionPosterService,
             AdultOtherAutomationRunRecorder automationRunRecorder,
             ExecutorService refreshExecutor,
             Sleeper sleeper
     ) {
-        this(properties, embyClient, collectionSyncService, automationRunRecorder, refreshExecutor, sleeper, false);
+        this(
+                properties,
+                embyClient,
+                collectionSyncService,
+                collectionPosterService,
+                automationRunRecorder,
+                refreshExecutor,
+                sleeper,
+                false
+        );
     }
 
     private AdultOtherLibraryAutomationRunner(
             EmbyProperties properties,
             EmbyClient embyClient,
             AdultOtherCollectionSyncService collectionSyncService,
+            EmbyCollectionPosterService collectionPosterService,
             AdultOtherAutomationRunRecorder automationRunRecorder,
             ExecutorService refreshExecutor,
             Sleeper sleeper,
@@ -85,6 +99,7 @@ public class AdultOtherLibraryAutomationRunner {
         this.properties = properties;
         this.embyClient = embyClient;
         this.collectionSyncService = collectionSyncService;
+        this.collectionPosterService = collectionPosterService;
         this.automationRunRecorder = automationRunRecorder;
         this.refreshExecutor = refreshExecutor;
         this.sleeper = sleeper;
@@ -410,33 +425,14 @@ public class AdultOtherLibraryAutomationRunner {
 
     private boolean refreshCollectionArtwork(String collectionId, String collectionName) {
         try {
-            embyClient.refreshCollectionImages(collectionId);
-            if (awaitCollectionPrimary(collectionId)) {
-                embyClient.materializePrimaryImage(collectionId);
+            if (collectionPosterService.refreshCollectionPoster(collectionId)) {
                 return true;
             }
-            log.warn("Adult Other collection image is still missing collectionId={} name={}",
+            log.warn("Adult Other collection poster could not be generated collectionId={} name={}",
                     collectionId, collectionName);
         } catch (RuntimeException exception) {
-            log.warn("Adult Other collection image refresh failed collectionId={} name={}",
+            log.warn("Adult Other collection poster generation failed collectionId={} name={}",
                     collectionId, collectionName, exception);
-        }
-        return false;
-    }
-
-    private boolean awaitCollectionPrimary(String collectionId) {
-        if (embyClient.hasPrimaryImage(collectionId)) {
-            return true;
-        }
-        Duration pollInterval = positive(properties.getAdultOtherPrimaryPollInterval(), Duration.ofSeconds(10));
-        long deadline = System.nanoTime() + Duration.ofSeconds(30).toNanos();
-        while (System.nanoTime() < deadline) {
-            if (!pause(pollInterval)) {
-                return false;
-            }
-            if (embyClient.hasPrimaryImage(collectionId)) {
-                return true;
-            }
         }
         return false;
     }
