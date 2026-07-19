@@ -171,6 +171,16 @@ public class EmbyClient {
         ));
     }
 
+    public void refreshLibrary(String libraryId) {
+        postJson("/Items/" + encodePath(libraryId) + "/Refresh", Map.of(
+                "Recursive", "true",
+                "MetadataRefreshMode", "Default",
+                "ImageRefreshMode", "Default",
+                "ReplaceAllMetadata", "false",
+                "ReplaceAllImages", "false"
+        ), "{\"ReplaceThumbnailImages\":false}");
+    }
+
     public void materializePrimaryImage(String itemId) {
         sendDiscarding("GET", "/Items/" + encodePath(itemId) + "/Images/Primary", Map.of());
     }
