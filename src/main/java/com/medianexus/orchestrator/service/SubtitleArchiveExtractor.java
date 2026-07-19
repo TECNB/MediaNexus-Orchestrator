@@ -41,6 +41,10 @@ public class SubtitleArchiveExtractor {
     }
 
     public ExtractedSubtitlePackage extract(MultipartFile file) {
+        return extract(stage(file));
+    }
+
+    public StagedSubtitleUpload stage(MultipartFile file) {
         if (file == null || file.isEmpty()) {
             throw badRequest("请上传字幕文件");
         }
@@ -54,33 +58,12 @@ public class SubtitleArchiveExtractor {
                     properties.getMaxUploadSize().toBytes(),
                     "上传文件超过大小限制"
             );
-            String extension = extension(sourceFileName);
-            if ("zip".equals(extension)) {
-                return extractZip(workDir, sourcePath, sourceFileName, sourceCopy);
-            }
-            if (!allowedExtensions().contains(extension)) {
-                throw badRequest("当前仅支持 " + allowedExtensionDescription() + " 或 .zip 文件");
-            }
-            long perFileLimit = perSubtitleLimit(extension);
-            if (sourceCopy.size() > perFileLimit) {
-                throw badRequest("字幕文件超过大小限制: " + sourceFileName);
-            }
-            ExtractedSubtitleEntry entry = new ExtractedSubtitleEntry(
-                    sourceFileName,
-                    sourceFileName,
-                    extension,
-                    sourceCopy.size(),
-                    sourceCopy.sha256(),
-                    sourcePath
-            );
-            return new ExtractedSubtitlePackage(
+            return new StagedSubtitleUpload(
                     workDir,
+                    sourcePath,
                     sourceFileName,
-                    false,
                     sourceCopy.size(),
-                    sourceCopy.sha256(),
-                    List.of(entry),
-                    List.of()
+                    sourceCopy.sha256()
             );
         } catch (BusinessException exception) {
             deleteQuietly(workDir);
@@ -95,11 +78,49 @@ public class SubtitleArchiveExtractor {
         }
     }
 
+    public ExtractedSubtitlePackage extract(StagedSubtitleUpload stagedUpload) {
+        Path workDir = stagedUpload.workDir();
+        String sourceFileName = stagedUpload.sourceFileName();
+        try {
+            String extension = extension(sourceFileName);
+            if ("zip".equals(extension)) {
+                return extractZip(workDir, stagedUpload.sourcePath(), sourceFileName, stagedUpload);
+            }
+            if (!allowedExtensions().contains(extension)) {
+                throw badRequest("当前仅支持 " + allowedExtensionDescription() + " 或 .zip 文件");
+            }
+            long perFileLimit = perSubtitleLimit(extension);
+            if (stagedUpload.sourceSize() > perFileLimit) {
+                throw badRequest("字幕文件超过大小限制: " + sourceFileName);
+            }
+            ExtractedSubtitleEntry entry = new ExtractedSubtitleEntry(
+                    sourceFileName,
+                    sourceFileName,
+                    extension,
+                    stagedUpload.sourceSize(),
+                    stagedUpload.sourceSha256(),
+                    stagedUpload.sourcePath()
+            );
+            return new ExtractedSubtitlePackage(
+                    workDir,
+                    sourceFileName,
+                    false,
+                    stagedUpload.sourceSize(),
+                    stagedUpload.sourceSha256(),
+                    List.of(entry),
+                    List.of()
+            );
+        } catch (BusinessException exception) {
+            deleteQuietly(workDir);
+            throw exception;
+        }
+    }
+
     private ExtractedSubtitlePackage extractZip(
             Path workDir,
             Path sourcePath,
             String sourceFileName,
-            CopyResult sourceCopy
+            StagedSubtitleUpload stagedUpload
     ) {
         Path entriesDir = workDir.resolve("entries");
         try {
@@ -187,8 +208,8 @@ public class SubtitleArchiveExtractor {
                     workDir,
                     sourceFileName,
                     true,
-                    sourceCopy.size(),
-                    sourceCopy.sha256(),
+                    stagedUpload.sourceSize(),
+                    stagedUpload.sourceSha256(),
                     List.copyOf(acceptedEntries),
                     List.copyOf(ignoredEntries)
             );
@@ -331,6 +352,15 @@ public class SubtitleArchiveExtractor {
     }
 
     private record CopyResult(long size, String sha256) {
+    }
+
+    public record StagedSubtitleUpload(
+            Path workDir,
+            Path sourcePath,
+            String sourceFileName,
+            long sourceSize,
+            String sourceSha256
+    ) {
     }
 
     public record ExtractedSubtitlePackage(

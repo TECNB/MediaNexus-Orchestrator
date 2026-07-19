@@ -23,6 +23,7 @@ import com.medianexus.orchestrator.model.SubtitleUploadLog;
 import com.medianexus.orchestrator.model.User;
 import com.medianexus.orchestrator.service.SubtitleArchiveExtractor.ExtractedSubtitleEntry;
 import com.medianexus.orchestrator.service.SubtitleArchiveExtractor.ExtractedSubtitlePackage;
+import com.medianexus.orchestrator.service.SubtitleArchiveExtractor.StagedSubtitleUpload;
 import com.medianexus.orchestrator.service.SubtitleFilenamePlanner.PlannedSubtitleFile;
 import com.medianexus.orchestrator.service.SubtitleFilenamePlanner.SubtitleFilenamePlan;
 import java.time.LocalDateTime;
@@ -38,9 +39,14 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -68,7 +74,10 @@ public class SubtitleUploadService {
     private final SubtitleArchiveExtractor archiveExtractor;
     private final SubtitleFilenamePlanner filenamePlanner;
     private final ObjectMapper objectMapper;
+    private final AutoSymlinkRefreshService autoSymlinkRefreshService;
+    private final ExecutorService executorService;
 
+    @Autowired
     public SubtitleUploadService(
             SubtitleUploadMapper subtitleUploadMapper,
             SubtitleUploadLogMapper subtitleUploadLogMapper,
@@ -78,7 +87,36 @@ public class SubtitleUploadService {
             AuthService authService,
             SubtitleArchiveExtractor archiveExtractor,
             SubtitleFilenamePlanner filenamePlanner,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            AutoSymlinkRefreshService autoSymlinkRefreshService
+    ) {
+        this(
+                subtitleUploadMapper,
+                subtitleUploadLogMapper,
+                openListClient,
+                openListProperties,
+                renameService,
+                authService,
+                archiveExtractor,
+                filenamePlanner,
+                objectMapper,
+                autoSymlinkRefreshService,
+                Executors.newSingleThreadExecutor(new SubtitleUploadThreadFactory())
+        );
+    }
+
+    SubtitleUploadService(
+            SubtitleUploadMapper subtitleUploadMapper,
+            SubtitleUploadLogMapper subtitleUploadLogMapper,
+            OpenListClient openListClient,
+            OpenListProperties openListProperties,
+            MovieSeriesFileRenameService renameService,
+            AuthService authService,
+            SubtitleArchiveExtractor archiveExtractor,
+            SubtitleFilenamePlanner filenamePlanner,
+            ObjectMapper objectMapper,
+            AutoSymlinkRefreshService autoSymlinkRefreshService,
+            ExecutorService executorService
     ) {
         this.subtitleUploadMapper = subtitleUploadMapper;
         this.subtitleUploadLogMapper = subtitleUploadLogMapper;
@@ -89,6 +127,8 @@ public class SubtitleUploadService {
         this.archiveExtractor = archiveExtractor;
         this.filenamePlanner = filenamePlanner;
         this.objectMapper = objectMapper;
+        this.autoSymlinkRefreshService = autoSymlinkRefreshService;
+        this.executorService = executorService;
     }
 
     public SubtitleUploadResponse uploadMovieSubtitle(
@@ -112,11 +152,11 @@ public class SubtitleUploadService {
     ) {
         User user = authService.requireCurrentUser();
         MediaSubtitlePlan mediaPlan = buildMediaPlan(mediaType, title, originalTitle, year, seasonNumber);
+        StagedSubtitleUpload stagedUpload = archiveExtractor.stage(file);
         String uploadId = UUID.randomUUID().toString();
-        SubtitleUpload upload = createUpload(uploadId, user, mediaPlan, safeOriginalFilename(file), overwrite);
-        ExtractedSubtitlePackage extractedPackage = null;
-        List<String> uploadedNames = new ArrayList<>();
+        SubtitleUpload upload = null;
         try {
+            upload = createUpload(uploadId, user, mediaPlan, safeOriginalFilename(file), overwrite);
             writeLog(
                     uploadId,
                     "INFO",
@@ -124,9 +164,31 @@ public class SubtitleUploadService {
                     "已创建" + mediaTypeLabel(mediaPlan.mediaType()) + "字幕上传批次",
                     mediaPlan.targetPath()
             );
+            SubtitleUploadResponse response = toResponse(upload);
+            executorService.submit(() -> processUpload(uploadId, mediaPlan, stagedUpload, overwrite));
+            return response;
+        } catch (RuntimeException exception) {
+            archiveExtractor.deleteQuietly(stagedUpload.workDir());
+            if (upload != null) {
+                markFailed(uploadId, "字幕后台任务提交失败");
+                writeLog(uploadId, "ERROR", "failed", "字幕后台任务提交失败", safeMessage(exception));
+            }
+            throw exception;
+        }
+    }
+
+    private void processUpload(
+            String uploadId,
+            MediaSubtitlePlan mediaPlan,
+            StagedSubtitleUpload stagedUpload,
+            boolean overwrite
+    ) {
+        ExtractedSubtitlePackage extractedPackage = null;
+        List<String> uploadedNames = new ArrayList<>();
+        try {
             markStage(uploadId, "PROCESSING", "extracting");
-            writeLog(uploadId, "INFO", "extracting", "正在解析上传文件", upload.getSourceFileName());
-            extractedPackage = archiveExtractor.extract(file);
+            writeLog(uploadId, "INFO", "extracting", "正在解析上传文件", stagedUpload.sourceFileName());
+            extractedPackage = archiveExtractor.extract(stagedUpload);
             updateSource(uploadId, extractedPackage);
             writeLog(
                     uploadId,
@@ -165,29 +227,47 @@ public class SubtitleUploadService {
                 writeLog(uploadId, "INFO", "uploading", "字幕文件上传完成", plannedFile.finalName());
             }
 
-            markSucceeded(uploadId, manifest.size());
+            markStage(uploadId, "PROCESSING", "refreshing_as");
+            refreshAutoSymlink(uploadId, mediaPlan.mediaType());
             writeLog(uploadId, "INFO", "waiting_for_as", "字幕已写入目标目录，等待 AS 后续迁移", mediaPlan.targetPath());
-            return toResponse(getExistingUpload(uploadId));
+            markSucceeded(uploadId, manifest.size());
         } catch (BusinessException exception) {
             markFailed(uploadId, exception.getMessage());
             writeLog(uploadId, "ERROR", "failed", "字幕上传失败", exception.getMessage());
-            throw exception;
         } catch (OpenListClientException exception) {
             cleanupUploadedFiles(uploadId, mediaPlan.targetPath(), uploadedNames);
             String message = "OpenList 上传失败: " + safeMessage(exception);
             markFailed(uploadId, message);
             writeLog(uploadId, "ERROR", "failed", "字幕上传失败", message);
-            throw badGateway(message);
         } catch (RuntimeException exception) {
             cleanupUploadedFiles(uploadId, mediaPlan.targetPath(), uploadedNames);
             log.warn("Subtitle upload failed uploadId={} mediaType={}", uploadId, mediaPlan.mediaType(), exception);
             String message = safeMessage(exception);
             markFailed(uploadId, message);
             writeLog(uploadId, "ERROR", "failed", "字幕上传失败", message);
-            throw internalError("字幕上传失败");
         } finally {
             if (extractedPackage != null) {
                 archiveExtractor.deleteQuietly(extractedPackage.workDir());
+            } else {
+                archiveExtractor.deleteQuietly(stagedUpload.workDir());
+            }
+        }
+    }
+
+    private void refreshAutoSymlink(String uploadId, String mediaType) {
+        try {
+            writeLog(uploadId, "INFO", "refreshing_as", "正在触发 AutoSymlink 刷新", null);
+            AutoSymlinkRefreshService.RefreshOutcome outcome = "SERIES".equals(mediaType)
+                    ? autoSymlinkRefreshService.refreshSeries()
+                    : autoSymlinkRefreshService.refreshMovie();
+            String level = outcome.status() == AutoSymlinkRefreshService.Status.SUBMITTED ? "INFO" : "WARN";
+            writeLog(uploadId, level, "refreshing_as", outcome.message(), outcome.detail());
+        } catch (Exception exception) {
+            log.warn("Subtitle AutoSymlink refresh failed uploadId={} mediaType={}", uploadId, mediaType, exception);
+            try {
+                writeLog(uploadId, "WARN", "refreshing_as", "AutoSymlink 刷新任务提交失败，已跳过", null);
+            } catch (Exception logException) {
+                log.warn("Subtitle AutoSymlink refresh log write failed uploadId={}", uploadId, logException);
             }
         }
     }
@@ -785,10 +865,6 @@ public class SubtitleUploadService {
         return new BusinessException(ErrorCode.CONFLICT, message, HttpStatus.CONFLICT);
     }
 
-    private BusinessException badGateway(String message) {
-        return new BusinessException(ErrorCode.BAD_GATEWAY, message, HttpStatus.BAD_GATEWAY);
-    }
-
     private BusinessException serviceUnavailable(String message) {
         return new BusinessException(ErrorCode.SERVICE_UNAVAILABLE, message, HttpStatus.SERVICE_UNAVAILABLE);
     }
@@ -828,5 +904,17 @@ public class SubtitleUploadService {
             Long size,
             String sha256
     ) {
+    }
+
+    private static class SubtitleUploadThreadFactory implements ThreadFactory {
+
+        private final AtomicInteger sequence = new AtomicInteger(1);
+
+        @Override
+        public Thread newThread(Runnable runnable) {
+            Thread thread = new Thread(runnable, "subtitle-upload-worker-" + sequence.getAndIncrement());
+            thread.setDaemon(true);
+            return thread;
+        }
     }
 }

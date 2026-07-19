@@ -31,7 +31,7 @@ public class SubtitleUploadController {
     @PostMapping(value = "/uploads", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @Operation(
             summary = "上传电影或剧集字幕",
-            description = "电影按名称和年份定位目录；剧集按名称和季数定位 Season 目录，并按集数匹配目标视频。"
+            description = "接收字幕并创建后台处理批次；电影按名称和年份定位目录，剧集按名称和季数定位 Season 目录。"
     )
     public ApiResponse<SubtitleUploadResponse> uploadSubtitle(
             @Parameter(description = "字幕文件，支持单个字幕文件或 ZIP")
