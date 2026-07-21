@@ -14,10 +14,10 @@ public class MovieSeriesFileRenameService {
 
     private static final String MOVIE_STANDARD_FILE_FORMAT = "{Movie Title} ({Release Year}) {Quality Full}";
     private static final String MOVIE_FOLDER_FORMAT = "{Movie Title} ({Release Year})";
-    private static final String SONARR_STANDARD_EPISODE_FORMAT =
+    private static final String SERIES_STANDARD_EPISODE_FORMAT =
             "{Series Title} - S{season:00}E{episode:00} - {Episode Title} {Quality Full}";
-    private static final String SONARR_SERIES_FOLDER_FORMAT = "{Series Title}";
-    private static final String SONARR_SEASON_FOLDER_FORMAT = "Season {season}";
+    private static final String SERIES_FOLDER_FORMAT = "{Series Title}";
+    private static final String SEASON_FOLDER_FORMAT = "Season {season}";
 
     private static final Pattern INVALID_NAME_CHARS = Pattern.compile("[\\\\/:*?\"<>|]+");
     private static final Pattern MULTIPLE_SPACE_PATTERN = Pattern.compile("\\s+");
@@ -44,12 +44,12 @@ public class MovieSeriesFileRenameService {
     }
 
     public String seriesFolderName(String title) {
-        String value = SONARR_SERIES_FOLDER_FORMAT.replace("{Series Title}", title);
+        String value = SERIES_FOLDER_FORMAT.replace("{Series Title}", title);
         return sanitizeFileName(value);
     }
 
     public String seasonFolderName(Integer seasonNumber) {
-        String value = SONARR_SEASON_FOLDER_FORMAT
+        String value = SEASON_FOLDER_FORMAT
                 .replace("{season}", String.valueOf(seasonNumber))
                 .replace("{season:00}", String.format(Locale.ROOT, "%02d", seasonNumber));
         return sanitizeFileName(value);
@@ -246,7 +246,7 @@ public class MovieSeriesFileRenameService {
     }
 
     private String seriesBaseName(String title, Integer seasonNumber, Integer episodeNumber, String quality) {
-        String value = SONARR_STANDARD_EPISODE_FORMAT
+        String value = SERIES_STANDARD_EPISODE_FORMAT
                 .replace("{Series Title}", title)
                 .replace("{season:00}", String.format(Locale.ROOT, "%02d", seasonNumber))
                 .replace("{season}", String.valueOf(seasonNumber))

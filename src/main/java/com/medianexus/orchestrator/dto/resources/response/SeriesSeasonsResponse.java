@@ -6,10 +6,7 @@ import java.util.List;
 
 @Schema(description = "剧集季数响应")
 public record SeriesSeasonsResponse(
-        @Schema(description = "TVDB ID；TMDB 或上游未返回 TVDB ID 时为 null", nullable = true)
-        @JsonProperty("tvdb_id")
-        Integer tvdbId,
-        @Schema(description = "TMDB ID；Sonarr 兼容结果或上游未返回 TMDB ID 时为 null", nullable = true)
+        @Schema(description = "TMDB ID")
         @JsonProperty("tmdb_id")
         Integer tmdbId,
         String title,

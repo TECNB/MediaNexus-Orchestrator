@@ -12,11 +12,11 @@ import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
 /**
- * Maps TMDB TV search, detail, and external-id responses into the internal
+ * Maps TMDB TV search and detail responses into the internal
  * series catalog contract consumed by resource search and release planning.
  */
 @Component
-public class TmdbSeriesCatalogSearch {
+public class TmdbSeriesCatalogSearch implements MediaCatalogSearch {
 
     private final TmdbClient tmdbClient;
     private final TmdbProperties properties;
@@ -26,6 +26,7 @@ public class TmdbSeriesCatalogSearch {
         this.properties = properties;
     }
 
+    @Override
     public List<SeriesCatalogItem> searchSeries(String term) {
         try {
             List<SeriesCatalogItem> items = new ArrayList<>();
@@ -41,8 +42,8 @@ public class TmdbSeriesCatalogSearch {
         }
     }
 
-    public SeriesCatalogSeasons getSeriesSeasons(SeriesCatalogIdentity identity) {
-        Integer tmdbId = identity.tmdbId();
+    @Override
+    public SeriesCatalogSeasons getSeriesSeasons(Integer tmdbId) {
         if (tmdbId == null || tmdbId <= 0) {
             throw new MediaCatalogSearchException(
                     MediaCatalogSearchException.Reason.UNSUPPORTED_IDENTITY,
@@ -53,7 +54,6 @@ public class TmdbSeriesCatalogSearch {
         try {
             JsonNode detail = tmdbClient.getTvDetails(tmdbId, defaultLanguage());
             return new SeriesCatalogSeasons(
-                    identity.tvdbId(),
                     tmdbId,
                     firstNonBlank(
                             textOrNull(detail.get("name")),
@@ -77,8 +77,6 @@ public class TmdbSeriesCatalogSearch {
         JsonNode fallbackDetail = needsFallbackOverview(searchItem, defaultDetail)
                 ? tmdbClient.getTvDetails(tmdbId, fallbackLanguage())
                 : null;
-        JsonNode externalIds = tmdbClient.getTvExternalIds(tmdbId);
-
         String localizedTitle = firstText(
                 defaultDetail.get("name"),
                 searchItem.get("name")
@@ -105,8 +103,8 @@ public class TmdbSeriesCatalogSearch {
                 year,
                 overview,
                 posterUrl(firstText(defaultDetail.get("poster_path"), searchItem.get("poster_path"))),
-                integerOrNull(externalIds.get("tvdb_id")),
-                textOrNull(externalIds.get("imdb_id")),
+                null,
+                null,
                 tmdbId,
                 normalizeStatus(textOrNull(defaultDetail.get("status"))),
                 firstNetworkName(defaultDetail.path("networks")),

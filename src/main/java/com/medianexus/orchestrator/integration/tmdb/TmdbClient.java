@@ -64,10 +64,6 @@ public class TmdbClient {
         return get("/tv/" + seriesId, "language=" + encode(language), "tv details");
     }
 
-    public JsonNode getTvExternalIds(int seriesId) {
-        return get("/tv/" + seriesId + "/external_ids", "", "tv external ids");
-    }
-
     private JsonNode get(String path, String query, String operation) {
         validateConfiguration();
         HttpRequest request = HttpRequest.newBuilder(buildUri(path, query))

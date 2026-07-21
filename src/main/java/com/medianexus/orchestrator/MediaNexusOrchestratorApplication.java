@@ -8,7 +8,6 @@ import com.medianexus.orchestrator.config.DatabaseSshTunnelProperties;
 import com.medianexus.orchestrator.config.EmbyProperties;
 import com.medianexus.orchestrator.config.OpenListProperties;
 import com.medianexus.orchestrator.config.ProwlarrProperties;
-import com.medianexus.orchestrator.config.SonarrProperties;
 import com.medianexus.orchestrator.config.SubtitleUploadProperties;
 import com.medianexus.orchestrator.config.TmdbProperties;
 import com.medianexus.orchestrator.config.UserQuotaProperties;
@@ -27,7 +26,6 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
         EmbyProperties.class,
         OpenListProperties.class,
         ProwlarrProperties.class,
-        SonarrProperties.class,
         SubtitleUploadProperties.class,
         TmdbProperties.class,
         UserQuotaProperties.class

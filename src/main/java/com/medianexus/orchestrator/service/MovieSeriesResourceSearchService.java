@@ -10,7 +10,6 @@ import com.medianexus.orchestrator.dto.resources.response.SeriesSeasonsResponse;
 import com.medianexus.orchestrator.service.catalog.MediaCatalogSearch;
 import com.medianexus.orchestrator.service.catalog.MediaCatalogSearchException;
 import com.medianexus.orchestrator.service.catalog.MovieCatalogItem;
-import com.medianexus.orchestrator.service.catalog.SeriesCatalogIdentity;
 import com.medianexus.orchestrator.service.catalog.SeriesCatalogItem;
 import com.medianexus.orchestrator.service.catalog.SeriesCatalogSeasons;
 import com.medianexus.orchestrator.service.catalog.TmdbMovieCatalogSearch;
@@ -76,27 +75,18 @@ public class MovieSeriesResourceSearchService {
         }
     }
 
-    public SeriesSeasonsResponse getSeriesSeasons(Integer tvdbId, Integer tmdbId) {
+    public SeriesSeasonsResponse getSeriesSeasons(Integer tmdbId) {
         authService.requireCurrentUser();
-        if (tvdbId == null && tmdbId == null) {
-            throw badRequest("tmdb_id or tvdb_id is required");
-        }
-        if (tvdbId != null && tvdbId <= 0) {
-            throw badRequest("tvdb_id must be greater than 0");
-        }
-        if (tmdbId != null && tmdbId <= 0) {
+        if (tmdbId == null || tmdbId <= 0) {
             throw badRequest("tmdb_id must be greater than 0");
         }
 
         try {
-            SeriesCatalogSeasons seasons = mediaCatalogSearch.getSeriesSeasons(
-                    new SeriesCatalogIdentity(tvdbId, tmdbId, null)
-            );
+            SeriesCatalogSeasons seasons = mediaCatalogSearch.getSeriesSeasons(tmdbId);
             if (seasons == null) {
                 throw new BusinessException(ErrorCode.BAD_REQUEST, "series not found", HttpStatus.NOT_FOUND);
             }
             return new SeriesSeasonsResponse(
-                    seasons.tvdbId(),
                     seasons.tmdbId(),
                     seasons.title(),
                     seasons.seasonCount(),
@@ -109,9 +99,8 @@ public class MovieSeriesResourceSearchService {
                 throw serviceUnavailable("剧集目录服务尚未配置");
             }
             log.warn(
-                    "Series seasons lookup failed tmdbId={} tvdbId={} reason={}",
+                    "Series seasons lookup failed tmdbId={} reason={}",
                     tmdbId,
-                    tvdbId,
                     exception.getMessage(),
                     exception
             );

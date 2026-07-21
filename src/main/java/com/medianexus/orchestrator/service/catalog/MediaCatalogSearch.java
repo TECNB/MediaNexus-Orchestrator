@@ -6,5 +6,5 @@ public interface MediaCatalogSearch {
 
     List<SeriesCatalogItem> searchSeries(String term);
 
-    SeriesCatalogSeasons getSeriesSeasons(SeriesCatalogIdentity identity);
+    SeriesCatalogSeasons getSeriesSeasons(Integer tmdbId);
 }

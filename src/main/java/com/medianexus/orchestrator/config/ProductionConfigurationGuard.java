@@ -22,7 +22,6 @@ public class ProductionConfigurationGuard implements InitializingBean {
     private final CloudDrive2Properties cloudDrive2Properties;
     private final OpenListProperties openListProperties;
     private final ProwlarrProperties prowlarrProperties;
-    private final SonarrProperties sonarrProperties;
     private final TmdbProperties tmdbProperties;
     private final String datasourceUrl;
     private final String datasourceUsername;
@@ -36,7 +35,6 @@ public class ProductionConfigurationGuard implements InitializingBean {
             CloudDrive2Properties cloudDrive2Properties,
             OpenListProperties openListProperties,
             ProwlarrProperties prowlarrProperties,
-            SonarrProperties sonarrProperties,
             TmdbProperties tmdbProperties,
             @Value("${spring.datasource.url:}") String datasourceUrl,
             @Value("${spring.datasource.username:}") String datasourceUsername,
@@ -49,7 +47,6 @@ public class ProductionConfigurationGuard implements InitializingBean {
         this.cloudDrive2Properties = cloudDrive2Properties;
         this.openListProperties = openListProperties;
         this.prowlarrProperties = prowlarrProperties;
-        this.sonarrProperties = sonarrProperties;
         this.tmdbProperties = tmdbProperties;
         this.datasourceUrl = datasourceUrl;
         this.datasourceUsername = datasourceUsername;
@@ -162,7 +159,6 @@ public class ProductionConfigurationGuard implements InitializingBean {
         rejectPlaceholder("medianexus.ani-rss.api-key", aniRssProperties.getApiKey(), violations);
         rejectPlaceholder("medianexus.openlist.authorization", openListProperties.getAuthorization(), violations);
         rejectPlaceholder("medianexus.prowlarr.api-key", prowlarrProperties.getApiKey(), violations);
-        rejectPlaceholder("medianexus.sonarr.api-key", sonarrProperties.getApiKey(), violations);
         rejectPlaceholder("medianexus.tmdb.api-token", tmdbProperties.getApiToken(), violations);
     }
 

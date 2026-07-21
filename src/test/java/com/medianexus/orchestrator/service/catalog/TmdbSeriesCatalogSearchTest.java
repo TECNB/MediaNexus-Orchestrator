@@ -51,14 +51,6 @@ class TmdbSeriesCatalogSearchTest {
                   "networks": [{ "name": "MGM+" }]
                 }
                 """);
-        tmdbClient.externalIdsResponse(281449, """
-                {
-                  "id": 281449,
-                  "imdb_id": "tt1234567",
-                  "tvdb_id": 451234
-                }
-                """);
-
         var items = catalogSearch.searchSeries("暗影蜘蛛侠");
 
         assertThat(items).hasSize(1);
@@ -69,8 +61,8 @@ class TmdbSeriesCatalogSearchTest {
         assertThat(items.get(0).overview()).isEqualTo("一位年迈私家侦探重回纽约街头。");
         assertThat(items.get(0).poster()).isEqualTo("https://image.tmdb.org/t/p/w500/spider-noir-detail.jpg");
         assertThat(items.get(0).tmdbId()).isEqualTo(281449);
-        assertThat(items.get(0).tvdbId()).isEqualTo(451234);
-        assertThat(items.get(0).imdbId()).isEqualTo("tt1234567");
+        assertThat(items.get(0).tvdbId()).isNull();
+        assertThat(items.get(0).imdbId()).isNull();
         assertThat(items.get(0).status()).isEqualTo("returning series");
         assertThat(items.get(0).network()).isEqualTo("MGM+");
         assertThat(items.get(0).seriesType()).isEqualTo("Scripted");
@@ -110,14 +102,6 @@ class TmdbSeriesCatalogSearchTest {
                   "overview": "A chemistry teacher starts cooking meth."
                 }
                 """);
-        tmdbClient.externalIdsResponse(1396, """
-                {
-                  "id": 1396,
-                  "imdb_id": null,
-                  "tvdb_id": null
-                }
-                """);
-
         var items = catalogSearch.searchSeries("绝命毒师");
 
         assertThat(items).hasSize(1);
@@ -144,11 +128,8 @@ class TmdbSeriesCatalogSearchTest {
                 }
                 """);
 
-        var seasons = catalogSearch.getSeriesSeasons(
-                new SeriesCatalogIdentity(null, 281449, null)
-        );
+        var seasons = catalogSearch.getSeriesSeasons(281449);
 
-        assertThat(seasons.tvdbId()).isNull();
         assertThat(seasons.tmdbId()).isEqualTo(281449);
         assertThat(seasons.title()).isEqualTo("暗影蜘蛛侠");
         assertThat(seasons.seasonNumbers()).containsExactly(1, 2);
@@ -163,7 +144,7 @@ class TmdbSeriesCatalogSearchTest {
                 }
                 """);
 
-        var seasons = catalogSearch.getSeriesSeasons(SeriesCatalogIdentity.tmdb(281449));
+        var seasons = catalogSearch.getSeriesSeasons(281449);
 
         assertThat(seasons.seasonCount()).isZero();
         assertThat(seasons.seasonNumbers()).isEmpty();
@@ -173,7 +154,6 @@ class TmdbSeriesCatalogSearchTest {
         private final ObjectMapper objectMapper = new ObjectMapper();
         private JsonNode searchResponse;
         private final java.util.Map<String, JsonNode> detailResponses = new java.util.HashMap<>();
-        private final java.util.Map<Integer, JsonNode> externalIdsResponses = new java.util.HashMap<>();
 
         FakeTmdbClient(TmdbProperties properties) {
             super(properties, new ObjectMapper());
@@ -189,21 +169,12 @@ class TmdbSeriesCatalogSearchTest {
             return detailResponses.get(seriesId + ":" + language);
         }
 
-        @Override
-        public JsonNode getTvExternalIds(int seriesId) {
-            return externalIdsResponses.get(seriesId);
-        }
-
         void searchResponse(String payload) {
             searchResponse = readTree(payload);
         }
 
         void detailResponse(int seriesId, String language, String payload) {
             detailResponses.put(seriesId + ":" + language, readTree(payload));
-        }
-
-        void externalIdsResponse(int seriesId, String payload) {
-            externalIdsResponses.put(seriesId, readTree(payload));
         }
 
         private JsonNode readTree(String payload) {

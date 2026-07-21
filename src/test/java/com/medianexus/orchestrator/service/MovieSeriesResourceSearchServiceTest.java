@@ -8,7 +8,6 @@ import com.medianexus.orchestrator.dto.resources.response.SeriesSearchResponse;
 import com.medianexus.orchestrator.model.User;
 import com.medianexus.orchestrator.service.catalog.MediaCatalogSearch;
 import com.medianexus.orchestrator.service.catalog.MovieCatalogItem;
-import com.medianexus.orchestrator.service.catalog.SeriesCatalogIdentity;
 import com.medianexus.orchestrator.service.catalog.SeriesCatalogItem;
 import com.medianexus.orchestrator.service.catalog.SeriesCatalogSeasons;
 import com.medianexus.orchestrator.service.catalog.TmdbMovieCatalogSearch;
@@ -60,14 +59,14 @@ class MovieSeriesResourceSearchServiceTest {
     @Test
     void mapsCatalogSeriesItemsToApiResponse() {
         mediaCatalogSearch.items = List.of(new SeriesCatalogItem(
-                "tvdb:81189",
+                "tmdb:1396",
                 "绝命毒师",
                 "Breaking Bad",
                 2008,
                 "When Walter White...",
                 "https://example.test/poster.jpg",
-                81189,
-                "tt0903747",
+                null,
+                null,
                 1396,
                 "ended",
                 "AMC",
@@ -79,34 +78,19 @@ class MovieSeriesResourceSearchServiceTest {
         assertThat(response.items()).hasSize(1);
         assertThat(response.items().get(0).title()).isEqualTo("绝命毒师");
         assertThat(response.items().get(0).originalTitle()).isEqualTo("Breaking Bad");
-        assertThat(response.items().get(0).tvdbId()).isEqualTo(81189);
+        assertThat(response.items().get(0).tvdbId()).isNull();
         assertThat(response.items().get(0).tmdbId()).isEqualTo(1396);
     }
 
     @Test
-    void loadsSeriesSeasonsThroughCatalogIdentity() {
-        mediaCatalogSearch.seasons = new SeriesCatalogSeasons(81189, null, "Breaking Bad", List.of(1, 2, 3));
+    void loadsSeriesSeasonsWithTmdbIdentity() {
+        mediaCatalogSearch.seasons = new SeriesCatalogSeasons(281449, "暗影蜘蛛侠", List.of(1));
 
-        var response = service.getSeriesSeasons(81189, null);
+        var response = service.getSeriesSeasons(281449);
 
-        assertThat(response.tvdbId()).isEqualTo(81189);
-        assertThat(response.tmdbId()).isNull();
-        assertThat(response.title()).isEqualTo("Breaking Bad");
-        assertThat(response.seasonCount()).isEqualTo(3);
-        assertThat(response.seasonNumbers()).containsExactly(1, 2, 3);
-        assertThat(mediaCatalogSearch.requestedIdentity.tvdbId()).isEqualTo(81189);
-    }
-
-    @Test
-    void loadsSeriesSeasonsWithTmdbIdentityWhenTvdbIdIsMissing() {
-        mediaCatalogSearch.seasons = new SeriesCatalogSeasons(null, 281449, "暗影蜘蛛侠", List.of(1));
-
-        var response = service.getSeriesSeasons(null, 281449);
-
-        assertThat(response.tvdbId()).isNull();
         assertThat(response.tmdbId()).isEqualTo(281449);
         assertThat(response.seasonNumbers()).containsExactly(1);
-        assertThat(mediaCatalogSearch.requestedIdentity.tmdbId()).isEqualTo(281449);
+        assertThat(mediaCatalogSearch.requestedTmdbId).isEqualTo(281449);
     }
 
     private static class TestAuthService extends AuthService {
@@ -137,8 +121,8 @@ class MovieSeriesResourceSearchServiceTest {
 
     private static class FakeMediaCatalogSearch implements MediaCatalogSearch {
         private List<SeriesCatalogItem> items = List.of();
-        private SeriesCatalogSeasons seasons = new SeriesCatalogSeasons(null, null, "Unknown Title", List.of());
-        private SeriesCatalogIdentity requestedIdentity;
+        private SeriesCatalogSeasons seasons = new SeriesCatalogSeasons(null, "Unknown Title", List.of());
+        private Integer requestedTmdbId;
 
         @Override
         public List<SeriesCatalogItem> searchSeries(String term) {
@@ -146,8 +130,8 @@ class MovieSeriesResourceSearchServiceTest {
         }
 
         @Override
-        public SeriesCatalogSeasons getSeriesSeasons(SeriesCatalogIdentity identity) {
-            requestedIdentity = identity;
+        public SeriesCatalogSeasons getSeriesSeasons(Integer tmdbId) {
+            requestedTmdbId = tmdbId;
             return seasons;
         }
     }

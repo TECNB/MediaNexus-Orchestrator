@@ -46,13 +46,13 @@ public record SeriesMagnetIngestTaskResponse(
         @Schema(description = "清洗后的剧集目录名")
         @JsonProperty("series_name")
         String seriesName,
-        @Schema(description = "季目录名，按当前 Sonarr Season Folder Format 渲染")
+        @Schema(description = "按当前季度目录格式渲染的季目录名")
         @JsonProperty("season_folder")
         String seasonFolder,
         @Schema(description = "magnet btih hash，统一小写")
         @JsonProperty("magnet_hash")
         String magnetHash,
-        @Schema(description = "最终保存目录，按当前 Sonarr 剧集目录格式渲染")
+        @Schema(description = "最终保存目录，按当前剧集目录格式渲染")
         @JsonProperty("save_path")
         String savePath,
         @Schema(description = "离线下载临时目录；当前与保存目录一致")

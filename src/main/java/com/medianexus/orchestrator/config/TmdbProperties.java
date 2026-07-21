@@ -20,7 +20,6 @@ public class TmdbProperties {
     private String fallbackLanguage;
     @NotBlank
     private String imageBaseUrl;
-    private boolean fallbackToSonarr;
 
     @NotNull
     @DurationMin(seconds = 1)
@@ -64,14 +63,6 @@ public class TmdbProperties {
 
     public void setImageBaseUrl(String imageBaseUrl) {
         this.imageBaseUrl = imageBaseUrl;
-    }
-
-    public boolean isFallbackToSonarr() {
-        return fallbackToSonarr;
-    }
-
-    public void setFallbackToSonarr(boolean fallbackToSonarr) {
-        this.fallbackToSonarr = fallbackToSonarr;
     }
 
     public Duration getTimeout() {

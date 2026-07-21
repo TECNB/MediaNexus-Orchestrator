@@ -112,14 +112,12 @@ public class MovieSeriesResourceController {
     }
 
     @GetMapping("/series/seasons")
-    @Operation(summary = "获取剧集季数", description = "按 TMDB 或 TVDB 剧集目录身份加载可选季数，优先使用 TMDB。")
+    @Operation(summary = "获取剧集季数", description = "按 TMDB 剧集目录身份加载可选季数。")
     public ApiResponse<SeriesSeasonsResponse> getSeriesSeasons(
             @Parameter(description = "TMDB id，必须大于 0")
-            @RequestParam(name = "tmdb_id", required = false) Integer tmdbId,
-            @Parameter(description = "TVDB id，必须大于 0；TMDB 不可用时用于兼容回退")
-            @RequestParam(name = "tvdb_id", required = false) Integer tvdbId
+            @RequestParam(name = "tmdb_id", required = false) Integer tmdbId
     ) {
-        return ApiResponse.success(resourceSearchService.getSeriesSeasons(tvdbId, tmdbId));
+        return ApiResponse.success(resourceSearchService.getSeriesSeasons(tmdbId));
     }
 
     @PostMapping("/series/openlist-ingest")

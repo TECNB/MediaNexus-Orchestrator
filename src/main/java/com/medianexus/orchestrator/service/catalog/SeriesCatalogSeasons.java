@@ -3,7 +3,6 @@ package com.medianexus.orchestrator.service.catalog;
 import java.util.List;
 
 public record SeriesCatalogSeasons(
-        Integer tvdbId,
         Integer tmdbId,
         String title,
         List<Integer> seasonNumbers
