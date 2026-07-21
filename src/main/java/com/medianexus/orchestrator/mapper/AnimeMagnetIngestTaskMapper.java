@@ -16,7 +16,7 @@ public interface AnimeMagnetIngestTaskMapper extends BaseMapper<AnimeMagnetInges
                 stage VARCHAR(64) NOT NULL,
                 magnet TEXT NOT NULL,
                 magnet_hash VARCHAR(64) NOT NULL,
-                bgm_id VARCHAR(64) NOT NULL,
+                bgm_id VARCHAR(64) NULL,
                 bgm_url VARCHAR(255) NULL,
                 tmdb_id INT NULL,
                 title VARCHAR(255) NOT NULL,
@@ -68,6 +68,22 @@ public interface AnimeMagnetIngestTaskMapper extends BaseMapper<AnimeMagnetInges
             ADD COLUMN tmdb_id INT NULL AFTER bgm_url
             """)
     void addCatalogIdentityColumns();
+
+    @Select("""
+            SELECT COUNT(*)
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'anime_magnet_ingest_tasks'
+              AND COLUMN_NAME = 'bgm_id'
+              AND IS_NULLABLE = 'NO'
+            """)
+    Integer countRequiredBgmIdColumns();
+
+    @Update("""
+            ALTER TABLE anime_magnet_ingest_tasks
+            MODIFY COLUMN bgm_id VARCHAR(64) NULL
+            """)
+    void makeBgmIdNullable();
 
     @Select("""
             SELECT COUNT(*)

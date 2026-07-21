@@ -12,6 +12,7 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -22,7 +23,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping("/api/v1/magnet-ingest/anime")
-@Tag(name = "动漫整季磁力导入", description = "Bangumi 搜索、整季 magnet 离线下载、OpenList 文件整理和任务日志接口")
+@Tag(name = "动漫整季磁力导入", description = "整季 magnet 离线下载、OpenList 文件整理和任务日志接口；历史 Bangumi 搜索入口继续保留。")
 public class MagnetIngestAnimeController {
 
     private final AnimeMagnetSearchService animeMagnetSearchService;
@@ -50,7 +51,10 @@ public class MagnetIngestAnimeController {
     public ApiResponse<AnimeMagnetIngestTaskResponse> createTask(
             @Valid @RequestBody AnimeMagnetIngestTaskCreateRequest request
     ) {
-        Integer tmdbId = animeMagnetSearchService.resolveTmdbId(request.bgmId());
+        Integer tmdbId = request.tmdbId();
+        if ((tmdbId == null || tmdbId <= 0) && StringUtils.hasText(request.bgmId())) {
+            tmdbId = animeMagnetSearchService.resolveTmdbId(request.bgmId());
+        }
         return ApiResponse.success(animeMagnetIngestTaskService.createTask(request, tmdbId));
     }
 

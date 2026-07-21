@@ -141,6 +141,7 @@ public class DatabaseInitializer implements ApplicationRunner {
         userAdminAuditLogMapper.createTableIfNotExists();
         animeMagnetIngestTaskMapper.createTableIfNotExists();
         ensureAnimeMagnetTaskCatalogIdentityColumns();
+        ensureAnimeMagnetTaskBgmIdOptional();
         ensureAnimeMagnetTaskOwnerColumn();
         ensureAnimeMagnetTaskReleaseMetadataColumns();
         ensureAnimeMagnetTaskAttemptChainColumns();
@@ -197,6 +198,13 @@ public class DatabaseInitializer implements ApplicationRunner {
         Integer columnCount = animeMagnetIngestTaskMapper.countCatalogIdentityColumns();
         if (columnCount == null || columnCount == 0) {
             animeMagnetIngestTaskMapper.addCatalogIdentityColumns();
+        }
+    }
+
+    private void ensureAnimeMagnetTaskBgmIdOptional() {
+        Integer columnCount = animeMagnetIngestTaskMapper.countRequiredBgmIdColumns();
+        if (columnCount != null && columnCount > 0) {
+            animeMagnetIngestTaskMapper.makeBgmIdNullable();
         }
     }
 

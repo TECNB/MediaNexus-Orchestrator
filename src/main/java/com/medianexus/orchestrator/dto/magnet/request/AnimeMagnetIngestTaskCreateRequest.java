@@ -4,14 +4,14 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Positive;
 
 @Schema(description = "动漫整季 magnet 导入任务创建请求")
 public record AnimeMagnetIngestTaskCreateRequest(
         @Schema(description = "整季 magnet 链接，必须包含 btih hash")
         @NotBlank(message = "magnet 链接不能为空")
         String magnet,
-        @Schema(description = "Bangumi 条目 id，来自导入搜索结果")
-        @NotBlank(message = "Bangumi 条目不能为空")
+        @Schema(description = "历史 Bangumi 条目 id；TMDB 搜索提交时可不传", requiredMode = Schema.RequiredMode.NOT_REQUIRED, nullable = true)
         @JsonProperty("bgm_id")
         String bgmId,
         @Schema(description = "Bangumi 条目地址；可不传", requiredMode = Schema.RequiredMode.NOT_REQUIRED, nullable = true)
@@ -30,6 +30,23 @@ public record AnimeMagnetIngestTaskCreateRequest(
         Integer seasonNumber,
         @Schema(description = "兼容旧前端字段；动漫入库保存路径固定使用中文或展示标题渲染", requiredMode = Schema.RequiredMode.NOT_REQUIRED, nullable = true)
         @JsonProperty("themoviedb_name")
-        String themoviedbName
+        String themoviedbName,
+        @Schema(description = "TMDB 剧集 id；来自统一目录搜索结果", requiredMode = Schema.RequiredMode.NOT_REQUIRED, nullable = true)
+        @JsonProperty("tmdb_id")
+        @Positive(message = "TMDB id 必须大于 0")
+        Integer tmdbId
 ) {
+
+    public AnimeMagnetIngestTaskCreateRequest(
+            String magnet,
+            String bgmId,
+            String bgmUrl,
+            String title,
+            String nameCn,
+            String name,
+            Integer seasonNumber,
+            String themoviedbName
+    ) {
+        this(magnet, bgmId, bgmUrl, title, nameCn, name, seasonNumber, themoviedbName, null);
+    }
 }

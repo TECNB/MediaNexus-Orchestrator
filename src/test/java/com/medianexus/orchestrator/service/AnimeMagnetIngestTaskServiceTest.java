@@ -89,16 +89,18 @@ class AnimeMagnetIngestTaskServiceTest {
 
         service.createTask(new AnimeMagnetIngestTaskCreateRequest(
                 "magnet:?xt=urn:btih:frierenhash",
-                "1234",
-                "https://bgm.tv/subject/1234",
+                null,
+                null,
                 "葬送的芙莉莲",
                 "葬送的芙莉莲",
                 "Frieren: Beyond Journey's End",
                 2,
-                "Frieren: Beyond Journey's End"
-        ), 209867);
+                "Frieren: Beyond Journey's End",
+                209867
+        ));
 
         assertThat(insertedTask.get().getTitle()).isEqualTo("葬送的芙莉莲");
+        assertThat(insertedTask.get().getBgmId()).isNull();
         assertThat(insertedTask.get().getName()).isEqualTo("Frieren: Beyond Journey's End");
         assertThat(insertedTask.get().getTmdbId()).isEqualTo(209867);
         assertThat(insertedTask.get().getSavePath()).isEqualTo("/pikpak/Media/Anime/葬送的芙莉莲/Season 02");

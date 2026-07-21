@@ -181,7 +181,7 @@ public class AnimeMagnetIngestTaskService {
      * 命中时返回已有任务而不是重复提交 OpenList 离线下载。
      */
     public AnimeMagnetIngestTaskResponse createTask(AnimeMagnetIngestTaskCreateRequest request) {
-        return createTask(request, null);
+        return createTask(request, request == null ? null : request.tmdbId());
     }
 
     public AnimeMagnetIngestTaskResponse createTask(
@@ -190,6 +190,9 @@ public class AnimeMagnetIngestTaskService {
     ) {
         User user = authService.requireCurrentUser();
         validateCreateRequest(request);
+        if ((tmdbId == null || tmdbId <= 0) && !StringUtils.hasText(request.bgmId())) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "TMDB id 不能为空");
+        }
         Integer season = request.seasonNumber() == null ? 1 : request.seasonNumber();
         mediaLibraryPresenceService.requireAnimeSeasonAbsent(tmdbId, request.bgmId(), season);
         String magnet = request.magnet().trim();
@@ -227,7 +230,7 @@ public class AnimeMagnetIngestTaskService {
                 new AnimeTaskSeed(
                         magnet,
                         magnetHash,
-                        request.bgmId().trim(),
+                        trimToNull(request.bgmId()),
                         trimToNull(request.bgmUrl()),
                         tmdbId,
                         title,
@@ -335,9 +338,10 @@ public class AnimeMagnetIngestTaskService {
         try {
             writeLog(taskId, "INFO", "created", "已创建动漫整季磁力任务", "savePath=" + seed.savePath());
             log.info(
-                    "Created anime magnet ingest task taskId={} userId={} bgmId={} magnetHash={} savePath={}",
+                    "Created anime magnet ingest task taskId={} userId={} tmdbId={} bgmId={} magnetHash={} savePath={}",
                     taskId,
                     user.getId(),
+                    task.getTmdbId(),
                     task.getBgmId(),
                     seed.magnetHash(),
                     seed.savePath()

@@ -15,7 +15,7 @@ public record AnimeMagnetIngestTaskResponse(
         String status,
         @Schema(description = "前端展示阶段，例如 created、submitted、downloading、organizing、succeeded、failed")
         String stage,
-        @Schema(description = "Bangumi 条目 id")
+        @Schema(description = "历史 Bangumi 条目 id；TMDB 目录任务为 null", nullable = true)
         @JsonProperty("bgm_id")
         String bgmId,
         @Schema(description = "导入任务标题")
