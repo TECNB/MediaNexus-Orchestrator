@@ -42,7 +42,7 @@ public record MovieMagnetIngestTaskResponse(
         @Schema(description = "magnet btih hash，统一小写")
         @JsonProperty("magnet_hash")
         String magnetHash,
-        @Schema(description = "最终保存目录，按当前 Radarr 电影目录格式渲染")
+        @Schema(description = "最终保存目录，按当前电影目录格式渲染")
         @JsonProperty("save_path")
         String savePath,
         @Schema(description = "离线下载临时目录；当前与保存目录一致")

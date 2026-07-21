@@ -2,16 +2,16 @@ package com.medianexus.orchestrator.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.medianexus.orchestrator.config.RadarrProperties;
+import com.medianexus.orchestrator.config.TmdbProperties;
+import com.medianexus.orchestrator.dto.resources.response.MovieSearchResponse;
 import com.medianexus.orchestrator.dto.resources.response.SeriesSearchResponse;
-import com.medianexus.orchestrator.integration.radarr.RadarrClient;
 import com.medianexus.orchestrator.model.User;
 import com.medianexus.orchestrator.service.catalog.MediaCatalogSearch;
+import com.medianexus.orchestrator.service.catalog.MovieCatalogItem;
 import com.medianexus.orchestrator.service.catalog.SeriesCatalogIdentity;
 import com.medianexus.orchestrator.service.catalog.SeriesCatalogItem;
 import com.medianexus.orchestrator.service.catalog.SeriesCatalogSeasons;
-import java.time.Duration;
+import com.medianexus.orchestrator.service.catalog.TmdbMovieCatalogSearch;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -19,16 +19,42 @@ import org.junit.jupiter.api.Test;
 class MovieSeriesResourceSearchServiceTest {
 
     private FakeMediaCatalogSearch mediaCatalogSearch;
+    private FakeTmdbMovieCatalogSearch movieCatalogSearch;
     private MovieSeriesResourceSearchService service;
 
     @BeforeEach
     void setUp() {
         mediaCatalogSearch = new FakeMediaCatalogSearch();
+        movieCatalogSearch = new FakeTmdbMovieCatalogSearch();
         service = new MovieSeriesResourceSearchService(
-                new FakeRadarrClient(),
+                movieCatalogSearch,
                 mediaCatalogSearch,
                 new TestAuthService()
         );
+    }
+
+    @Test
+    void mapsTmdbMovieCatalogItemsToApiResponse() {
+        movieCatalogSearch.items = List.of(new MovieCatalogItem(
+                "tmdb:36557",
+                "007：大战皇家赌场",
+                "Casino Royale",
+                2006,
+                "邦德首次执行 00 级任务。",
+                "https://image.tmdb.org/t/p/w500/casino-royale.jpg",
+                36557,
+                null,
+                List.of(),
+                "released"
+        ));
+
+        MovieSearchResponse response = service.searchMovies("007");
+
+        assertThat(response.items()).hasSize(1);
+        assertThat(response.items().get(0).id()).isEqualTo("tmdb:36557");
+        assertThat(response.items().get(0).tmdbId()).isEqualTo(36557);
+        assertThat(response.items().get(0).title()).isEqualTo("007：大战皇家赌场");
+        assertThat(response.items().get(0).originalTitle()).isEqualTo("Casino Royale");
     }
 
     @Test
@@ -96,15 +122,16 @@ class MovieSeriesResourceSearchServiceTest {
         }
     }
 
-    private static class FakeRadarrClient extends RadarrClient {
-        FakeRadarrClient() {
-            super(radarrProperties(), new ObjectMapper());
+    private static class FakeTmdbMovieCatalogSearch extends TmdbMovieCatalogSearch {
+        private List<MovieCatalogItem> items = List.of();
+
+        FakeTmdbMovieCatalogSearch() {
+            super(null, new TmdbProperties());
         }
 
-        private static RadarrProperties radarrProperties() {
-            RadarrProperties properties = new RadarrProperties();
-            properties.setTimeout(Duration.ofSeconds(1));
-            return properties;
+        @Override
+        public List<MovieCatalogItem> searchMovies(String term) {
+            return items;
         }
     }
 

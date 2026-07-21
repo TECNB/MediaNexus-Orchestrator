@@ -45,6 +45,21 @@ public class TmdbClient {
         return results;
     }
 
+    public JsonNode searchMovies(String query, String language) {
+        JsonNode payload = get(
+                "/search/movie",
+                "query=" + encode(query)
+                        + "&language=" + encode(language)
+                        + "&include_adult=false",
+                "movie search"
+        );
+        JsonNode results = payload.path("results");
+        if (!results.isArray()) {
+            throw new TmdbClientException(Reason.INVALID_RESPONSE, "TMDB movie search response results is not an array");
+        }
+        return results;
+    }
+
     public JsonNode getTvDetails(int seriesId, String language) {
         return get("/tv/" + seriesId, "language=" + encode(language), "tv details");
     }

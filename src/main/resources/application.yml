@@ -114,12 +114,6 @@ medianexus:
     timeout: ${MEDIANEXUS_PROWLARR_TIMEOUT:120s}
     search-cache-ttl: ${MEDIANEXUS_PROWLARR_SEARCH_CACHE_TTL:30m}
     search-cache-max-weight-bytes: ${MEDIANEXUS_PROWLARR_SEARCH_CACHE_MAX_WEIGHT_BYTES:33554432}
-  radarr:
-    scheme: ${MEDIANEXUS_RADARR_SCHEME:http}
-    host: ${MEDIANEXUS_RADARR_HOST:}
-    port: ${MEDIANEXUS_RADARR_PORT:0}
-    api-key: ${MEDIANEXUS_RADARR_API_KEY:}
-    timeout: ${MEDIANEXUS_RADARR_TIMEOUT:10s}
   sonarr:
     scheme: ${MEDIANEXUS_SONARR_SCHEME:http}
     host: ${MEDIANEXUS_SONARR_HOST:}

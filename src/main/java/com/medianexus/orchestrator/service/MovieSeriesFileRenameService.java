@@ -12,8 +12,8 @@ import org.springframework.util.StringUtils;
 @Service
 public class MovieSeriesFileRenameService {
 
-    private static final String RADARR_STANDARD_MOVIE_FORMAT = "{Movie Title} ({Release Year}) {Quality Full}";
-    private static final String RADARR_MOVIE_FOLDER_FORMAT = "{Movie Title} ({Release Year})";
+    private static final String MOVIE_STANDARD_FILE_FORMAT = "{Movie Title} ({Release Year}) {Quality Full}";
+    private static final String MOVIE_FOLDER_FORMAT = "{Movie Title} ({Release Year})";
     private static final String SONARR_STANDARD_EPISODE_FORMAT =
             "{Series Title} - S{season:00}E{episode:00} - {Episode Title} {Quality Full}";
     private static final String SONARR_SERIES_FOLDER_FORMAT = "{Series Title}";
@@ -39,7 +39,7 @@ public class MovieSeriesFileRenameService {
     );
 
     public String movieFolderName(String title, Integer year) {
-        String value = replaceMovieValues(RADARR_MOVIE_FOLDER_FORMAT, title, year, "");
+        String value = replaceMovieValues(MOVIE_FOLDER_FORMAT, title, year, "");
         return sanitizeFileName(value);
     }
 
@@ -241,7 +241,7 @@ public class MovieSeriesFileRenameService {
     }
 
     private String movieBaseName(String title, Integer year, String quality) {
-        String value = replaceMovieValues(RADARR_STANDARD_MOVIE_FORMAT, title, year, quality);
+        String value = replaceMovieValues(MOVIE_STANDARD_FILE_FORMAT, title, year, quality);
         return sanitizeFileName(cleanDanglingSeparators(value));
     }
 

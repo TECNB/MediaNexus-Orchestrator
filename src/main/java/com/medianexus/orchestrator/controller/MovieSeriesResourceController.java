@@ -46,7 +46,7 @@ public class MovieSeriesResourceController {
     }
 
     @GetMapping("/movies/search")
-    @Operation(summary = "搜索电影", description = "按关键词代理 Radarr movie lookup，并返回前端选择器字段。")
+    @Operation(summary = "搜索电影", description = "按关键词搜索 TMDB 电影目录，并返回前端选择器字段。")
     public ApiResponse<MovieSearchResponse> searchMovies(
             @Parameter(description = "电影搜索关键词，不能为空")
             @RequestParam(name = "term", required = false) String term

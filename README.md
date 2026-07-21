@@ -2,7 +2,7 @@
 
 `MediaNexus-Orchestrator` 是 MediaNexus 的 Java 后端项目，用于承载新的资源搜索、发布资源选择、OpenList 入库编排、任务中心、失败恢复、字幕上传、动漫订阅和管理端能力。
 
-MediaNexus 本身是 Emby 分享工作流上层的管理与编排站点，不替代 CD2、AutoSymlink、Emby、VidHub、Prowlarr、Sonarr、Radarr、OpenList、PikPak、Ani-RSS 或外部资源网站。
+MediaNexus 本身是 Emby 分享工作流上层的管理与编排站点，不替代 CD2、AutoSymlink、Emby、VidHub、Prowlarr、Sonarr、OpenList、PikPak、Ani-RSS 或外部资源网站。
 
 ## 当前定位
 
