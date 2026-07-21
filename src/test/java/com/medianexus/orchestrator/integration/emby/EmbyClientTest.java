@@ -167,6 +167,53 @@ class EmbyClientTest {
         assertThat(uploadBody.get()).containsExactly(Base64.getEncoder().encode(uploadedImage));
     }
 
+    @Test
+    void createsAUserByCopyingOnlyTheTemplatePolicyAndSetsItsPassword() throws Exception {
+        AtomicReference<String> createBody = new AtomicReference<>();
+        AtomicReference<String> passwordBody = new AtomicReference<>();
+        AtomicReference<String> deleteMethod = new AtomicReference<>();
+        server.createContext("/Users/New", exchange -> {
+            createBody.set(new String(exchange.getRequestBody().readAllBytes()));
+            byte[] body = "{\"Id\":\"new-user-id\",\"Name\":\"alice\"}".getBytes();
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.createContext("/Users/new-user-id/Password", exchange -> {
+            passwordBody.set(new String(exchange.getRequestBody().readAllBytes()));
+            exchange.sendResponseHeaders(204, -1);
+            exchange.close();
+        });
+        server.createContext("/Users/new-user-id", exchange -> {
+            deleteMethod.set(exchange.getRequestMethod());
+            exchange.sendResponseHeaders(204, -1);
+            exchange.close();
+        });
+        server.start();
+        EmbyClient client = new EmbyClient(properties(), new ObjectMapper());
+
+        EmbyUserAccount created = client.createUserFromTemplate("alice", "template-id");
+        client.updateUserPassword(created.id(), "ABCDEFGH");
+        client.deleteUser(created.id());
+
+        ObjectMapper mapper = new ObjectMapper();
+        assertThat(mapper.readTree(createBody.get()).path("Name").asText()).isEqualTo("alice");
+        assertThat(mapper.readTree(createBody.get()).path("CopyFromUserId").asText()).isEqualTo("template-id");
+        assertThat(mapper.readTree(createBody.get()).path("UserCopyOptions").get(0).asText())
+                .isEqualTo("UserPolicy");
+        assertThat(mapper.readTree(passwordBody.get()).path("NewPw").asText()).isEqualTo("ABCDEFGH");
+        assertThat(mapper.readTree(passwordBody.get()).path("ResetPassword").asBoolean()).isFalse();
+        assertThat(deleteMethod.get()).isEqualTo("DELETE");
+    }
+
+    private EmbyProperties properties() {
+        EmbyProperties properties = new EmbyProperties();
+        properties.setBaseUrl("http://127.0.0.1:" + server.getAddress().getPort());
+        properties.setApiKey("emby-token");
+        properties.setTimeout(Duration.ofSeconds(2));
+        return properties;
+    }
+
     private Set<String> queryParameters(String query) {
         return Arrays.stream(query.split("&")).collect(Collectors.toSet());
     }
