@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonAnySetter;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.swagger.v3.oas.annotations.media.Schema;
+import jakarta.validation.constraints.Positive;
 
 @JsonIgnoreProperties(ignoreUnknown = false)
 @Schema(description = "电影 magnet 导入任务创建请求")
@@ -16,8 +17,16 @@ public record MovieMagnetIngestRequest(
         @JsonProperty("original_title")
         String originalTitle,
         @Schema(description = "电影年份")
-        Integer year
+        Integer year,
+        @Schema(description = "TMDB 电影 id；来自目录搜索结果", requiredMode = Schema.RequiredMode.NOT_REQUIRED, nullable = true)
+        @JsonProperty("tmdb_id")
+        @Positive(message = "TMDB id 必须大于 0")
+        Integer tmdbId
 ) {
+
+    public MovieMagnetIngestRequest(String magnet, String title, String originalTitle, Integer year) {
+        this(magnet, title, originalTitle, year, null);
+    }
 
     @JsonAnySetter
     public void rejectUnknownField(String fieldName, Object ignored) {

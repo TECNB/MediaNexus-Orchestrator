@@ -76,6 +76,39 @@ public class EmbyClient {
         ));
     }
 
+    public List<EmbyCatalogItem> findMoviesByTmdbId(int tmdbId) {
+        return catalogItems(Map.of(
+                "Recursive", "true",
+                "IncludeItemTypes", "Movie",
+                "Fields", "ProviderIds,Path",
+                "AnyProviderIdEquals", "tmdb." + tmdbId,
+                "GroupItemsIntoCollections", "false",
+                "Limit", "20"
+        ));
+    }
+
+    public List<EmbyCatalogItem> findSeriesByTmdbId(int tmdbId) {
+        return catalogItems(Map.of(
+                "Recursive", "true",
+                "IncludeItemTypes", "Series",
+                "Fields", "ProviderIds,Path",
+                "AnyProviderIdEquals", "tmdb." + tmdbId,
+                "Limit", "20"
+        ));
+    }
+
+    public List<EmbyCatalogItem> listSeriesSeasons(String seriesId) {
+        if (!StringUtils.hasText(seriesId)) {
+            return List.of();
+        }
+        return catalogItems(Map.of(
+                "ParentId", seriesId.trim(),
+                "IncludeItemTypes", "Season",
+                "Fields", "Path",
+                "Limit", "100"
+        ));
+    }
+
     public List<EmbyItem> listLibraryVideoItemsByDateCreated(
             String libraryId,
             int startIndex,
@@ -270,6 +303,26 @@ public class EmbyClient {
         return result;
     }
 
+    private List<EmbyCatalogItem> catalogItems(Map<String, String> params) {
+        JsonNode root = get("/Items", params);
+        JsonNode items = root.path("Items");
+        if (!items.isArray()) {
+            return List.of();
+        }
+
+        List<EmbyCatalogItem> result = new ArrayList<>();
+        for (JsonNode item : items) {
+            result.add(new EmbyCatalogItem(
+                    text(item, "Id", "id"),
+                    text(item, "Name", "name"),
+                    text(item, "Type", "type"),
+                    text(item, "Path", "path"),
+                    integerOrNull(item, "IndexNumber", "indexNumber")
+            ));
+        }
+        return result;
+    }
+
     private JsonNode get(String path, Map<String, String> params) {
         return send("GET", path, params);
     }
@@ -406,6 +459,16 @@ public class EmbyClient {
             JsonNode value = node.path(field);
             if (!value.isMissingNode() && !value.isNull()) {
                 return value.asText();
+            }
+        }
+        return null;
+    }
+
+    private Integer integerOrNull(JsonNode node, String... fields) {
+        for (String field : fields) {
+            JsonNode value = node.path(field);
+            if (!value.isMissingNode() && !value.isNull() && value.canConvertToInt()) {
+                return value.asInt();
             }
         }
         return null;

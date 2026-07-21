@@ -99,6 +99,7 @@ public class AnimeMagnetIngestTaskService {
     private final AuthService authService;
     private final UserActionQuotaService userActionQuotaService;
     private final AutoSymlinkRefreshService autoSymlinkRefreshService;
+    private final MediaLibraryPresenceService mediaLibraryPresenceService;
     private final ExecutorService executorService;
 
     @Autowired
@@ -111,7 +112,8 @@ public class AnimeMagnetIngestTaskService {
             @Qualifier("animeLibraryOrganizer") LibraryOrganizer animeLibraryOrganizer,
             AuthService authService,
             UserActionQuotaService userActionQuotaService,
-            AutoSymlinkRefreshService autoSymlinkRefreshService
+            AutoSymlinkRefreshService autoSymlinkRefreshService,
+            MediaLibraryPresenceService mediaLibraryPresenceService
     ) {
         this.taskMapper = taskMapper;
         this.taskLogMapper = taskLogMapper;
@@ -122,6 +124,7 @@ public class AnimeMagnetIngestTaskService {
         this.authService = authService;
         this.userActionQuotaService = userActionQuotaService;
         this.autoSymlinkRefreshService = autoSymlinkRefreshService;
+        this.mediaLibraryPresenceService = mediaLibraryPresenceService;
         this.executorService = Executors.newSingleThreadExecutor(new WorkerThreadFactory());
     }
 
@@ -135,6 +138,7 @@ public class AnimeMagnetIngestTaskService {
             AuthService authService,
             UserActionQuotaService userActionQuotaService,
             AutoSymlinkRefreshService autoSymlinkRefreshService,
+            MediaLibraryPresenceService mediaLibraryPresenceService,
             ExecutorService executorService
     ) {
         this.taskMapper = taskMapper;
@@ -146,6 +150,7 @@ public class AnimeMagnetIngestTaskService {
         this.authService = authService;
         this.userActionQuotaService = userActionQuotaService;
         this.autoSymlinkRefreshService = autoSymlinkRefreshService;
+        this.mediaLibraryPresenceService = mediaLibraryPresenceService;
         this.executorService = executorService;
     }
 
@@ -176,8 +181,17 @@ public class AnimeMagnetIngestTaskService {
      * 命中时返回已有任务而不是重复提交 OpenList 离线下载。
      */
     public AnimeMagnetIngestTaskResponse createTask(AnimeMagnetIngestTaskCreateRequest request) {
+        return createTask(request, null);
+    }
+
+    public AnimeMagnetIngestTaskResponse createTask(
+            AnimeMagnetIngestTaskCreateRequest request,
+            Integer tmdbId
+    ) {
         User user = authService.requireCurrentUser();
         validateCreateRequest(request);
+        Integer season = request.seasonNumber() == null ? 1 : request.seasonNumber();
+        mediaLibraryPresenceService.requireAnimeSeasonAbsent(tmdbId, request.bgmId(), season);
         String magnet = request.magnet().trim();
         String magnetHash = extractMagnetHash(magnet);
 
@@ -206,7 +220,6 @@ public class AnimeMagnetIngestTaskService {
         }
 
         String title = preferredTitle(request);
-        Integer season = request.seasonNumber() == null ? 1 : request.seasonNumber();
         String folderTitle = animeFolderTitle(request, title);
         String savePath = renderAnimePath(folderTitle, season);
         AnimeMagnetIngestTaskResponse response = insertTask(
@@ -216,6 +229,7 @@ public class AnimeMagnetIngestTaskService {
                         magnetHash,
                         request.bgmId().trim(),
                         trimToNull(request.bgmUrl()),
+                        tmdbId,
                         title,
                         trimToNull(request.nameCn()),
                         trimToNull(request.name()),
@@ -243,6 +257,11 @@ public class AnimeMagnetIngestTaskService {
             TaskRetryReference retryReference
     ) {
         User user = authService.requireCurrentUser();
+        mediaLibraryPresenceService.requireAnimeSeasonAbsent(
+                originalTask.getTmdbId(),
+                originalTask.getBgmId(),
+                originalTask.getSeasonNumber()
+        );
         String normalizedMagnet = magnet == null ? "" : magnet.trim();
         if (!normalizedMagnet.toLowerCase(Locale.ROOT).startsWith("magnet:?")) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "请输入有效 magnet 链接");
@@ -264,6 +283,7 @@ public class AnimeMagnetIngestTaskService {
                         magnetHash,
                         originalTask.getBgmId(),
                         trimToNull(originalTask.getBgmUrl()),
+                        originalTask.getTmdbId(),
                         originalTask.getTitle(),
                         trimToNull(originalTask.getNameCn()),
                         trimToNull(originalTask.getName()),
@@ -292,6 +312,7 @@ public class AnimeMagnetIngestTaskService {
         task.setMagnetHash(seed.magnetHash());
         task.setBgmId(seed.bgmId());
         task.setBgmUrl(seed.bgmUrl());
+        task.setTmdbId(seed.tmdbId());
         task.setTitle(seed.title());
         task.setNameCn(seed.nameCn());
         task.setName(seed.name());
@@ -1046,6 +1067,7 @@ public class AnimeMagnetIngestTaskService {
             String magnetHash,
             String bgmId,
             String bgmUrl,
+            Integer tmdbId,
             String title,
             String nameCn,
             String name,

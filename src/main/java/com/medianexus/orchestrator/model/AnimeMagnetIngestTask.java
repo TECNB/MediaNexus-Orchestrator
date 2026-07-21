@@ -23,6 +23,8 @@ public class AnimeMagnetIngestTask {
 
     private String bgmUrl;
 
+    private Integer tmdbId;
+
     private String title;
 
     private String nameCn;
@@ -129,6 +131,14 @@ public class AnimeMagnetIngestTask {
 
     public void setBgmUrl(String bgmUrl) {
         this.bgmUrl = bgmUrl;
+    }
+
+    public Integer getTmdbId() {
+        return tmdbId;
+    }
+
+    public void setTmdbId(Integer tmdbId) {
+        this.tmdbId = tmdbId;
     }
 
     public String getTitle() {

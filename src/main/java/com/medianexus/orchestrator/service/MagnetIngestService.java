@@ -120,6 +120,7 @@ public class MagnetIngestService {
     private final AuthService authService;
     private final UserActionQuotaService userActionQuotaService;
     private final AutoSymlinkRefreshService autoSymlinkRefreshService;
+    private final MediaLibraryPresenceService mediaLibraryPresenceService;
     private final ExecutorService executorService;
 
     @Autowired
@@ -136,7 +137,8 @@ public class MagnetIngestService {
             @Qualifier("seriesLibraryOrganizer") LibraryOrganizer seriesLibraryOrganizer,
             AuthService authService,
             UserActionQuotaService userActionQuotaService,
-            AutoSymlinkRefreshService autoSymlinkRefreshService
+            AutoSymlinkRefreshService autoSymlinkRefreshService,
+            MediaLibraryPresenceService mediaLibraryPresenceService
     ) {
         this.movieTaskMapper = movieTaskMapper;
         this.movieTaskLogMapper = movieTaskLogMapper;
@@ -151,6 +153,7 @@ public class MagnetIngestService {
         this.authService = authService;
         this.userActionQuotaService = userActionQuotaService;
         this.autoSymlinkRefreshService = autoSymlinkRefreshService;
+        this.mediaLibraryPresenceService = mediaLibraryPresenceService;
         this.executorService = Executors.newSingleThreadExecutor(new WorkerThreadFactory());
     }
 
@@ -165,7 +168,8 @@ public class MagnetIngestService {
             LibraryOrganizer libraryOrganizer,
             AuthService authService,
             UserActionQuotaService userActionQuotaService,
-            AutoSymlinkRefreshService autoSymlinkRefreshService
+            AutoSymlinkRefreshService autoSymlinkRefreshService,
+            MediaLibraryPresenceService mediaLibraryPresenceService
     ) {
         this(
                 movieTaskMapper,
@@ -180,7 +184,8 @@ public class MagnetIngestService {
                 libraryOrganizer,
                 authService,
                 userActionQuotaService,
-                autoSymlinkRefreshService
+                autoSymlinkRefreshService,
+                mediaLibraryPresenceService
         );
     }
 
@@ -217,6 +222,7 @@ public class MagnetIngestService {
     ) {
         User user = authService.requireCurrentUser();
         MovieTaskPlan plan = buildMoviePlan(request);
+        mediaLibraryPresenceService.requireMovieAbsent(plan.tmdbId());
         ReleaseIngestMetadata releaseMetadata = metadata == null ? ReleaseIngestMetadata.manual() : metadata;
 
         MovieMagnetIngestTask activeTask = movieTaskMapper.selectOne(new LambdaQueryWrapper<MovieMagnetIngestTask>()
@@ -249,6 +255,7 @@ public class MagnetIngestService {
             TaskRetryReference retryReference
     ) {
         User user = authService.requireCurrentUser();
+        mediaLibraryPresenceService.requireMovieAbsent(originalTask.getTmdbId());
         String normalizedMagnet = normalizeMagnet(magnet);
         String magnetHash = extractMagnetHash(normalizedMagnet);
         MovieMagnetIngestTask activeTask = movieTaskMapper.selectOne(new LambdaQueryWrapper<MovieMagnetIngestTask>()
@@ -265,6 +272,7 @@ public class MagnetIngestService {
                 originalTask.getTitle(),
                 trimToNull(originalTask.getOriginalTitle()),
                 originalTask.getYear(),
+                originalTask.getTmdbId(),
                 null,
                 originalTask.getSavePath()
         );
@@ -290,6 +298,7 @@ public class MagnetIngestService {
         task.setTitle(plan.title());
         task.setOriginalTitle(plan.originalTitle());
         task.setYear(plan.year());
+        task.setTmdbId(plan.tmdbId());
         applyReleaseMetadata(task, releaseMetadata);
         task.setSavePath(plan.savePath());
         task.setTempPath(plan.savePath());
@@ -332,6 +341,7 @@ public class MagnetIngestService {
     ) {
         User user = authService.requireCurrentUser();
         SeriesTaskPlan plan = buildSeriesPlan(request);
+        mediaLibraryPresenceService.requireSeriesSeasonAbsent(plan.tmdbId(), plan.seasonNumber());
         ReleaseIngestMetadata releaseMetadata = metadata == null ? ReleaseIngestMetadata.manual() : metadata;
         return createPlannedSeriesTask(user, plan, releaseMetadata, SERIES_PRODUCT_TYPE);
     }
@@ -342,6 +352,7 @@ public class MagnetIngestService {
     ) {
         User user = authService.requireCurrentUser();
         SeriesTaskPlan plan = buildAnimeSeasonSeriesPlan(request);
+        mediaLibraryPresenceService.requireSeriesSeasonAbsent(plan.tmdbId(), plan.seasonNumber());
         ReleaseIngestMetadata releaseMetadata = metadata == null ? ReleaseIngestMetadata.manual() : metadata;
         return createPlannedSeriesTask(user, plan, releaseMetadata, ANIME_PRODUCT_TYPE);
     }
@@ -361,6 +372,10 @@ public class MagnetIngestService {
             TaskRetryReference retryReference
     ) {
         User user = authService.requireCurrentUser();
+        mediaLibraryPresenceService.requireSeriesSeasonAbsent(
+                originalTask.getTmdbId(),
+                originalTask.getSeasonNumber()
+        );
         String normalizedMagnet = normalizeMagnet(magnet);
         String magnetHash = extractMagnetHash(normalizedMagnet);
         SeriesMagnetIngestTask activeTask = seriesTaskMapper.selectOne(new LambdaQueryWrapper<SeriesMagnetIngestTask>()
@@ -377,6 +392,7 @@ public class MagnetIngestService {
                 originalTask.getTitle(),
                 trimToNull(originalTask.getOriginalTitle()),
                 originalTask.getSeasonNumber(),
+                originalTask.getTmdbId(),
                 originalTask.getSeriesName(),
                 originalTask.getSeasonFolder(),
                 originalTask.getSavePath()
@@ -431,6 +447,7 @@ public class MagnetIngestService {
         task.setTitle(plan.title());
         task.setOriginalTitle(plan.originalTitle());
         task.setSeasonNumber(plan.seasonNumber());
+        task.setTmdbId(plan.tmdbId());
         task.setTaskProductType(persistedProductType);
         applyReleaseMetadata(task, releaseMetadata);
         task.setSeriesName(plan.seriesName());
@@ -1335,7 +1352,16 @@ public class MagnetIngestService {
         String rootPath = configuredRootPath(openListProperties.getMovieRootPath(), "OpenList 电影基础路径尚未配置");
         String folderName = renameService.movieFolderName(fileTitle, year);
         String savePath = openListClient.joinPath(rootPath, folderName);
-        return new MovieTaskPlan(magnet, magnetHash, title, trimToNull(request.originalTitle()), year, rootPath, savePath);
+        return new MovieTaskPlan(
+                magnet,
+                magnetHash,
+                title,
+                trimToNull(request.originalTitle()),
+                year,
+                request.tmdbId(),
+                rootPath,
+                savePath
+        );
     }
 
     private SeriesTaskPlan buildSeriesPlan(SeriesMagnetIngestRequest request) {
@@ -1357,6 +1383,7 @@ public class MagnetIngestService {
                 title,
                 trimToNull(request.originalTitle()),
                 seasonNumber,
+                request.tmdbId(),
                 seriesName,
                 seasonFolder,
                 savePath
@@ -1381,6 +1408,7 @@ public class MagnetIngestService {
                 title,
                 originalTitle,
                 seasonNumber,
+                request.tmdbId(),
                 seriesName,
                 seasonFolder,
                 savePath
@@ -1998,6 +2026,7 @@ public class MagnetIngestService {
             String title,
             String originalTitle,
             Integer year,
+            Integer tmdbId,
             String rootPath,
             String savePath
     ) {
@@ -2009,6 +2038,7 @@ public class MagnetIngestService {
             String title,
             String originalTitle,
             Integer seasonNumber,
+            Integer tmdbId,
             String seriesName,
             String seasonFolder,
             String savePath

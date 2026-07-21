@@ -5,6 +5,7 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Positive;
 
 @JsonIgnoreProperties(ignoreUnknown = false)
 @Schema(description = "资源页剧集 OpenList 入库请求")
@@ -24,8 +25,23 @@ public record SeriesOpenListIngestRequest(
         @Pattern(regexp = "SERIES|ANIME", message = "任务产品类别只能是 SERIES 或 ANIME")
         String taskProductType,
         @Schema(description = "期望分辨率标签，例如 2160p、1080p 或 720p")
-        String quality
+        String quality,
+        @Schema(description = "TMDB 剧集 id；来自资源页目录结果", requiredMode = Schema.RequiredMode.NOT_REQUIRED, nullable = true)
+        @JsonProperty("tmdb_id")
+        @Positive(message = "TMDB id 必须大于 0")
+        Integer tmdbId
 ) {
+
+    public SeriesOpenListIngestRequest(
+            String term,
+            String title,
+            String originalTitle,
+            Integer seasonNumber,
+            String taskProductType,
+            String quality
+    ) {
+        this(term, title, originalTitle, seasonNumber, taskProductType, quality, null);
+    }
 
     @JsonAnySetter
     public void rejectUnknownField(String fieldName, Object ignored) {

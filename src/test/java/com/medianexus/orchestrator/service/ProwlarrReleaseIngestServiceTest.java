@@ -785,13 +785,15 @@ class ProwlarrReleaseIngestServiceTest {
                         1,
                         "download-ref-frieren",
                         List.of("1080p"),
-                        List.of("sdr")
+                        List.of("sdr"),
+                        209867
                 )
         );
 
         assertThat(response.taskProductType()).isEqualTo("ANIME");
         assertThat(magnetIngestService.createdAnimeSeasonSeriesTask).isTrue();
         assertThat(magnetIngestService.createdSeriesTask).isFalse();
+        assertThat(magnetIngestService.lastSeriesRequest.tmdbId()).isEqualTo(209867);
     }
 
     private MovieReleaseRecommendationRequest request(
@@ -945,7 +947,7 @@ class ProwlarrReleaseIngestServiceTest {
         private TaskRetryReference retryReference;
 
         FakeAnimeMagnetIngestTaskService() {
-            super(null, null, null, null, null, null, null, null, null);
+            super(null, null, null, null, null, null, null, null, null, null);
         }
 
         @Override
@@ -985,6 +987,7 @@ class ProwlarrReleaseIngestServiceTest {
     private static class FakeMagnetIngestService extends MagnetIngestService {
         private boolean createdSeriesTask;
         private boolean createdAnimeSeasonSeriesTask;
+        private SeriesMagnetIngestRequest lastSeriesRequest;
         private SeriesMagnetIngestTaskResponse animeResponse;
         private SeriesMagnetIngestTask retryOriginalTask;
         private String retryMagnet;
@@ -992,7 +995,7 @@ class ProwlarrReleaseIngestServiceTest {
         private TaskRetryReference retryReference;
 
         FakeMagnetIngestService() {
-            super(null, null, null, null, null, null, null, null, null, null, null);
+            super(null, null, null, null, null, null, null, null, null, null, null, null);
         }
 
         @Override
@@ -1001,6 +1004,7 @@ class ProwlarrReleaseIngestServiceTest {
                 ReleaseIngestMetadata metadata
         ) {
             createdSeriesTask = true;
+            lastSeriesRequest = request;
             return seriesTaskResponse("task-series", "SERIES");
         }
 
@@ -1010,6 +1014,7 @@ class ProwlarrReleaseIngestServiceTest {
                 ReleaseIngestMetadata metadata
         ) {
             createdAnimeSeasonSeriesTask = true;
+            lastSeriesRequest = request;
             return animeResponse == null ? seriesTaskResponse("task-anime", "ANIME") : animeResponse;
         }
 

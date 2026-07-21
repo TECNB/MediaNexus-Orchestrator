@@ -50,7 +50,8 @@ public class MagnetIngestAnimeController {
     public ApiResponse<AnimeMagnetIngestTaskResponse> createTask(
             @Valid @RequestBody AnimeMagnetIngestTaskCreateRequest request
     ) {
-        return ApiResponse.success(animeMagnetIngestTaskService.createTask(request));
+        Integer tmdbId = animeMagnetSearchService.resolveTmdbId(request.bgmId());
+        return ApiResponse.success(animeMagnetIngestTaskService.createTask(request, tmdbId));
     }
 
     @GetMapping("/tasks")

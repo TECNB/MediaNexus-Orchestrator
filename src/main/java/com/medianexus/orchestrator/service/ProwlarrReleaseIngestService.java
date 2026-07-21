@@ -287,7 +287,8 @@ public class ProwlarrReleaseIngestService {
                         magnet,
                         title,
                         trimToNull(request.originalTitle()),
-                        request.year()
+                        request.year(),
+                        request.tmdbId()
                 ),
                 metadata(selectedRelease.release(), selectedRelease.tags())
         );
@@ -305,7 +306,8 @@ public class ProwlarrReleaseIngestService {
                 magnet,
                 title,
                 trimToNull(request.originalTitle()),
-                seasonNumber
+                seasonNumber,
+                request.tmdbId()
         );
         ReleaseIngestMetadata releaseMetadata = metadata(selectedRelease.release(), selectedRelease.tags());
         if (requiresAnimeSeriesTask(request.taskProductType())) {
@@ -321,7 +323,13 @@ public class ProwlarrReleaseIngestService {
         int year = validateYear(request == null ? null : request.year());
         String magnet = resolveMagnet(request.indexerId(), request.downloadRef(), releaseTitle);
         return magnetIngestService.createMovieTask(
-                new MovieMagnetIngestRequest(magnet, title, trimToNull(request.originalTitle()), year),
+                new MovieMagnetIngestRequest(
+                        magnet,
+                        title,
+                        trimToNull(request.originalTitle()),
+                        year,
+                        request.tmdbId()
+                ),
                 requestMetadata(
                         releaseTitle,
                         request.indexer(),
@@ -340,7 +348,13 @@ public class ProwlarrReleaseIngestService {
         int seasonNumber = validateSeasonNumber(request == null ? null : request.seasonNumber());
         String magnet = resolveMagnet(request.indexerId(), request.downloadRef(), releaseTitle);
         SeriesMagnetIngestRequest ingestRequest =
-                new SeriesMagnetIngestRequest(magnet, title, trimToNull(request.originalTitle()), seasonNumber);
+                new SeriesMagnetIngestRequest(
+                        magnet,
+                        title,
+                        trimToNull(request.originalTitle()),
+                        seasonNumber,
+                        request.tmdbId()
+                );
         ReleaseIngestMetadata releaseMetadata = requestMetadata(
                 releaseTitle,
                 request.indexer(),

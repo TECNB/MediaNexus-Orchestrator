@@ -25,6 +25,8 @@ public class SeriesMagnetIngestTask {
 
     private Integer seasonNumber;
 
+    private Integer tmdbId;
+
     private String taskProductType;
 
     private String sourceType;
@@ -137,6 +139,14 @@ public class SeriesMagnetIngestTask {
 
     public void setSeasonNumber(Integer seasonNumber) {
         this.seasonNumber = seasonNumber;
+    }
+
+    public Integer getTmdbId() {
+        return tmdbId;
+    }
+
+    public void setTmdbId(Integer tmdbId) {
+        this.tmdbId = tmdbId;
     }
 
     public String getTaskProductType() {

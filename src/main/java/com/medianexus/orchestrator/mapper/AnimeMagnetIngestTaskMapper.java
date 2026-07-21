@@ -18,6 +18,7 @@ public interface AnimeMagnetIngestTaskMapper extends BaseMapper<AnimeMagnetInges
                 magnet_hash VARCHAR(64) NOT NULL,
                 bgm_id VARCHAR(64) NOT NULL,
                 bgm_url VARCHAR(255) NULL,
+                tmdb_id INT NULL,
                 title VARCHAR(255) NOT NULL,
                 name_cn VARCHAR(255) NULL,
                 name VARCHAR(255) NULL,
@@ -52,6 +53,21 @@ public interface AnimeMagnetIngestTaskMapper extends BaseMapper<AnimeMagnetInges
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
             """)
     void createTableIfNotExists();
+
+    @Select("""
+            SELECT COUNT(*)
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'anime_magnet_ingest_tasks'
+              AND COLUMN_NAME = 'tmdb_id'
+            """)
+    Integer countCatalogIdentityColumns();
+
+    @Update("""
+            ALTER TABLE anime_magnet_ingest_tasks
+            ADD COLUMN tmdb_id INT NULL AFTER bgm_url
+            """)
+    void addCatalogIdentityColumns();
 
     @Select("""
             SELECT COUNT(*)

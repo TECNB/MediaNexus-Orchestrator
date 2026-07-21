@@ -25,6 +25,8 @@ public class MovieMagnetIngestTask {
 
     private Integer year;
 
+    private Integer tmdbId;
+
     private String sourceType;
 
     private String releaseTitle;
@@ -131,6 +133,14 @@ public class MovieMagnetIngestTask {
 
     public void setYear(Integer year) {
         this.year = year;
+    }
+
+    public Integer getTmdbId() {
+        return tmdbId;
+    }
+
+    public void setTmdbId(Integer tmdbId) {
+        this.tmdbId = tmdbId;
     }
 
     public String getSourceType() {

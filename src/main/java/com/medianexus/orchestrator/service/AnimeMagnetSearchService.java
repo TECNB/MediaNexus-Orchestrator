@@ -67,6 +67,42 @@ public class AnimeMagnetSearchService {
         }
     }
 
+    /**
+     * 将手动动漫入口选中的 Bangumi 条目转换为统一使用的 TMDB 目录身份。
+     *
+     * 身份补全不应阻断原有 magnet 入库流程；Ani-RSS 暂时不可用或没有映射时返回 null，
+     * 后续仍可依靠标题进行宽松存在性检查。
+     */
+    public Integer resolveTmdbId(String bgmId) {
+        if (!StringUtils.hasText(bgmId)) {
+            return null;
+        }
+        String normalizedBgmId = bgmId.trim();
+        try {
+            JsonNode ani = aniRssClient.getAniBySubjectId(normalizedBgmId);
+            JsonNode tmdbIdNode = ani == null ? null : ani.path("tmdb").path("id");
+            Integer tmdbId = positiveIntegerOrNull(tmdbIdNode);
+            if (tmdbId == null) {
+                log.warn("Ani-RSS anime identity has no usable TMDB id bgmId={}", logValue(normalizedBgmId));
+            }
+            return tmdbId;
+        } catch (AniRssClientException exception) {
+            log.warn(
+                    "Ani-RSS anime identity lookup failed bgmId={} reason={}",
+                    logValue(normalizedBgmId),
+                    exception.getMessage()
+            );
+            return null;
+        } catch (RuntimeException exception) {
+            log.warn(
+                    "Ani-RSS anime identity mapping failed bgmId={} reason={}",
+                    logValue(normalizedBgmId),
+                    exception.getMessage()
+            );
+            return null;
+        }
+    }
+
     private String logValue(String value) {
         if (!StringUtils.hasText(value)) {
             return "blank";
@@ -175,5 +211,24 @@ public class AnimeMagnetSearchService {
             return null;
         }
         return node.asInt();
+    }
+
+    private Integer positiveIntegerOrNull(JsonNode node) {
+        if (node == null || node.isNull()) {
+            return null;
+        }
+        Integer value;
+        if (node.canConvertToInt()) {
+            value = node.asInt();
+        } else if (node.isTextual()) {
+            try {
+                value = Integer.valueOf(node.asText().trim());
+            } catch (NumberFormatException exception) {
+                return null;
+            }
+        } else {
+            return null;
+        }
+        return value > 0 ? value : null;
     }
 }

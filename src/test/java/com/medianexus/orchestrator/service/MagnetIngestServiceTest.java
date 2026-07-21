@@ -158,6 +158,7 @@ class MagnetIngestServiceTest {
                 new OpenListLibraryOrganizer(openListClient),
                 null,
                 null,
+                null,
                 null
         );
     }

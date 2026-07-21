@@ -43,6 +43,7 @@ class AnimeMagnetIngestTaskServiceTest {
     private final AnimeMagnetIngestTaskLogMapper taskLogMapper = mock(AnimeMagnetIngestTaskLogMapper.class);
     private final TestAuthService authService = new TestAuthService();
     private final TestUserActionQuotaService quotaService = new TestUserActionQuotaService();
+    private final MediaLibraryPresenceService mediaLibraryPresenceService = mock(MediaLibraryPresenceService.class);
     private final ControlledExecutor taskExecutor = new ControlledExecutor();
     private final AtomicReference<AnimeMagnetIngestTask> insertedTask = new AtomicReference<>();
     private final AnimeMagnetIngestTaskService service = new AnimeMagnetIngestTaskService(
@@ -55,6 +56,7 @@ class AnimeMagnetIngestTaskServiceTest {
             authService,
             quotaService,
             null,
+            mediaLibraryPresenceService,
             taskExecutor
     );
 
@@ -94,10 +96,11 @@ class AnimeMagnetIngestTaskServiceTest {
                 "Frieren: Beyond Journey's End",
                 2,
                 "Frieren: Beyond Journey's End"
-        ));
+        ), 209867);
 
         assertThat(insertedTask.get().getTitle()).isEqualTo("葬送的芙莉莲");
         assertThat(insertedTask.get().getName()).isEqualTo("Frieren: Beyond Journey's End");
+        assertThat(insertedTask.get().getTmdbId()).isEqualTo(209867);
         assertThat(insertedTask.get().getSavePath()).isEqualTo("/pikpak/Media/Anime/葬送的芙莉莲/Season 02");
     }
 
@@ -143,6 +146,7 @@ class AnimeMagnetIngestTaskServiceTest {
                 authService,
                 quotaService,
                 null,
+                mediaLibraryPresenceService,
                 taskExecutor
         );
 
@@ -182,6 +186,7 @@ class AnimeMagnetIngestTaskServiceTest {
                 authService,
                 quotaService,
                 null,
+                mediaLibraryPresenceService,
                 taskExecutor
         );
 
@@ -224,6 +229,7 @@ class AnimeMagnetIngestTaskServiceTest {
                 authService,
                 quotaService,
                 null,
+                mediaLibraryPresenceService,
                 taskExecutor
         );
 
@@ -296,6 +302,7 @@ class AnimeMagnetIngestTaskServiceTest {
                 authService,
                 quotaService,
                 null,
+                mediaLibraryPresenceService,
                 taskExecutor
         );
     }

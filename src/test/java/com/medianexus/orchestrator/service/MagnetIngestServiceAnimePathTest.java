@@ -21,11 +21,13 @@ class MagnetIngestServiceAnimePathTest {
                 "magnet:?xt=urn:btih:1234567890abcdef",
                 "007：大战皇家赌场",
                 "Casino Royale",
-                2006
+                2006,
+                36557
         ));
 
         assertThat(recordValue(plan, "title")).isEqualTo("007：大战皇家赌场");
         assertThat(recordValue(plan, "originalTitle")).isEqualTo("Casino Royale");
+        assertThat(recordValue(plan, "tmdbId")).isEqualTo(36557);
         assertThat(recordValue(plan, "savePath")).isEqualTo("/pikpak/Media/Movies/Casino Royale (2006)");
     }
 
@@ -37,11 +39,13 @@ class MagnetIngestServiceAnimePathTest {
                 "magnet:?xt=urn:btih:abcdef1234567890",
                 "绝命毒师",
                 "Breaking Bad",
-                1
+                1,
+                1396
         ));
 
         assertThat(recordValue(plan, "title")).isEqualTo("绝命毒师");
         assertThat(recordValue(plan, "originalTitle")).isEqualTo("Breaking Bad");
+        assertThat(recordValue(plan, "tmdbId")).isEqualTo(1396);
         assertThat(recordValue(plan, "seriesName")).isEqualTo("Breaking Bad");
         assertThat(recordValue(plan, "savePath")).isEqualTo("/pikpak/Media/TV/Breaking Bad/Season 1");
     }
@@ -54,11 +58,13 @@ class MagnetIngestServiceAnimePathTest {
                 "magnet:?xt=urn:btih:1122334455667788",
                 "葬送的芙莉莲",
                 "Frieren: Beyond Journey's End",
-                2
+                2,
+                209867
         ));
 
         assertThat(recordValue(plan, "title")).isEqualTo("葬送的芙莉莲");
         assertThat(recordValue(plan, "originalTitle")).isEqualTo("Frieren: Beyond Journey's End");
+        assertThat(recordValue(plan, "tmdbId")).isEqualTo(209867);
         assertThat(recordValue(plan, "seriesName")).isEqualTo("葬送的芙莉莲");
         assertThat(recordValue(plan, "savePath")).isEqualTo("/pikpak/Media/Anime/葬送的芙莉莲/Season 02");
     }
@@ -95,6 +101,7 @@ class MagnetIngestServiceAnimePathTest {
                 properties,
                 new MovieSeriesFileRenameService(),
                 new OpenListLibraryOrganizer(openListClient),
+                null,
                 null,
                 null,
                 null

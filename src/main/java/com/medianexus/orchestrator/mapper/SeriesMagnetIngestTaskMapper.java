@@ -19,6 +19,7 @@ public interface SeriesMagnetIngestTaskMapper extends BaseMapper<SeriesMagnetIng
                 title VARCHAR(255) NOT NULL,
                 original_title VARCHAR(255) NULL,
                 season_number INT NOT NULL,
+                tmdb_id INT NULL,
                 task_product_type VARCHAR(32) NOT NULL DEFAULT 'SERIES',
                 source_type VARCHAR(32) NULL,
                 release_title VARCHAR(1024) NULL,
@@ -52,6 +53,21 @@ public interface SeriesMagnetIngestTaskMapper extends BaseMapper<SeriesMagnetIng
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
             """)
     void createTableIfNotExists();
+
+    @Select("""
+            SELECT COUNT(*)
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'series_magnet_ingest_tasks'
+              AND COLUMN_NAME = 'tmdb_id'
+            """)
+    Integer countCatalogIdentityColumns();
+
+    @Update("""
+            ALTER TABLE series_magnet_ingest_tasks
+            ADD COLUMN tmdb_id INT NULL AFTER season_number
+            """)
+    void addCatalogIdentityColumns();
 
     @Select("""
             SELECT COUNT(*)
