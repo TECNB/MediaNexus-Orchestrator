@@ -32,6 +32,12 @@ public record AdminUserResponse(
         @Schema(description = "今日用量动作拆分")
         @JsonProperty("usage_breakdown")
         AdminUserUsageBreakdownResponse usageBreakdown,
+        @Schema(description = "邀请人用户 id；旧用户或管理员直接邀请时为空", nullable = true)
+        @JsonProperty("invited_by_user_id")
+        Long invitedByUserId,
+        @Schema(description = "邀请人用户名快照；旧用户或管理员直接邀请时为空", nullable = true)
+        @JsonProperty("invited_by_username")
+        String invitedByUsername,
         @Schema(description = "账号创建时间")
         @JsonProperty("created_at")
         LocalDateTime createdAt,

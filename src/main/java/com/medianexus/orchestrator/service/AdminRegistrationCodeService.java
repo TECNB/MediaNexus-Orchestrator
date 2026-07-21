@@ -1,8 +1,11 @@
 package com.medianexus.orchestrator.service;
 
+import com.medianexus.orchestrator.common.exception.BusinessException;
+import com.medianexus.orchestrator.common.exception.ErrorCode;
+import com.medianexus.orchestrator.dto.admin.request.AdminRegistrationCodeGenerateRequest;
 import com.medianexus.orchestrator.dto.admin.response.AdminRegistrationCodeResponse;
+import com.medianexus.orchestrator.mapper.UserMapper;
 import com.medianexus.orchestrator.model.User;
-import java.security.SecureRandom;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -10,76 +13,103 @@ import org.springframework.util.StringUtils;
 @Service
 public class AdminRegistrationCodeService {
 
-    private static final String REGISTRATION_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-    private static final int REGISTRATION_CODE_GROUP_SIZE = 4;
-    private static final int REGISTRATION_CODE_GROUP_COUNT = 4;
-
     private final RegistrationCodeSettingsService registrationCodeSettingsService;
     private final AuthService authService;
     private final UserAdminAuditService auditService;
-    private final SecureRandom secureRandom = new SecureRandom();
+    private final UserMapper userMapper;
 
     public AdminRegistrationCodeService(
             RegistrationCodeSettingsService registrationCodeSettingsService,
             AuthService authService,
-            UserAdminAuditService auditService
+            UserAdminAuditService auditService,
+            UserMapper userMapper
     ) {
         this.registrationCodeSettingsService = registrationCodeSettingsService;
         this.authService = authService;
         this.auditService = auditService;
+        this.userMapper = userMapper;
     }
 
+    @Transactional(readOnly = true)
     public AdminRegistrationCodeResponse getCurrentRegistrationCode() {
         authService.requireAdminUser();
         return toResponse(registrationCodeSettingsService.resolveEffectiveRegistrationCode());
     }
 
     @Transactional
-    public AdminRegistrationCodeResponse generateRegistrationCode() {
+    public AdminRegistrationCodeResponse generateRegistrationCode(
+            AdminRegistrationCodeGenerateRequest request
+    ) {
         User admin = authService.requireAdminUser();
+        User inviter = resolveInviter(request == null ? null : request.inviterUserId());
         RegistrationCodeSettingsService.RegistrationCodeSetting previous =
-                registrationCodeSettingsService.resolveEffectiveRegistrationCode();
-        String registrationCode = generateCode();
-        registrationCodeSettingsService.updateRegistrationCode(registrationCode);
+                registrationCodeSettingsService.lockEffectiveRegistrationCode();
+        String registrationCode = registrationCodeSettingsService.rotateRegistrationCode(
+                inviter == null ? null : inviter.getId(),
+                inviter == null ? null : inviter.getUsername()
+        );
         auditService.record(
                 admin.getId(),
-                null,
+                inviter == null ? null : inviter.getId(),
                 UserAdminAuditService.ACTION_GENERATE_REGISTRATION_CODE,
-                auditValue(previous.registrationCode(), previous.source()),
-                auditValue(registrationCode, "DATABASE")
+                auditValue(
+                        previous.registrationCode(),
+                        previous.source(),
+                        previous.inviterUserId(),
+                        previous.inviterUsername()
+                ),
+                auditValue(
+                        registrationCode,
+                        "DATABASE",
+                        inviter == null ? null : inviter.getId(),
+                        inviter == null ? null : inviter.getUsername()
+                )
         );
-        return new AdminRegistrationCodeResponse(registrationCode, "DATABASE");
+        return new AdminRegistrationCodeResponse(
+                registrationCode,
+                "DATABASE",
+                inviter == null ? null : inviter.getId(),
+                inviter == null ? null : inviter.getUsername()
+        );
     }
 
     private AdminRegistrationCodeResponse toResponse(
             RegistrationCodeSettingsService.RegistrationCodeSetting setting
     ) {
-        return new AdminRegistrationCodeResponse(setting.registrationCode(), setting.source());
-    }
-
-    private String generateCode() {
-        StringBuilder code = new StringBuilder(
-                REGISTRATION_CODE_GROUP_COUNT * REGISTRATION_CODE_GROUP_SIZE
-                        + REGISTRATION_CODE_GROUP_COUNT - 1
+        return new AdminRegistrationCodeResponse(
+                setting.registrationCode(),
+                setting.source(),
+                setting.inviterUserId(),
+                setting.inviterUsername()
         );
-        for (int groupIndex = 0; groupIndex < REGISTRATION_CODE_GROUP_COUNT; groupIndex++) {
-            if (groupIndex > 0) {
-                code.append('-');
-            }
-            for (int characterIndex = 0; characterIndex < REGISTRATION_CODE_GROUP_SIZE; characterIndex++) {
-                code.append(REGISTRATION_CODE_ALPHABET.charAt(
-                        secureRandom.nextInt(REGISTRATION_CODE_ALPHABET.length())
-                ));
-            }
-        }
-        return code.toString();
     }
 
-    private String auditValue(String registrationCode, String source) {
-        if (!StringUtils.hasText(registrationCode)) {
-            return "registration_code=blank;source=" + source;
+    private User resolveInviter(Long inviterUserId) {
+        if (inviterUserId == null) {
+            return null;
         }
-        return "registration_code=" + mask(registrationCode) + ";source=" + source;
+        User inviter = userMapper.selectById(inviterUserId);
+        if (inviter == null) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "邀请人用户不存在");
+        }
+        return inviter;
+    }
+
+    private String auditValue(
+            String registrationCode,
+            String source,
+            Long inviterUserId,
+            String inviterUsername
+    ) {
+        String inviterValue = inviterUserId == null || !StringUtils.hasText(inviterUsername)
+                ? "none"
+                : inviterUserId + ":" + inviterUsername;
+        if (!StringUtils.hasText(registrationCode)) {
+            return "registration_code=blank;source=" + source + ";inviter=" + inviterValue;
+        }
+        return "registration_code=" + mask(registrationCode)
+                + ";source=" + source
+                + ";inviter=" + inviterValue;
     }
 
     private String mask(String registrationCode) {

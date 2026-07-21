@@ -135,7 +135,9 @@ public class DatabaseInitializer implements ApplicationRunner {
 
     private void createTablesIfNotExists() {
         userMapper.createTableIfNotExists();
+        ensureUserEmbyUserIdColumn();
         ensureUserQuotaOverrideColumn();
+        ensureUserInviterColumns();
         userActionUsageMapper.createTableIfNotExists();
         systemSettingMapper.createTableIfNotExists();
         userAdminAuditLogMapper.createTableIfNotExists();
@@ -180,6 +182,28 @@ public class DatabaseInitializer implements ApplicationRunner {
         Integer columnCount = userMapper.countDailyContentCreateLimitOverrideColumn();
         if (columnCount == null || columnCount == 0) {
             userMapper.addDailyContentCreateLimitOverrideColumn();
+        }
+    }
+
+    private void ensureUserEmbyUserIdColumn() {
+        Integer columnCount = userMapper.countEmbyUserIdColumn();
+        if (columnCount == null || columnCount == 0) {
+            userMapper.addEmbyUserIdColumn();
+        }
+        Integer indexCount = userMapper.countEmbyUserIdUniqueIndex();
+        if (indexCount == null || indexCount == 0) {
+            userMapper.addEmbyUserIdUniqueIndex();
+        }
+    }
+
+    private void ensureUserInviterColumns() {
+        Integer inviterIdColumnCount = userMapper.countInvitedByUserIdColumn();
+        if (inviterIdColumnCount == null || inviterIdColumnCount == 0) {
+            userMapper.addInvitedByUserIdColumn();
+        }
+        Integer inviterUsernameColumnCount = userMapper.countInvitedByUsernameColumn();
+        if (inviterUsernameColumnCount == null || inviterUsernameColumnCount == 0) {
+            userMapper.addInvitedByUsernameColumn();
         }
     }
 

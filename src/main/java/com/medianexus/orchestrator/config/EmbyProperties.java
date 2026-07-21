@@ -20,6 +20,16 @@ public class EmbyProperties {
     private String apiKey;
 
     /**
+     * Secret used to derive deterministic managed passwords for provisioned Emby users.
+     */
+    private String registrationPasswordSecret;
+
+    /**
+     * Existing Emby user whose UserPolicy is copied for newly provisioned users.
+     */
+    private String registrationTemplateUsername = "csy";
+
+    /**
      * Secret expected in the Emby webhook query string.
      */
     private String webhookSecret;
@@ -66,6 +76,22 @@ public class EmbyProperties {
 
     public void setApiKey(String apiKey) {
         this.apiKey = apiKey;
+    }
+
+    public String getRegistrationPasswordSecret() {
+        return registrationPasswordSecret;
+    }
+
+    public void setRegistrationPasswordSecret(String registrationPasswordSecret) {
+        this.registrationPasswordSecret = registrationPasswordSecret;
+    }
+
+    public String getRegistrationTemplateUsername() {
+        return registrationTemplateUsername;
+    }
+
+    public void setRegistrationTemplateUsername(String registrationTemplateUsername) {
+        this.registrationTemplateUsername = registrationTemplateUsername;
     }
 
     public String getWebhookSecret() {

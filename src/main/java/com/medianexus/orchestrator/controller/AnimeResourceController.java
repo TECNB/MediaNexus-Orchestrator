@@ -8,6 +8,7 @@ import com.medianexus.orchestrator.dto.anime.response.AnimeSubscriptionPreviewRe
 import com.medianexus.orchestrator.dto.anime.response.AnimeSubscriptionResponse;
 import com.medianexus.orchestrator.service.AnimeSearchService;
 import com.medianexus.orchestrator.service.AnimeSubscriptionService;
+import com.medianexus.orchestrator.service.AuthService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -27,13 +28,16 @@ public class AnimeResourceController {
 
     private final AnimeSearchService animeSearchService;
     private final AnimeSubscriptionService animeSubscriptionService;
+    private final AuthService authService;
 
     public AnimeResourceController(
             AnimeSearchService animeSearchService,
-            AnimeSubscriptionService animeSubscriptionService
+            AnimeSubscriptionService animeSubscriptionService,
+            AuthService authService
     ) {
         this.animeSearchService = animeSearchService;
         this.animeSubscriptionService = animeSubscriptionService;
+        this.authService = authService;
     }
 
     @GetMapping("/search")
@@ -42,6 +46,7 @@ public class AnimeResourceController {
             @Parameter(description = "搜索关键词，不能为空")
             @RequestParam(name = "term", required = false) String term
     ) {
+        authService.requireAdminUser();
         return ApiResponse.success(animeSearchService.search(term));
     }
 
@@ -51,6 +56,7 @@ public class AnimeResourceController {
             @Parameter(description = "Mikan 番剧页面地址")
             @RequestParam(name = "sourceUrl", required = false) String sourceUrl
     ) {
+        authService.requireAdminUser();
         return ApiResponse.success(animeSubscriptionService.groups(sourceUrl));
     }
 
@@ -62,18 +68,21 @@ public class AnimeResourceController {
             @Parameter(description = "Mikan 番剧页面地址")
             @RequestParam(name = "sourceUrl", required = false) String sourceUrl
     ) {
+        authService.requireAdminUser();
         return ApiResponse.success(animeSubscriptionService.groups(sourceUrl));
     }
 
     @PostMapping("/preview")
     @Operation(summary = "预览 Ani-RSS 订阅", description = "将用户选择的字幕组转换为 Ani-RSS 订阅草稿，并返回预览集数和缺集信息。")
     public ApiResponse<AnimeSubscriptionPreviewResponse> preview(@Valid @RequestBody AnimeSubscriptionPreviewRequest request) {
+        authService.requireAdminUser();
         return ApiResponse.success(animeSubscriptionService.preview(request));
     }
 
     @PostMapping("/subscribe")
     @Operation(summary = "创建 Ani-RSS 订阅", description = "提交前会先预览并检查同名同季订阅，重复时返回 exists 而不是重复创建。")
     public ApiResponse<AnimeSubscriptionResponse> subscribe(@Valid @RequestBody AnimeSubscriptionPreviewRequest request) {
+        authService.requireAdminUser();
         return ApiResponse.success(animeSubscriptionService.subscribe(request));
     }
 }

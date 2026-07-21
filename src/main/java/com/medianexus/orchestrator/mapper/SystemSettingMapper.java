@@ -32,6 +32,24 @@ public interface SystemSettingMapper extends BaseMapper<SystemSetting> {
             """)
     String selectSettingValue(@Param("settingKey") String settingKey);
 
+    @Select("""
+            SELECT setting_value
+            FROM system_settings
+            WHERE setting_key = #{settingKey}
+            LIMIT 1
+            FOR UPDATE
+            """)
+    String selectSettingValueForUpdate(@Param("settingKey") String settingKey);
+
+    @Insert("""
+            INSERT IGNORE INTO system_settings (setting_key, setting_value)
+            VALUES (#{settingKey}, #{settingValue})
+            """)
+    void insertSettingIfAbsent(
+            @Param("settingKey") String settingKey,
+            @Param("settingValue") String settingValue
+    );
+
     @Insert("""
             INSERT INTO system_settings (setting_key, setting_value)
             VALUES (#{settingKey}, #{settingValue})

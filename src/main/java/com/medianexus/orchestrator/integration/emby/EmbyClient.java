@@ -65,6 +65,57 @@ public class EmbyClient {
         return libraries;
     }
 
+    public List<EmbyUserAccount> listUsers() {
+        JsonNode root = get("/Users/Query", Map.of("Limit", "10000"));
+        JsonNode users = root.path("Items");
+        if (!users.isArray()) {
+            throw new EmbyClientException("Emby users response is incomplete");
+        }
+
+        List<EmbyUserAccount> result = new ArrayList<>();
+        for (JsonNode user : users) {
+            JsonNode policy = user.path("Policy");
+            result.add(new EmbyUserAccount(
+                    text(user, "Id", "id"),
+                    text(user, "Name", "name"),
+                    policy.path("IsAdministrator").asBoolean(false),
+                    policy.path("IsDisabled").asBoolean(false)
+            ));
+        }
+        return result;
+    }
+
+    public EmbyUserAccount createUserFromTemplate(String username, String templateUserId) {
+        JsonNode user = postJson("/Users/New", Map.of(), writeJson(Map.of(
+                "Name", username,
+                "CopyFromUserId", templateUserId,
+                "UserCopyOptions", List.of("UserPolicy")
+        )));
+        String userId = text(user, "Id", "id");
+        if (!StringUtils.hasText(userId)) {
+            throw new EmbyClientException("Emby user id missing after create");
+        }
+        JsonNode policy = user.path("Policy");
+        return new EmbyUserAccount(
+                userId,
+                text(user, "Name", "name"),
+                policy.path("IsAdministrator").asBoolean(false),
+                policy.path("IsDisabled").asBoolean(false)
+        );
+    }
+
+    public void updateUserPassword(String userId, String password) {
+        postJson("/Users/" + encodePath(userId) + "/Password", Map.of(), writeJson(Map.of(
+                "Id", userId,
+                "NewPw", password,
+                "ResetPassword", false
+        )));
+    }
+
+    public void deleteUser(String userId) {
+        delete("/Users/" + encodePath(userId), Map.of());
+    }
+
     public List<EmbyItem> listLibraryVideoItems(String libraryId) {
         return items(Map.of(
                 "ParentId", libraryId,
@@ -337,6 +388,14 @@ public class EmbyClient {
 
     private JsonNode delete(String path, Map<String, String> params) {
         return send("DELETE", path, params);
+    }
+
+    private String writeJson(Object value) {
+        try {
+            return objectMapper.writeValueAsString(value);
+        } catch (JsonProcessingException exception) {
+            throw new EmbyClientException("Emby request body could not be serialized", exception);
+        }
     }
 
     private JsonNode send(String method, String path, Map<String, String> params) {

@@ -1,6 +1,7 @@
 package com.medianexus.orchestrator.controller;
 
 import com.medianexus.orchestrator.common.response.ApiResponse;
+import com.medianexus.orchestrator.dto.admin.request.AdminRegistrationCodeGenerateRequest;
 import com.medianexus.orchestrator.dto.admin.response.AdminRegistrationCodeResponse;
 import com.medianexus.orchestrator.service.AdminRegistrationCodeService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -8,6 +9,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -29,7 +31,9 @@ public class AdminRegistrationCodeController {
 
     @PostMapping("/generate")
     @Operation(summary = "生成注册码", description = "生成新的注册码并保存到数据库，后续注册立即使用新注册码校验。")
-    public ApiResponse<AdminRegistrationCodeResponse> generateRegistrationCode() {
-        return ApiResponse.success(registrationCodeService.generateRegistrationCode());
+    public ApiResponse<AdminRegistrationCodeResponse> generateRegistrationCode(
+            @RequestBody(required = false) AdminRegistrationCodeGenerateRequest request
+    ) {
+        return ApiResponse.success(registrationCodeService.generateRegistrationCode(request));
     }
 }

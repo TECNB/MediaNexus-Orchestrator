@@ -8,6 +8,7 @@ import com.medianexus.orchestrator.dto.admin.response.AdminUserListResponse;
 import com.medianexus.orchestrator.dto.admin.response.AdminUserQuotaResponse;
 import com.medianexus.orchestrator.dto.admin.response.AdminUserResponse;
 import com.medianexus.orchestrator.dto.admin.response.AdminUserSummaryResponse;
+import com.medianexus.orchestrator.dto.emby.response.EmbyCredentialResponse;
 import com.medianexus.orchestrator.service.AdminUserManagementService;
 import com.medianexus.orchestrator.service.UserQuotaSettingsService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -15,6 +16,7 @@ import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -22,6 +24,8 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.http.CacheControl;
+import org.springframework.http.ResponseEntity;
 
 @RestController
 @RequestMapping("/api/v1/admin")
@@ -95,5 +99,26 @@ public class AdminUserController {
             @PathVariable Long userId
     ) {
         return ApiResponse.success(adminUserManagementService.resetTodayUsage(userId));
+    }
+
+    @DeleteMapping("/users/{userId}")
+    @Operation(summary = "删除用户", description = "删除目标普通用户；若该用户由 MediaNexus 托管 Emby 账号，同时删除对应 Emby 用户。")
+    public ApiResponse<Void> deleteUser(
+            @Parameter(description = "目标用户 id")
+            @PathVariable Long userId
+    ) {
+        adminUserManagementService.deleteUser(userId);
+        return ApiResponse.success();
+    }
+
+    @GetMapping("/users/{userId}/emby-credentials")
+    @Operation(summary = "查看用户 Emby 凭据", description = "管理员查看目标普通用户的 Emby 托管凭据并记录审计。")
+    public ResponseEntity<ApiResponse<EmbyCredentialResponse>> getEmbyCredentials(
+            @Parameter(description = "目标用户 id")
+            @PathVariable Long userId
+    ) {
+        return ResponseEntity.ok()
+                .cacheControl(CacheControl.noStore())
+                .body(ApiResponse.success(adminUserManagementService.getEmbyCredential(userId)));
     }
 }

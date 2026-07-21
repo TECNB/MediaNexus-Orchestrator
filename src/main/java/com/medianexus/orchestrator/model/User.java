@@ -21,7 +21,13 @@ public class User {
     @TableField("user_role")
     private String role;
 
+    private String embyUserId;
+
     private Integer dailyContentCreateLimitOverride;
+
+    private Long invitedByUserId;
+
+    private String invitedByUsername;
 
     private LocalDateTime createdAt;
 
@@ -67,12 +73,36 @@ public class User {
         this.role = role;
     }
 
+    public String getEmbyUserId() {
+        return embyUserId;
+    }
+
+    public void setEmbyUserId(String embyUserId) {
+        this.embyUserId = embyUserId;
+    }
+
     public Integer getDailyContentCreateLimitOverride() {
         return dailyContentCreateLimitOverride;
     }
 
     public void setDailyContentCreateLimitOverride(Integer dailyContentCreateLimitOverride) {
         this.dailyContentCreateLimitOverride = dailyContentCreateLimitOverride;
+    }
+
+    public Long getInvitedByUserId() {
+        return invitedByUserId;
+    }
+
+    public void setInvitedByUserId(Long invitedByUserId) {
+        this.invitedByUserId = invitedByUserId;
+    }
+
+    public String getInvitedByUsername() {
+        return invitedByUsername;
+    }
+
+    public void setInvitedByUsername(String invitedByUsername) {
+        this.invitedByUsername = invitedByUsername;
     }
 
     public LocalDateTime getCreatedAt() {

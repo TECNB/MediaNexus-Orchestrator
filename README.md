@@ -131,8 +131,12 @@ MEDIANEXUS_ANI_RSS_BASE_URL='http://example.invalid:7789'
 MEDIANEXUS_ANI_RSS_API_KEY=''
 MEDIANEXUS_ANI_RSS_TIMEOUT='10s'
 MEDIANEXUS_AUTH_REGISTRATION_CODE='your-registration-code'
+MEDIANEXUS_EMBY_REGISTRATION_PASSWORD_SECRET='a-stable-random-secret-at-least-16-characters'
+MEDIANEXUS_EMBY_REGISTRATION_TEMPLATE_USERNAME='csy'
 MEDIANEXUS_DAILY_CONTENT_CREATE_LIMIT=3
 ```
+
+`MEDIANEXUS_EMBY_REGISTRATION_PASSWORD_SECRET` 用于派生托管 Emby 用户的 8 位密码，必须保持稳定；更换该值会改变所有托管用户显示的密码。新注册用户仅复制模板用户的 `UserPolicy`，默认模板用户名为 `csy`。
 
 生产环境使用：
 

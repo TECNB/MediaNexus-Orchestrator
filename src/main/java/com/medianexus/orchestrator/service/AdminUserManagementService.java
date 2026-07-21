@@ -9,6 +9,7 @@ import com.medianexus.orchestrator.dto.admin.response.AdminUserQuotaResponse;
 import com.medianexus.orchestrator.dto.admin.response.AdminUserResponse;
 import com.medianexus.orchestrator.dto.admin.response.AdminUserSummaryResponse;
 import com.medianexus.orchestrator.dto.admin.response.AdminUserUsageBreakdownResponse;
+import com.medianexus.orchestrator.dto.emby.response.EmbyCredentialResponse;
 import com.medianexus.orchestrator.mapper.UserActionUsageMapper;
 import com.medianexus.orchestrator.mapper.UserMapper;
 import com.medianexus.orchestrator.mapper.projection.AdminUserUsageRow;
@@ -44,19 +45,22 @@ public class AdminUserManagementService {
     private final UserActionUsageMapper usageMapper;
     private final UserQuotaSettingsService quotaSettingsService;
     private final UserAdminAuditService auditService;
+    private final EmbyAccountService embyAccountService;
 
     public AdminUserManagementService(
             AuthService authService,
             UserMapper userMapper,
             UserActionUsageMapper usageMapper,
             UserQuotaSettingsService quotaSettingsService,
-            UserAdminAuditService auditService
+            UserAdminAuditService auditService,
+            EmbyAccountService embyAccountService
     ) {
         this.authService = authService;
         this.userMapper = userMapper;
         this.usageMapper = usageMapper;
         this.quotaSettingsService = quotaSettingsService;
         this.auditService = auditService;
+        this.embyAccountService = embyAccountService;
     }
 
     public AdminUserListResponse listUsers(
@@ -111,6 +115,46 @@ public class AdminUserManagementService {
     }
 
     @Transactional
+    public EmbyCredentialResponse getEmbyCredential(Long userId) {
+        User admin = authService.requireAdminUser();
+        User user = requireNormalUser(userId);
+        EmbyCredentialResponse credential = embyAccountService.credentialsFor(user);
+        auditService.record(
+                admin.getId(),
+                user.getId(),
+                UserAdminAuditService.ACTION_VIEW_EMBY_CREDENTIAL,
+                null,
+                "managed=" + credential.managed()
+        );
+        return credential;
+    }
+
+    @Transactional
+    public void deleteUser(Long userId) {
+        User admin = authService.requireAdminUser();
+        User user = requireNormalUser(userId);
+        usageMapper.delete(new LambdaQueryWrapper<UserActionUsage>()
+                .eq(UserActionUsage::getUserId, user.getId()));
+        int deletedUserCount = userMapper.deleteById(user.getId());
+        if (deletedUserCount != 1) {
+            throw new BusinessException(
+                    ErrorCode.INTERNAL_ERROR,
+                    "用户删除失败，请稍后重试",
+                    HttpStatus.INTERNAL_SERVER_ERROR
+            );
+        }
+        boolean hasManagedEmbyUser = StringUtils.hasText(user.getEmbyUserId());
+        auditService.record(
+                admin.getId(),
+                user.getId(),
+                UserAdminAuditService.ACTION_DELETE_USER,
+                "username=" + user.getUsername() + ";managed_emby=" + hasManagedEmbyUser,
+                "deleted=true;emby_deleted=" + hasManagedEmbyUser
+        );
+        embyAccountService.deleteManagedUser(user);
+    }
+
+    @Transactional
     public AdminUserQuotaResponse updateUserQuota(Long userId, AdminUserQuotaUpdateRequest request) {
         User admin = authService.requireAdminUser();
         if (request == null) {
@@ -162,6 +206,8 @@ public class AdminUserManagementService {
         row.setEmail(user.getEmail());
         row.setRole(user.getRole());
         row.setDailyContentCreateLimitOverride(user.getDailyContentCreateLimitOverride());
+        row.setInvitedByUserId(user.getInvitedByUserId());
+        row.setInvitedByUsername(user.getInvitedByUsername());
         row.setCreatedAt(user.getCreatedAt());
         row.setUpdatedAt(user.getUpdatedAt());
         row.setUsedCount(0);
@@ -198,12 +244,18 @@ public class AdminUserManagementService {
                 usedCount,
                 usageStatus,
                 new AdminUserUsageBreakdownResponse(magnetCount, animeCount),
+                row.getInvitedByUserId(),
+                row.getInvitedByUsername(),
                 row.getCreatedAt(),
                 row.getUpdatedAt()
         );
     }
 
     private User requireEditableNormalUser(Long userId) {
+        return requireNormalUser(userId);
+    }
+
+    private User requireNormalUser(Long userId) {
         if (userId == null) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "用户 id 不能为空");
         }
@@ -212,7 +264,7 @@ public class AdminUserManagementService {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "用户不存在");
         }
         if (ADMIN_ROLE.equalsIgnoreCase(user.getRole())) {
-            throw new BusinessException(ErrorCode.FORBIDDEN, "管理员账号不可修改额度或重置次数", HttpStatus.FORBIDDEN);
+            throw new BusinessException(ErrorCode.FORBIDDEN, "管理员账号不适用此操作", HttpStatus.FORBIDDEN);
         }
         return user;
     }

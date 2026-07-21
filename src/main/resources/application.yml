@@ -57,6 +57,8 @@ medianexus:
   emby:
     base-url: ${MEDIANEXUS_EMBY_BASE_URL:}
     api-key: ${MEDIANEXUS_EMBY_API_KEY:}
+    registration-password-secret: ${MEDIANEXUS_EMBY_REGISTRATION_PASSWORD_SECRET:}
+    registration-template-username: ${MEDIANEXUS_EMBY_REGISTRATION_TEMPLATE_USERNAME:csy}
     adult-other-library-name: ${MEDIANEXUS_EMBY_ADULT_OTHER_LIBRARY_NAME:Adult - Other}
     adult-other-automation-enabled: ${MEDIANEXUS_EMBY_ADULT_OTHER_AUTOMATION_ENABLED:true}
     adult-other-refresh-concurrency: ${MEDIANEXUS_EMBY_ADULT_OTHER_REFRESH_CONCURRENCY:8}

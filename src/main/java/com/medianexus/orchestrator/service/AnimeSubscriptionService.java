@@ -122,7 +122,7 @@ public class AnimeSubscriptionService {
      * 命中重复时返回 exists 状态，不再向上游提交 addAni。
      */
     public AnimeSubscriptionResponse subscribe(AnimeSubscriptionPreviewRequest request) {
-        User user = authService.requireCurrentUser();
+        User user = authService.requireAdminUser();
         requireGroupRequest(request);
         userActionQuotaService.assertDailyContentCreateAvailable(user);
 

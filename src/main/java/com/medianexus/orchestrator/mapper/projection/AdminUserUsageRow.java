@@ -9,6 +9,8 @@ public class AdminUserUsageRow {
     private String email;
     private String role;
     private Integer dailyContentCreateLimitOverride;
+    private Long invitedByUserId;
+    private String invitedByUsername;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
     private Integer usedCount;
@@ -53,6 +55,22 @@ public class AdminUserUsageRow {
 
     public void setDailyContentCreateLimitOverride(Integer dailyContentCreateLimitOverride) {
         this.dailyContentCreateLimitOverride = dailyContentCreateLimitOverride;
+    }
+
+    public Long getInvitedByUserId() {
+        return invitedByUserId;
+    }
+
+    public void setInvitedByUserId(Long invitedByUserId) {
+        this.invitedByUserId = invitedByUserId;
+    }
+
+    public String getInvitedByUsername() {
+        return invitedByUsername;
+    }
+
+    public void setInvitedByUsername(String invitedByUsername) {
+        this.invitedByUsername = invitedByUsername;
     }
 
     public LocalDateTime getCreatedAt() {

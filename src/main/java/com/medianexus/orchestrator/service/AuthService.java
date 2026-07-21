@@ -24,6 +24,9 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.StringUtils;
 
 @Service
@@ -42,16 +45,27 @@ public class AuthService {
     private final UserMapper userMapper;
     private final RegistrationCodeSettingsService registrationCodeSettingsService;
     private final PasswordEncoder passwordEncoder;
+    private final EmbyAccountService embyAccountService;
 
     @Autowired
     public AuthService(
             UserMapper userMapper,
             RegistrationCodeSettingsService registrationCodeSettingsService,
-            PasswordEncoder passwordEncoder
+            PasswordEncoder passwordEncoder,
+            EmbyAccountService embyAccountService
     ) {
         this.userMapper = userMapper;
         this.registrationCodeSettingsService = registrationCodeSettingsService;
         this.passwordEncoder = passwordEncoder;
+        this.embyAccountService = embyAccountService;
+    }
+
+    public AuthService(
+            UserMapper userMapper,
+            RegistrationCodeSettingsService registrationCodeSettingsService,
+            PasswordEncoder passwordEncoder
+    ) {
+        this(userMapper, registrationCodeSettingsService, passwordEncoder, null);
     }
 
     public AuthService(
@@ -59,15 +73,15 @@ public class AuthService {
             AuthProperties authProperties,
             PasswordEncoder passwordEncoder
     ) {
-        this(userMapper, new RegistrationCodeSettingsService(null, authProperties), passwordEncoder);
+        this(userMapper, new RegistrationCodeSettingsService(null, authProperties), passwordEncoder, null);
     }
 
+    @Transactional
     public AuthSessionResponse register(AuthRegisterRequest request) {
         try {
             if (request == null) {
                 throw new BusinessException(ErrorCode.BAD_REQUEST, "请求不能为空");
             }
-            validateRegistrationCode(request.registrationCode());
             String username = normalizeUsername(request.username());
             String email = normalizeEmail(request.email());
             String password = normalizePassword(request.password());
@@ -75,6 +89,9 @@ public class AuthService {
             if (!password.equals(confirmPassword)) {
                 throw new BusinessException(ErrorCode.BAD_REQUEST, "两次输入的密码不一致");
             }
+            RegistrationCodeSettingsService.RegistrationCodeSetting registrationCodeSetting =
+                    registrationCodeSettingsService.lockEffectiveRegistrationCode();
+            validateRegistrationCode(request.registrationCode(), registrationCodeSetting);
             ensureUsernameAvailable(username);
             ensureEmailAvailable(email);
 
@@ -83,11 +100,18 @@ public class AuthService {
             user.setEmail(email);
             user.setPasswordHash(passwordEncoder.encode(password));
             user.setRole(USER_ROLE);
+            user.setInvitedByUserId(registrationCodeSetting.inviterUserId());
+            user.setInvitedByUsername(registrationCodeSetting.inviterUsername());
             try {
                 userMapper.insert(user);
             } catch (DuplicateKeyException exception) {
                 throw duplicateAccountException(username, email);
             }
+            String embyUserId = embyAccountService.provisionUser(user);
+            registerEmbyRollbackCleanup(embyUserId);
+            userMapper.updateEmbyUserId(user.getId(), embyUserId);
+            user.setEmbyUserId(embyUserId);
+            registrationCodeSettingsService.rotateRegistrationCode();
             AuthSessionResponse response = loginUser(getExistingUser(user.getId()));
             log.info("User registered userId={} username={}", user.getId(), username);
             return response;
@@ -176,16 +200,31 @@ public class AuthService {
         return user;
     }
 
-    private void validateRegistrationCode(String registrationCode) {
-        String expectedRegistrationCode = registrationCodeSettingsService
-                .resolveEffectiveRegistrationCode()
-                .registrationCode();
+    private void validateRegistrationCode(
+            String registrationCode,
+            RegistrationCodeSettingsService.RegistrationCodeSetting setting
+    ) {
+        String expectedRegistrationCode = setting.registrationCode();
         if (!StringUtils.hasText(expectedRegistrationCode)) {
             throw new BusinessException(ErrorCode.FORBIDDEN, "注册暂未开放", HttpStatus.FORBIDDEN);
         }
         if (!registrationCode.trim().equals(expectedRegistrationCode)) {
             throw new BusinessException(ErrorCode.FORBIDDEN, "注册码无效", HttpStatus.FORBIDDEN);
         }
+    }
+
+    private void registerEmbyRollbackCleanup(String embyUserId) {
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCompletion(int status) {
+                if (status != TransactionSynchronization.STATUS_COMMITTED) {
+                    embyAccountService.deleteProvisionedUser(embyUserId);
+                }
+            }
+        });
     }
 
     private String normalizeUsername(String username) {

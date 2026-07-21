@@ -12,6 +12,8 @@ public class UserAdminAuditService {
     public static final String ACTION_RESTORE_USER_QUOTA_DEFAULT = "RESTORE_USER_QUOTA_DEFAULT";
     public static final String ACTION_RESET_USER_USAGE_TODAY = "RESET_USER_USAGE_TODAY";
     public static final String ACTION_GENERATE_REGISTRATION_CODE = "GENERATE_REGISTRATION_CODE";
+    public static final String ACTION_VIEW_EMBY_CREDENTIAL = "VIEW_EMBY_CREDENTIAL";
+    public static final String ACTION_DELETE_USER = "DELETE_USER";
 
     private final UserAdminAuditLogMapper auditLogMapper;
 
