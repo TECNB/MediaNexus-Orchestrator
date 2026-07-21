@@ -1,6 +1,7 @@
 package com.medianexus.orchestrator.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -11,13 +12,18 @@ import static org.mockito.Mockito.when;
 
 import com.medianexus.orchestrator.config.OpenListProperties;
 import com.medianexus.orchestrator.integration.openlist.OpenListClient;
+import com.medianexus.orchestrator.integration.openlist.OpenListClientException;
 import com.medianexus.orchestrator.integration.openlist.OpenListLibraryOrganizer;
 import com.medianexus.orchestrator.integration.openlist.OpenListFileInfo;
 import com.medianexus.orchestrator.mapper.MovieMagnetIngestTaskLogMapper;
 import com.medianexus.orchestrator.mapper.MovieMagnetIngestTaskMapper;
 import com.medianexus.orchestrator.mapper.SeriesMagnetIngestTaskLogMapper;
 import com.medianexus.orchestrator.mapper.SeriesMagnetIngestTaskMapper;
+import com.medianexus.orchestrator.model.MovieMagnetIngestTask;
 import com.medianexus.orchestrator.model.SeriesMagnetIngestTask;
+import com.medianexus.orchestrator.service.organization.LibraryOrganizationPlan;
+import com.medianexus.orchestrator.service.organization.LibraryOrganizationProgressObserver;
+import com.medianexus.orchestrator.service.organization.LibraryOrganizer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -26,6 +32,110 @@ import org.mockito.ArgumentCaptor;
 import org.springframework.test.util.ReflectionTestUtils;
 
 class MagnetIngestServiceTest {
+
+    @Test
+    void movieOrganizeRejectsTinyFilesDisguisedAsVideos() {
+        OpenListClient openListClient = mock(OpenListClient.class);
+        stubPathHelpers(openListClient);
+        String savePath = "/movies/Furious 7 (2015)";
+        String releasePath = savePath + "/release";
+        String mainVideo = "Fast.&.Furious.7.2015.2160p.WEB-DL.60fps.H265.10bit.AAC-MOMOWEB.mp4";
+        String adMkv = "【更多无水印高清电影请访问 www.BBEDDE.com】.MKV";
+        String adMp4 = "【更多无水印蓝光原盘请访问 www.BBEDDE.com】.MP4";
+        String advertisement = "【更多无水印蓝光电影请访问 www.BBEDDE.com】.DOC";
+        when(openListClient.findFiles(savePath)).thenReturn(List.of(
+                new OpenListFileInfo(mainVideo, 25_647_428_045L, false, releasePath),
+                new OpenListFileInfo(adMkv, 636_976L, false, releasePath),
+                new OpenListFileInfo(adMp4, 296_080L, false, releasePath),
+                new OpenListFileInfo(advertisement, 296_080L, false, releasePath)
+        ));
+        when(openListClient.listFiles(savePath)).thenReturn(List.of());
+        RecordingLibraryOrganizer organizer = new RecordingLibraryOrganizer();
+        MagnetIngestService service = service(openListClient, organizer);
+
+        Object result = ReflectionTestUtils.invokeMethod(service, "organizeMovieFiles", movieTask(savePath));
+
+        LibraryOrganizationPlan plan = organizer.plan;
+        String targetName = "Furious 7 (2015) 2160p WEB-DL H.265.mp4";
+        assertThat(plan.renames()).containsExactly(
+                new LibraryOrganizationPlan.RenameOperation(releasePath + "/" + mainVideo, targetName)
+        );
+        assertThat(plan.moves()).containsExactly(
+                new LibraryOrganizationPlan.MoveOperation(releasePath + "/" + targetName, savePath)
+        );
+        assertThat(plan.deletions())
+                .extracting(LibraryOrganizationPlan.DeleteOperation::path)
+                .containsExactlyInAnyOrder(
+                        releasePath + "/" + adMkv,
+                        releasePath + "/" + adMp4,
+                        releasePath + "/" + advertisement
+        );
+        assertThat(plan.expectedTargetNames()).containsExactly(targetName);
+        assertThat(ReflectionTestUtils.getField(result, "organizedCount")).isEqualTo(1);
+        assertThat(ReflectionTestUtils.getField(result, "skippedCount")).isEqualTo(3);
+        assertThat(ReflectionTestUtils.getField(result, "videoCount")).isEqualTo(1);
+    }
+
+    @Test
+    void movieOrganizeKeepsLargestFilePerLogicalVersionAndRetainsDistinctQualities() {
+        OpenListClient openListClient = mock(OpenListClient.class);
+        stubPathHelpers(openListClient);
+        String savePath = "/movies/Furious 7 (2015)";
+        String releasePath = savePath + "/release";
+        String smallerContainer = "release.mkv";
+        String largerContainer = "release.mp4";
+        String distinctQuality = "release.1080p.mkv";
+        when(openListClient.findFiles(savePath)).thenReturn(List.of(
+                new OpenListFileInfo(smallerContainer, 200L * 1024L * 1024L, false, releasePath),
+                new OpenListFileInfo(largerContainer, 300L * 1024L * 1024L, false, releasePath),
+                new OpenListFileInfo(distinctQuality, 100L * 1024L * 1024L, false, releasePath)
+        ));
+        when(openListClient.listFiles(savePath)).thenReturn(List.of());
+        RecordingLibraryOrganizer organizer = new RecordingLibraryOrganizer();
+        MagnetIngestService service = service(openListClient, organizer);
+
+        Object result = ReflectionTestUtils.invokeMethod(service, "organizeMovieFiles", movieTask(savePath));
+
+        assertThat(organizer.plan.renames()).containsExactlyInAnyOrder(
+                new LibraryOrganizationPlan.RenameOperation(
+                        releasePath + "/" + largerContainer,
+                        "Furious 7 (2015).mp4"
+                ),
+                new LibraryOrganizationPlan.RenameOperation(
+                        releasePath + "/" + distinctQuality,
+                        "Furious 7 (2015) 1080p.mkv"
+                )
+        );
+        assertThat(organizer.plan.deletions()).containsExactly(
+                new LibraryOrganizationPlan.DeleteOperation(releasePath + "/" + smallerContainer)
+        );
+        assertThat(ReflectionTestUtils.getField(result, "organizedCount")).isEqualTo(2);
+        assertThat(ReflectionTestUtils.getField(result, "skippedCount")).isEqualTo(1);
+        assertThat(ReflectionTestUtils.getField(result, "videoCount")).isEqualTo(2);
+    }
+
+    @Test
+    void movieOrganizeStopsWithoutExecutingPlanWhenVideoSizeIsMissing() {
+        OpenListClient openListClient = mock(OpenListClient.class);
+        stubPathHelpers(openListClient);
+        String savePath = "/movies/Furious 7 (2015)";
+        when(openListClient.findFiles(savePath)).thenReturn(List.of(
+                new OpenListFileInfo("release.mkv", null, false, savePath + "/release")
+        ));
+        when(openListClient.listFiles(savePath)).thenReturn(List.of());
+        RecordingLibraryOrganizer organizer = new RecordingLibraryOrganizer();
+        MagnetIngestService service = service(openListClient, organizer);
+
+        assertThatThrownBy(() -> ReflectionTestUtils.invokeMethod(
+                service,
+                "organizeMovieFiles",
+                movieTask(savePath)
+        ))
+                .isInstanceOf(OpenListClientException.class)
+                .hasMessageContaining("OpenList 未返回电影视频文件大小")
+                .hasMessageContaining("release.mkv");
+        assertThat(organizer.plan).isNull();
+    }
 
     @Test
     void animeSeriesOrganizeDeletesAuxiliaryDirectoryWithoutScanningIt() {
@@ -147,6 +257,10 @@ class MagnetIngestServiceTest {
     }
 
     private MagnetIngestService service(OpenListClient openListClient) {
+        return service(openListClient, new OpenListLibraryOrganizer(openListClient));
+    }
+
+    private MagnetIngestService service(OpenListClient openListClient, LibraryOrganizer libraryOrganizer) {
         return new MagnetIngestService(
                 mock(MovieMagnetIngestTaskMapper.class),
                 mock(MovieMagnetIngestTaskLogMapper.class),
@@ -155,12 +269,23 @@ class MagnetIngestServiceTest {
                 openListClient,
                 new OpenListProperties(),
                 new MovieSeriesFileRenameService(),
-                new OpenListLibraryOrganizer(openListClient),
+                libraryOrganizer,
                 null,
                 null,
                 null,
                 null
         );
+    }
+
+    private MovieMagnetIngestTask movieTask(String savePath) {
+        MovieMagnetIngestTask task = new MovieMagnetIngestTask();
+        task.setId("furious-7");
+        task.setTitle("Furious 7");
+        task.setOriginalTitle("Furious 7");
+        task.setYear(2015);
+        task.setSavePath(savePath);
+        task.setTempPath(savePath);
+        return task;
     }
 
     private SeriesMagnetIngestTask animeSeriesTask() {
@@ -188,5 +313,18 @@ class MagnetIngestServiceTest {
         return normalized.length() > 1 && normalized.endsWith("/")
                 ? normalized.substring(0, normalized.length() - 1)
                 : normalized;
+    }
+
+    private static class RecordingLibraryOrganizer implements LibraryOrganizer {
+
+        private LibraryOrganizationPlan plan;
+
+        @Override
+        public void organize(
+                LibraryOrganizationPlan plan,
+                LibraryOrganizationProgressObserver progressObserver
+        ) {
+            this.plan = plan;
+        }
     }
 }

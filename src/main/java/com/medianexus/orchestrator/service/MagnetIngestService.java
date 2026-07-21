@@ -38,6 +38,7 @@ import java.time.LocalDateTime;
 import java.time.Year;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -74,6 +75,7 @@ public class MagnetIngestService {
     private static final List<String> TERMINAL_STATUSES = List.of("SUCCEEDED", "PARTIAL_SUCCESS", "FAILED", "INTERRUPTED");
     private static final Duration SAVING_FILES_VISIBLE_GRACE = Duration.ofMinutes(5);
     private static final int FIRST_MOVIE_YEAR = 1888;
+    private static final long MIN_MOVIE_VIDEO_BYTES = 100L * 1024L * 1024L;
     private static final int OPENLIST_ORGANIZE_BATCH_SIZE = 10;
     private static final String ADMIN_ROLE = "ADMIN";
     private static final String SERIES_PRODUCT_TYPE = "SERIES";
@@ -863,23 +865,18 @@ public class MagnetIngestService {
                 writeMovieLog(task.getId(), level, stage, message, detail);
         taskLogWriter.write("INFO", "organizing", "正在扫描临时目录并生成整理计划", task.getTempPath());
         List<OpenListFileInfo> files = openListClient.findFiles(task.getTempPath());
-        Set<String> targetNames = targetNames(task.getSavePath());
         OrganizationPlan plan = new OrganizationPlan();
+        MovieVideoSelection videoSelection = selectMovieVideos(taskLogWriter, plan, files, task);
+        Set<String> targetNames = targetNames(task.getSavePath());
         Map<String, String> videoQualityByBaseName = new HashMap<>();
         String mainVideoQuality = "";
         int organized = 0;
-        int skipped = 0;
+        int skipped = videoSelection.skippedCount();
         int videoCount = 0;
 
-        for (OpenListFileInfo file : files) {
-            if (!renameService.isVideo(file.name())) {
-                continue;
-            }
-            MovieSeriesFileRenameService.RenameResult rename = renameService.movieVideo(
-                    file.name(),
-                    fileTitle(task.getTitle(), task.getOriginalTitle(), "电影标题不能为空"),
-                    task.getYear()
-            );
+        for (MovieVideoCandidate candidate : videoSelection.videos()) {
+            OpenListFileInfo file = candidate.file();
+            MovieSeriesFileRenameService.RenameResult rename = candidate.rename();
             boolean accepted = planFile(taskLogWriter, task.getSavePath(), targetNames, plan, file, rename.fileName());
             if (accepted) {
                 organized++;
@@ -930,6 +927,74 @@ public class MagnetIngestService {
 
         executeOrganizationPlan(movieLibraryOrganizer, taskLogWriter, task.getSavePath(), plan, organized, skipped, Set.of());
         return new OrganizeResult(organized, skipped, videoCount);
+    }
+
+    private MovieVideoSelection selectMovieVideos(
+            TaskLogWriter taskLogWriter,
+            OrganizationPlan plan,
+            List<OpenListFileInfo> files,
+            MovieMagnetIngestTask task
+    ) {
+        Map<String, MovieVideoCandidate> videoByBaseName = new HashMap<>();
+        int skipped = 0;
+        String title = fileTitle(task.getTitle(), task.getOriginalTitle(), "电影标题不能为空");
+
+        for (OpenListFileInfo file : files) {
+            if (!renameService.isVideo(file.name())) {
+                continue;
+            }
+            if (file.size() == null) {
+                throw new OpenListClientException(
+                        "OpenList 未返回电影视频文件大小: " + file.path() + "/" + file.name()
+                );
+            }
+            if (file.size() < MIN_MOVIE_VIDEO_BYTES) {
+                skipped++;
+                skipFile(
+                        taskLogWriter,
+                        plan,
+                        file,
+                        "跳过小于 100 MiB 的视频文件（size=" + file.size() + "）"
+                );
+                continue;
+            }
+
+            MovieSeriesFileRenameService.RenameResult rename = renameService.movieVideo(
+                    file.name(),
+                    title,
+                    task.getYear()
+            );
+            MovieVideoCandidate candidate = new MovieVideoCandidate(file, rename);
+            MovieVideoCandidate retained = videoByBaseName.get(rename.baseName());
+            if (retained == null) {
+                videoByBaseName.put(rename.baseName(), candidate);
+                continue;
+            }
+
+            skipped++;
+            if (compareMovieVideoCandidates(candidate, retained) > 0) {
+                skipFile(taskLogWriter, plan, retained.file(), "跳过同一电影版本的较小重复视频");
+                videoByBaseName.put(rename.baseName(), candidate);
+            } else {
+                skipFile(taskLogWriter, plan, file, "跳过同一电影版本的较小重复视频");
+            }
+        }
+
+        List<MovieVideoCandidate> videos = videoByBaseName.values().stream()
+                .sorted(Comparator
+                        .comparingLong((MovieVideoCandidate candidate) -> candidate.file().size())
+                        .reversed()
+                        .thenComparing(candidate -> candidate.file().name(), String.CASE_INSENSITIVE_ORDER))
+                .toList();
+        return new MovieVideoSelection(videos, skipped);
+    }
+
+    private int compareMovieVideoCandidates(MovieVideoCandidate left, MovieVideoCandidate right) {
+        int sizeComparison = Long.compare(left.file().size(), right.file().size());
+        if (sizeComparison != 0) {
+            return sizeComparison;
+        }
+        return String.CASE_INSENSITIVE_ORDER.compare(left.file().name(), right.file().name());
     }
 
     private OrganizeResult organizeSeriesFiles(SeriesMagnetIngestTask task) {
@@ -2068,6 +2133,15 @@ public class MagnetIngestService {
         private static AnimeSeriesOrganizeSelection passthrough(List<OpenListFileInfo> files) {
             return new AnimeSeriesOrganizeSelection(files, Map.of(), Set.of());
         }
+    }
+
+    private record MovieVideoCandidate(
+            OpenListFileInfo file,
+            MovieSeriesFileRenameService.RenameResult rename
+    ) {
+    }
+
+    private record MovieVideoSelection(List<MovieVideoCandidate> videos, int skippedCount) {
     }
 
     private record OrganizeResult(int organizedCount, int skippedCount, int videoCount) {
