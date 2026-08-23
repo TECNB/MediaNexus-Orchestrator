@@ -22,7 +22,9 @@ public class ProductionConfigurationGuard implements InitializingBean {
     private final CloudDrive2Properties cloudDrive2Properties;
     private final EmbyProperties embyProperties;
     private final OpenListProperties openListProperties;
+    private final PanSouProperties panSouProperties;
     private final ProwlarrProperties prowlarrProperties;
+    private final QasProperties qasProperties;
     private final TmdbProperties tmdbProperties;
     private final String datasourceUrl;
     private final String datasourceUsername;
@@ -36,7 +38,9 @@ public class ProductionConfigurationGuard implements InitializingBean {
             CloudDrive2Properties cloudDrive2Properties,
             EmbyProperties embyProperties,
             OpenListProperties openListProperties,
+            PanSouProperties panSouProperties,
             ProwlarrProperties prowlarrProperties,
+            QasProperties qasProperties,
             TmdbProperties tmdbProperties,
             @Value("${spring.datasource.url:}") String datasourceUrl,
             @Value("${spring.datasource.username:}") String datasourceUsername,
@@ -49,7 +53,9 @@ public class ProductionConfigurationGuard implements InitializingBean {
         this.cloudDrive2Properties = cloudDrive2Properties;
         this.embyProperties = embyProperties;
         this.openListProperties = openListProperties;
+        this.panSouProperties = panSouProperties;
         this.prowlarrProperties = prowlarrProperties;
+        this.qasProperties = qasProperties;
         this.tmdbProperties = tmdbProperties;
         this.datasourceUrl = datasourceUrl;
         this.datasourceUsername = datasourceUsername;
@@ -166,7 +172,9 @@ public class ProductionConfigurationGuard implements InitializingBean {
                 violations
         );
         rejectPlaceholder("medianexus.openlist.authorization", openListProperties.getAuthorization(), violations);
+        rejectPlaceholder("medianexus.pansou.password", panSouProperties.getPassword(), violations);
         rejectPlaceholder("medianexus.prowlarr.api-key", prowlarrProperties.getApiKey(), violations);
+        rejectPlaceholder("medianexus.qas.api-token", qasProperties.getApiToken(), violations);
         rejectPlaceholder("medianexus.tmdb.api-token", tmdbProperties.getApiToken(), violations);
     }
 

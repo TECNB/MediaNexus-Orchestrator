@@ -116,6 +116,19 @@ medianexus:
     timeout: ${MEDIANEXUS_PROWLARR_TIMEOUT:120s}
     search-cache-ttl: ${MEDIANEXUS_PROWLARR_SEARCH_CACHE_TTL:30m}
     search-cache-max-weight-bytes: ${MEDIANEXUS_PROWLARR_SEARCH_CACHE_MAX_WEIGHT_BYTES:33554432}
+  pansou:
+    base-url: ${MEDIANEXUS_PANSOU_BASE_URL:}
+    username: ${MEDIANEXUS_PANSOU_USERNAME:}
+    password: ${MEDIANEXUS_PANSOU_PASSWORD:}
+    timeout: ${MEDIANEXUS_PANSOU_TIMEOUT:15s}
+    link-check-limit: ${MEDIANEXUS_PANSOU_LINK_CHECK_LIMIT:10}
+  qas:
+    base-url: ${MEDIANEXUS_QAS_BASE_URL:}
+    api-token: ${MEDIANEXUS_QAS_API_TOKEN:}
+    timeout: ${MEDIANEXUS_QAS_TIMEOUT:15s}
+    movie-root-path: ${MEDIANEXUS_QAS_MOVIE_ROOT_PATH:/Movie}
+    tv-root-path: ${MEDIANEXUS_QAS_TV_ROOT_PATH:/TV}
+    variety-root-path: ${MEDIANEXUS_QAS_VARIETY_ROOT_PATH:/Variety}
   tmdb:
     base-url: ${MEDIANEXUS_TMDB_BASE_URL:https://api.themoviedb.org/3}
     api-token: ${MEDIANEXUS_TMDB_API_TOKEN:}

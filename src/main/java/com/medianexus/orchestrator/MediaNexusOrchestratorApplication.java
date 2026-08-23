@@ -7,7 +7,9 @@ import com.medianexus.orchestrator.config.CloudDrive2Properties;
 import com.medianexus.orchestrator.config.DatabaseSshTunnelProperties;
 import com.medianexus.orchestrator.config.EmbyProperties;
 import com.medianexus.orchestrator.config.OpenListProperties;
+import com.medianexus.orchestrator.config.PanSouProperties;
 import com.medianexus.orchestrator.config.ProwlarrProperties;
+import com.medianexus.orchestrator.config.QasProperties;
 import com.medianexus.orchestrator.config.SubtitleUploadProperties;
 import com.medianexus.orchestrator.config.TmdbProperties;
 import com.medianexus.orchestrator.config.UserQuotaProperties;
@@ -25,7 +27,9 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
         DatabaseSshTunnelProperties.class,
         EmbyProperties.class,
         OpenListProperties.class,
+        PanSouProperties.class,
         ProwlarrProperties.class,
+        QasProperties.class,
         SubtitleUploadProperties.class,
         TmdbProperties.class,
         UserQuotaProperties.class
