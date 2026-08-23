@@ -64,6 +64,14 @@ public class TmdbClient {
         return get("/tv/" + seriesId, "language=" + encode(language), "tv details");
     }
 
+    public JsonNode getTvSeasonDetails(int seriesId, int seasonNumber, String language) {
+        return get(
+                "/tv/" + seriesId + "/season/" + seasonNumber,
+                "language=" + encode(language),
+                "tv season details"
+        );
+    }
+
     private JsonNode get(String path, String query, String operation) {
         validateConfiguration();
         HttpRequest request = HttpRequest.newBuilder(buildUri(path, query))
