@@ -34,6 +34,12 @@ public class QuarkIngestPlanner {
             "^(\\d{2})[.-](\\d{2})(.*)\\.(" + MEDIA_EXTENSIONS + ")$",
             Pattern.CASE_INSENSITIVE
     );
+    private static final Pattern VARIETY_ISSUE = Pattern.compile(
+            "第\\s*(\\d{1,3}|[一二三四五六七八九十]{1,3})\\s*期"
+    );
+    private static final Pattern VARIETY_EXTRA = Pattern.compile(
+            "加更|纯享|番外|花絮|采访|预告|先导|彩蛋|未播|会员版|衍生"
+    );
     private static final Pattern PLAYABLE_VIDEO = Pattern.compile(
             ".*\\.(" + VIDEO_EXTENSIONS + ")$", Pattern.CASE_INSENSITIVE
     );
@@ -100,6 +106,16 @@ public class QuarkIngestPlanner {
             if (shortDateYears.size() > 1) {
                 throw new QuarkIngestPlanningException("短日期文件跨越多个年份，无法使用单一 QAS 规则安全命名");
             }
+            if (isFlatMonthDayMediaSet(selectedContent.entries())) {
+                return planMappedMonthDayVariety(
+                        title,
+                        seasonNumber,
+                        savePath,
+                        selectedContent,
+                        airDateEpisodes,
+                        shortDateYears.iterator().next()
+                );
+            }
             candidates.addAll(varietyShortDateCandidates(title, shortDateYears.iterator().next()));
         } else if (containsMonthDayMedia(selectedContent.entries())) {
             throw new QuarkIngestPlanningException(
@@ -108,6 +124,244 @@ public class QuarkIngestPlanner {
             );
         }
         return planSeasonMedia(title, seasonNumber, savePath, shareTree, airDateEpisodes, candidates);
+    }
+
+    private QasIngestPlan planMappedMonthDayVariety(
+            String title,
+            int seasonNumber,
+            String savePath,
+            ContentRoot contentRoot,
+            Map<LocalDate, List<Integer>> airDateEpisodes,
+            int year
+    ) {
+        List<QasShareNode> mediaFiles = contentRoot.entries().stream()
+                .filter(file -> isMediaFile(file.name()))
+                .toList();
+        List<QasShareNode> videos = mediaFiles.stream()
+                .filter(file -> isPlayableVideo(file.name()))
+                .toList();
+        if (videos.isEmpty()) {
+            throw new QuarkIngestPlanningException("Quark 分享中没有可播放视频");
+        }
+
+        List<DatedVarietyVideo> datedVideos = new ArrayList<>();
+        Set<QasShareNode> assignedMedia = new HashSet<>();
+        for (QasShareNode video : videos) {
+            Matcher matcher = MONTH_DAY_MEDIA.matcher(video.name());
+            if (!matcher.matches()) {
+                throw new QuarkIngestPlanningException("日期型综艺中存在无法识别的视频：" + video.name());
+            }
+            LocalDate date;
+            try {
+                date = LocalDate.of(
+                        year,
+                        Integer.parseInt(matcher.group(1)),
+                        Integer.parseInt(matcher.group(2))
+                );
+            } catch (DateTimeException exception) {
+                throw new QuarkIngestPlanningException("短日期文件包含无效日期：" + video.name());
+            }
+            String sourceStem = stemOf(video.name());
+            List<QasShareNode> relatedFiles = mediaFiles.stream()
+                    .filter(file -> belongsToVideo(file, video, sourceStem))
+                    .toList();
+            if (!assignedMedia.addAll(relatedFiles)) {
+                throw new QuarkIngestPlanningException("字幕无法唯一关联到视频：" + video.name());
+            }
+            datedVideos.add(new DatedVarietyVideo(
+                    video,
+                    relatedFiles,
+                    date,
+                    matcher.group(3).trim(),
+                    sourceStem
+            ));
+        }
+        if (assignedMedia.size() != mediaFiles.size()) {
+            throw new QuarkIngestPlanningException("日期型综艺存在无法关联到视频的字幕");
+        }
+
+        List<LocalDate> scheduleDates = airDateEpisodes.keySet().stream().sorted().toList();
+        Map<LocalDate, List<DatedVarietyVideo>> mainByScheduleDate = new LinkedHashMap<>();
+        List<DatedVarietyVideo> specials = new ArrayList<>();
+        for (DatedVarietyVideo video : datedVideos) {
+            LocalDate scheduleDate = mappedScheduleDate(video, scheduleDates, airDateEpisodes);
+            if (scheduleDate == null) {
+                specials.add(video);
+            } else {
+                mainByScheduleDate.computeIfAbsent(scheduleDate, ignored -> new ArrayList<>()).add(video);
+            }
+        }
+
+        String season = String.format(Locale.ROOT, "%02d", seasonNumber);
+        List<QasTaskPlan> tasks = new ArrayList<>();
+        for (Map.Entry<LocalDate, List<DatedVarietyVideo>> entry : mainByScheduleDate.entrySet()) {
+            List<Integer> episodes = airDateEpisodes.getOrDefault(entry.getKey(), List.of()).stream()
+                    .distinct()
+                    .sorted()
+                    .toList();
+            List<DatedVarietyVideo> files = entry.getValue().stream()
+                    .sorted((left, right) -> compareDatedParts(
+                            left.video().name(), right.video().name()
+                    ))
+                    .toList();
+            if (episodes.isEmpty() || (files.size() > 1 && files.size() != episodes.size())) {
+                throw new QuarkIngestPlanningException(
+                        "播出日期 " + entry.getKey() + " 的视频数量无法与 TMDB 集号安全对应"
+                );
+            }
+            if (files.size() == 1) {
+                String episodeCode = episodeRange(episodes);
+                tasks.add(exactDatedTask(
+                        title,
+                        "S" + season + "E" + episodeCode,
+                        savePath,
+                        contentRoot.sourceUrl(),
+                        files.get(0),
+                        "TMDB 正集 " + episodeCode
+                ));
+                continue;
+            }
+            for (int index = 0; index < files.size(); index++) {
+                String episodeCode = String.format(Locale.ROOT, "%02d", episodes.get(index));
+                tasks.add(exactDatedTask(
+                        title,
+                        "S" + season + "E" + episodeCode,
+                        savePath,
+                        contentRoot.sourceUrl(),
+                        files.get(index),
+                        "TMDB 正集 " + episodeCode
+                ));
+            }
+        }
+
+        String specialsPath = seasonPath(savePath, 0);
+        List<DatedVarietyVideo> orderedSpecials = specials.stream()
+                .sorted((left, right) -> {
+                    int byDate = left.date().compareTo(right.date());
+                    return byDate != 0
+                            ? byDate
+                            : left.video().name().compareToIgnoreCase(right.video().name());
+                })
+                .toList();
+        for (int index = 0; index < orderedSpecials.size(); index++) {
+            String episodeCode = String.format(Locale.ROOT, "%02d", index + 1);
+            tasks.add(exactDatedTask(
+                    title,
+                    "S00E" + episodeCode,
+                    specialsPath,
+                    contentRoot.sourceUrl(),
+                    orderedSpecials.get(index),
+                    "特别篇 " + episodeCode
+            ));
+        }
+
+        List<String> warnings = new ArrayList<>();
+        if (!orderedSpecials.isEmpty()) {
+            warnings.add("检测到 " + orderedSpecials.size()
+                    + " 个加更或非正集内容，已按时间顺序保存到 Season 00 特别篇");
+        }
+        warnings.add("日期型综艺已按当前分享生成精确 S/E 规则；分享新增文件后需重新提交以更新追更规则");
+        return new QasIngestPlan(tasks, warnings);
+    }
+
+    private boolean isFlatMonthDayMediaSet(List<QasShareNode> entries) {
+        List<QasShareNode> mediaFiles = entries.stream().filter(file -> isMediaFile(file.name())).toList();
+        return !mediaFiles.isEmpty()
+                && entries.stream().noneMatch(QasShareNode::directory)
+                && mediaFiles.stream().allMatch(file -> MONTH_DAY_MEDIA.matcher(file.name()).matches());
+    }
+
+    private boolean belongsToVideo(QasShareNode file, QasShareNode video, String videoStem) {
+        if (file == video) {
+            return true;
+        }
+        if (!isSubtitle(file.name())) {
+            return false;
+        }
+        String subtitleStem = stemOf(file.name());
+        return subtitleStem.equalsIgnoreCase(videoStem)
+                || subtitleStem.toLowerCase(Locale.ROOT).startsWith(videoStem.toLowerCase(Locale.ROOT) + ".");
+    }
+
+    private LocalDate mappedScheduleDate(
+            DatedVarietyVideo video,
+            List<LocalDate> scheduleDates,
+            Map<LocalDate, List<Integer>> airDateEpisodes
+    ) {
+        if (VARIETY_EXTRA.matcher(video.descriptor()).find()) {
+            return null;
+        }
+        Matcher issueMatcher = VARIETY_ISSUE.matcher(video.descriptor());
+        if (issueMatcher.find()) {
+            Integer issue = parseVarietyIssue(issueMatcher.group(1));
+            if (issue == null || issue <= 0 || issue > scheduleDates.size()) {
+                throw new QuarkIngestPlanningException("无法把期数映射到 TMDB 播出日：" + video.video().name());
+            }
+            return scheduleDates.get(issue - 1);
+        }
+        return airDateEpisodes.containsKey(video.date()) ? video.date() : null;
+    }
+
+    private Integer parseVarietyIssue(String value) {
+        if (value.chars().allMatch(Character::isDigit)) {
+            return Integer.parseInt(value);
+        }
+        return chineseNumber(value);
+    }
+
+    private String episodeRange(List<Integer> episodes) {
+        String first = String.format(Locale.ROOT, "%02d", episodes.get(0));
+        if (episodes.size() == 1) {
+            return first;
+        }
+        if (episodes.size() == 2 && episodes.get(1) == episodes.get(0) + 1) {
+            return first + "-E" + String.format(Locale.ROOT, "%02d", episodes.get(1));
+        }
+        throw new QuarkIngestPlanningException("单个视频对应的 TMDB 集号不是连续范围");
+    }
+
+    private QasTaskPlan exactDatedTask(
+            String title,
+            String episodeIdentity,
+            String savePath,
+            String sourceUrl,
+            DatedVarietyVideo video,
+            String ruleLabel
+    ) {
+        String descriptor = video.descriptor().isBlank()
+                ? video.date().toString()
+                : video.descriptor();
+        String targetBase = title + " - " + episodeIdentity + " - " + descriptor;
+        String pattern = "^" + regexEscape(video.sourceStem())
+                + "((?:\\.[^.]+)*)\\.(" + MEDIA_EXTENSIONS + ")$";
+        List<QasRenameSample> samples = video.relatedFiles().stream()
+                .map(file -> {
+                    Matcher matcher = Pattern.compile(pattern).matcher(file.name());
+                    matcher.matches();
+                    return new QasRenameSample(
+                            file.name(),
+                            targetBase + matcher.group(1) + "." + matcher.group(2)
+                    );
+                })
+                .toList();
+        return new QasTaskPlan(
+                title + " " + episodeIdentity + " [精确命名]",
+                sourceUrl,
+                savePath,
+                pattern,
+                targetBase + "\\1.\\2",
+                null,
+                ruleLabel,
+                video.relatedFiles().size(),
+                samples
+        );
+    }
+
+    private String seasonPath(String savePath, int seasonNumber) {
+        if (savePath == null || !savePath.matches(".*/Season \\d{2}$")) {
+            throw new QuarkIngestPlanningException("综艺保存目录不是标准 Season 目录");
+        }
+        return savePath.replaceFirst("/Season \\d{2}$", String.format(Locale.ROOT, "/Season %02d", seasonNumber));
     }
 
     private QasIngestPlan planSeasonMedia(
@@ -1254,6 +1508,15 @@ public class QuarkIngestPlanner {
     }
 
     private record DatedFile(QasShareNode file, LocalDate date) {
+    }
+
+    private record DatedVarietyVideo(
+            QasShareNode video,
+            List<QasShareNode> relatedFiles,
+            LocalDate date,
+            String descriptor,
+            String sourceStem
+    ) {
     }
 
     private record DateCollisionPlan(List<RuleCandidate> candidates, List<String> warnings) {

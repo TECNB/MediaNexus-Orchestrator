@@ -388,35 +388,43 @@ class QuarkIngestPlannerTest {
                 "五十公里桃花坞", 2, "/Variety/五十公里桃花坞/Season 02", tree, schedule
         );
 
-        assertThat(plan.tasks()).hasSize(4);
-        assertThat(plan.tasks()).extracting(QasTaskPlan::matchedFileCount)
-                .containsExactlyInAnyOrder(28, 2, 1, 1);
-        assertThat(plan.tasks()).extracting(QasTaskPlan::replace)
-                .contains(
-                        "五十公里桃花坞 - 2022-\\1-\\2 - \\3.\\4",
-                        "五十公里桃花坞 - 2022-\\1-\\2\\3.\\4"
-                )
-                .anyMatch(replace -> replace.startsWith("五十公里桃花坞 - S02E02"))
-                .anyMatch(replace -> replace.startsWith("五十公里桃花坞 - S02E03"));
+        assertThat(plan.tasks()).hasSize(32);
+        assertThat(plan.tasks()).allSatisfy(task -> {
+            assertThat(task.matchedFileCount()).isEqualTo(1);
+            assertThat(task.replace()).containsPattern("五十公里桃花坞 - S(?:02|00)E\\d{2}");
+        });
+        assertThat(plan.tasks()).extracting(QasTaskPlan::savePath)
+                .filteredOn(path -> path.endsWith("/Season 02"))
+                .hasSize(11);
+        assertThat(plan.tasks()).extracting(QasTaskPlan::savePath)
+                .filteredOn(path -> path.endsWith("/Season 00"))
+                .hasSize(21);
         assertThat(plan.tasks()).flatExtracting(QasTaskPlan::renameSamples)
                 .extracting(QasRenameSample::sourceName, QasRenameSample::targetName)
                 .contains(
                         org.assertj.core.groups.Tuple.tuple(
-                                "06.12.mp4", "五十公里桃花坞 - 2022-06-12.mp4"
+                                "06.12.mp4", "五十公里桃花坞 - S00E01 - 2022-06-12.mp4"
                         ),
                         org.assertj.core.groups.Tuple.tuple(
-                                "06.19第一期.mp4", "五十公里桃花坞 - 2022-06-19 - 第一期.mp4"
+                                "06.19第一期.mp4", "五十公里桃花坞 - S02E01 - 第一期.mp4"
                         ),
                         org.assertj.core.groups.Tuple.tuple(
                                 "06.26上.mp4", "五十公里桃花坞 - S02E02 - 上.mp4"
                         ),
                         org.assertj.core.groups.Tuple.tuple(
                                 "06.26下.mp4", "五十公里桃花坞 - S02E03 - 下.mp4"
+                        ),
+                        org.assertj.core.groups.Tuple.tuple(
+                                "07.24第6期.mp4", "五十公里桃花坞 - S02E07-E08 - 第6期.mp4"
+                        ),
+                        org.assertj.core.groups.Tuple.tuple(
+                                "07.31第7期.mp4", "五十公里桃花坞 - S02E09-E10 - 第7期.mp4"
+                        ),
+                        org.assertj.core.groups.Tuple.tuple(
+                                "08.23第10期加更.mp4", "五十公里桃花坞 - S00E21 - 第10期加更.mp4"
                         )
                 );
-        assertThat(plan.warnings()).anyMatch(message ->
-                message.contains("同一播出日期") && message.contains("TMDB 集号")
-        );
+        assertThat(plan.warnings()).anyMatch(message -> message.contains("特别篇"));
     }
 
     @Test
@@ -435,9 +443,13 @@ class QuarkIngestPlannerTest {
         );
 
         assertThat(plan.tasks()).singleElement().satisfies(task -> {
-            assertThat(task.replace()).isEqualTo("节目 - 2022-\\1-\\2\\3.\\4");
+            assertThat(task.savePath()).isEqualTo("/Variety/节目/Season 00");
+            assertThat(task.replace()).isEqualTo("节目 - S00E01 - 2022-06-12\\1.\\2");
             assertThat(task.renameSamples()).extracting(QasRenameSample::targetName)
-                    .containsExactly("节目 - 2022-06-12.mp4", "节目 - 2022-06-12.zh-CN.srt");
+                    .containsExactly(
+                            "节目 - S00E01 - 2022-06-12.mp4",
+                            "节目 - S00E01 - 2022-06-12.zh-CN.srt"
+                    );
         });
     }
 
