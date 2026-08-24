@@ -10,6 +10,8 @@ import com.medianexus.orchestrator.integration.qas.QasClientException.Reason;
 import jakarta.annotation.PreDestroy;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.HttpTimeoutException;
@@ -25,6 +27,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -41,6 +44,12 @@ public class QasClient {
     private static final int ERROR_BODY_LIMIT = 8 * 1024;
     private static final int MAX_SHARE_DEPTH = 4;
     private static final int MAX_SHARE_NODES = 500;
+    private static final int MAX_EXECUTION_LOG_LINES = 500;
+    private static final int MAX_EXECUTION_LOG_LENGTH = 1000;
+    private static final Pattern URL = Pattern.compile("https?://\\S+", Pattern.CASE_INSENSITIVE);
+    private static final Pattern SECRET = Pattern.compile(
+            "(?i)\\b(token|stoken|cookie|webhook)(\\s*[=:]\\s*)[^\\s,;]+"
+    );
 
     private final QasProperties properties;
     private final ObjectMapper objectMapper;
@@ -105,6 +114,10 @@ public class QasClient {
 
     /** Starts all newly created tasks in one QAS SSE request. */
     public void triggerTasksNow(List<QasCreatedTask> tasks) {
+        triggerTasksNow(tasks, null);
+    }
+
+    public void triggerTasksNow(List<QasCreatedTask> tasks, QasExecutionObserver observer) {
         if (tasks == null || tasks.isEmpty()) {
             throw new IllegalArgumentException("QAS immediate execution task list cannot be empty");
         }
@@ -132,7 +145,7 @@ public class QasClient {
                 }
             }
             String executionLabel = tasks.size() == 1 ? tasks.get(0).taskName() : tasks.size() + " tasks";
-            streamExecutor.execute(() -> drainExecutionStream(executionLabel, response.body()));
+            streamExecutor.execute(() -> drainExecutionStream(executionLabel, response.body(), observer));
         } catch (IOException exception) {
             throw new QasClientException(Reason.UPSTREAM, "QAS immediate execution request failed", exception);
         } catch (InterruptedException exception) {
@@ -351,13 +364,66 @@ public class QasClient {
         return StringUtils.hasText(message) ? message : fallback;
     }
 
-    private void drainExecutionStream(String taskName, InputStream inputStream) {
-        try (InputStream stream = inputStream) {
-            stream.transferTo(OutputStreamSink.INSTANCE);
+    private void drainExecutionStream(
+            String taskName,
+            InputStream inputStream,
+            QasExecutionObserver observer
+    ) {
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, StandardCharsets.UTF_8))) {
+            String line;
+            int forwarded = 0;
+            boolean truncated = false;
+            while ((line = reader.readLine()) != null) {
+                String payload = ssePayload(line);
+                if (!StringUtils.hasText(payload) || "[DONE]".equals(payload)) {
+                    continue;
+                }
+                if (observer == null) {
+                    continue;
+                }
+                if (forwarded >= MAX_EXECUTION_LOG_LINES) {
+                    truncated = true;
+                    continue;
+                }
+                String sanitized = sanitizeExecutionOutput(payload);
+                if (StringUtils.hasText(sanitized)) {
+                    observer.onOutput(executionLevel(sanitized), sanitized);
+                    forwarded++;
+                }
+            }
+            if (truncated && observer != null) {
+                observer.onOutput("WARN", "QAS 执行输出超过 500 行，后续明细未写入日志");
+            }
+            if (observer != null) {
+                observer.onCompleted();
+            }
             log.info("QAS immediate execution stream completed taskName={}", taskName);
         } catch (IOException exception) {
+            if (observer != null) {
+                observer.onInterrupted();
+            }
             log.warn("QAS immediate execution stream ended unexpectedly taskName={}", taskName);
         }
+    }
+
+    private String ssePayload(String line) {
+        String trimmed = line == null ? "" : line.trim();
+        return trimmed.startsWith("data:") ? trimmed.substring("data:".length()).trim() : "";
+    }
+
+    String sanitizeExecutionOutput(String value) {
+        String sanitized = URL.matcher(value).replaceAll("[链接已隐藏]");
+        sanitized = SECRET.matcher(sanitized).replaceAll("$1=***").trim();
+        return sanitized.length() <= MAX_EXECUTION_LOG_LENGTH
+                ? sanitized
+                : sanitized.substring(0, MAX_EXECUTION_LOG_LENGTH) + "…";
+    }
+
+    private String executionLevel(String message) {
+        String normalized = message.toLowerCase(Locale.ROOT);
+        return normalized.contains("失败") || normalized.contains("error") || normalized.contains("exception")
+                ? "ERROR"
+                : normalized.contains("警告") || normalized.contains("warn") ? "WARN" : "INFO";
     }
 
     private Duration timeout() {
@@ -382,19 +448,6 @@ public class QasClient {
             Thread thread = new Thread(runnable, "qas-stream-" + sequence.incrementAndGet());
             thread.setDaemon(true);
             return thread;
-        }
-    }
-
-    private static final class OutputStreamSink extends java.io.OutputStream {
-
-        private static final OutputStreamSink INSTANCE = new OutputStreamSink();
-
-        @Override
-        public void write(int value) {
-        }
-
-        @Override
-        public void write(byte[] bytes, int offset, int length) {
         }
     }
 

@@ -123,6 +123,17 @@ class QasClientTest {
         });
     }
 
+    @Test
+    void redactsUrlsAndCredentialsBeforeForwardingExecutionOutput() {
+        String sanitized = client.sanitizeExecutionOutput(
+                "任务 https://pan.quark.cn/s/share?pwd=1234 token=secret stoken:temporary cookie=abc"
+        );
+
+        assertThat(sanitized)
+                .contains("[链接已隐藏]", "token=***", "stoken=***", "cookie=***")
+                .doesNotContain("pwd=1234", "secret", "temporary", "abc");
+    }
+
     private void handleShareDetail(HttpExchange exchange) throws IOException {
         String shareUrl = readJson(exchange).path("shareurl").asText();
         String body;

@@ -4,12 +4,16 @@ import com.medianexus.orchestrator.common.response.ApiResponse;
 import com.medianexus.orchestrator.dto.quark.request.MovieQuarkIngestRequest;
 import com.medianexus.orchestrator.dto.quark.request.SeriesQuarkIngestRequest;
 import com.medianexus.orchestrator.dto.quark.response.QuarkIngestTaskResponse;
+import com.medianexus.orchestrator.dto.quark.response.QuarkIngestTaskListResponse;
+import com.medianexus.orchestrator.dto.quark.response.QuarkIngestTaskLogListResponse;
 import com.medianexus.orchestrator.dto.quark.response.QuarkIngestPreviewResponse;
 import com.medianexus.orchestrator.service.QuarkIngestService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -71,5 +75,17 @@ public class QuarkIngestController {
             @Valid @RequestBody SeriesQuarkIngestRequest request
     ) {
         return ApiResponse.success(quarkIngestService.previewVariety(request));
+    }
+
+    @GetMapping("/tasks")
+    @Operation(summary = "查看最近的 Quark 入库记录")
+    public ApiResponse<QuarkIngestTaskListResponse> listTasks() {
+        return ApiResponse.success(quarkIngestService.listTasks());
+    }
+
+    @GetMapping("/tasks/{taskId}/logs")
+    @Operation(summary = "查看 Quark 入库记录日志")
+    public ApiResponse<QuarkIngestTaskLogListResponse> getTaskLogs(@PathVariable String taskId) {
+        return ApiResponse.success(quarkIngestService.getTaskLogs(taskId));
     }
 }

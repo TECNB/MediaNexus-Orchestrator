@@ -20,6 +20,7 @@ import org.springframework.stereotype.Component;
 @Component
 public class QuarkIngestPlanner {
 
+    private static final int MAX_RENAME_SAMPLES = 20;
     private static final Pattern PURE_NUMBER = Pattern.compile(
             "^(?!\\d{1,2}\\.\\d{2}(?:\\D|$))(\\d{2,3})((?:\\.[^.]+)*)\\.(mkv|mp4|avi|mov|wmv|flv|ts|m2ts|webm|rmvb|srt|ass|ssa|vtt|sub)$"
     );
@@ -140,13 +141,8 @@ public class QuarkIngestPlanner {
         for (RuleCandidate candidate : candidates) {
             if (isSafeForAllFiles(candidate, mediaFiles)) {
                 return new QasIngestPlan(
-                        List.of(new QasTaskPlan(
-                                taskName,
-                                contentRoot.sourceUrl(),
-                                savePath,
-                                candidate.pattern().pattern(),
-                                candidate.replace(),
-                                null
+                        List.of(renameTaskPlan(
+                                taskName, contentRoot.sourceUrl(), savePath, candidate, mediaFiles, null
                         )),
                         ignoredFiles.isEmpty()
                                 ? List.of()
@@ -175,10 +171,9 @@ public class QuarkIngestPlanner {
                 String taskLabel = labelIndex == 1
                         ? candidate.label()
                         : candidate.label() + "-" + labelIndex;
-                tasks.add(new QasTaskPlan(
+                tasks.add(renameTaskPlan(
                         taskName + " [" + taskLabel + "]",
-                        contentRoot.sourceUrl(), savePath,
-                        candidate.pattern().pattern(), candidate.replace(), null
+                        contentRoot.sourceUrl(), savePath, candidate, group.getValue(), null
                 ));
             }
             if (groups != null) {
@@ -296,6 +291,35 @@ public class QuarkIngestPlanner {
                 matcher -> matcher.group(1)
         ));
         return candidates;
+    }
+
+    private QasTaskPlan renameTaskPlan(
+            String taskName,
+            String sourceUrl,
+            String savePath,
+            RuleCandidate candidate,
+            List<QasShareNode> files,
+            String versionLabel
+    ) {
+        List<QasRenameSample> samples = files.stream()
+                .limit(MAX_RENAME_SAMPLES)
+                .map(file -> {
+                    Matcher matcher = candidate.pattern().matcher(file.name());
+                    matcher.matches();
+                    return new QasRenameSample(file.name(), candidate.targetName().apply(matcher));
+                })
+                .toList();
+        return new QasTaskPlan(
+                taskName,
+                sourceUrl,
+                savePath,
+                candidate.pattern().pattern(),
+                candidate.replace(),
+                versionLabel,
+                candidate.label(),
+                files.size(),
+                samples
+        );
     }
 
     private List<RuleCandidate> varietyDateCandidates(String title) {
@@ -479,6 +503,9 @@ public class QuarkIngestPlanner {
             Set<Integer> episodes = new HashSet<>();
             String pattern;
             String replace;
+            String renameRule;
+            int matchedFileCount;
+            List<QasRenameSample> renameSamples;
             VersionRule versionRule = versionCandidates(title, season, versionLabel).stream()
                     .filter(candidate -> versionRuleMatches(candidate, directory.children()))
                     .findFirst()
@@ -489,6 +516,9 @@ public class QuarkIngestPlanner {
                 analysis.targetNames().forEach(target -> addUniqueTarget(allTargetNames, target));
                 pattern = versionRule.pattern().pattern();
                 replace = versionRule.replace();
+                renameRule = ruleLabel(pattern) + "（多版本）";
+                matchedFileCount = directory.children().size();
+                renameSamples = analysis.renameSamples().stream().limit(MAX_RENAME_SAMPLES).toList();
             } else if (directory.children().stream().allMatch(file ->
                     !file.directory() && DATE_ONLY.matcher(file.name()).matches())) {
                 if (airDateEpisodes == null || airDateEpisodes.isEmpty()) {
@@ -523,6 +553,15 @@ public class QuarkIngestPlanner {
                 }
                 pattern = DATE_ONLY.pattern();
                 replace = title + " - S" + season + "E{II} - " + versionLabel + ".\\4";
+                renameRule = "播出日期（多版本）";
+                matchedFileCount = orderedFiles.size();
+                renameSamples = new ArrayList<>();
+                for (int index = 0; index < Math.min(orderedFiles.size(), MAX_RENAME_SAMPLES); index++) {
+                    String targetName = title + " - S" + season
+                            + "E" + String.format(Locale.ROOT, "%02d", orderedEpisodes.get(index))
+                            + " - " + versionLabel + "." + extensionOf(orderedFiles.get(index).name());
+                    renameSamples.add(new QasRenameSample(orderedFiles.get(index).name(), targetName));
+                }
             } else {
                 throw new QuarkIngestPlanningException("版本目录存在无法安全命名的文件：" + directory.name());
             }
@@ -541,7 +580,10 @@ public class QuarkIngestPlanner {
                     savePath,
                     pattern,
                     replace,
-                    versionLabel
+                    versionLabel,
+                    renameRule,
+                    matchedFileCount,
+                    renameSamples
             ));
         }
         List<String> warnings = tasks.size() > 8
@@ -671,6 +713,7 @@ public class QuarkIngestPlanner {
         Set<Integer> subtitleEpisodes = new HashSet<>();
         Set<String> localTargets = new HashSet<>();
         List<String> targets = new ArrayList<>();
+        List<QasRenameSample> renameSamples = new ArrayList<>();
         for (QasShareNode file : files) {
             Matcher matcher = rule.pattern().matcher(file.name());
             matcher.matches();
@@ -685,11 +728,12 @@ public class QuarkIngestPlanner {
                 throw new QuarkIngestPlanningException("规划后的文件名发生冲突：" + target);
             }
             targets.add(target);
+            renameSamples.add(new QasRenameSample(file.name(), target));
         }
         if (videoEpisodes.isEmpty() || !videoEpisodes.containsAll(subtitleEpisodes)) {
             throw new QuarkIngestPlanningException("版本目录存在没有对应视频的字幕");
         }
-        return new VersionAnalysis(videoEpisodes, targets);
+        return new VersionAnalysis(videoEpisodes, targets, renameSamples);
     }
 
     private LocalDate dateFrom(String fileName) {
@@ -843,6 +887,10 @@ public class QuarkIngestPlanner {
     ) {
     }
 
-    private record VersionAnalysis(Set<Integer> episodes, List<String> targetNames) {
+    private record VersionAnalysis(
+            Set<Integer> episodes,
+            List<String> targetNames,
+            List<QasRenameSample> renameSamples
+    ) {
     }
 }

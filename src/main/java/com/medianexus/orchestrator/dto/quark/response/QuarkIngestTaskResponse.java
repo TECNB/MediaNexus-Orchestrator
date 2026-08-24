@@ -5,6 +5,8 @@ import io.swagger.v3.oas.annotations.media.Schema;
 
 @Schema(description = "QAS 任务创建与即时触发结果")
 public record QuarkIngestTaskResponse(
+        @Schema(description = "MediaNexus Quark 入库记录 id")
+        String id,
         @Schema(description = "结果状态：STARTED、SCHEDULED 或 PARTIAL")
         String status,
         @JsonProperty("media_type")

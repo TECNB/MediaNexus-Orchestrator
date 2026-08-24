@@ -239,6 +239,13 @@ class QuarkIngestPlannerTest {
             assertThat(task.pattern()).contains("[ _-]");
             assertThat(task.pattern()).contains("ts");
             assertThat(task.replace()).isEqualTo("测试剧 - S01E\\1 - \\2.\\3");
+            assertThat(task.renameRule()).isEqualTo("数字加标签");
+            assertThat(task.matchedFileCount()).isEqualTo(2);
+            assertThat(task.renameSamples()).extracting(QasRenameSample::sourceName, QasRenameSample::targetName)
+                    .containsExactly(
+                            org.assertj.core.groups.Tuple.tuple("01 4K.mp4", "测试剧 - S01E01 - 4K.mp4"),
+                            org.assertj.core.groups.Tuple.tuple("02_4K.ts", "测试剧 - S01E02 - 4K.ts")
+                    );
         });
     }
 

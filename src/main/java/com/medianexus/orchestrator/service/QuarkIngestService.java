@@ -13,16 +13,27 @@ import com.medianexus.orchestrator.dto.quark.response.QuarkSharePreviewNodeRespo
 import com.medianexus.orchestrator.integration.qas.QasClient;
 import com.medianexus.orchestrator.integration.qas.QasClientException;
 import com.medianexus.orchestrator.integration.qas.QasCreatedTask;
+import com.medianexus.orchestrator.integration.qas.QasExecutionObserver;
 import com.medianexus.orchestrator.integration.qas.QasShareInspectionException;
 import com.medianexus.orchestrator.integration.qas.QasShareNode;
 import com.medianexus.orchestrator.integration.qas.QasShareTree;
 import com.medianexus.orchestrator.integration.qas.QasTaskCreateCommand;
 import com.medianexus.orchestrator.integration.tmdb.TmdbClient;
 import com.medianexus.orchestrator.integration.tmdb.TmdbClientException;
+import com.medianexus.orchestrator.mapper.QuarkIngestTaskLogMapper;
+import com.medianexus.orchestrator.mapper.QuarkIngestTaskMapper;
+import com.medianexus.orchestrator.model.QuarkIngestTask;
+import com.medianexus.orchestrator.model.QuarkIngestTaskLog;
+import com.medianexus.orchestrator.model.User;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.medianexus.orchestrator.dto.quark.response.QuarkIngestTaskListResponse;
+import com.medianexus.orchestrator.dto.quark.response.QuarkIngestTaskLogListResponse;
+import com.medianexus.orchestrator.dto.quark.response.QuarkIngestTaskLogResponse;
 import com.fasterxml.jackson.databind.JsonNode;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.format.DateTimeParseException;
 import java.time.Year;
 import java.util.ArrayList;
@@ -32,6 +43,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Locale;
 import java.util.Set;
+import java.util.UUID;
 import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -44,6 +56,7 @@ public class QuarkIngestService {
 
     private static final Logger log = LoggerFactory.getLogger(QuarkIngestService.class);
     private static final int FIRST_MOVIE_YEAR = 1888;
+    private static final String ADMIN_ROLE = "ADMIN";
     private static final Pattern QUARK_SHARE_PATH = Pattern.compile(
             "^/s/[A-Za-z0-9]+(?:/[A-Fa-f0-9]{32})?/?$"
     );
@@ -55,6 +68,8 @@ public class QuarkIngestService {
     private final AuthService authService;
     private final QuarkIngestPlanner ingestPlanner;
     private final TmdbClient tmdbClient;
+    private final QuarkIngestTaskMapper taskMapper;
+    private final QuarkIngestTaskLogMapper taskLogMapper;
 
     public QuarkIngestService(
             QasClient qasClient,
@@ -63,7 +78,9 @@ public class QuarkIngestService {
             MovieSeriesFileRenameService renameService,
             AuthService authService,
             QuarkIngestPlanner ingestPlanner,
-            TmdbClient tmdbClient
+            TmdbClient tmdbClient,
+            QuarkIngestTaskMapper taskMapper,
+            QuarkIngestTaskLogMapper taskLogMapper
     ) {
         this.qasClient = qasClient;
         this.qasProperties = qasProperties;
@@ -72,11 +89,13 @@ public class QuarkIngestService {
         this.authService = authService;
         this.ingestPlanner = ingestPlanner;
         this.tmdbClient = tmdbClient;
+        this.taskMapper = taskMapper;
+        this.taskLogMapper = taskLogMapper;
     }
 
     public QuarkIngestTaskResponse ingestMovie(MovieQuarkIngestRequest request) {
         PreparedIngest prepared = prepareMovie(request, true);
-        return createAndTrigger("MOVIE", prepared.plan());
+        return createAndTrigger("MOVIE", requiredText(request.title(), "电影标题不能为空"), prepared.plan());
     }
 
     public QuarkIngestTaskResponse ingestSeries(SeriesQuarkIngestRequest request) {
@@ -105,7 +124,7 @@ public class QuarkIngestService {
             String configuredRoot
     ) {
         PreparedIngest prepared = prepareSeasonMedia(request, mediaType, configuredRoot, true);
-        return createAndTrigger(mediaType, prepared.plan());
+        return createAndTrigger(mediaType, requiredText(request.title(), "标题不能为空"), prepared.plan());
     }
 
     private PreparedIngest prepareMovie(MovieQuarkIngestRequest request, boolean allowTimeoutFallback) {
@@ -349,7 +368,10 @@ public class QuarkIngestService {
         return Map.copyOf(result);
     }
 
-    private QuarkIngestTaskResponse createAndTrigger(String mediaType, QasIngestPlan plan) {
+    private QuarkIngestTaskResponse createAndTrigger(String mediaType, String title, QasIngestPlan plan) {
+        User user = authService.requireCurrentUser();
+        QuarkIngestTask ingestTask = createIngestRecord(user, mediaType, title, plan);
+        writePlanLogs(ingestTask.getId(), mediaType, plan);
         List<QasCreatedTask> createdTasks = new ArrayList<>();
         List<String> creationFailures = new ArrayList<>();
         QasClientException firstFailure = null;
@@ -362,31 +384,40 @@ public class QuarkIngestService {
                         task.pattern(),
                         task.replace()
                 )));
+                writeLog(ingestTask.getId(), "INFO", "creating", "已创建 QAS 任务", task.taskName());
             } catch (QasClientException exception) {
                 if (firstFailure == null) {
                     firstFailure = exception;
                 }
                 creationFailures.add(task.taskName() + "：" + safeUpstreamMessage(exception));
+                writeLog(ingestTask.getId(), "ERROR", "creating", "QAS 任务创建失败",
+                        task.taskName() + "：" + safeUpstreamMessage(exception));
             }
         }
         if (createdTasks.isEmpty()) {
+            updateIngestRecord(ingestTask.getId(), "FAILED", "failed", false, 0,
+                    plan.tasks().size(), "QAS 未创建任何任务");
             throw mapCreateFailure(firstFailure == null
                     ? new QasClientException(QasClientException.Reason.UPSTREAM, "QAS 未创建任何任务")
                     : firstFailure);
         }
 
+        int plannedCount = plan.tasks().size();
+        int createdCount = createdTasks.size();
+        boolean partial = createdCount < plannedCount;
+        writeLog(ingestTask.getId(), partial ? "WARN" : "INFO", "submitted",
+                "已创建 " + createdCount + "/" + plannedCount + " 个 QAS 任务，正在请求立即执行", null);
+        updateStage(ingestTask.getId(), "submitted");
+
         boolean triggered = false;
         String triggerFailure = null;
         try {
-            qasClient.triggerTasksNow(createdTasks);
+            qasClient.triggerTasksNow(createdTasks, executionObserver(ingestTask.getId()));
             triggered = true;
         } catch (QasClientException exception) {
             triggerFailure = safeUpstreamMessage(exception);
         }
 
-        int plannedCount = plan.tasks().size();
-        int createdCount = createdTasks.size();
-        boolean partial = createdCount < plannedCount;
         String status = partial ? "PARTIAL" : triggered ? "STARTED" : "SCHEDULED";
         List<String> warnings = new ArrayList<>(plan.warnings());
         if (!creationFailures.isEmpty()) {
@@ -398,6 +429,17 @@ public class QuarkIngestService {
         String message = resultMessage(createdCount, plannedCount, partial, triggered, creationFailures, triggerFailure);
         String taskNames = String.join(", ", createdTasks.stream().map(QasCreatedTask::taskName).toList());
         String savePath = plan.tasks().get(0).savePath();
+        if (triggered) {
+            updateAcceptedIngestRecord(
+                    ingestTask.getId(), status, createdCount, plannedCount, message
+            );
+        } else {
+            updateIngestRecord(
+                    ingestTask.getId(), status, partial ? "partial" : "scheduled",
+                    false, createdCount, plannedCount, message
+            );
+            writeLog(ingestTask.getId(), "WARN", partial ? "partial" : "scheduled", message, null);
+        }
         log.info(
                 "Created QAS ingest tasks mediaType={} createdCount={} plannedCount={} immediateStarted={}",
                 mediaType,
@@ -406,6 +448,7 @@ public class QuarkIngestService {
                 triggered
         );
         return new QuarkIngestTaskResponse(
+                ingestTask.getId(),
                 status,
                 mediaType,
                 taskNames,
@@ -437,6 +480,203 @@ public class QuarkIngestService {
         return plannedCount == 1
                 ? "QAS 任务已创建并开始执行"
                 : "已创建 " + plannedCount + " 个 QAS 版本任务并开始执行";
+    }
+
+    public QuarkIngestTaskListResponse listTasks() {
+        User user = authService.requireCurrentUser();
+        LambdaQueryWrapper<QuarkIngestTask> query = new LambdaQueryWrapper<QuarkIngestTask>()
+                .orderByDesc(QuarkIngestTask::getCreatedAt)
+                .last("LIMIT 20");
+        if (!isAdmin(user)) {
+            query.eq(QuarkIngestTask::getCreatedByUserId, user.getId());
+        }
+        List<QuarkIngestTaskResponse> items = taskMapper.selectList(query).stream()
+                .map(this::toTaskResponse)
+                .toList();
+        return new QuarkIngestTaskListResponse(items, items.size());
+    }
+
+    public QuarkIngestTaskLogListResponse getTaskLogs(String taskId) {
+        User user = authService.requireCurrentUser();
+        getAccessibleTask(taskId, user);
+        List<QuarkIngestTaskLogResponse> items = taskLogMapper.selectList(
+                        new LambdaQueryWrapper<QuarkIngestTaskLog>()
+                                .eq(QuarkIngestTaskLog::getTaskId, taskId)
+                                .orderByAsc(QuarkIngestTaskLog::getId)
+                ).stream()
+                .map(logEntry -> new QuarkIngestTaskLogResponse(
+                        logEntry.getId(), logEntry.getTaskId(), logEntry.getLevel(), logEntry.getStage(),
+                        logEntry.getMessage(), logEntry.getDetail(), logEntry.getCreatedAt()
+                ))
+                .toList();
+        return new QuarkIngestTaskLogListResponse(items, items.size());
+    }
+
+    private QuarkIngestTask createIngestRecord(
+            User user,
+            String mediaType,
+            String title,
+            QasIngestPlan plan
+    ) {
+        QuarkIngestTask task = new QuarkIngestTask();
+        task.setId(UUID.randomUUID().toString());
+        task.setCreatedByUserId(user.getId());
+        task.setMediaType(mediaType);
+        task.setTitle(title);
+        task.setStatus("PLANNED");
+        task.setStage("planning");
+        task.setTaskNames(String.join(", ", plan.tasks().stream().map(QasTaskPlan::taskName).toList()));
+        task.setSavePath(plan.tasks().get(0).savePath());
+        task.setImmediateExecutionStarted(false);
+        task.setCreatedTaskCount(0);
+        task.setPlannedTaskCount(plan.tasks().size());
+        task.setMessage("QAS 入库计划已生成");
+        LocalDateTime now = LocalDateTime.now();
+        task.setCreatedAt(now);
+        task.setUpdatedAt(now);
+        taskMapper.insert(task);
+        writeLog(task.getId(), "INFO", "planning", "分享检查与保存规划完成",
+                "计划创建 " + plan.tasks().size() + " 个 QAS 任务；目标目录：" + task.getSavePath());
+        return task;
+    }
+
+    private void writePlanLogs(String taskId, String mediaType, QasIngestPlan plan) {
+        for (QasTaskPlan task : plan.tasks()) {
+            if (!StringUtils.hasText(task.pattern()) || !StringUtils.hasText(task.replace())) {
+                boolean movie = "MOVIE".equals(mediaType);
+                writeLog(taskId, movie ? "INFO" : "WARN", "planning",
+                        movie ? "电影任务保留来源文件名" : "未启用自动重命名",
+                        movie
+                                ? "第一版电影内部文件不改名；QAS 仅保存到规范电影目录"
+                                : task.versionLabel() == null
+                                ? "任务：" + task.taskName() + "；将保留来源文件名和目录结构"
+                                : "任务：" + task.taskName() + "；版本：" + task.versionLabel());
+                continue;
+            }
+            String rule = StringUtils.hasText(task.renameRule()) ? task.renameRule() : "自动识别";
+            writeLog(taskId, "INFO", "planning", "已生成重命名计划",
+                    "任务：" + task.taskName() + "；规则：" + rule + "；匹配文件：" + task.matchedFileCount());
+            for (QasRenameSample sample : task.renameSamples()) {
+                writeLog(taskId, "INFO", "rename_preview", "改名预览",
+                        sample.sourceName() + " → " + sample.targetName());
+            }
+            if (task.matchedFileCount() > task.renameSamples().size()) {
+                writeLog(taskId, "INFO", "rename_preview", "改名预览已截断",
+                        "仅展示前 " + task.renameSamples().size() + "/" + task.matchedFileCount() + " 个文件");
+            }
+        }
+        for (String warning : plan.warnings()) {
+            writeLog(taskId, "WARN", "planning", warning, null);
+        }
+    }
+
+    private QasExecutionObserver executionObserver(String taskId) {
+        return new QasExecutionObserver() {
+            @Override
+            public void onOutput(String level, String message) {
+                String stage = message.contains("重命名") ? "renaming" : "qas_running";
+                writeLog(taskId, level, stage, message, null);
+            }
+
+            @Override
+            public void onCompleted() {
+                writeLog(taskId, "INFO", "execution_ended", "QAS 即时执行输出已结束",
+                        "这表示本次 QAS 进程输出结束，不代表媒体已经完成入库");
+                updateStage(taskId, "execution_ended");
+            }
+
+            @Override
+            public void onInterrupted() {
+                writeLog(taskId, "WARN", "execution_stream_interrupted", "QAS 即时执行输出意外中断",
+                        "已创建的 QAS 持久任务不会因此删除，后续仍可由 QAS 定时执行");
+                updateStage(taskId, "execution_stream_interrupted");
+            }
+        };
+    }
+
+    private void writeLog(String taskId, String level, String stage, String message, String detail) {
+        QuarkIngestTaskLog entry = new QuarkIngestTaskLog();
+        entry.setTaskId(taskId);
+        entry.setLevel(level);
+        entry.setStage(stage);
+        entry.setMessage(truncate(message, 1024));
+        entry.setDetail(StringUtils.hasText(detail) ? truncate(detail, 4000) : null);
+        entry.setCreatedAt(LocalDateTime.now());
+        taskLogMapper.insert(entry);
+    }
+
+    private void updateIngestRecord(
+            String taskId,
+            String status,
+            String stage,
+            boolean immediateStarted,
+            int createdCount,
+            int plannedCount,
+            String message
+    ) {
+        QuarkIngestTask task = new QuarkIngestTask();
+        task.setId(taskId);
+        task.setStatus(status);
+        task.setStage(stage);
+        task.setImmediateExecutionStarted(immediateStarted);
+        task.setCreatedTaskCount(createdCount);
+        task.setPlannedTaskCount(plannedCount);
+        task.setMessage(truncate(message, 1024));
+        task.setUpdatedAt(LocalDateTime.now());
+        taskMapper.updateById(task);
+    }
+
+    private void updateStage(String taskId, String stage) {
+        QuarkIngestTask task = new QuarkIngestTask();
+        task.setId(taskId);
+        task.setStage(stage);
+        task.setUpdatedAt(LocalDateTime.now());
+        taskMapper.updateById(task);
+    }
+
+    private void updateAcceptedIngestRecord(
+            String taskId,
+            String status,
+            int createdCount,
+            int plannedCount,
+            String message
+    ) {
+        QuarkIngestTask task = new QuarkIngestTask();
+        task.setId(taskId);
+        task.setStatus(status);
+        task.setImmediateExecutionStarted(true);
+        task.setCreatedTaskCount(createdCount);
+        task.setPlannedTaskCount(plannedCount);
+        task.setMessage(truncate(message, 1024));
+        task.setUpdatedAt(LocalDateTime.now());
+        taskMapper.updateById(task);
+    }
+
+    private QuarkIngestTask getAccessibleTask(String taskId, User user) {
+        QuarkIngestTask task = taskMapper.selectById(taskId);
+        if (task == null || (!isAdmin(user) && !task.getCreatedByUserId().equals(user.getId()))) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "任务不存在", HttpStatus.NOT_FOUND);
+        }
+        return task;
+    }
+
+    private boolean isAdmin(User user) {
+        return user != null && ADMIN_ROLE.equalsIgnoreCase(user.getRole());
+    }
+
+    private QuarkIngestTaskResponse toTaskResponse(QuarkIngestTask task) {
+        return new QuarkIngestTaskResponse(
+                task.getId(), task.getStatus(), task.getMediaType(), task.getTaskNames(), task.getSavePath(),
+                Boolean.TRUE.equals(task.getImmediateExecutionStarted()), task.getCreatedTaskCount(),
+                task.getPlannedTaskCount(), List.of(), task.getMessage()
+        );
+    }
+
+    private String truncate(String value, int maxLength) {
+        if (value == null || value.length() <= maxLength) {
+            return value;
+        }
+        return value.substring(0, maxLength - 1) + "…";
     }
 
     private String validateShareUrl(String value) {
