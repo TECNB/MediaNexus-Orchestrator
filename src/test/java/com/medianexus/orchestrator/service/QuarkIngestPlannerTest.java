@@ -29,8 +29,7 @@ class QuarkIngestPlannerTest {
                 ))
         );
 
-        QasIngestPlan plan = planner.planSeasonMedia(
-                "SERIES",
+        QasIngestPlan plan = planner.planSeries(
                 "我的阿勒泰",
                 1,
                 "/TV/我的阿勒泰/Season 01",
@@ -78,8 +77,7 @@ class QuarkIngestPlannerTest {
                 ))
         );
 
-        QasIngestPlan plan = planner.planSeasonMedia(
-                "VARIETY",
+        QasIngestPlan plan = planner.planVariety(
                 "喜人奇妙夜",
                 1,
                 "/Variety/喜人奇妙夜/Season 01",
@@ -91,7 +89,8 @@ class QuarkIngestPlannerTest {
             assertThat(task.sourceUrl())
                     .isEqualTo("https://pan.quark.cn/s/share-id/wrapper-fid?pwd=1234");
             assertThat(task.pattern())
-                    .isEqualTo("^(20\\d{2})(\\d{2})(\\d{2})(.*)\\.(mp4|mkv|srt|ass|ssa|vtt|sub)$");
+                    .contains("20\\d{2}")
+                    .contains("ts");
             assertThat(task.replace()).isEqualTo("喜人奇妙夜 - \\1-\\2-\\3 - \\4.\\5");
         });
     }
@@ -107,8 +106,7 @@ class QuarkIngestPlannerTest {
                 )
         );
 
-        QasIngestPlan plan = planner.planSeasonMedia(
-                "VARIETY",
+        QasIngestPlan plan = planner.planVariety(
                 "极限挑战",
                 2,
                 "/Variety/极限挑战/Season 02",
@@ -130,8 +128,8 @@ class QuarkIngestPlannerTest {
                 List.of(file("第3期 沉浸版.mp4"), file("第4期 纯享版.mp4"))
         );
 
-        QasIngestPlan plan = planner.planSeasonMedia(
-                "VARIETY", "极限挑战", 2, "/Variety/极限挑战/Season 02", tree, Map.of()
+        QasIngestPlan plan = planner.planVariety(
+                "极限挑战", 2, "/Variety/极限挑战/Season 02", tree, Map.of()
         );
 
         assertThat(plan.tasks()).singleElement().satisfies(task ->
@@ -146,8 +144,7 @@ class QuarkIngestPlannerTest {
                 List.of(file("01.mkv"), subtitle("01.zh-CN.srt"))
         );
 
-        QasIngestPlan plan = planner.planSeasonMedia(
-                "SERIES",
+        QasIngestPlan plan = planner.planSeries(
                 "我的阿勒泰",
                 1,
                 "/TV/我的阿勒泰/Season 01",
@@ -171,15 +168,14 @@ class QuarkIngestPlannerTest {
                 )
         );
 
-        assertThatThrownBy(() -> planner.planSeasonMedia(
-                "SERIES", "日期剧", 1, "/TV/日期剧/Season 01", tree, Map.of()
+        assertThatThrownBy(() -> planner.planSeries(
+                "日期剧", 1, "/TV/日期剧/Season 01", tree, Map.of()
         )).isInstanceOfSatisfying(QuarkIngestPlanningException.class, exception ->
                 assertThat(exception.getReason())
                         .isEqualTo(QuarkIngestPlanningException.Reason.DATE_MAPPING_REQUIRED)
         );
 
-        QasIngestPlan plan = planner.planSeasonMedia(
-                "SERIES",
+        QasIngestPlan plan = planner.planSeries(
                 "日期剧",
                 1,
                 "/TV/日期剧/Season 01",
@@ -203,8 +199,8 @@ class QuarkIngestPlannerTest {
                 )
         );
 
-        QasIngestPlan plan = planner.planSeasonMedia(
-                "SERIES", "测试剧", 1, "/TV/测试剧/Season 01", tree, Map.of()
+        QasIngestPlan plan = planner.planSeries(
+                "测试剧", 1, "/TV/测试剧/Season 01", tree, Map.of()
         );
 
         assertThat(plan.tasks()).extracting(QasTaskPlan::replace)
@@ -212,6 +208,219 @@ class QuarkIngestPlannerTest {
                         "测试剧 - S01E\\1 - REMUX\\2.\\3",
                         "测试剧 - S01E\\1 - WEB-DL\\2.\\3"
                 );
+    }
+
+    @Test
+    void rejectsSharesWithoutPlayableVideo() {
+        QasShareTree tree = new QasShareTree(
+                "https://pan.quark.cn/s/share-id",
+                List.of(new QasShareNode("zip-fid", "全集.zip", false, "archive", 1, List.of()))
+        );
+
+        assertThatThrownBy(() -> planner.planSeries(
+                "测试剧", 1, "/TV/测试剧/Season 01", tree, Map.of()
+        )).isInstanceOfSatisfying(QuarkIngestPlanningException.class, exception ->
+                assertThat(exception.getMessage()).contains("可播放视频")
+        );
+    }
+
+    @Test
+    void renamesNumericEpisodesWithQualityLabelsAndTsVideos() {
+        QasShareTree tree = new QasShareTree(
+                "https://pan.quark.cn/s/share-id",
+                List.of(file("01 4K.mp4"), file("02_4K.ts"))
+        );
+
+        QasIngestPlan plan = planner.planSeries(
+                "测试剧", 1, "/TV/测试剧/Season 01", tree, Map.of()
+        );
+
+        assertThat(plan.tasks()).singleElement().satisfies(task -> {
+            assertThat(task.pattern()).contains("[ _-]");
+            assertThat(task.pattern()).contains("ts");
+            assertThat(task.replace()).isEqualTo("测试剧 - S01E\\1 - \\2.\\3");
+        });
+    }
+
+    @Test
+    void renamesSeasonEpisodeFilesWithHumanReadableSuffix() {
+        QasShareTree tree = new QasShareTree(
+                "https://pan.quark.cn/s/share-id",
+                List.of(file("S01E12 - 第06期 上：标题.mkv"), file("S01E13 - 第07期.mp4"))
+        );
+
+        QasIngestPlan plan = planner.planVariety(
+                "节目", 1, "/Variety/节目/Season 01", tree, Map.of()
+        );
+
+        assertThat(plan.tasks()).singleElement().satisfies(task ->
+                assertThat(task.replace()).isEqualTo("节目 - S01E\\1 - \\2.\\3")
+        );
+    }
+
+    @Test
+    void renamesSeasonDotEpReleaseNames() {
+        QasShareTree tree = new QasShareTree(
+                "https://pan.quark.cn/s/share-id",
+                List.of(
+                        file("Joy.of.Life.2019.S01.EP01.WEB-DL.4K.mp4"),
+                        file("Joy.of.Life.2019.S01.EP46.WEB-DL.4K.mp4")
+                )
+        );
+
+        QasIngestPlan plan = planner.planSeries(
+                "庆余年", 1, "/TV/庆余年/Season 01", tree, Map.of()
+        );
+
+        assertThat(plan.tasks()).singleElement().satisfies(task ->
+                assertThat(task.replace()).isEqualTo("庆余年 - S01E\\1\\2.\\3")
+        );
+    }
+
+    @Test
+    void supportsSeparatedAndPartiallyCompactVarietyDates() {
+        QasShareTree tree = new QasShareTree(
+                "https://pan.quark.cn/s/share-id",
+                List.of(
+                        file("2025-03-21 第1期上.mkv"),
+                        file("2025.03.28-第2期下.mp4")
+                )
+        );
+
+        QasIngestPlan plan = planner.planVariety(
+                "节目", 1, "/Variety/节目/Season 01", tree, Map.of()
+        );
+
+        assertThat(plan.tasks()).singleElement().satisfies(task ->
+                assertThat(task.replace()).isEqualTo("节目 - \\1-\\2-\\3 - \\4.\\5")
+        );
+
+        QasShareTree compactTree = new QasShareTree(
+                "https://pan.quark.cn/s/share-id",
+                List.of(file("2025.0411.第4期上.mp4"), file("2025.0418.第5期下.mp4"))
+        );
+        QasIngestPlan compactPlan = planner.planVariety(
+                "节目", 1, "/Variety/节目/Season 01", compactTree, Map.of()
+        );
+        assertThat(compactPlan.tasks()).singleElement().satisfies(task ->
+                assertThat(task.replace()).isEqualTo("节目 - \\1-\\2-\\3 - \\4.\\5")
+        );
+    }
+
+    @Test
+    void doesNotTreatMonthDayVarietyNamesAsEpisodeNumbers() {
+        QasShareTree tree = new QasShareTree(
+                "https://pan.quark.cn/s/share-id",
+                List.of(file("01.07上.mp4"), file("01.14下.mp4"), file("02.25爆点料.mp4"))
+        );
+
+        QasIngestPlan plan = planner.planVariety(
+                "节目", 1, "/Variety/节目/Season 01", tree, Map.of()
+        );
+
+        assertThat(plan.tasks()).singleElement().satisfies(task -> {
+            assertThat(task.pattern()).isEmpty();
+            assertThat(task.replace()).isEmpty();
+        });
+        assertThat(plan.warnings()).anyMatch(message -> message.contains("空重命名规则"));
+    }
+
+    @Test
+    void splitsDisjointNamingFamiliesIntoSafeTasks() {
+        QasShareTree tree = new QasShareTree(
+                "https://pan.quark.cn/s/share-id",
+                List.of(
+                        file("01.mp4"),
+                        file("02.mp4"),
+                        file("S01E03 - 第3集.mkv"),
+                        file("S01E04 - 第4集.mkv")
+                )
+        );
+
+        QasIngestPlan plan = planner.planSeries(
+                "我的阿勒泰", 1, "/TV/我的阿勒泰/Season 01", tree, Map.of()
+        );
+
+        assertThat(plan.tasks()).hasSize(2);
+        assertThat(plan.tasks()).extracting(QasTaskPlan::sourceUrl)
+                .containsOnly("https://pan.quark.cn/s/share-id");
+        assertThat(plan.tasks()).extracting(QasTaskPlan::taskName)
+                .allMatch(name -> name.startsWith("我的阿勒泰 S01 ["));
+        assertThat(plan.warnings()).anyMatch(message -> message.contains("多个互斥命名规则"));
+    }
+
+    @Test
+    void selectsRequestedSeasonFromMultiSeasonCollection() {
+        QasShareTree tree = new QasShareTree(
+                "https://pan.quark.cn/s/share-id",
+                List.of(directory(
+                        "wrapper-fid",
+                        "剧集全集",
+                        directory("s1-fid", "第1季", file("01.mkv")),
+                        directory("s2-fid", "S02 2025", file("01.mkv"), file("02.mkv")),
+                        directory("s3-fid", "Season 3", file("01.mkv"))
+                ))
+        );
+
+        QasIngestPlan plan = planner.planSeries(
+                "测试剧", 2, "/TV/测试剧/Season 02", tree, Map.of()
+        );
+
+        assertThat(plan.tasks()).singleElement().satisfies(task -> {
+            assertThat(task.sourceUrl()).isEqualTo("https://pan.quark.cn/s/share-id/s2-fid");
+            assertThat(task.replace()).isEqualTo("测试剧 - S02E\\1\\2.\\3");
+        });
+    }
+
+    @Test
+    void selectsSeasonWhenCollectionAlsoContainsSpecials() {
+        QasShareTree tree = new QasShareTree(
+                "https://pan.quark.cn/s/share-id",
+                List.of(directory(
+                        "wrapper-fid", "全集",
+                        directory("special-fid", "圣诞特别篇", file("Special.mp4")),
+                        directory("s1-fid", "S01", file("S01E01.mp4")),
+                        directory("s2-fid", "第二季", file("S02E01.mp4"))
+                ))
+        );
+
+        QasIngestPlan plan = planner.planSeries(
+                "黑镜", 1, "/TV/黑镜/Season 01", tree, Map.of()
+        );
+
+        assertThat(plan.tasks()).singleElement().satisfies(task ->
+                assertThat(task.sourceUrl()).isEqualTo("https://pan.quark.cn/s/share-id/s1-fid")
+        );
+    }
+
+    @Test
+    void rejectsExplicitEpisodeFromAnotherSeason() {
+        QasShareTree tree = new QasShareTree(
+                "https://pan.quark.cn/s/share-id",
+                List.of(file("Show.S02E01.mkv"))
+        );
+
+        assertThatThrownBy(() -> planner.planSeries(
+                "测试剧", 1, "/TV/测试剧/Season 01", tree, Map.of()
+        )).isInstanceOfSatisfying(QuarkIngestPlanningException.class, exception ->
+                assertThat(exception.getMessage()).contains("第 2 季").contains("第 1 季")
+        );
+    }
+
+    @Test
+    void unwrapsMovieFolderButKeepsMovieRenameRulesEmpty() {
+        QasShareTree tree = new QasShareTree(
+                "https://pan.quark.cn/s/share-id?pwd=1234",
+                List.of(directory("movie-fid", "电影包装目录", file("电影.mkv"), subtitle("电影.zh-CN.srt")))
+        );
+
+        QasIngestPlan plan = planner.planMovie("电影 (2025)", "/Movie/电影 (2025)", tree);
+
+        assertThat(plan.tasks()).singleElement().satisfies(task -> {
+            assertThat(task.sourceUrl()).isEqualTo("https://pan.quark.cn/s/share-id/movie-fid?pwd=1234");
+            assertThat(task.pattern()).isEmpty();
+            assertThat(task.replace()).isEmpty();
+        });
     }
 
     private static List<QasShareNode> numberedEpisodes() {

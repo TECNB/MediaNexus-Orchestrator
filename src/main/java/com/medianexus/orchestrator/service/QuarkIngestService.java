@@ -124,7 +124,11 @@ public class QuarkIngestService {
         );
         try {
             QasShareTree tree = qasClient.inspectShare(shareUrl);
-            ensureShareHasFiles(tree);
+            try {
+                plan = ingestPlanner.planMovie(folderName, savePath, tree);
+            } catch (QuarkIngestPlanningException exception) {
+                throw badRequest("无法安全规划 Quark 转存：" + exception.getMessage());
+            }
             return new PreparedIngest(plan, tree);
         } catch (QasShareInspectionException exception) {
             if (allowTimeoutFallback && exception.isTimedOut() && !exception.isComplexStructureObserved()) {
@@ -238,13 +242,6 @@ public class QuarkIngestService {
         return new ShareStats(videos, subtitles, directories, maxDepth);
     }
 
-    private void ensureShareHasFiles(QasShareTree tree) {
-        ShareStats stats = shareStats(tree.entries(), 1);
-        if (stats.videoCount() == 0 && stats.subtitleCount() == 0) {
-            throw badRequest("Quark 分享中没有可转存的媒体文件");
-        }
-    }
-
     private boolean isVideo(QasShareNode node) {
         String name = node.name().toLowerCase(Locale.ROOT);
         return "video".equalsIgnoreCase(node.category())
@@ -264,13 +261,8 @@ public class QuarkIngestService {
             QasShareTree shareTree
     ) {
         try {
-            return ingestPlanner.planSeasonMedia(
-                    mediaType,
-                    seriesName,
-                    seasonNumber,
-                    savePath,
-                    shareTree,
-                    Map.of()
+            return planWithAvailableAirDates(
+                    mediaType, seriesName, seasonNumber, savePath, shareTree, Map.of()
             );
         } catch (QuarkIngestPlanningException exception) {
             if (exception.getReason() != QuarkIngestPlanningException.Reason.DATE_MAPPING_REQUIRED) {
@@ -283,17 +275,30 @@ public class QuarkIngestService {
         }
         Map<LocalDate, Integer> airDateEpisodes = loadAirDateEpisodes(request.tmdbId(), seasonNumber);
         try {
-            return ingestPlanner.planSeasonMedia(
-                    mediaType,
-                    seriesName,
-                    seasonNumber,
-                    savePath,
-                    shareTree,
-                    airDateEpisodes
+            return planWithAvailableAirDates(
+                    mediaType, seriesName, seasonNumber, savePath, shareTree, airDateEpisodes
             );
         } catch (QuarkIngestPlanningException exception) {
             throw badRequest("无法安全规划 Quark 转存：" + exception.getMessage());
         }
+    }
+
+    private QasIngestPlan planWithAvailableAirDates(
+            String mediaType,
+            String seriesName,
+            int seasonNumber,
+            String savePath,
+            QasShareTree shareTree,
+            Map<LocalDate, Integer> airDateEpisodes
+    ) {
+        if ("VARIETY".equals(mediaType)) {
+            return ingestPlanner.planVariety(
+                    seriesName, seasonNumber, savePath, shareTree, airDateEpisodes
+            );
+        }
+        return ingestPlanner.planSeries(
+                seriesName, seasonNumber, savePath, shareTree, airDateEpisodes
+        );
     }
 
     private Map<LocalDate, Integer> loadAirDateEpisodes(int tmdbId, int seasonNumber) {

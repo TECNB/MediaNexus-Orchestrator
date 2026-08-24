@@ -24,8 +24,7 @@ class QasLiveSharePlanningTest {
         QasClient client = new QasClient(properties, new ObjectMapper());
         try {
             QasShareTree tree = client.inspectShare("https://pan.quark.cn/s/9259970f4a63");
-            QasIngestPlan plan = new QuarkIngestPlanner().planSeasonMedia(
-                    "SERIES",
+            QasIngestPlan plan = new QuarkIngestPlanner().planSeries(
                     "我的阿勒泰",
                     1,
                     "/TV/我的阿勒泰/Season 01",
