@@ -22,7 +22,7 @@ public record SeriesQuarkIngestRequest(
         @Schema(description = "目标季数，从 1 开始")
         Integer seasonNumber,
         @JsonProperty("tmdb_id")
-        @Schema(description = "TMDB 剧集 ID；仅在日期型多版本映射集号时使用", nullable = true)
+        @Schema(description = "TMDB 剧集 ID；用于日期型文件推断年份或映射集号", nullable = true)
         Integer tmdbId
 ) {
 }

@@ -30,6 +30,10 @@ public class QuarkIngestPlanner {
     private static final String VIDEO_EXTENSIONS = "mkv|mp4|avi|mov|wmv|flv|ts|m2ts|webm|rmvb";
     private static final String SUBTITLE_EXTENSIONS = "srt|ass|ssa|vtt|sub";
     private static final String MEDIA_EXTENSIONS = VIDEO_EXTENSIONS + "|" + SUBTITLE_EXTENSIONS;
+    private static final Pattern MONTH_DAY_MEDIA = Pattern.compile(
+            "^(\\d{2})[.-](\\d{2})(.*)\\.(" + MEDIA_EXTENSIONS + ")$",
+            Pattern.CASE_INSENSITIVE
+    );
     private static final Pattern PLAYABLE_VIDEO = Pattern.compile(
             ".*\\.(" + VIDEO_EXTENSIONS + ")$", Pattern.CASE_INSENSITIVE
     );
@@ -69,7 +73,7 @@ public class QuarkIngestPlanner {
             int seasonNumber,
             String savePath,
             QasShareTree shareTree,
-            Map<LocalDate, Integer> airDateEpisodes
+            Map<LocalDate, List<Integer>> airDateEpisodes
     ) {
         String season = String.format(Locale.ROOT, "%02d", seasonNumber);
         return planSeasonMedia(
@@ -83,11 +87,26 @@ public class QuarkIngestPlanner {
             int seasonNumber,
             String savePath,
             QasShareTree shareTree,
-            Map<LocalDate, Integer> airDateEpisodes
+            Map<LocalDate, List<Integer>> airDateEpisodes
     ) {
         String season = String.format(Locale.ROOT, "%02d", seasonNumber);
         List<RuleCandidate> candidates = new ArrayList<>(ordinaryEpisodeCandidates(title, season));
         candidates.addAll(varietyDateCandidates(title));
+        ContentRoot selectedContent = unwrapSingleDirectory(shareTree.sourceUrl(), shareTree.entries());
+        selectedContent = selectRequestedSeason(selectedContent, seasonNumber);
+        selectedContent = unwrapSingleDirectory(selectedContent.sourceUrl(), selectedContent.entries());
+        Set<Integer> shortDateYears = resolveShortDateYears(selectedContent.entries(), airDateEpisodes);
+        if (!shortDateYears.isEmpty()) {
+            if (shortDateYears.size() > 1) {
+                throw new QuarkIngestPlanningException("短日期文件跨越多个年份，无法使用单一 QAS 规则安全命名");
+            }
+            candidates.addAll(varietyShortDateCandidates(title, shortDateYears.iterator().next()));
+        } else if (containsMonthDayMedia(selectedContent.entries())) {
+            throw new QuarkIngestPlanningException(
+                    QuarkIngestPlanningException.Reason.DATE_MAPPING_REQUIRED,
+                    "短日期综艺文件需要 TMDB Season Details 推断播出年份"
+            );
+        }
         return planSeasonMedia(title, seasonNumber, savePath, shareTree, airDateEpisodes, candidates);
     }
 
@@ -96,7 +115,7 @@ public class QuarkIngestPlanner {
             int seasonNumber,
             String savePath,
             QasShareTree shareTree,
-            Map<LocalDate, Integer> airDateEpisodes,
+            Map<LocalDate, List<Integer>> airDateEpisodes,
             List<RuleCandidate> ordinaryCandidates
     ) {
         ContentRoot contentRoot = unwrapSingleDirectory(shareTree.sourceUrl(), shareTree.entries());
@@ -115,7 +134,9 @@ public class QuarkIngestPlanner {
         }
         if (contentRoot.entries().stream().noneMatch(QasShareNode::directory)) {
             validateExplicitSeason(contentRoot.entries(), seasonNumber);
-            return planOrdinary(title, seasonNumber, savePath, contentRoot, ordinaryCandidates);
+            return planOrdinary(
+                    title, seasonNumber, savePath, contentRoot, ordinaryCandidates, airDateEpisodes
+            );
         }
         throw new QuarkIngestPlanningException("分享中包含无法安全展平的复杂目录");
     }
@@ -125,7 +146,8 @@ public class QuarkIngestPlanner {
             int seasonNumber,
             String savePath,
             ContentRoot contentRoot,
-            List<RuleCandidate> candidates
+            List<RuleCandidate> candidates,
+            Map<LocalDate, List<Integer>> airDateEpisodes
     ) {
         if (contentRoot.entries().stream().noneMatch(file -> isPlayableVideo(file.name()))) {
             throw new QuarkIngestPlanningException("Quark 分享中没有可播放视频");
@@ -138,6 +160,10 @@ public class QuarkIngestPlanner {
         List<QasShareNode> ignoredFiles = contentRoot.entries().stream()
                 .filter(file -> !isMediaFile(file.name()))
                 .toList();
+        DateCollisionPlan dateCollisions = planDateCollisions(
+                title, season, candidates, mediaFiles, airDateEpisodes
+        );
+        candidates = dateCollisions.candidates();
         for (RuleCandidate candidate : candidates) {
             if (isSafeForAllFiles(candidate, mediaFiles)) {
                 return new QasIngestPlan(
@@ -154,6 +180,7 @@ public class QuarkIngestPlanner {
         Map<RuleCandidate, List<QasShareNode>> groups = groupByDisjointRule(candidates, mediaFiles);
         if (groups != null && groups.size() > 1) {
             Set<String> targets = new HashSet<>();
+            Set<String> logicalVideos = new HashSet<>();
             Map<String, Integer> labelCounts = new LinkedHashMap<>();
             List<QasTaskPlan> tasks = new ArrayList<>();
             for (Map.Entry<RuleCandidate, List<QasShareNode>> group : groups.entrySet()) {
@@ -166,6 +193,14 @@ public class QuarkIngestPlanner {
                     Matcher matcher = candidate.pattern().matcher(file.name());
                     matcher.matches();
                     addUniqueTarget(targets, candidate.targetName().apply(matcher));
+                    if (!isSubtitle(file.name())
+                            && !logicalVideos.add(candidate.logicalKey().apply(matcher))) {
+                        groups = null;
+                        break;
+                    }
+                }
+                if (groups == null) {
+                    break;
                 }
                 int labelIndex = labelCounts.merge(candidate.label(), 1, Integer::sum);
                 String taskLabel = labelIndex == 1
@@ -177,7 +212,7 @@ public class QuarkIngestPlanner {
                 ));
             }
             if (groups != null) {
-                List<String> warnings = new ArrayList<>();
+                List<String> warnings = new ArrayList<>(dateCollisions.warnings());
                 warnings.add("分享包含多个互斥命名规则，已拆分为 " + tasks.size() + " 个 QAS 任务");
                 if (!ignoredFiles.isEmpty()) {
                     warnings.add("已通过 QAS 规则忽略 " + ignoredFiles.size() + " 个非媒体文件");
@@ -324,7 +359,16 @@ public class QuarkIngestPlanner {
 
     private List<RuleCandidate> varietyDateCandidates(String title) {
         return List.of(
-                dateCandidate("^(20\\d{2})(\\d{2})(\\d{2})(.*)\\.(" + MEDIA_EXTENSIONS + ")$", title),
+                plainDateCandidate(
+                        "^(20\\d{2})(\\d{2})(\\d{2})((?:\\.[^.]+)*)\\.(" + MEDIA_EXTENSIONS + ")$",
+                        title
+                ),
+                dateCandidate("^(20\\d{2})(\\d{2})(\\d{2})(.+?)\\.(" + MEDIA_EXTENSIONS + ")$", title),
+                plainDateCandidate(
+                        "^(20\\d{2})[-.](\\d{2})[-.](\\d{2})((?:\\.[^.]+)*)\\.("
+                                + MEDIA_EXTENSIONS + ")$",
+                        title
+                ),
                 dateCandidate(
                         "^(20\\d{2})[-.](\\d{2})[-.](\\d{2})[ ._-]*(.+?)\\.(" + MEDIA_EXTENSIONS + ")$",
                         title
@@ -336,13 +380,95 @@ public class QuarkIngestPlanner {
         );
     }
 
+    private List<RuleCandidate> varietyShortDateCandidates(String title, int year) {
+        return List.of(
+                plainShortDateCandidate(
+                        "^(\\d{2})[.-](\\d{2})((?:\\.[^.]+)*)\\.(" + MEDIA_EXTENSIONS + ")$",
+                        title,
+                        year
+                ),
+                shortDateCandidate(
+                        "^(\\d{2})[.-](\\d{2})\\s*(.+?)\\.(" + MEDIA_EXTENSIONS + ")$",
+                        title,
+                        year
+                )
+        );
+    }
+
     private RuleCandidate dateCandidate(String pattern, String title) {
-        return candidate(
+        return dateCandidate(
+                "播出日期",
                 pattern,
                 title + " - \\1-\\2-\\3 - \\4.\\5",
                 matcher -> title + " - " + matcher.group(1) + "-" + matcher.group(2) + "-"
                         + matcher.group(3) + " - " + matcher.group(4) + "." + matcher.group(5),
-                matcher -> matcher.group(1) + matcher.group(2) + matcher.group(3)
+                matcher -> LocalDate.of(
+                        Integer.parseInt(matcher.group(1)),
+                        Integer.parseInt(matcher.group(2)),
+                        Integer.parseInt(matcher.group(3))
+                )
+        );
+    }
+
+    private RuleCandidate plainDateCandidate(String pattern, String title) {
+        return dateCandidate(
+                "播出日期",
+                pattern,
+                title + " - \\1-\\2-\\3\\4.\\5",
+                matcher -> title + " - " + matcher.group(1) + "-" + matcher.group(2) + "-"
+                        + matcher.group(3) + matcher.group(4) + "." + matcher.group(5),
+                matcher -> LocalDate.of(
+                        Integer.parseInt(matcher.group(1)),
+                        Integer.parseInt(matcher.group(2)),
+                        Integer.parseInt(matcher.group(3))
+                )
+        );
+    }
+
+    private RuleCandidate shortDateCandidate(String pattern, String title, int year) {
+        return dateCandidate(
+                "播出日期（短日期）",
+                pattern,
+                title + " - " + year + "-\\1-\\2 - \\3.\\4",
+                matcher -> title + " - " + year + "-" + matcher.group(1) + "-"
+                        + matcher.group(2) + " - " + matcher.group(3).trim() + "." + matcher.group(4),
+                matcher -> LocalDate.of(
+                        year,
+                        Integer.parseInt(matcher.group(1)),
+                        Integer.parseInt(matcher.group(2))
+                )
+        );
+    }
+
+    private RuleCandidate plainShortDateCandidate(String pattern, String title, int year) {
+        return dateCandidate(
+                "播出日期（短日期）",
+                pattern,
+                title + " - " + year + "-\\1-\\2\\3.\\4",
+                matcher -> title + " - " + year + "-" + matcher.group(1) + "-"
+                        + matcher.group(2) + matcher.group(3) + "." + matcher.group(4),
+                matcher -> LocalDate.of(
+                        year,
+                        Integer.parseInt(matcher.group(1)),
+                        Integer.parseInt(matcher.group(2))
+                )
+        );
+    }
+
+    private RuleCandidate dateCandidate(
+            String label,
+            String pattern,
+            String replace,
+            Function<Matcher, String> targetName,
+            Function<Matcher, LocalDate> sourceDate
+    ) {
+        return new RuleCandidate(
+                label,
+                Pattern.compile(pattern),
+                replace,
+                targetName,
+                matcher -> "DATE:" + sourceDate.apply(matcher),
+                sourceDate
         );
     }
 
@@ -352,7 +478,14 @@ public class QuarkIngestPlanner {
             Function<Matcher, String> targetName,
             Function<Matcher, String> episodeKey
     ) {
-        return new RuleCandidate(ruleLabel(pattern), Pattern.compile(pattern), replace, targetName, episodeKey);
+        return new RuleCandidate(
+                ruleLabel(pattern),
+                Pattern.compile(pattern),
+                replace,
+                targetName,
+                matcher -> "EPISODE:" + normalizeEpisodeKey(episodeKey.apply(matcher)),
+                null
+        );
     }
 
     private String ruleLabel(String pattern) {
@@ -402,6 +535,175 @@ public class QuarkIngestPlanner {
         return groups;
     }
 
+    private DateCollisionPlan planDateCollisions(
+            String title,
+            String season,
+            List<RuleCandidate> candidates,
+            List<QasShareNode> mediaFiles,
+            Map<LocalDate, List<Integer>> airDateEpisodes
+    ) {
+        Map<LocalDate, List<DatedFile>> videosByDate = new LinkedHashMap<>();
+        for (QasShareNode file : mediaFiles) {
+            if (isSubtitle(file.name())) {
+                continue;
+            }
+            DatedFile datedFile = datedFile(candidates, file);
+            if (datedFile != null) {
+                videosByDate.computeIfAbsent(datedFile.date(), ignored -> new ArrayList<>()).add(datedFile);
+            }
+        }
+        List<Map.Entry<LocalDate, List<DatedFile>>> collisions = videosByDate.entrySet().stream()
+                .filter(entry -> entry.getValue().size() > 1)
+                .toList();
+        if (collisions.isEmpty()) {
+            return new DateCollisionPlan(candidates, List.of());
+        }
+
+        List<RuleCandidate> exactCandidates = new ArrayList<>();
+        Set<String> exactStems = new HashSet<>();
+        Set<String> exactStemKeys = new HashSet<>();
+        for (Map.Entry<LocalDate, List<DatedFile>> collision : collisions) {
+            List<Integer> episodes = airDateEpisodes == null
+                    ? List.of()
+                    : airDateEpisodes.getOrDefault(collision.getKey(), List.of());
+            List<DatedFile> orderedFiles = collision.getValue().stream()
+                    .sorted((left, right) -> compareDatedParts(left.file().name(), right.file().name()))
+                    .toList();
+            List<Integer> orderedEpisodes = episodes.stream().sorted().toList();
+            if (orderedEpisodes.size() != orderedFiles.size()) {
+                return new DateCollisionPlan(candidates, List.of());
+            }
+            for (int index = 0; index < orderedFiles.size(); index++) {
+                DatedFile datedFile = orderedFiles.get(index);
+                String stem = stemOf(datedFile.file().name());
+                if (!exactStemKeys.add(stem.toLowerCase(Locale.ROOT))) {
+                    return new DateCollisionPlan(candidates, List.of());
+                }
+                exactStems.add(stem);
+                exactCandidates.add(exactEpisodeCandidate(
+                        title,
+                        season,
+                        orderedEpisodes.get(index),
+                        stem,
+                        dateDescriptor(stem, datedFile.date())
+                ));
+            }
+        }
+
+        List<RuleCandidate> planned = new ArrayList<>(exactCandidates);
+        for (RuleCandidate candidate : candidates) {
+            planned.add(candidate.sourceDate() == null
+                    ? candidate
+                    : excludingStems(candidate, exactStems));
+        }
+        return new DateCollisionPlan(
+                planned,
+                List.of("同一播出日期包含多个正集，已按 TMDB 集号拆分精确命名规则")
+        );
+    }
+
+    private DatedFile datedFile(List<RuleCandidate> candidates, QasShareNode file) {
+        for (RuleCandidate candidate : candidates) {
+            if (candidate.sourceDate() == null) {
+                continue;
+            }
+            Matcher matcher = candidate.pattern().matcher(file.name());
+            if (matcher.matches() && isValidDate(candidate, matcher)) {
+                return new DatedFile(file, candidate.sourceDate().apply(matcher));
+            }
+        }
+        return null;
+    }
+
+    private RuleCandidate exactEpisodeCandidate(
+            String title,
+            String season,
+            int episode,
+            String sourceStem,
+            String descriptor
+    ) {
+        String episodeCode = String.format(Locale.ROOT, "%02d", episode);
+        String targetBase = title + " - S" + season + "E" + episodeCode
+                + (descriptor.isBlank() ? "" : " - " + descriptor);
+        String pattern = "^" + regexEscape(sourceStem)
+                + "((?:\\.[^.]+)*)\\.(" + MEDIA_EXTENSIONS + ")$";
+        return new RuleCandidate(
+                "TMDB 集号 E" + episodeCode,
+                Pattern.compile(pattern),
+                targetBase + "\\1.\\2",
+                matcher -> targetBase + matcher.group(1) + "." + matcher.group(2),
+                matcher -> "EPISODE:" + episodeCode,
+                null
+        );
+    }
+
+    private RuleCandidate excludingStems(RuleCandidate candidate, Set<String> exactStems) {
+        String exclusions = exactStems.stream()
+                .map(this::regexEscape)
+                .sorted()
+                .collect(java.util.stream.Collectors.joining("|"));
+        String original = candidate.pattern().pattern();
+        String pattern = "^(?!(?:" + exclusions + ")(?:(?:\\.[^.]+)*)\\.(?:"
+                + MEDIA_EXTENSIONS + ")$)" + original.substring(1);
+        return new RuleCandidate(
+                candidate.label(),
+                Pattern.compile(pattern),
+                candidate.replace(),
+                candidate.targetName(),
+                candidate.logicalKey(),
+                candidate.sourceDate()
+        );
+    }
+
+    private int compareDatedParts(String left, String right) {
+        int leftRank = partRank(left);
+        int rightRank = partRank(right);
+        if (leftRank != rightRank) {
+            return Integer.compare(leftRank, rightRank);
+        }
+        return left.compareToIgnoreCase(right);
+    }
+
+    private int partRank(String name) {
+        if (name.contains("上")) {
+            return 0;
+        }
+        if (name.contains("中")) {
+            return 1;
+        }
+        if (name.contains("下")) {
+            return 2;
+        }
+        return 3;
+    }
+
+    private String dateDescriptor(String stem, LocalDate date) {
+        String value = stem.replaceFirst(
+                "^(?:" + date.getYear() + "[.-]?)?"
+                        + String.format(Locale.ROOT, "%02d[.-]%02d", date.getMonthValue(), date.getDayOfMonth())
+                        + "[ ._-]*",
+                ""
+        );
+        return value.trim();
+    }
+
+    private String stemOf(String name) {
+        int extension = name.lastIndexOf('.');
+        return extension > 0 ? name.substring(0, extension) : name;
+    }
+
+    private String regexEscape(String value) {
+        return value.replaceAll("([\\\\.\\[\\]{}()*+?^$|])", "\\\\$1");
+    }
+
+    private String normalizeEpisodeKey(String value) {
+        try {
+            return Integer.toString(Integer.parseInt(value));
+        } catch (NumberFormatException exception) {
+            return value;
+        }
+    }
+
     private boolean isPlayableVideo(String name) {
         return name != null && PLAYABLE_VIDEO.matcher(name).matches();
     }
@@ -414,6 +716,83 @@ public class QuarkIngestPlanner {
         return nodes.stream().anyMatch(node -> node.directory()
                 ? containsPlayableVideo(node.children())
                 : isPlayableVideo(node.name()));
+    }
+
+    private boolean containsMonthDayMedia(List<QasShareNode> nodes) {
+        return nodes.stream().anyMatch(node -> node.directory()
+                ? containsMonthDayMedia(node.children())
+                : node.name() != null && MONTH_DAY_MEDIA.matcher(node.name()).matches());
+    }
+
+    private Set<Integer> resolveShortDateYears(
+            List<QasShareNode> nodes,
+            Map<LocalDate, List<Integer>> airDateEpisodes
+    ) {
+        if (airDateEpisodes == null || airDateEpisodes.isEmpty()) {
+            return Set.of();
+        }
+        Set<Integer> years = new HashSet<>();
+        collectShortDateYears(nodes, airDateEpisodes.keySet(), years);
+        return years;
+    }
+
+    private void collectShortDateYears(
+            List<QasShareNode> nodes,
+            Set<LocalDate> seasonDates,
+            Set<Integer> years
+    ) {
+        for (QasShareNode node : nodes) {
+            if (node.directory()) {
+                collectShortDateYears(node.children(), seasonDates, years);
+                continue;
+            }
+            Matcher matcher = node.name() == null ? null : MONTH_DAY_MEDIA.matcher(node.name());
+            if (matcher == null || !matcher.matches()) {
+                continue;
+            }
+            years.add(resolveShortDateYear(
+                    Integer.parseInt(matcher.group(1)),
+                    Integer.parseInt(matcher.group(2)),
+                    seasonDates
+            ));
+        }
+    }
+
+    private int resolveShortDateYear(int month, int day, Set<LocalDate> seasonDates) {
+        Set<Integer> candidateYears = new HashSet<>();
+        for (LocalDate seasonDate : seasonDates) {
+            candidateYears.add(seasonDate.getYear() - 1);
+            candidateYears.add(seasonDate.getYear());
+            candidateYears.add(seasonDate.getYear() + 1);
+        }
+        LocalDate best = null;
+        long bestDistance = Long.MAX_VALUE;
+        boolean ambiguous = false;
+        for (int year : candidateYears) {
+            LocalDate candidate;
+            try {
+                candidate = LocalDate.of(year, month, day);
+            } catch (DateTimeException exception) {
+                throw new QuarkIngestPlanningException("短日期文件包含无效日期：" + month + "." + day);
+            }
+            long distance = seasonDates.stream()
+                    .mapToLong(seasonDate -> Math.abs(java.time.temporal.ChronoUnit.DAYS.between(
+                            seasonDate, candidate
+                    )))
+                    .min()
+                    .orElse(Long.MAX_VALUE);
+            if (distance < bestDistance) {
+                best = candidate;
+                bestDistance = distance;
+                ambiguous = false;
+            } else if (distance == bestDistance && best != null && candidate.getYear() != best.getYear()) {
+                ambiguous = true;
+            }
+        }
+        if (best == null || bestDistance > 183 || ambiguous) {
+            throw new QuarkIngestPlanningException("无法从 TMDB 季度日期安全推断 " + month + "." + day + " 的年份");
+        }
+        return best.getYear();
     }
 
     private void validateExplicitSeason(List<QasShareNode> nodes, int requestedSeason) {
@@ -448,30 +827,26 @@ public class QuarkIngestPlanner {
             if (file.directory() || !matcher.matches()) {
                 return false;
             }
-            if ("播出日期".equals(candidate.label()) && !isValidDate(matcher)) {
+            if (candidate.sourceDate() != null && !isValidDate(candidate, matcher)) {
                 return false;
             }
             String targetName = candidate.targetName().apply(matcher).toLowerCase(Locale.ROOT);
             if (!targetNames.add(targetName)) {
                 return false;
             }
-            String key = candidate.episodeKey().apply(matcher);
+            String key = candidate.logicalKey().apply(matcher);
             if (isSubtitle(file.name())) {
                 subtitleKeys.add(key);
-            } else {
-                videoKeys.add(key);
+            } else if (!videoKeys.add(key)) {
+                return false;
             }
         }
         return !videoKeys.isEmpty() && videoKeys.containsAll(subtitleKeys);
     }
 
-    private boolean isValidDate(Matcher matcher) {
+    private boolean isValidDate(RuleCandidate candidate, Matcher matcher) {
         try {
-            LocalDate.of(
-                    Integer.parseInt(matcher.group(1)),
-                    Integer.parseInt(matcher.group(2)),
-                    Integer.parseInt(matcher.group(3))
-            );
+            candidate.sourceDate().apply(matcher);
             return true;
         } catch (DateTimeException | NumberFormatException exception) {
             return false;
@@ -488,7 +863,7 @@ public class QuarkIngestPlanner {
             String savePath,
             String sourceUrl,
             List<QasShareNode> versionDirectories,
-            Map<LocalDate, Integer> airDateEpisodes
+            Map<LocalDate, List<Integer>> airDateEpisodes
     ) {
         String season = String.format(Locale.ROOT, "%02d", seasonNumber);
         Set<String> allTargetNames = new HashSet<>();
@@ -535,11 +910,11 @@ public class QuarkIngestPlanner {
                         .map(file -> dateFrom(file.name()))
                         .sorted()
                         .forEach(date -> {
-                            Integer episode = airDateEpisodes.get(date);
-                            if (episode == null) {
+                            List<Integer> mappedEpisodes = airDateEpisodes.getOrDefault(date, List.of());
+                            if (mappedEpisodes.size() != 1) {
                                 throw new QuarkIngestPlanningException("TMDB 中找不到播出日期 " + date + " 对应的集号");
                             }
-                            orderedEpisodes.add(episode);
+                            orderedEpisodes.add(mappedEpisodes.get(0));
                         });
                 for (int index = 0; index < orderedEpisodes.size(); index++) {
                     if (orderedEpisodes.get(index) != index + 1) {
@@ -873,8 +1248,15 @@ public class QuarkIngestPlanner {
             Pattern pattern,
             String replace,
             Function<Matcher, String> targetName,
-            Function<Matcher, String> episodeKey
+            Function<Matcher, String> logicalKey,
+            Function<Matcher, LocalDate> sourceDate
     ) {
+    }
+
+    private record DatedFile(QasShareNode file, LocalDate date) {
+    }
+
+    private record DateCollisionPlan(List<RuleCandidate> candidates, List<String> warnings) {
     }
 
     private record SeasonDirectory(QasShareNode node, Integer seasonNumber) {

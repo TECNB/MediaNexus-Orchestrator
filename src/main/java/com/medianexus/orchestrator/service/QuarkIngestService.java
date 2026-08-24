@@ -226,7 +226,7 @@ public class QuarkIngestService {
                 prepared.plan().warnings(),
                 prepared.plan().tasks().size() == 1
                         ? "分享结构检查完成，可以创建 QAS 任务"
-                        : "分享结构检查完成，将创建 " + prepared.plan().tasks().size() + " 个 QAS 版本任务"
+                        : "分享结构检查完成，将创建 " + prepared.plan().tasks().size() + " 个 QAS 任务"
         );
     }
 
@@ -290,9 +290,9 @@ public class QuarkIngestService {
         }
 
         if (request.tmdbId() == null || request.tmdbId() <= 0) {
-            throw badRequest("日期型多版本需要有效的 TMDB ID 才能映射集号");
+            throw badRequest("日期型资源需要有效的 TMDB ID 才能推断年份或映射集号");
         }
-        Map<LocalDate, Integer> airDateEpisodes = loadAirDateEpisodes(request.tmdbId(), seasonNumber);
+        Map<LocalDate, List<Integer>> airDateEpisodes = loadAirDateEpisodes(request.tmdbId(), seasonNumber);
         try {
             return planWithAvailableAirDates(
                     mediaType, seriesName, seasonNumber, savePath, shareTree, airDateEpisodes
@@ -308,7 +308,7 @@ public class QuarkIngestService {
             int seasonNumber,
             String savePath,
             QasShareTree shareTree,
-            Map<LocalDate, Integer> airDateEpisodes
+            Map<LocalDate, List<Integer>> airDateEpisodes
     ) {
         if ("VARIETY".equals(mediaType)) {
             return ingestPlanner.planVariety(
@@ -320,7 +320,7 @@ public class QuarkIngestService {
         );
     }
 
-    private Map<LocalDate, Integer> loadAirDateEpisodes(int tmdbId, int seasonNumber) {
+    private Map<LocalDate, List<Integer>> loadAirDateEpisodes(int tmdbId, int seasonNumber) {
         JsonNode details;
         try {
             details = tmdbClient.getTvSeasonDetails(
@@ -343,8 +343,7 @@ public class QuarkIngestService {
                     HttpStatus.BAD_GATEWAY
             );
         }
-        Map<LocalDate, Integer> result = new LinkedHashMap<>();
-        Set<LocalDate> ambiguousDates = new HashSet<>();
+        Map<LocalDate, List<Integer>> result = new LinkedHashMap<>();
         for (JsonNode episode : episodes) {
             int episodeNumber = episode.path("episode_number").asInt(0);
             String airDate = episode.path("air_date").asText("");
@@ -353,18 +352,12 @@ public class QuarkIngestService {
             }
             try {
                 LocalDate date = LocalDate.parse(airDate);
-                if (ambiguousDates.contains(date)) {
-                    continue;
-                }
-                Integer previous = result.putIfAbsent(date, episodeNumber);
-                if (previous != null && previous != episodeNumber) {
-                    result.remove(date);
-                    ambiguousDates.add(date);
-                }
+                result.computeIfAbsent(date, ignored -> new ArrayList<>()).add(episodeNumber);
             } catch (DateTimeParseException ignored) {
                 // Invalid dates cannot safely participate in an episode mapping.
             }
         }
+        result.replaceAll((date, values) -> values.stream().distinct().sorted().toList());
         return Map.copyOf(result);
     }
 

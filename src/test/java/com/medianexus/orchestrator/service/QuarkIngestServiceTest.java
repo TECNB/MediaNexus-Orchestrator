@@ -2,6 +2,7 @@ package com.medianexus.orchestrator.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.atLeastOnce;
@@ -31,6 +32,54 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class QuarkIngestServiceTest {
+
+    @Test
+    void loadsTmdbSeasonDetailsToPreviewShortDateVarietyNames() throws Exception {
+        QasClient qasClient = mock(QasClient.class);
+        AuthService authService = mock(AuthService.class);
+        TmdbProperties tmdbProperties = new TmdbProperties();
+        tmdbProperties.setDefaultLanguage("zh-CN");
+        TmdbClient tmdbClient = mock(TmdbClient.class);
+        QuarkIngestService service = new QuarkIngestService(
+                qasClient,
+                properties(),
+                tmdbProperties,
+                new MovieSeriesFileRenameService(),
+                authService,
+                new QuarkIngestPlanner(),
+                tmdbClient,
+                mock(QuarkIngestTaskMapper.class),
+                mock(QuarkIngestTaskLogMapper.class)
+        );
+        String shareUrl = "https://pan.quark.cn/s/share123";
+        when(qasClient.inspectShare(shareUrl)).thenReturn(new QasShareTree(
+                shareUrl,
+                List.of(file("06.12.mp4"), file("06.19第一期.mp4"))
+        ));
+        when(tmdbClient.getTvSeasonDetails(126398, 2, "zh-CN")).thenReturn(
+                new ObjectMapper().readTree("""
+                        {"episodes":[
+                          {"episode_number":1,"air_date":"2022-06-19"},
+                          {"episode_number":2,"air_date":"2022-06-26"}
+                        ]}
+                        """)
+        );
+
+        QuarkIngestPreviewResponse preview = service.previewVariety(new SeriesQuarkIngestRequest(
+                shareUrl,
+                "五十公里桃花坞",
+                null,
+                2,
+                126398
+        ));
+
+        assertThat(preview.ready()).isTrue();
+        assertThat(preview.plannedTaskCount()).isEqualTo(2);
+        assertThat(preview.tasks()).allSatisfy(task -> assertThat(task.renameEnabled()).isTrue());
+        assertThat(preview.message()).contains("2 个 QAS 任务");
+        verify(tmdbClient).getTvSeasonDetails(eq(126398), eq(2), eq("zh-CN"));
+        verify(qasClient, never()).createTask(any(QasTaskCreateCommand.class));
+    }
 
     @Test
     void previewsShareStructureAndPlanWithoutCreatingQasTask() {

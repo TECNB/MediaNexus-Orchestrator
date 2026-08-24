@@ -180,7 +180,10 @@ class QuarkIngestPlannerTest {
                 1,
                 "/TV/日期剧/Season 01",
                 tree,
-                Map.of(LocalDate.of(2025, 1, 1), 1, LocalDate.of(2025, 1, 8), 2)
+                Map.of(
+                        LocalDate.of(2025, 1, 1), List.of(1),
+                        LocalDate.of(2025, 1, 8), List.of(2)
+                )
         );
 
         assertThat(plan.tasks()).hasSize(2).allSatisfy(task -> {
@@ -315,21 +318,127 @@ class QuarkIngestPlannerTest {
     }
 
     @Test
-    void doesNotTreatMonthDayVarietyNamesAsEpisodeNumbers() {
+    void requiresTmdbScheduleBeforeRenamingMonthDayVarietyNames() {
         QasShareTree tree = new QasShareTree(
                 "https://pan.quark.cn/s/share-id",
                 List.of(file("01.07上.mp4"), file("01.14下.mp4"), file("02.25爆点料.mp4"))
         );
 
-        QasIngestPlan plan = planner.planVariety(
+        assertThatThrownBy(() -> planner.planVariety(
                 "节目", 1, "/Variety/节目/Season 01", tree, Map.of()
+        )).isInstanceOfSatisfying(QuarkIngestPlanningException.class, exception ->
+                assertThat(exception.getReason())
+                        .isEqualTo(QuarkIngestPlanningException.Reason.DATE_MAPPING_REQUIRED)
+        );
+    }
+
+    @Test
+    void renamesRealMonthDayVarietyShareAndSplitsTmdbDoubleEpisodeDate() {
+        QasShareTree tree = new QasShareTree(
+                "https://pan.quark.cn/s/share-id",
+                List.of(
+                        file("06.12.mp4"),
+                        file("06.19第一期.mp4"),
+                        file("06.20 第一期加更 上.mp4"),
+                        file("06.21第一期加更 下.mp4"),
+                        file("06.26上.mp4"),
+                        file("06.26下.mp4"),
+                        file("06.27第2期加更.mp4"),
+                        file("06.28第2期加更.mp4"),
+                        file("07.03第3期.mp4"),
+                        file("07.04第3期加更上.mp4"),
+                        file("07.05第3期加更下.mp4"),
+                        file("07.10第4期.mp4"),
+                        file("07.11 第4期加更上.mp4"),
+                        file("07.12 第4期加更下.mp4"),
+                        file("07.15 第5期.mp4"),
+                        file("07.18 第5期加更上.mp4"),
+                        file("07.19 第5期加更下.mp4"),
+                        file("07.24第6期.mp4"),
+                        file("07.25第6期加更.mp4"),
+                        file("07.26第6期加更.mp4"),
+                        file("07.31第7期.mp4"),
+                        file("08.01第7期加更.mp4"),
+                        file("08.02第7期加更.mp4"),
+                        file("08.07第8期.mp4"),
+                        file("08.08第8期加更.mp4"),
+                        file("08.09加更.mp4"),
+                        file("08.14.mp4"),
+                        file("08.15 第9期加更上.mp4"),
+                        file("08.16 第9期加更下.mp4"),
+                        file("08.21第10期.mp4"),
+                        file("08.22第10期加更.mp4"),
+                        file("08.23第10期加更.mp4")
+                )
+        );
+        Map<LocalDate, List<Integer>> schedule = Map.ofEntries(
+                Map.entry(LocalDate.of(2022, 6, 19), List.of(1)),
+                Map.entry(LocalDate.of(2022, 6, 26), List.of(2, 3)),
+                Map.entry(LocalDate.of(2022, 7, 3), List.of(4)),
+                Map.entry(LocalDate.of(2022, 7, 10), List.of(5)),
+                Map.entry(LocalDate.of(2022, 7, 17), List.of(6)),
+                Map.entry(LocalDate.of(2022, 7, 24), List.of(7, 8)),
+                Map.entry(LocalDate.of(2022, 7, 31), List.of(9, 10)),
+                Map.entry(LocalDate.of(2022, 8, 7), List.of(11)),
+                Map.entry(LocalDate.of(2022, 8, 14), List.of(12)),
+                Map.entry(LocalDate.of(2022, 8, 21), List.of(13))
+        );
+
+        QasIngestPlan plan = planner.planVariety(
+                "五十公里桃花坞", 2, "/Variety/五十公里桃花坞/Season 02", tree, schedule
+        );
+
+        assertThat(plan.tasks()).hasSize(4);
+        assertThat(plan.tasks()).extracting(QasTaskPlan::matchedFileCount)
+                .containsExactlyInAnyOrder(28, 2, 1, 1);
+        assertThat(plan.tasks()).extracting(QasTaskPlan::replace)
+                .contains(
+                        "五十公里桃花坞 - 2022-\\1-\\2 - \\3.\\4",
+                        "五十公里桃花坞 - 2022-\\1-\\2\\3.\\4"
+                )
+                .anyMatch(replace -> replace.startsWith("五十公里桃花坞 - S02E02"))
+                .anyMatch(replace -> replace.startsWith("五十公里桃花坞 - S02E03"));
+        assertThat(plan.tasks()).flatExtracting(QasTaskPlan::renameSamples)
+                .extracting(QasRenameSample::sourceName, QasRenameSample::targetName)
+                .contains(
+                        org.assertj.core.groups.Tuple.tuple(
+                                "06.12.mp4", "五十公里桃花坞 - 2022-06-12.mp4"
+                        ),
+                        org.assertj.core.groups.Tuple.tuple(
+                                "06.19第一期.mp4", "五十公里桃花坞 - 2022-06-19 - 第一期.mp4"
+                        ),
+                        org.assertj.core.groups.Tuple.tuple(
+                                "06.26上.mp4", "五十公里桃花坞 - S02E02 - 上.mp4"
+                        ),
+                        org.assertj.core.groups.Tuple.tuple(
+                                "06.26下.mp4", "五十公里桃花坞 - S02E03 - 下.mp4"
+                        )
+                );
+        assertThat(plan.warnings()).anyMatch(message ->
+                message.contains("同一播出日期") && message.contains("TMDB 集号")
+        );
+    }
+
+    @Test
+    void keepsShortDateSubtitleBasenameAlignedWithVideo() {
+        QasShareTree tree = new QasShareTree(
+                "https://pan.quark.cn/s/share-id",
+                List.of(file("06.12.mp4"), subtitle("06.12.zh-CN.srt"))
+        );
+
+        QasIngestPlan plan = planner.planVariety(
+                "节目",
+                2,
+                "/Variety/节目/Season 02",
+                tree,
+                Map.of(LocalDate.of(2022, 6, 19), List.of(1))
         );
 
         assertThat(plan.tasks()).singleElement().satisfies(task -> {
-            assertThat(task.pattern()).isEmpty();
-            assertThat(task.replace()).isEmpty();
+            assertThat(task.replace()).isEqualTo("节目 - 2022-\\1-\\2\\3.\\4");
+            assertThat(task.renameSamples()).extracting(QasRenameSample::targetName)
+                    .containsExactly("节目 - 2022-06-12.mp4", "节目 - 2022-06-12.zh-CN.srt");
         });
-        assertThat(plan.warnings()).anyMatch(message -> message.contains("空重命名规则"));
     }
 
     @Test
@@ -376,6 +485,28 @@ class QuarkIngestPlannerTest {
         assertThat(plan.tasks()).singleElement().satisfies(task -> {
             assertThat(task.sourceUrl()).isEqualTo("https://pan.quark.cn/s/share-id/s2-fid");
             assertThat(task.replace()).isEqualTo("测试剧 - S02E\\1\\2.\\3");
+        });
+    }
+
+    @Test
+    void ignoresShortDateFilesOutsideRequestedVarietySeason() {
+        QasShareTree tree = new QasShareTree(
+                "https://pan.quark.cn/s/share-id",
+                List.of(directory(
+                        "wrapper-fid",
+                        "综艺全集",
+                        directory("s1-fid", "Season 1", file("06.12.mp4")),
+                        directory("s2-fid", "Season 2", file("01.mp4"), file("02.mp4"))
+                ))
+        );
+
+        QasIngestPlan plan = planner.planVariety(
+                "测试综艺", 2, "/Variety/测试综艺/Season 02", tree, Map.of()
+        );
+
+        assertThat(plan.tasks()).singleElement().satisfies(task -> {
+            assertThat(task.sourceUrl()).isEqualTo("https://pan.quark.cn/s/share-id/s2-fid");
+            assertThat(task.replace()).isEqualTo("测试综艺 - S02E\\1\\2.\\3");
         });
     }
 
