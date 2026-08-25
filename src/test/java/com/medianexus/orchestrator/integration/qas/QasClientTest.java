@@ -24,6 +24,7 @@ class QasClientTest {
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final List<JsonNode> executionPayloads = new CopyOnWriteArrayList<>();
     private final List<JsonNode> createPayloads = new CopyOnWriteArrayList<>();
+    private final List<JsonNode> taskListRequests = new CopyOnWriteArrayList<>();
     private HttpServer server;
     private QasClient client;
 
@@ -39,6 +40,11 @@ class QasClientTest {
             JsonNode payload = readJson(exchange);
             createPayloads.add(payload);
             respond(exchange, 200, "{\"success\":true,\"data\":" + payload + "}");
+        });
+        server.createContext("/data", exchange -> {
+            taskListRequests.add(objectMapper.createObjectNode());
+            respond(exchange, 200, "{\"success\":true,\"data\":{\"tasklist\":["
+                    + "{\"taskname\":\"旧任务\",\"shareurl\":\"https://pan.quark.cn/s/existing\"}]}}");
         });
         server.start();
 
@@ -120,6 +126,49 @@ class QasClientTest {
         assertThat(createPayloads).singleElement().satisfies(payload -> {
             assertThat(payload.path("pattern").asText()).isEqualTo("^(\\d{2,3})\\.(mkv|mp4)$");
             assertThat(payload.path("replace").asText()).isEqualTo("我的阿勒泰 - S01E\\1 - 4K.\\2");
+            assertThat(payload.has("runweek")).isFalse();
+        });
+    }
+
+    @Test
+    void distinguishesLegacySchedulingFromExplicitOneTimeAndDailyTasks() {
+        client.createTask(new QasTaskCreateCommand(
+                "legacy", "https://pan.quark.cn/s/legacy", "/TV/A", "pattern", "replace"
+        ));
+        client.createTask(new QasTaskCreateCommand(
+                "one-time", "https://pan.quark.cn/s/one-time", "/TV/A", "pattern", "replace", List.of(), null
+        ));
+        client.createTask(new QasTaskCreateCommand(
+                "daily", "https://pan.quark.cn/s/daily", "/TV/A", "pattern", "replace",
+                List.of(1, 2, 3, 4, 5, 6, 7), null
+        ));
+
+        assertThat(createPayloads).hasSize(3);
+        assertThat(createPayloads.get(0).has("runweek")).isFalse();
+        assertThat(createPayloads.get(1).path("runweek")).isEmpty();
+        assertThat(createPayloads.get(2).path("runweek")).extracting(JsonNode::asInt)
+                .containsExactly(1, 2, 3, 4, 5, 6, 7);
+    }
+
+    @Test
+    void readsExistingTasksForStableNameAndSourceDuplicateChecks() {
+        assertThat(client.findTask("旧任务", "https://pan.quark.cn/s/existing"))
+                .isPresent()
+                .get()
+                .extracting(QasExistingTask::taskName)
+                .isEqualTo("旧任务");
+        assertThat(taskListRequests).hasSize(1);
+    }
+
+    @Test
+    void removesSchedulerFieldsFromImmediateExecutionCopy() throws Exception {
+        JsonNode document = objectMapper.readTree("{\"taskname\":\"A\",\"runweek\":[1,2],\"enddate\":\"2099-01-01\"}");
+        client.triggerTasksNow(List.of(new QasCreatedTask("A", "/TV/A", document)));
+
+        assertThat(executionPayloads).singleElement().satisfies(payload -> {
+            JsonNode task = payload.path("tasklist").get(0);
+            assertThat(task.has("runweek")).isFalse();
+            assertThat(task.has("enddate")).isFalse();
         });
     }
 

@@ -23,6 +23,7 @@ import java.time.Duration;
 import java.util.Locale;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
@@ -73,6 +74,13 @@ public class QasClient {
         payload.put("savepath", command.savePath());
         payload.put("pattern", command.pattern());
         payload.put("replace", command.replace());
+        if (command.runWeek() != null) {
+            ArrayNode runWeek = payload.putArray("runweek");
+            command.runWeek().forEach(runWeek::add);
+        }
+        if (StringUtils.hasText(command.endDate())) {
+            payload.put("enddate", command.endDate());
+        }
 
         HttpResponse<String> response = sendText("/api/add_task", payload);
         JsonNode root = parseResponse(response.body());
@@ -87,7 +95,64 @@ public class QasClient {
         if (taskDocument == null || !taskDocument.isObject()) {
             throw new QasClientException(Reason.INVALID_RESPONSE, "QAS task response has no data object");
         }
-        return new QasCreatedTask(command.taskName(), command.savePath(), taskDocument.deepCopy());
+        ObjectNode document = taskDocument.deepCopy();
+        // Some QAS versions omit scheduler fields from the response document.
+        // Keep the values used for creation so an immediate run can explicitly
+        // remove them without changing the persisted task.
+        if (command.runWeek() != null && !document.has("runweek")) {
+            ArrayNode persistedRunWeek = document.putArray("runweek");
+            command.runWeek().forEach(persistedRunWeek::add);
+        }
+        if (StringUtils.hasText(command.endDate()) && !document.has("enddate")) {
+            document.put("enddate", command.endDate());
+        }
+        return new QasCreatedTask(command.taskName(), command.savePath(), document);
+    }
+
+    /**
+     * Reads QAS' current task list.  QAS deployments have returned both a
+     * plain array and an object containing {@code data} or {@code tasklist};
+     * this adapter normalizes those response variants for duplicate checks.
+     */
+    public List<QasExistingTask> listTasks() {
+        HttpResponse<String> response = sendGetText("/data");
+        JsonNode root;
+        try {
+            root = objectMapper.readTree(response.body());
+        } catch (JsonProcessingException exception) {
+            throw new QasClientException(Reason.INVALID_RESPONSE, "QAS task list response parsing failed", exception);
+        }
+        if (root == null || (!root.isObject() && !root.isArray())) {
+            throw new QasClientException(Reason.INVALID_RESPONSE, "QAS task list returned an invalid response");
+        }
+        if (response.statusCode() == 401 || isAuthenticationFailure(root)) {
+            throw new QasClientException(Reason.AUTHENTICATION, upstreamMessage(root, "QAS authentication failed"));
+        }
+        if (response.statusCode() < 200 || response.statusCode() >= 300) {
+            throw new QasClientException(Reason.UPSTREAM, upstreamMessage(root, "QAS task list request failed"));
+        }
+        JsonNode items = root.isArray() ? root : firstArray(root.path("data"), root.path("tasklist"), root.path("tasks"));
+        if (items == null || !items.isArray()) {
+            throw new QasClientException(Reason.INVALID_RESPONSE, "QAS task list has no array data");
+        }
+        List<QasExistingTask> tasks = new ArrayList<>();
+        for (JsonNode item : items) {
+            if (!item.isObject()) {
+                continue;
+            }
+            String taskName = firstText(item, "taskname", "task_name", "name");
+            String shareUrl = firstText(item, "shareurl", "share_url", "url");
+            if (StringUtils.hasText(taskName) && StringUtils.hasText(shareUrl)) {
+                tasks.add(new QasExistingTask(taskName, shareUrl, item.deepCopy()));
+            }
+        }
+        return List.copyOf(tasks);
+    }
+
+    public Optional<QasExistingTask> findTask(String taskName, String shareUrl) {
+        return listTasks().stream()
+                .filter(task -> taskName.equals(task.taskName()) && shareUrl.equals(task.shareUrl()))
+                .findFirst();
     }
 
     /**
@@ -123,7 +188,16 @@ public class QasClient {
         }
         ObjectNode payload = objectMapper.createObjectNode();
         ArrayNode taskList = payload.putArray("tasklist");
-        tasks.forEach(task -> taskList.add(task.document()));
+        tasks.forEach(task -> {
+            JsonNode document = task.document().deepCopy();
+            if (document.isObject()) {
+                ((ObjectNode) document).remove("runweek");
+                ((ObjectNode) document).remove("runWeek");
+                ((ObjectNode) document).remove("enddate");
+                ((ObjectNode) document).remove("endDate");
+            }
+            taskList.add(document);
+        });
         HttpRequest request = jsonRequest("/run_script_now", payload).build();
 
         try {
@@ -297,6 +371,22 @@ public class QasClient {
         }
     }
 
+    private HttpResponse<String> sendGetText(String path) {
+        try {
+            return httpClient.send(
+                    getRequest(path).build(),
+                    HttpResponse.BodyHandlers.ofString()
+            );
+        } catch (HttpTimeoutException exception) {
+            throw new QasClientException(Reason.UPSTREAM, "QAS request timed out", exception);
+        } catch (IOException exception) {
+            throw new QasClientException(Reason.UPSTREAM, "QAS request failed", exception);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new QasClientException(Reason.UPSTREAM, "QAS request interrupted", exception);
+        }
+    }
+
     private HttpRequest.Builder jsonRequest(String path, JsonNode payload) {
         return jsonRequest(path, payload, timeout());
     }
@@ -312,6 +402,43 @@ public class QasClient {
                 .timeout(requestTimeout)
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(body));
+    }
+
+    private HttpRequest.Builder getRequest(String path) {
+        return HttpRequest.newBuilder(endpoint(path))
+                .timeout(timeout())
+                .header("Accept", "application/json")
+                .GET();
+    }
+
+    private JsonNode firstArray(JsonNode... candidates) {
+        for (JsonNode candidate : candidates) {
+            if (candidate != null && candidate.isArray()) {
+                return candidate;
+            }
+            if (candidate != null && candidate.isObject()) {
+                JsonNode nested = firstArray(
+                        candidate.path("items"),
+                        candidate.path("tasks"),
+                        candidate.path("tasklist"),
+                        candidate.path("list")
+                );
+                if (nested != null) {
+                    return nested;
+                }
+            }
+        }
+        return null;
+    }
+
+    private String firstText(JsonNode node, String... fields) {
+        for (String field : fields) {
+            String value = node.path(field).asText("").trim();
+            if (StringUtils.hasText(value)) {
+                return value;
+            }
+        }
+        return "";
     }
 
     private URI endpoint(String path) {

@@ -14,6 +14,7 @@ import com.medianexus.orchestrator.integration.qas.QasClient;
 import com.medianexus.orchestrator.integration.qas.QasClientException;
 import com.medianexus.orchestrator.integration.qas.QasCreatedTask;
 import com.medianexus.orchestrator.integration.qas.QasExecutionObserver;
+import com.medianexus.orchestrator.integration.qas.QasExistingTask;
 import com.medianexus.orchestrator.integration.qas.QasShareInspectionException;
 import com.medianexus.orchestrator.integration.qas.QasShareNode;
 import com.medianexus.orchestrator.integration.qas.QasShareTree;
@@ -363,6 +364,7 @@ public class QuarkIngestService {
 
     private QuarkIngestTaskResponse createAndTrigger(String mediaType, String title, QasIngestPlan plan) {
         User user = authService.requireCurrentUser();
+        ensureNoDuplicateQasTasks(plan);
         QuarkIngestTask ingestTask = createIngestRecord(user, mediaType, title, plan);
         writePlanLogs(ingestTask.getId(), mediaType, plan);
         List<QasCreatedTask> createdTasks = new ArrayList<>();
@@ -452,6 +454,27 @@ public class QuarkIngestService {
                 List.copyOf(warnings),
                 message
         );
+    }
+
+    private void ensureNoDuplicateQasTasks(QasIngestPlan plan) {
+        List<QasExistingTask> existing;
+        try {
+            existing = qasClient.listTasks();
+        } catch (QasClientException exception) {
+            throw mapCreateFailure(exception);
+        }
+        if (existing == null) {
+            existing = List.of();
+        }
+        for (QasTaskPlan planned : plan.tasks()) {
+            boolean duplicate = existing.stream().anyMatch(task ->
+                    planned.taskName().equals(task.taskName())
+                            && planned.sourceUrl().equals(task.shareUrl())
+            );
+            if (duplicate) {
+                throw badRequest("QAS 中已存在同名同来源任务：" + planned.taskName());
+            }
+        }
     }
 
     private String resultMessage(
@@ -549,13 +572,13 @@ public class QuarkIngestService {
             String rule = StringUtils.hasText(task.renameRule()) ? task.renameRule() : "自动识别";
             writeLog(taskId, "INFO", "planning", "已生成重命名计划",
                     "任务：" + task.taskName() + "；规则：" + rule + "；匹配文件：" + task.matchedFileCount());
-            for (QasRenameSample sample : task.renameSamples()) {
+            for (QasRenameSample sample : task.renameSamples().stream().limit(20).toList()) {
                 writeLog(taskId, "INFO", "rename_preview", "改名预览",
                         sample.sourceName() + " → " + sample.targetName());
             }
-            if (task.matchedFileCount() > task.renameSamples().size()) {
+            if (task.matchedFileCount() > 20) {
                 writeLog(taskId, "INFO", "rename_preview", "改名预览已截断",
-                        "仅展示前 " + task.renameSamples().size() + "/" + task.matchedFileCount() + " 个文件");
+                        "仅展示前 20/" + task.matchedFileCount() + " 个文件");
             }
         }
         for (String warning : plan.warnings()) {

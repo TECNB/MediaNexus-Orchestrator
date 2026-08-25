@@ -3,11 +3,15 @@ package com.medianexus.orchestrator.controller;
 import com.medianexus.orchestrator.common.response.ApiResponse;
 import com.medianexus.orchestrator.dto.quark.request.MovieQuarkIngestRequest;
 import com.medianexus.orchestrator.dto.quark.request.SeriesQuarkIngestRequest;
+import com.medianexus.orchestrator.dto.quark.request.QuarkMultiSourceRequest;
 import com.medianexus.orchestrator.dto.quark.response.QuarkIngestTaskResponse;
 import com.medianexus.orchestrator.dto.quark.response.QuarkIngestTaskListResponse;
 import com.medianexus.orchestrator.dto.quark.response.QuarkIngestTaskLogListResponse;
 import com.medianexus.orchestrator.dto.quark.response.QuarkIngestPreviewResponse;
 import com.medianexus.orchestrator.service.QuarkIngestService;
+import com.medianexus.orchestrator.service.QuarkMultiSourceIngestService;
+import com.medianexus.orchestrator.dto.quark.response.QuarkMultiSourcePreviewResponse;
+import com.medianexus.orchestrator.dto.quark.response.QuarkMultiSourceTaskResponse;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -24,9 +28,14 @@ import org.springframework.web.bind.annotation.RestController;
 public class QuarkIngestController {
 
     private final QuarkIngestService quarkIngestService;
+    private final QuarkMultiSourceIngestService quarkMultiSourceIngestService;
 
-    public QuarkIngestController(QuarkIngestService quarkIngestService) {
+    public QuarkIngestController(
+            QuarkIngestService quarkIngestService,
+            QuarkMultiSourceIngestService quarkMultiSourceIngestService
+    ) {
         this.quarkIngestService = quarkIngestService;
+        this.quarkMultiSourceIngestService = quarkMultiSourceIngestService;
     }
 
     @PostMapping("/movies/tasks")
@@ -75,6 +84,54 @@ public class QuarkIngestController {
             @Valid @RequestBody SeriesQuarkIngestRequest request
     ) {
         return ApiResponse.success(quarkIngestService.previewVariety(request));
+    }
+
+    @PostMapping("/series/tree-preview")
+    @Operation(summary = "检查电视剧 Quark 分享目录树")
+    public ApiResponse<QuarkMultiSourcePreviewResponse> previewSeriesTree(
+            @Valid @RequestBody QuarkMultiSourceRequest request
+    ) {
+        return ApiResponse.success(quarkMultiSourceIngestService.previewStructure(request, "SERIES"));
+    }
+
+    @PostMapping("/series/plan-preview")
+    @Operation(summary = "预览电视剧多来源季度映射和逐文件改名")
+    public ApiResponse<QuarkMultiSourcePreviewResponse> previewSeriesPlan(
+            @Valid @RequestBody QuarkMultiSourceRequest request
+    ) {
+        return ApiResponse.success(quarkMultiSourceIngestService.previewPlan(request, "SERIES"));
+    }
+
+    @PostMapping("/series/batch-tasks")
+    @Operation(summary = "创建电视剧多来源 QAS 任务")
+    public ApiResponse<QuarkMultiSourceTaskResponse> createSeriesBatchTasks(
+            @Valid @RequestBody QuarkMultiSourceRequest request
+    ) {
+        return ApiResponse.success(quarkMultiSourceIngestService.ingest(request, "SERIES"));
+    }
+
+    @PostMapping("/variety/tree-preview")
+    @Operation(summary = "检查综艺 Quark 分享目录树")
+    public ApiResponse<QuarkMultiSourcePreviewResponse> previewVarietyTree(
+            @Valid @RequestBody QuarkMultiSourceRequest request
+    ) {
+        return ApiResponse.success(quarkMultiSourceIngestService.previewStructure(request, "VARIETY"));
+    }
+
+    @PostMapping("/variety/plan-preview")
+    @Operation(summary = "预览综艺多来源季度映射和逐文件改名")
+    public ApiResponse<QuarkMultiSourcePreviewResponse> previewVarietyPlan(
+            @Valid @RequestBody QuarkMultiSourceRequest request
+    ) {
+        return ApiResponse.success(quarkMultiSourceIngestService.previewPlan(request, "VARIETY"));
+    }
+
+    @PostMapping("/variety/batch-tasks")
+    @Operation(summary = "创建综艺多来源 QAS 任务")
+    public ApiResponse<QuarkMultiSourceTaskResponse> createVarietyBatchTasks(
+            @Valid @RequestBody QuarkMultiSourceRequest request
+    ) {
+        return ApiResponse.success(quarkMultiSourceIngestService.ingest(request, "VARIETY"));
     }
 
     @GetMapping("/tasks")

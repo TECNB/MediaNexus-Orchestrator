@@ -20,7 +20,8 @@ import org.springframework.stereotype.Component;
 @Component
 public class QuarkIngestPlanner {
 
-    private static final int MAX_RENAME_SAMPLES = 20;
+    /** The share inspector caps trees at 500 nodes; previews use the same bound. */
+    private static final int MAX_RENAME_SAMPLES = 500;
     private static final Pattern PURE_NUMBER = Pattern.compile(
             "^(?!\\d{1,2}\\.\\d{2}(?:\\D|$))(\\d{2,3})((?:\\.[^.]+)*)\\.(mkv|mp4|avi|mov|wmv|flv|ts|m2ts|webm|rmvb|srt|ass|ssa|vtt|sub)$"
     );
