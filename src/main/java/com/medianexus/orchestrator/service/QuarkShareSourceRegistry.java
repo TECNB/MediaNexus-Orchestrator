@@ -267,7 +267,8 @@ public class QuarkShareSourceRegistry {
         }
         Matcher matcher = SEASON.matcher(value);
         while (matcher.find()) {
-            numbers.add(Integer.parseInt(matcher.group(1)));
+            String season = matcher.group(1) != null ? matcher.group(1) : matcher.group(2);
+            numbers.add(Integer.parseInt(season));
         }
         Matcher episode = EPISODE_SEASON.matcher(value);
         while (episode.find()) {

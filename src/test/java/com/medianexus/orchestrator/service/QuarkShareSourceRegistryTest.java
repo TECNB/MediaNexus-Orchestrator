@@ -67,6 +67,23 @@ class QuarkShareSourceRegistryTest {
     }
 
     @Test
+    void detectsAnArabicSeasonNumberInAChineseDirectoryName() {
+        QasShareTree tree = new QasShareTree(
+                "https://pan.quark.cn/s/share-id",
+                List.of(directory("s5", "第5季", file("01.mkv")))
+        );
+
+        QuarkShareSourceRegistry.PreviewSession session = registry.create(
+                "https://pan.quark.cn/s/share-id", "VARIETY", tree
+        );
+
+        assertThat(session.candidates().values()).singleElement().satisfies(candidate -> {
+            assertThat(candidate.detectedSeason()).isEqualTo(5);
+            assertThat(candidate.seasonStatus()).isEqualTo("AUTO");
+        });
+    }
+
+    @Test
     void prefersTheCurrentSeasonDirectoryOverAnAncestorCollectionRange() {
         QasShareTree tree = new QasShareTree(
                 "https://pan.quark.cn/s/share-id",
