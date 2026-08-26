@@ -14,6 +14,7 @@ import com.medianexus.orchestrator.dto.quark.response.QuarkSourcePlanResponse;
 import com.medianexus.orchestrator.dto.quark.response.QuarkSourceTaskResultResponse;
 import com.medianexus.orchestrator.dto.quark.response.QuarkSourceTreeNodeResponse;
 import com.medianexus.orchestrator.integration.qas.QasClient;
+import com.medianexus.orchestrator.integration.quark.QuarkShareTreeClient;
 import com.medianexus.orchestrator.integration.qas.QasClientException;
 import com.medianexus.orchestrator.integration.qas.QasCreatedTask;
 import com.medianexus.orchestrator.integration.qas.QasExecutionObserver;
@@ -60,6 +61,7 @@ public class QuarkMultiSourceIngestService {
     private static final List<Integer> ALL_WEEKDAYS = List.of(1, 2, 3, 4, 5, 6, 7);
 
     private final QasClient qasClient;
+    private final QuarkShareTreeClient quarkShareTreeClient;
     private final QasProperties qasProperties;
     private final TmdbProperties tmdbProperties;
     private final AuthService authService;
@@ -71,6 +73,7 @@ public class QuarkMultiSourceIngestService {
 
     public QuarkMultiSourceIngestService(
             QasClient qasClient,
+            QuarkShareTreeClient quarkShareTreeClient,
             QasProperties qasProperties,
             TmdbProperties tmdbProperties,
             AuthService authService,
@@ -81,6 +84,7 @@ public class QuarkMultiSourceIngestService {
             QuarkIngestTaskLogMapper taskLogMapper
     ) {
         this.qasClient = qasClient;
+        this.quarkShareTreeClient = quarkShareTreeClient;
         this.qasProperties = qasProperties;
         this.tmdbProperties = tmdbProperties;
         this.authService = authService;
@@ -709,9 +713,19 @@ public class QuarkMultiSourceIngestService {
 
     private QasShareTree inspect(String shareUrl) {
         try {
-            return qasClient.inspectShare(shareUrl);
+            return quarkShareTreeClient.inspectShare(shareUrl);
         } catch (QasShareInspectionException exception) {
-            throw new BusinessException(ErrorCode.BAD_GATEWAY, "QAS 分享检查失败：" + safeMessage(exception.getMessage()), HttpStatus.BAD_GATEWAY);
+            try {
+                return qasClient.inspectShare(shareUrl);
+            } catch (QasShareInspectionException fallback) {
+                throw new BusinessException(ErrorCode.BAD_GATEWAY, "夸克分享检查失败：" + safeMessage(fallback.getMessage()), HttpStatus.BAD_GATEWAY);
+            }
+        } catch (QasClientException exception) {
+            try {
+                return qasClient.inspectShare(shareUrl);
+            } catch (QasShareInspectionException fallback) {
+                throw new BusinessException(ErrorCode.BAD_GATEWAY, "夸克分享检查失败：" + safeMessage(fallback.getMessage()), HttpStatus.BAD_GATEWAY);
+            }
         }
     }
 

@@ -125,6 +125,7 @@ medianexus:
   qas:
     base-url: ${MEDIANEXUS_QAS_BASE_URL:}
     api-token: ${MEDIANEXUS_QAS_API_TOKEN:}
+    quark-cookie: ${MEDIANEXUS_QUARK_COOKIE:}
     timeout: ${MEDIANEXUS_QAS_TIMEOUT:15s}
     movie-root-path: ${MEDIANEXUS_QAS_MOVIE_ROOT_PATH:/Movie}
     tv-root-path: ${MEDIANEXUS_QAS_TV_ROOT_PATH:/TV}

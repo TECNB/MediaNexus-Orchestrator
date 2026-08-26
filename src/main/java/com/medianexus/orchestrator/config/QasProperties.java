@@ -14,6 +14,9 @@ public class QasProperties {
 
     private String apiToken;
 
+    /** Optional Quark account cookie used by the direct share-tree preview client. */
+    private String quarkCookie;
+
     @NotNull
     @DurationMin(seconds = 1)
     private Duration timeout;
@@ -38,6 +41,14 @@ public class QasProperties {
 
     public void setApiToken(String apiToken) {
         this.apiToken = apiToken;
+    }
+
+    public String getQuarkCookie() {
+        return quarkCookie;
+    }
+
+    public void setQuarkCookie(String quarkCookie) {
+        this.quarkCookie = quarkCookie;
     }
 
     public Duration getTimeout() {
