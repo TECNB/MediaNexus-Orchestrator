@@ -2,6 +2,8 @@ package com.medianexus.orchestrator.integration.quark;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.medianexus.orchestrator.config.QasProperties;
 import com.medianexus.orchestrator.integration.qas.QasClientException;
 import com.medianexus.orchestrator.integration.qas.QasShareInspectionException;
@@ -103,20 +105,35 @@ public class QuarkShareTreeClient {
     }
 
     private JsonNode requestDetail(String shareId, String stoken, String fid) {
-        String query = "?pr=ucpro&fr=pc&pwd_id=" + enc(shareId)
-                + "&stoken=" + enc(stoken)
-                + "&pdir_fid=" + enc(fid)
-                + "&force=0&_page=1&_size=100&_fetch_banner=0&_fetch_share=1&_fetch_total=1"
-                + "&_sort=file_type:asc,updated_at:desc&ver=2&fetch_share_full_path=1";
-        JsonNode root = send(requestBuilder(API_BASE + "/share/sharepage/detail" + query).GET().build());
-        if (root.path("code").asInt(0) != 0 && !root.path("success").asBoolean(false)) {
-            throw new QasShareInspectionException(QasClientException.Reason.UPSTREAM, "夸克分享目录读取失败", false);
+        ObjectNode merged = null;
+        int page = 1;
+        while (true) {
+            String query = "?pr=ucpro&fr=pc&pwd_id=" + enc(shareId)
+                    + "&stoken=" + enc(stoken)
+                    + "&pdir_fid=" + enc(fid)
+                    + "&force=0&_page=" + page + "&_size=50&_fetch_banner=0&_fetch_share=1&_fetch_total=1"
+                    + "&_sort=file_type:asc,updated_at:desc&ver=2&fetch_share_full_path=1";
+            JsonNode root = send(requestBuilder(API_BASE + "/share/sharepage/detail" + query).GET().build());
+            if (root.path("code").asInt(0) != 0 && !root.path("success").asBoolean(false)) {
+                throw new QasShareInspectionException(QasClientException.Reason.UPSTREAM, "夸克分享目录读取失败", false);
+            }
+            JsonNode data = root.path("data");
+            if (!data.isObject() || !data.path("list").isArray()) {
+                throw new QasShareInspectionException(QasClientException.Reason.INVALID_RESPONSE, "夸克分享目录响应无 data.list", false);
+            }
+            if (merged == null) {
+                merged = ((ObjectNode) data).deepCopy();
+                merged.set("list", objectMapper.createArrayNode());
+            }
+            ArrayNode list = (ArrayNode) merged.path("list");
+            data.path("list").forEach(list::add);
+            int expected = data.path("metadata").path("_total").asInt(0);
+            if (data.path("list").size() < 50 || (expected > 0 && list.size() >= expected)) {
+                break;
+            }
+            page++;
         }
-        JsonNode data = root.path("data");
-        if (!data.isObject() || !data.path("list").isArray()) {
-            throw new QasShareInspectionException(QasClientException.Reason.INVALID_RESPONSE, "夸克分享目录响应无 data.list", false);
-        }
-        return data;
+        return merged;
     }
 
     private JsonNode send(HttpRequest request) {
