@@ -66,6 +66,61 @@ class QuarkShareSourceRegistryTest {
         });
     }
 
+    @Test
+    void prefersTheCurrentSeasonDirectoryOverAnAncestorCollectionRange() {
+        QasShareTree tree = new QasShareTree(
+                "https://pan.quark.cn/s/share-id",
+                List.of(directory(
+                        "pack", "欢乐喜剧人 S1-S7 合集",
+                        directory("s2", "S2", file("第一期.mkv"))
+                ))
+        );
+
+        QuarkShareSourceRegistry.PreviewSession session = registry.create(
+                "https://pan.quark.cn/s/share-id", "VARIETY", tree
+        );
+
+        assertThat(session.candidates().values()).singleElement().satisfies(candidate -> {
+            assertThat(candidate.sourceName()).isEqualTo("S2");
+            assertThat(candidate.detectedSeason()).isEqualTo(2);
+            assertThat(candidate.seasonStatus()).isEqualTo("AUTO");
+        });
+    }
+
+    @Test
+    void rejectsASeasonDirectoryWhoseFilesDeclareAnotherSeason() {
+        QasShareTree tree = new QasShareTree(
+                "https://pan.quark.cn/s/share-id",
+                List.of(directory("s1", "S1", file("Show.S02E01.mkv")))
+        );
+
+        QuarkShareSourceRegistry.PreviewSession session = registry.create(
+                "https://pan.quark.cn/s/share-id", "SERIES", tree
+        );
+
+        assertThat(session.candidates().values()).singleElement().satisfies(candidate -> {
+            assertThat(candidate.detectedSeason()).isNull();
+            assertThat(candidate.seasonStatus()).isEqualTo("MIXED");
+        });
+    }
+
+    @Test
+    void marksAPlayableSeasonRangeDirectoryAsMixed() {
+        QasShareTree tree = new QasShareTree(
+                "https://pan.quark.cn/s/share-id",
+                List.of(directory("pack", "欢乐喜剧人 S1-S7 合集", file("01.mkv")))
+        );
+
+        QuarkShareSourceRegistry.PreviewSession session = registry.create(
+                "https://pan.quark.cn/s/share-id", "VARIETY", tree
+        );
+
+        assertThat(session.candidates().values()).singleElement().satisfies(candidate -> {
+            assertThat(candidate.detectedSeason()).isNull();
+            assertThat(candidate.seasonStatus()).isEqualTo("MIXED");
+        });
+    }
+
     private static QasShareNode directory(String fid, String name, QasShareNode... children) {
         return new QasShareNode(fid, name, true, null, 0, List.of(children));
     }

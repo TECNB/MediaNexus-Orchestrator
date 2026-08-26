@@ -35,6 +35,10 @@ public class QuarkIngestPlanner {
             "^(\\d{2})[.-](\\d{2})(.*)\\.(" + MEDIA_EXTENSIONS + ")$",
             Pattern.CASE_INSENSITIVE
     );
+    private static final Pattern SHORT_YEAR_DATE_MEDIA = Pattern.compile(
+            "^(\\d{2})(\\d{2})(\\d{2})(?!\\d)(.*)\\.(" + MEDIA_EXTENSIONS + ")$",
+            Pattern.CASE_INSENSITIVE
+    );
     private static final Pattern VARIETY_ISSUE = Pattern.compile(
             "第\\s*(\\d{1,3}|[一二三四五六七八九十]{1,3})\\s*期"
     );
@@ -102,6 +106,15 @@ public class QuarkIngestPlanner {
         ContentRoot selectedContent = unwrapSingleDirectory(shareTree.sourceUrl(), shareTree.entries());
         selectedContent = selectRequestedSeason(selectedContent, seasonNumber);
         selectedContent = unwrapSingleDirectory(selectedContent.sourceUrl(), selectedContent.entries());
+        Integer shortYearCentury = resolveShortYearCentury(selectedContent.entries(), airDateEpisodes);
+        if (shortYearCentury != null) {
+            candidates.addAll(varietyShortYearDateCandidates(title, shortYearCentury));
+        } else if (containsShortYearDateMedia(selectedContent.entries())) {
+            throw new QuarkIngestPlanningException(
+                    QuarkIngestPlanningException.Reason.DATE_MAPPING_REQUIRED,
+                    "六位日期综艺文件需要 TMDB Season Details 确认完整年份"
+            );
+        }
         Set<Integer> shortDateYears = resolveShortDateYears(selectedContent.entries(), airDateEpisodes);
         if (!shortDateYears.isEmpty()) {
             if (shortDateYears.size() > 1) {
@@ -650,6 +663,38 @@ public class QuarkIngestPlanner {
         );
     }
 
+    private List<RuleCandidate> varietyShortYearDateCandidates(String title, int century) {
+        String yearPrefix = Integer.toString(century);
+        return List.of(
+                dateCandidate(
+                        "播出日期（六位日期）",
+                        "^(\\d{2})(\\d{2})(\\d{2})(?!\\d)((?:\\.[^.]+)*)\\.(" + MEDIA_EXTENSIONS + ")$",
+                        title + " - " + yearPrefix + "\\1-\\2-\\3\\4.\\5",
+                        matcher -> title + " - " + yearPrefix + matcher.group(1) + "-"
+                                + matcher.group(2) + "-" + matcher.group(3)
+                                + matcher.group(4) + "." + matcher.group(5),
+                        matcher -> LocalDate.of(
+                                century * 100 + Integer.parseInt(matcher.group(1)),
+                                Integer.parseInt(matcher.group(2)),
+                                Integer.parseInt(matcher.group(3))
+                        )
+                ),
+                dateCandidate(
+                        "播出日期（六位日期）",
+                        "^(\\d{2})(\\d{2})(\\d{2})(?!\\d)[ ._-]*(.+?)\\.(" + MEDIA_EXTENSIONS + ")$",
+                        title + " - " + yearPrefix + "\\1-\\2-\\3 - \\4.\\5",
+                        matcher -> title + " - " + yearPrefix + matcher.group(1) + "-"
+                                + matcher.group(2) + "-" + matcher.group(3) + " - "
+                                + matcher.group(4).trim() + "." + matcher.group(5),
+                        matcher -> LocalDate.of(
+                                century * 100 + Integer.parseInt(matcher.group(1)),
+                                Integer.parseInt(matcher.group(2)),
+                                Integer.parseInt(matcher.group(3))
+                        )
+                )
+        );
+    }
+
     private RuleCandidate dateCandidate(String pattern, String title) {
         return dateCandidate(
                 "播出日期",
@@ -977,6 +1022,61 @@ public class QuarkIngestPlanner {
         return nodes.stream().anyMatch(node -> node.directory()
                 ? containsMonthDayMedia(node.children())
                 : node.name() != null && MONTH_DAY_MEDIA.matcher(node.name()).matches());
+    }
+
+    private boolean containsShortYearDateMedia(List<QasShareNode> nodes) {
+        return nodes.stream().anyMatch(node -> node.directory()
+                ? containsShortYearDateMedia(node.children())
+                : node.name() != null && SHORT_YEAR_DATE_MEDIA.matcher(node.name()).matches());
+    }
+
+    private Integer resolveShortYearCentury(
+            List<QasShareNode> nodes,
+            Map<LocalDate, List<Integer>> airDateEpisodes
+    ) {
+        if (airDateEpisodes == null || airDateEpisodes.isEmpty()) {
+            return null;
+        }
+        Set<Integer> centuries = new HashSet<>();
+        collectShortYearCenturies(nodes, airDateEpisodes.keySet(), centuries);
+        if (centuries.isEmpty()) {
+            return null;
+        }
+        if (centuries.size() > 1) {
+            throw new QuarkIngestPlanningException("六位日期文件跨越多个世纪，无法使用单一 QAS 规则安全命名");
+        }
+        return centuries.iterator().next();
+    }
+
+    private void collectShortYearCenturies(
+            List<QasShareNode> nodes,
+            Set<LocalDate> seasonDates,
+            Set<Integer> centuries
+    ) {
+        for (QasShareNode node : nodes) {
+            if (node.directory()) {
+                collectShortYearCenturies(node.children(), seasonDates, centuries);
+                continue;
+            }
+            Matcher matcher = node.name() == null ? null : SHORT_YEAR_DATE_MEDIA.matcher(node.name());
+            if (matcher == null || !matcher.matches()) {
+                continue;
+            }
+            int shortYear = Integer.parseInt(matcher.group(1));
+            int month = Integer.parseInt(matcher.group(2));
+            int day = Integer.parseInt(matcher.group(3));
+            List<LocalDate> matches = seasonDates.stream()
+                    .filter(date -> date.getYear() % 100 == shortYear
+                            && date.getMonthValue() == month
+                            && date.getDayOfMonth() == day)
+                    .toList();
+            if (matches.size() != 1) {
+                throw new QuarkIngestPlanningException(
+                        "TMDB 中无法唯一确认六位日期 " + matcher.group(1) + matcher.group(2) + matcher.group(3)
+                );
+            }
+            centuries.add(matches.get(0).getYear() / 100);
+        }
     }
 
     private Set<Integer> resolveShortDateYears(
@@ -1401,11 +1501,15 @@ public class QuarkIngestPlanner {
     }
 
     private ContentRoot selectRequestedSeason(ContentRoot contentRoot, int seasonNumber) {
-        if (contentRoot.entries().size() < 2
-                || contentRoot.entries().stream().anyMatch(node -> !node.directory())) {
+        List<QasShareNode> directories = contentRoot.entries().stream()
+                .filter(QasShareNode::directory)
+                .toList();
+        boolean hasDirectMedia = contentRoot.entries().stream()
+                .anyMatch(node -> !node.directory() && isMediaFile(node.name()));
+        if (directories.size() < 2 || hasDirectMedia) {
             return contentRoot;
         }
-        List<SeasonDirectory> allDirectories = contentRoot.entries().stream()
+        List<SeasonDirectory> allDirectories = directories.stream()
                 .map(directory -> new SeasonDirectory(directory, seasonNumberFrom(directory.name())))
                 .toList();
         List<SeasonDirectory> seasonDirectories = allDirectories.stream()

@@ -34,6 +34,9 @@ public class QuarkShareSourceRegistry {
     private static final Pattern SEASON = Pattern.compile(
             "(?i)(?:^|[^a-z0-9])(?:s(?:eason)?[ ._-]*0?(\\d{1,2})|第\\s*0?(\\d{1,2})\\s*季)(?:[^0-9]|$)"
     );
+    private static final Pattern SEASON_RANGE = Pattern.compile(
+            "(?i)s(?:eason)?[ ._]*0?(\\d{1,2})\\s*[-~至到]\\s*s?(?:eason)?[ ._]*0?(\\d{1,2})"
+    );
     private static final Pattern EPISODE_SEASON = Pattern.compile(
             "(?i)(?:^|[^a-z0-9])s(\\d{1,2})e\\d{1,3}(?:[^0-9]|$)"
     );
@@ -209,25 +212,58 @@ public class QuarkShareSourceRegistry {
     }
 
     private static SeasonDetection detectSeason(String sourceName, String relativePath, List<QasShareNode> entries) {
-        List<Integer> numbers = new ArrayList<>();
-        addSeasonMatches(numbers, sourceName);
-        addSeasonMatches(numbers, relativePath);
+        List<Integer> sourceNumbers = new ArrayList<>();
+        addSeasonMatches(sourceNumbers, sourceName);
+        sourceNumbers = distinctNumbers(sourceNumbers);
+        List<Integer> fileNumbers = new ArrayList<>();
         for (QasShareNode entry : entries) {
-            addSeasonMatches(numbers, entry.name());
+            addSeasonMatches(fileNumbers, entry.name());
         }
-        numbers = numbers.stream().distinct().sorted().toList();
-        if (numbers.size() == 1) {
-            return new SeasonDetection(numbers.get(0), "AUTO");
-        }
-        if (numbers.size() > 1) {
+        fileNumbers = distinctNumbers(fileNumbers);
+        if (sourceNumbers.size() == 1) {
+            Integer sourceSeason = sourceNumbers.get(0);
+            if (fileNumbers.isEmpty() || fileNumbers.stream().allMatch(sourceSeason::equals)) {
+                return new SeasonDetection(sourceSeason, "AUTO");
+            }
             return new SeasonDetection(null, "MIXED");
         }
+        if (sourceNumbers.size() > 1 || fileNumbers.size() > 1) {
+            return new SeasonDetection(null, "MIXED");
+        }
+        if (fileNumbers.size() == 1) {
+            return new SeasonDetection(fileNumbers.get(0), "AUTO");
+        }
+        List<String> pathSegments = List.of(relativePath.split("/"));
+        for (int index = pathSegments.size() - 1; index >= 0; index--) {
+            String segment = pathSegments.get(index);
+            if (segment.equals(sourceName)) {
+                continue;
+            }
+            List<Integer> pathNumbers = new ArrayList<>();
+            addSeasonMatches(pathNumbers, segment);
+            pathNumbers = distinctNumbers(pathNumbers);
+            if (pathNumbers.size() == 1) {
+                return new SeasonDetection(pathNumbers.get(0), "AUTO");
+            }
+            if (pathNumbers.size() > 1) {
+                return new SeasonDetection(null, "MIXED");
+            }
+        }
         return new SeasonDetection(null, "UNRECOGNIZED");
+    }
+
+    private static List<Integer> distinctNumbers(List<Integer> numbers) {
+        return numbers.stream().distinct().sorted().toList();
     }
 
     private static void addSeasonMatches(List<Integer> numbers, String value) {
         if (!StringUtils.hasText(value)) {
             return;
+        }
+        Matcher range = SEASON_RANGE.matcher(value);
+        while (range.find()) {
+            numbers.add(Integer.parseInt(range.group(1)));
+            numbers.add(Integer.parseInt(range.group(2)));
         }
         Matcher matcher = SEASON.matcher(value);
         while (matcher.find()) {

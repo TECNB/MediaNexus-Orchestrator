@@ -501,6 +501,74 @@ class QuarkIngestPlannerTest {
     }
 
     @Test
+    void selectsRequestedSeasonWhenCollectionContainsAnAuxiliaryFile() {
+        QasShareTree tree = new QasShareTree(
+                "https://pan.quark.cn/s/share-id",
+                List.of(directory(
+                        "wrapper-fid",
+                        "欢乐喜剧人 S1-S7 合集",
+                        directory("s1-fid", "S1", file("01.mkv")),
+                        directory("s2-fid", "S2", file("01.mkv")),
+                        new QasShareNode("doc-fid", "资源说明.docx", false, "doc", 1, List.of())
+                ))
+        );
+
+        QasIngestPlan plan = planner.planVariety(
+                "欢乐喜剧人", 1, "/Variety/欢乐喜剧人/Season 01", tree, Map.of()
+        );
+
+        assertThat(plan.tasks()).singleElement().satisfies(task ->
+                assertThat(task.sourceUrl()).isEqualTo("https://pan.quark.cn/s/share-id/s1-fid")
+        );
+    }
+
+    @Test
+    void doesNotSelectOneSeasonWhenTheCollectionHasDirectVideo() {
+        QasShareTree tree = new QasShareTree(
+                "https://pan.quark.cn/s/share-id",
+                List.of(directory(
+                        "wrapper-fid",
+                        "合集",
+                        directory("s1-fid", "S1", file("01.mkv")),
+                        directory("s2-fid", "S2", file("01.mkv")),
+                        file("未归档正片.mp4")
+                ))
+        );
+
+        assertThatThrownBy(() -> planner.planVariety(
+                "测试综艺", 1, "/Variety/测试综艺/Season 01", tree, Map.of()
+        )).isInstanceOfSatisfying(QuarkIngestPlanningException.class, exception ->
+                assertThat(exception.getMessage()).contains("复杂目录")
+        );
+    }
+
+    @Test
+    void plansSixDigitVarietyDatesAfterTmdbConfirmsTheCentury() {
+        QasShareTree tree = new QasShareTree(
+                "https://pan.quark.cn/s/share-id",
+                List.of(file("150509_超清.mp4"), file("150516_完整版.mp4"))
+        );
+
+        QasIngestPlan plan = planner.planVariety(
+                "欢乐喜剧人",
+                1,
+                "/Variety/欢乐喜剧人/Season 01",
+                tree,
+                Map.of(LocalDate.of(2015, 5, 9), List.of(3), LocalDate.of(2015, 5, 16), List.of(4))
+        );
+
+        assertThat(plan.tasks()).singleElement().satisfies(task -> {
+            assertThat(task.renameRule()).isEqualTo("播出日期（六位日期）");
+            assertThat(task.replace()).isEqualTo("欢乐喜剧人 - 20\\1-\\2-\\3 - \\4.\\5");
+            assertThat(task.renameSamples()).extracting(QasRenameSample::targetName)
+                    .containsExactly(
+                            "欢乐喜剧人 - 2015-05-09 - 超清.mp4",
+                            "欢乐喜剧人 - 2015-05-16 - 完整版.mp4"
+                    );
+        });
+    }
+
+    @Test
     void ignoresShortDateFilesOutsideRequestedVarietySeason() {
         QasShareTree tree = new QasShareTree(
                 "https://pan.quark.cn/s/share-id",
