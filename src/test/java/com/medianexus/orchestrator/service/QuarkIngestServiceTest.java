@@ -36,12 +36,14 @@ class QuarkIngestServiceTest {
     @Test
     void loadsTmdbSeasonDetailsToPreviewShortDateVarietyNames() throws Exception {
         QasClient qasClient = mock(QasClient.class);
+        QuarkShareTreeService shareTreeService = mock(QuarkShareTreeService.class);
         AuthService authService = mock(AuthService.class);
         TmdbProperties tmdbProperties = new TmdbProperties();
         tmdbProperties.setDefaultLanguage("zh-CN");
         TmdbClient tmdbClient = mock(TmdbClient.class);
         QuarkIngestService service = new QuarkIngestService(
                 qasClient,
+                shareTreeService,
                 properties(),
                 tmdbProperties,
                 new MovieSeriesFileRenameService(),
@@ -52,7 +54,7 @@ class QuarkIngestServiceTest {
                 mock(QuarkIngestTaskLogMapper.class)
         );
         String shareUrl = "https://pan.quark.cn/s/share123";
-        when(qasClient.inspectShare(shareUrl)).thenReturn(new QasShareTree(
+        when(shareTreeService.inspectShare(shareUrl)).thenReturn(new QasShareTree(
                 shareUrl,
                 List.of(file("06.12.mp4"), file("06.19第一期.mp4"))
         ));
@@ -84,12 +86,14 @@ class QuarkIngestServiceTest {
     @Test
     void previewsShareStructureAndPlanWithoutCreatingQasTask() {
         QasClient qasClient = mock(QasClient.class);
+        QuarkShareTreeService shareTreeService = mock(QuarkShareTreeService.class);
         AuthService authService = mock(AuthService.class);
         QasProperties qasProperties = properties();
         TmdbProperties tmdbProperties = new TmdbProperties();
         tmdbProperties.setDefaultLanguage("zh-CN");
         QuarkIngestService service = new QuarkIngestService(
                 qasClient,
+                shareTreeService,
                 qasProperties,
                 tmdbProperties,
                 new MovieSeriesFileRenameService(),
@@ -100,7 +104,7 @@ class QuarkIngestServiceTest {
                 mock(QuarkIngestTaskLogMapper.class)
         );
         String shareUrl = "https://pan.quark.cn/s/share123";
-        when(qasClient.inspectShare(shareUrl)).thenReturn(new QasShareTree(
+        when(shareTreeService.inspectShare(shareUrl)).thenReturn(new QasShareTree(
                 shareUrl,
                 List.of(directory("wrapper-fid", "测试剧集", file("01.mkv"), file("02.mkv")))
         ));
@@ -129,6 +133,7 @@ class QuarkIngestServiceTest {
     @Test
     void reportsPartialWhenOnlyOneOfTwoVersionTasksIsCreated() {
         QasClient qasClient = mock(QasClient.class);
+        QuarkShareTreeService shareTreeService = mock(QuarkShareTreeService.class);
         AuthService authService = mock(AuthService.class);
         QasProperties qasProperties = properties();
         TmdbProperties tmdbProperties = new TmdbProperties();
@@ -141,6 +146,7 @@ class QuarkIngestServiceTest {
         when(authService.requireCurrentUser()).thenReturn(user);
         QuarkIngestService service = new QuarkIngestService(
                 qasClient,
+                shareTreeService,
                 qasProperties,
                 tmdbProperties,
                 new MovieSeriesFileRenameService(),
@@ -152,7 +158,7 @@ class QuarkIngestServiceTest {
         );
 
         String shareUrl = "https://pan.quark.cn/s/9259970f4a63";
-        when(qasClient.inspectShare(shareUrl)).thenReturn(new QasShareTree(
+        when(shareTreeService.inspectShare(shareUrl)).thenReturn(new QasShareTree(
                 shareUrl,
                 List.of(
                         directory("high-fid", "4K高码率", file("01.mkv")),

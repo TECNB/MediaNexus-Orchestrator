@@ -127,6 +127,7 @@ medianexus:
     api-token: ${MEDIANEXUS_QAS_API_TOKEN:}
     quark-cookie: ${MEDIANEXUS_QUARK_COOKIE:}
     timeout: ${MEDIANEXUS_QAS_TIMEOUT:15s}
+    share-tree-cache-ttl: ${MEDIANEXUS_QUARK_SHARE_TREE_CACHE_TTL:5m}
     movie-root-path: ${MEDIANEXUS_QAS_MOVIE_ROOT_PATH:/Movie}
     tv-root-path: ${MEDIANEXUS_QAS_TV_ROOT_PATH:/TV}
     variety-root-path: ${MEDIANEXUS_QAS_VARIETY_ROOT_PATH:/Variety}

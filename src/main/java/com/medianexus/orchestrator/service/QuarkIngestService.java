@@ -63,6 +63,7 @@ public class QuarkIngestService {
     );
 
     private final QasClient qasClient;
+    private final QuarkShareTreeService shareTreeService;
     private final QasProperties qasProperties;
     private final TmdbProperties tmdbProperties;
     private final MovieSeriesFileRenameService renameService;
@@ -74,6 +75,7 @@ public class QuarkIngestService {
 
     public QuarkIngestService(
             QasClient qasClient,
+            QuarkShareTreeService shareTreeService,
             QasProperties qasProperties,
             TmdbProperties tmdbProperties,
             MovieSeriesFileRenameService renameService,
@@ -84,6 +86,7 @@ public class QuarkIngestService {
             QuarkIngestTaskLogMapper taskLogMapper
     ) {
         this.qasClient = qasClient;
+        this.shareTreeService = shareTreeService;
         this.qasProperties = qasProperties;
         this.tmdbProperties = tmdbProperties;
         this.renameService = renameService;
@@ -143,7 +146,7 @@ public class QuarkIngestService {
                 List.of()
         );
         try {
-            QasShareTree tree = qasClient.inspectShare(shareUrl);
+            QasShareTree tree = shareTreeService.inspectShare(shareUrl);
             try {
                 plan = ingestPlanner.planMovie(folderName, savePath, tree);
             } catch (QuarkIngestPlanningException exception) {
@@ -181,7 +184,7 @@ public class QuarkIngestService {
         QasIngestPlan plan;
         QasShareTree shareTree;
         try {
-            shareTree = qasClient.inspectShare(shareUrl);
+            shareTree = shareTreeService.inspectShare(shareUrl);
             plan = planSeasonMedia(
                     request,
                     mediaType,

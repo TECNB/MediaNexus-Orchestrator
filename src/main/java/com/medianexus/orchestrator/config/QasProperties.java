@@ -21,6 +21,10 @@ public class QasProperties {
     @DurationMin(seconds = 1)
     private Duration timeout;
 
+    @NotNull
+    @DurationMin(seconds = 1)
+    private Duration shareTreeCacheTtl;
+
     private String movieRootPath;
 
     private String tvRootPath;
@@ -57,6 +61,14 @@ public class QasProperties {
 
     public void setTimeout(Duration timeout) {
         this.timeout = timeout;
+    }
+
+    public Duration getShareTreeCacheTtl() {
+        return shareTreeCacheTtl;
+    }
+
+    public void setShareTreeCacheTtl(Duration shareTreeCacheTtl) {
+        this.shareTreeCacheTtl = shareTreeCacheTtl;
     }
 
     public String getMovieRootPath() {
