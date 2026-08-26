@@ -123,9 +123,29 @@ public class QuarkMultiSourceIngestService {
                 sources,
                 List.of(),
                 session.candidates().isEmpty()
-                        ? "分享中没有可规划的视频来源"
+                        ? noSourceMessage(tree)
                         : "分享目录检查完成，请为每个来源设置季度或忽略"
         );
+    }
+
+    private String noSourceMessage(QasShareTree tree) {
+        long zipCount = countZipFiles(tree.entries());
+        if (zipCount > 0) {
+            return "未发现可播放视频；检测到 " + zipCount + " 个 ZIP 压缩包，当前链路不支持解压后入库";
+        }
+        return "未发现可播放视频；请确认分享中包含 MKV、MP4 等受支持的视频文件";
+    }
+
+    private long countZipFiles(List<QasShareNode> nodes) {
+        long count = 0;
+        for (QasShareNode node : nodes) {
+            if (node.directory()) {
+                count += countZipFiles(node.children());
+            } else if (node.name().toLowerCase(Locale.ROOT).endsWith(".zip")) {
+                count++;
+            }
+        }
+        return count;
     }
 
     public QuarkMultiSourcePreviewResponse previewPlan(QuarkMultiSourceRequest request, String mediaType) {
