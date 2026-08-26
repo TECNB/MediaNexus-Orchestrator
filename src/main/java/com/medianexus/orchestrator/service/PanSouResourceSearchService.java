@@ -2,8 +2,11 @@ package com.medianexus.orchestrator.service;
 
 import com.medianexus.orchestrator.common.exception.BusinessException;
 import com.medianexus.orchestrator.common.exception.ErrorCode;
-import com.medianexus.orchestrator.config.PanSouProperties;
+import com.medianexus.orchestrator.dto.resources.request.QuarkReleaseLinkCheckItemRequest;
+import com.medianexus.orchestrator.dto.resources.request.QuarkReleaseLinkCheckRequest;
 import com.medianexus.orchestrator.dto.resources.request.QuarkReleaseSearchRequest;
+import com.medianexus.orchestrator.dto.resources.response.QuarkReleaseLinkCheckItemResponse;
+import com.medianexus.orchestrator.dto.resources.response.QuarkReleaseLinkCheckResponse;
 import com.medianexus.orchestrator.dto.resources.response.QuarkReleaseItemResponse;
 import com.medianexus.orchestrator.dto.resources.response.QuarkReleaseSearchResponse;
 import com.medianexus.orchestrator.integration.pansou.PanSouClient;
@@ -22,7 +25,6 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -48,16 +50,13 @@ public class PanSouResourceSearchService {
     );
 
     private final PanSouClient panSouClient;
-    private final PanSouProperties properties;
     private final AuthService authService;
 
     public PanSouResourceSearchService(
             PanSouClient panSouClient,
-            PanSouProperties properties,
             AuthService authService
     ) {
         this.panSouClient = panSouClient;
-        this.properties = properties;
         this.authService = authService;
     }
 
@@ -97,13 +96,58 @@ public class PanSouResourceSearchService {
 
         List<Candidate> candidates = new ArrayList<>(candidatesByIdentity.values());
         candidates.sort(Candidate.SEMANTIC_ORDER);
-        checkVisibleLinks(candidates, warnings);
-        candidates.sort(Candidate.FINAL_ORDER);
 
         List<QuarkReleaseItemResponse> items = candidates.stream()
                 .map(Candidate::toResponse)
                 .toList();
         return new QuarkReleaseSearchResponse(title, items, warnings);
+    }
+
+    public QuarkReleaseLinkCheckResponse checkLinks(QuarkReleaseLinkCheckRequest request) {
+        authService.requireCurrentUser();
+        if (request == null || request.items() == null || request.items().isEmpty()) {
+            throw badRequest("待检查链接不能为空");
+        }
+
+        Map<String, QuarkReleaseLinkCheckItemRequest> requestsByIdentity = new LinkedHashMap<>();
+        for (QuarkReleaseLinkCheckItemRequest item : request.items()) {
+            CanonicalShare share = canonicalShare(item.shareUrl(), "");
+            if (share == null) {
+                throw badRequest("只能检查合法的 pan.quark.cn 分享链接");
+            }
+            if (!stableId(share.identity()).equals(item.id())) {
+                throw badRequest("候选 ID 与分享链接不匹配");
+            }
+            requestsByIdentity.putIfAbsent(share.identity(), item);
+        }
+
+        List<PanSouLinkCheckResult> checks;
+        try {
+            checks = panSouClient.checkLinks(requestsByIdentity.entrySet().stream()
+                    .map(entry -> new PanSouLinkCheckRequest(
+                            canonicalShare(entry.getValue().shareUrl(), "").url(),
+                            ""
+                    ))
+                    .toList());
+        } catch (PanSouClientException exception) {
+            throw mapFailure(exception);
+        }
+
+        Map<String, PanSouLinkCheckResult> checksByIdentity = new LinkedHashMap<>();
+        for (PanSouLinkCheckResult check : checks) {
+            CanonicalShare share = canonicalShare(
+                    StringUtils.hasText(check.normalizedUrl()) ? check.normalizedUrl() : check.url(),
+                    ""
+            );
+            if (share != null) {
+                checksByIdentity.put(share.identity(), check);
+            }
+        }
+
+        List<QuarkReleaseLinkCheckItemResponse> items = requestsByIdentity.entrySet().stream()
+                .map(entry -> toCheckResponse(entry.getValue(), checksByIdentity.get(entry.getKey())))
+                .toList();
+        return new QuarkReleaseLinkCheckResponse(request.viewToken(), items);
     }
 
     private PanSouSearchResult searchUpstream(String keyword, boolean refresh) {
@@ -114,36 +158,40 @@ public class PanSouResourceSearchService {
         }
     }
 
-    private void checkVisibleLinks(List<Candidate> candidates, List<String> warnings) {
-        int limit = Math.min(properties.getLinkCheckLimit(), candidates.size());
-        if (limit == 0) {
-            return;
+    private QuarkReleaseLinkCheckItemResponse toCheckResponse(
+            QuarkReleaseLinkCheckItemRequest item,
+            PanSouLinkCheckResult check
+    ) {
+        if (check == null) {
+            return new QuarkReleaseLinkCheckItemResponse(
+                    item.id(),
+                    "UNCERTAIN",
+                    "PanSou 未返回该链接的检查结果"
+            );
         }
-        List<PanSouLinkCheckRequest> requests = candidates.subList(0, limit).stream()
-                .map(candidate -> new PanSouLinkCheckRequest(candidate.shareUrl, ""))
-                .toList();
-        try {
-            List<PanSouLinkCheckResult> checks = panSouClient.checkLinks(requests);
-            Map<String, PanSouLinkCheckResult> checksByIdentity = new HashMap<>();
-            for (PanSouLinkCheckResult check : checks) {
-                CanonicalShare share = canonicalShare(
-                        StringUtils.hasText(check.normalizedUrl()) ? check.normalizedUrl() : check.url(),
-                        ""
-                );
-                if (share != null) {
-                    checksByIdentity.put(share.identity(), check);
-                }
-            }
-            for (int index = 0; index < limit; index++) {
-                Candidate candidate = candidates.get(index);
-                PanSouLinkCheckResult check = checksByIdentity.get(candidate.identity);
-                if (check != null) {
-                    candidate.applyCheck(check);
-                }
-            }
-        } catch (PanSouClientException exception) {
-            warnings.add("PanSou 链接有效性检查失败，候选仍可在选择时预览：" + safeMessage(exception));
-        }
+        String availability = cleanCheckState(check.state());
+        String summary = StringUtils.hasText(check.summary())
+                ? check.summary().trim()
+                : checkStateSummary(availability);
+        return new QuarkReleaseLinkCheckItemResponse(item.id(), availability, summary);
+    }
+
+    private String cleanCheckState(String value) {
+        String state = clean(value).toUpperCase(Locale.ROOT);
+        return switch (state) {
+            case "OK", "BAD", "LOCKED", "UNCERTAIN", "UNSUPPORTED" -> state;
+            default -> "UNCERTAIN";
+        };
+    }
+
+    private String checkStateSummary(String state) {
+        return switch (state) {
+            case "OK" -> "链接有效";
+            case "BAD" -> "链接失效";
+            case "LOCKED" -> "需要提取码或访问受限";
+            case "UNSUPPORTED" -> "暂不支持检查";
+            default -> "暂时无法确认";
+        };
     }
 
     private Candidate analyze(
@@ -207,7 +255,6 @@ public class PanSouResourceSearchService {
                 : "POSSIBLE";
         return new Candidate(
                 stableId(share.identity()),
-                share.identity(),
                 candidateTitle,
                 share.url(),
                 clean(entry.source()),
@@ -391,14 +438,7 @@ public class PanSouResourceSearchService {
                 .comparingInt(Candidate::relevanceWeight).reversed()
                 .thenComparing(Comparator.comparingInt((Candidate candidate) -> candidate.semanticScore).reversed())
                 .thenComparing(candidate -> candidate.id);
-        private static final Comparator<Candidate> FINAL_ORDER = Comparator
-                .comparingInt(Candidate::relevanceWeight).reversed()
-                .thenComparing(Comparator.comparingInt(Candidate::availabilityWeight).reversed())
-                .thenComparing(Comparator.comparingInt((Candidate candidate) -> candidate.semanticScore).reversed())
-                .thenComparing(candidate -> candidate.id);
-
         private final String id;
-        private final String identity;
         private String title;
         private String shareUrl;
         private String source;
@@ -413,7 +453,6 @@ public class PanSouResourceSearchService {
 
         private Candidate(
                 String id,
-                String identity,
                 String title,
                 String shareUrl,
                 String source,
@@ -427,7 +466,6 @@ public class PanSouResourceSearchService {
                 List<String> tags
         ) {
             this.id = id;
-            this.identity = identity;
             this.title = title;
             this.shareUrl = shareUrl;
             this.source = source;
@@ -442,9 +480,6 @@ public class PanSouResourceSearchService {
         }
 
         private Candidate merge(Candidate other) {
-            if (other.title.length() > title.length()) {
-                title = other.title;
-            }
             if (!shareUrl.contains("?pwd=") && other.shareUrl.contains("?pwd=")) {
                 shareUrl = other.shareUrl;
             }
@@ -453,7 +488,10 @@ public class PanSouResourceSearchService {
             } else if (StringUtils.hasText(other.source) && !source.contains(other.source)) {
                 source += " · " + other.source;
             }
-            if (other.semanticScore > semanticScore) {
+            if (other.semanticScore > semanticScore
+                    || (other.semanticScore == semanticScore && other.title.length() > title.length())) {
+                title = other.title;
+                publishedAt = other.publishedAt;
                 relevance = other.relevance;
                 semanticScore = other.semanticScore;
                 matchReasons.clear();
@@ -466,24 +504,10 @@ public class PanSouResourceSearchService {
             return this;
         }
 
-        private void applyCheck(PanSouLinkCheckResult check) {
-            availability = cleanState(check.state());
-            availabilitySummary = StringUtils.hasText(check.summary()) ? check.summary().trim() : stateSummary(availability);
-        }
-
         private int relevanceWeight() {
             return switch (relevance) {
                 case "STRONG" -> 3;
                 case "POSSIBLE" -> 2;
-                default -> 1;
-            };
-        }
-
-        private int availabilityWeight() {
-            return switch (availability) {
-                case "OK" -> 4;
-                case "UNCERTAIN", "UNCHECKED" -> 3;
-                case "LOCKED" -> 2;
                 default -> 1;
             };
         }
@@ -504,19 +528,5 @@ public class PanSouResourceSearchService {
             );
         }
 
-        private static String cleanState(String value) {
-            String state = value == null ? "" : value.trim().toUpperCase(Locale.ROOT);
-            return List.of("OK", "BAD", "LOCKED", "UNCERTAIN").contains(state) ? state : "UNCHECKED";
-        }
-
-        private static String stateSummary(String state) {
-            return switch (state) {
-                case "OK" -> "链接有效";
-                case "BAD" -> "链接失效";
-                case "LOCKED" -> "链接受限";
-                case "UNCERTAIN" -> "暂时无法确认";
-                default -> "等待有效性检查";
-            };
-        }
     }
 }

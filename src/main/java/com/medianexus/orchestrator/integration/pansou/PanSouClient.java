@@ -53,28 +53,60 @@ public class PanSouClient implements AutoCloseable {
         ObjectNode payload = objectMapper.createObjectNode();
         payload.put("kw", command.keyword().trim());
         payload.putArray("cloud_types").add("quark");
-        payload.put("res", "merge");
+        payload.put("res", "all");
         payload.put("src", "all");
         payload.put("refresh", command.refresh());
 
         JsonNode root = sendAuthorized("/api/search", payload);
         JsonNode data = root.path("data");
-        JsonNode entries = data.path("merged_by_type").path("quark");
-        if (!entries.isArray()) {
-            entries = root.path("merged_by_type").path("quark");
-        }
-        if (!entries.isArray()) {
-            throw new PanSouClientException(INVALID_RESPONSE, "PanSou 搜索响应缺少 Quark 结果列表");
-        }
         List<PanSouSearchEntry> result = new ArrayList<>();
-        for (JsonNode entry : entries) {
-            result.add(new PanSouSearchEntry(
-                    text(entry, "url"),
-                    firstText(entry, "password", "pwd"),
-                    firstText(entry, "note", "title", "name", "work_title", "desc"),
-                    firstText(entry, "datetime", "time", "created_at"),
-                    firstText(entry, "source", "channel", "plugin")
-            ));
+        JsonNode messages = data.path("results");
+        if (!messages.isArray()) {
+            messages = root.path("results");
+        }
+        if (messages.isArray()) {
+            for (JsonNode message : messages) {
+                JsonNode links = message.path("links");
+                if (!links.isArray()) {
+                    continue;
+                }
+                for (JsonNode link : links) {
+                    if (!"quark".equalsIgnoreCase(text(link, "type"))) {
+                        continue;
+                    }
+                    result.add(new PanSouSearchEntry(
+                            text(link, "url"),
+                            firstText(link, "password", "pwd"),
+                            firstNonBlank(
+                                    firstText(link, "work_title", "note", "title", "name", "desc"),
+                                    firstText(message, "title", "note", "name")
+                            ),
+                            firstNonBlank(
+                                    firstText(link, "datetime", "time", "created_at"),
+                                    firstText(message, "datetime", "time", "created_at")
+                            ),
+                            firstText(message, "channel", "source", "plugin")
+                    ));
+                }
+            }
+        }
+        if (result.isEmpty()) {
+            JsonNode entries = data.path("merged_by_type").path("quark");
+            if (!entries.isArray()) {
+                entries = root.path("merged_by_type").path("quark");
+            }
+            if (!entries.isArray()) {
+                throw new PanSouClientException(INVALID_RESPONSE, "PanSou 搜索响应缺少 Quark 结果列表");
+            }
+            for (JsonNode entry : entries) {
+                result.add(new PanSouSearchEntry(
+                        text(entry, "url"),
+                        firstText(entry, "password", "pwd"),
+                        firstText(entry, "note", "title", "name", "work_title", "desc"),
+                        firstText(entry, "datetime", "time", "created_at"),
+                        firstText(entry, "source", "channel", "plugin")
+                ));
+            }
         }
         return new PanSouSearchResult(result);
     }
@@ -256,6 +288,10 @@ public class PanSouClient implements AutoCloseable {
             }
         }
         return "";
+    }
+
+    private String firstNonBlank(String first, String second) {
+        return StringUtils.hasText(first) ? first : second;
     }
 
     private String text(JsonNode node, String field) {

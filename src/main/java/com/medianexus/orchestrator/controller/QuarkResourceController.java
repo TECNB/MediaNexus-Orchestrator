@@ -1,7 +1,9 @@
 package com.medianexus.orchestrator.controller;
 
 import com.medianexus.orchestrator.common.response.ApiResponse;
+import com.medianexus.orchestrator.dto.resources.request.QuarkReleaseLinkCheckRequest;
 import com.medianexus.orchestrator.dto.resources.request.QuarkReleaseSearchRequest;
+import com.medianexus.orchestrator.dto.resources.response.QuarkReleaseLinkCheckResponse;
 import com.medianexus.orchestrator.dto.resources.response.QuarkReleaseSearchResponse;
 import com.medianexus.orchestrator.service.PanSouResourceSearchService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -29,5 +31,13 @@ public class QuarkResourceController {
             @Valid @RequestBody QuarkReleaseSearchRequest request
     ) {
         return ApiResponse.success(searchService.search(request));
+    }
+
+    @PostMapping("/releases/links/check")
+    @Operation(summary = "批量检查当前可见的 Quark 分享候选")
+    public ApiResponse<QuarkReleaseLinkCheckResponse> checkLinks(
+            @Valid @RequestBody QuarkReleaseLinkCheckRequest request
+    ) {
+        return ApiResponse.success(searchService.checkLinks(request));
     }
 }

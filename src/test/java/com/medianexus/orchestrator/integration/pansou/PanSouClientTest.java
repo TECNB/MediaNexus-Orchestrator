@@ -36,9 +36,12 @@ class PanSouClientTest {
         server.createContext("/api/search", exchange -> {
             searchPayloads.add(readJson(exchange));
             respond(exchange, 200, """
-                    {"data":{"merged_by_type":{"quark":[
-                      {"url":"https://pan.quark.cn/s/abc123?entry=source","password":"7788","note":"测试资源","datetime":"2026-08-23","source":"tg:test"}
-                    ]}}}
+                    {"data":{"results":[
+                      {"title":"测试资源","channel":"tg:test","datetime":"2026-08-23","links":[
+                        {"type":"quark","url":"https://pan.quark.cn/s/abc123?entry=source","password":"7788","work_title":"测试资源"},
+                        {"type":"xunlei","url":"https://pan.xunlei.com/s/not-quark","work_title":"测试资源"}
+                      ]}
+                    ],"merged_by_type":{"quark":[]}}}
                     """);
         });
         server.createContext("/api/check/links", exchange -> respond(exchange, 200, """
@@ -61,7 +64,7 @@ class PanSouClientTest {
     }
 
     @Test
-    void reusesLoginTokenAndSendsMergedQuarkSearchContract() {
+    void reusesLoginTokenAndFlattensAllQuarkSearchResults() {
         PanSouSearchResult search = client.search(new PanSouSearchCommand("热辣滚烫", false));
         List<PanSouLinkCheckResult> checks = client.checkLinks(List.of(
                 new PanSouLinkCheckRequest("https://pan.quark.cn/s/abc123?pwd=7788", "")
@@ -80,7 +83,7 @@ class PanSouClientTest {
         assertThat(searchPayloads).singleElement().satisfies(payload -> {
             assertThat(payload.path("kw").asText()).isEqualTo("热辣滚烫");
             assertThat(payload.path("cloud_types")).extracting(JsonNode::asText).containsExactly("quark");
-            assertThat(payload.path("res").asText()).isEqualTo("merge");
+            assertThat(payload.path("res").asText()).isEqualTo("all");
             assertThat(payload.path("src").asText()).isEqualTo("all");
             assertThat(payload.path("refresh").asBoolean()).isFalse();
         });
