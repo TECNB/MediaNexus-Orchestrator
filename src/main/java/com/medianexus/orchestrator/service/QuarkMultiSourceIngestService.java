@@ -284,7 +284,7 @@ public class QuarkMultiSourceIngestService {
             );
         }
 
-        boolean triggered = !created.isEmpty();
+        boolean triggered = !created.isEmpty() || !directSources.isEmpty();
         String triggerError = null;
         try {
             if (!created.isEmpty()) {
@@ -301,7 +301,7 @@ public class QuarkMultiSourceIngestService {
                 && computation.tasks().stream().anyMatch(PlannedSource::followUpdates);
         String status = createdCount < plannedCount ? "PARTIAL" : triggered ? "STARTED" : "SCHEDULED";
         String message = executionSummary(
-                computation, hasSubscriptions, createdCount < plannedCount, triggered, triggerError
+                computation, hasSubscriptions, createdCount < plannedCount, triggered, createdCount, triggerError
         );
         updateLocalRecord(localTaskId, status, triggered || !directSources.isEmpty(), createdCount, plannedCount, message);
         return new QuarkMultiSourceTaskResponse(
@@ -339,6 +339,7 @@ public class QuarkMultiSourceIngestService {
             boolean hasSubscriptions,
             boolean partial,
             boolean triggered,
+            int startedCount,
             String triggerError
     ) {
         int videoCount = 0;
@@ -366,9 +367,10 @@ public class QuarkMultiSourceIngestService {
             return counts + "；部分文件未能开始入库，请查看失败来源";
         }
         if (!triggered) {
-            return counts + "；首次执行未能启动：" + triggerError;
+            return counts + "；本次未能立即执行";
         }
-        return counts + "，已开始执行" + (hasSubscriptions ? "；标记的更新文件夹将继续每日检查" : "");
+        return counts + "，已启动 " + startedCount + " 个任务，正在后台转存"
+                + (hasSubscriptions ? "；标记的更新文件夹将继续每日检查" : "");
     }
 
     private Computation compute(
