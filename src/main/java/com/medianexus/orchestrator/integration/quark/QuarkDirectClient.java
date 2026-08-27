@@ -28,7 +28,7 @@ import org.springframework.util.StringUtils;
 @Component
 public class QuarkDirectClient {
 
-    private static final String BASE_URL = "https://drive-pc.quark.cn";
+    private static final String DEFAULT_BASE_URL = "https://drive-pc.quark.cn";
     private static final int BATCH_SIZE = 100;
     private static final int MAX_RETRIES = 2;
     private static final Pattern SHARE_PATH = Pattern.compile("/s/([^/?#]+)(?:/([^/?#]+))?");
@@ -179,7 +179,10 @@ public class QuarkDirectClient {
     private JsonNode request(String method, String path, ObjectNode body) {
         for (int attempt = 0; ; attempt++) {
             try {
-                HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(BASE_URL + path))
+                String baseUrl = StringUtils.hasText(properties.getQuarkApiBaseUrl())
+                        ? properties.getQuarkApiBaseUrl().trim()
+                        : DEFAULT_BASE_URL;
+                HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(baseUrl + path))
                         .timeout(timeout())
                         .header("Accept", "application/json, text/plain, */*")
                         .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")

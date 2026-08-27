@@ -17,6 +17,8 @@ public class QasProperties {
     /** Optional Quark account cookie used by the direct share-tree preview client. */
     private String quarkCookie;
 
+    private String quarkApiBaseUrl;
+
     private String smartstrmWebhook;
 
     @NotNull
@@ -55,6 +57,14 @@ public class QasProperties {
 
     public void setQuarkCookie(String quarkCookie) {
         this.quarkCookie = quarkCookie;
+    }
+
+    public String getQuarkApiBaseUrl() {
+        return quarkApiBaseUrl;
+    }
+
+    public void setQuarkApiBaseUrl(String quarkApiBaseUrl) {
+        this.quarkApiBaseUrl = quarkApiBaseUrl;
     }
 
     public String getSmartstrmWebhook() {
