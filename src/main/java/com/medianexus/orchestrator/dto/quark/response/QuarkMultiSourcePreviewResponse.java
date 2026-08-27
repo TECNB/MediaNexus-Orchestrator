@@ -11,6 +11,7 @@ public record QuarkMultiSourcePreviewResponse(
         @JsonProperty("root_source_candidate_id") String rootSourceCandidateId,
         List<QuarkSourceTreeNodeResponse> entries,
         List<QuarkSourcePlanResponse> sources,
+        @JsonProperty("season_coverages") List<QuarkSeasonCoverageResponse> seasonCoverages,
         List<String> warnings,
         String message
 ) {
@@ -18,6 +19,7 @@ public record QuarkMultiSourcePreviewResponse(
     public QuarkMultiSourcePreviewResponse {
         entries = entries == null ? List.of() : List.copyOf(entries);
         sources = sources == null ? List.of() : List.copyOf(sources);
+        seasonCoverages = seasonCoverages == null ? List.of() : List.copyOf(seasonCoverages);
         warnings = warnings == null ? List.of() : List.copyOf(warnings);
     }
 }

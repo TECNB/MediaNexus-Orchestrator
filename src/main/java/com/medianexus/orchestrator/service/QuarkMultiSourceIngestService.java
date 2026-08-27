@@ -14,6 +14,7 @@ import com.medianexus.orchestrator.dto.quark.response.QuarkRenamePreviewResponse
 import com.medianexus.orchestrator.dto.quark.response.QuarkSourcePlanResponse;
 import com.medianexus.orchestrator.dto.quark.response.QuarkSourceTaskResultResponse;
 import com.medianexus.orchestrator.dto.quark.response.QuarkSourceTreeNodeResponse;
+import com.medianexus.orchestrator.dto.quark.response.QuarkSeasonCoverageResponse;
 import com.medianexus.orchestrator.integration.qas.QasClient;
 import com.medianexus.orchestrator.integration.qas.QasClientException;
 import com.medianexus.orchestrator.integration.qas.QasCreatedTask;
@@ -34,6 +35,7 @@ import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -44,6 +46,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.TreeMap;
 import java.util.regex.Pattern;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -129,6 +132,7 @@ public class QuarkMultiSourceIngestService {
                 tree.entries().stream().map(node -> treeNode(node, session, "")).toList(),
                 sources,
                 List.of(),
+                List.of(),
                 session.candidates().isEmpty()
                         ? noSourceMessage(tree)
                         : "分享目录检查完成，请为每个来源设置季度或忽略"
@@ -172,6 +176,7 @@ public class QuarkMultiSourceIngestService {
                 session.rootCandidateIds().isEmpty() ? null : session.rootCandidateIds().get(0),
                 freshTree.entries().stream().map(node -> treeNode(node, session, "")).toList(),
                 computation.sources(),
+                computation.seasonCoverages(),
                 computation.warnings(),
                 computation.message()
         );
@@ -434,6 +439,7 @@ public class QuarkMultiSourceIngestService {
         applyTaskNames(tasks, request.title());
         Map<String, Set<String>> conflictingTargets = detectGlobalConflicts(tasks, errors);
         sourceResponses = updateSourceResponses(sourceResponses, tasks, conflictingTargets);
+        List<QuarkSeasonCoverageResponse> seasonCoverages = buildSeasonCoverages(request, sourceResponses);
         boolean ready = errors.isEmpty() && !tasks.isEmpty();
         String planFingerprint = planFingerprint(tasks, sourceResponses, request.followUpdatesEnabled());
         String message = ready
@@ -445,10 +451,99 @@ public class QuarkMultiSourceIngestService {
                 ready,
                 tasks,
                 sourceResponses,
+                seasonCoverages,
                 List.of(),
                 message,
                 planFingerprint
         );
+    }
+
+    private List<QuarkSeasonCoverageResponse> buildSeasonCoverages(
+            QuarkMultiSourceRequest request,
+            List<QuarkSourcePlanResponse> sources
+    ) {
+        Map<Integer, CoverageAccumulator> coverageBySeason = new TreeMap<>();
+        for (QuarkSourcePlanResponse source : sources) {
+            Integer season = source.selectedSeason();
+            if (season == null || source.ignored()) {
+                continue;
+            }
+            CoverageAccumulator coverage = coverageBySeason.computeIfAbsent(season, CoverageAccumulator::new);
+            for (QuarkRenamePreviewResponse file : source.files()) {
+                if (!isPlayableVideo(file.sourceName())) {
+                    continue;
+                }
+                if ("IGNORED".equals(file.status())) {
+                    coverage.ignoredVideoCount++;
+                } else if ("UNRECOGNIZED".equals(file.status()) || "CONFLICT".equals(file.status())) {
+                    coverage.unknownVideoCount++;
+                } else if (!"EXCLUDED".equals(file.status())) {
+                    coverage.videoCount++;
+                    coverage.episodeNumbers.addAll(targetEpisodes(file.targetName()));
+                }
+            }
+        }
+        Map<Integer, TmdbEpisodeCoverage> tmdbBySeason = new HashMap<>();
+        for (Integer season : coverageBySeason.keySet()) {
+            tmdbBySeason.put(season, loadEpisodeCoverage(request.tmdbId(), season));
+        }
+        return coverageBySeason.values().stream()
+                .map(coverage -> coverage.toResponse(tmdbBySeason.get(coverage.seasonNumber)))
+                .toList();
+    }
+
+    private Set<Integer> targetEpisodes(String targetName) {
+        Set<Integer> episodes = new HashSet<>();
+        if (targetName == null) {
+            return episodes;
+        }
+        java.util.regex.Matcher matcher = Pattern.compile("(?i)S\\d{2}E(\\d{1,3})(?:-E(\\d{1,3}))?").matcher(targetName);
+        if (!matcher.find()) {
+            return episodes;
+        }
+        int first = Integer.parseInt(matcher.group(1));
+        int last = matcher.group(2) == null ? first : Integer.parseInt(matcher.group(2));
+        for (int episode = Math.min(first, last); episode <= Math.max(first, last); episode++) {
+            episodes.add(episode);
+        }
+        return episodes;
+    }
+
+    private TmdbEpisodeCoverage loadEpisodeCoverage(Integer tmdbId, int season) {
+        if (tmdbId == null || tmdbId <= 0) {
+            return TmdbEpisodeCoverage.unavailable("未绑定 TMDB，暂无法取得季度集数");
+        }
+        try {
+            JsonNode details = tmdbClient.getTvSeasonDetails(tmdbId, season,
+                    StringUtils.hasText(tmdbProperties.getDefaultLanguage())
+                            ? tmdbProperties.getDefaultLanguage().trim() : "zh-CN");
+            JsonNode episodes = details.path("episodes");
+            if (!episodes.isArray()) {
+                return TmdbEpisodeCoverage.unavailable("TMDB 季度详情缺少 episodes");
+            }
+            Set<Integer> all = new HashSet<>();
+            Set<Integer> aired = new HashSet<>();
+            Set<Integer> unknownDate = new HashSet<>();
+            LocalDate today = LocalDate.now(ZoneId.of("Asia/Shanghai"));
+            for (JsonNode episode : episodes) {
+                int number = episode.path("episode_number").asInt(0);
+                if (number <= 0) continue;
+                all.add(number);
+                String airDate = episode.path("air_date").asText("");
+                if (!StringUtils.hasText(airDate)) {
+                    unknownDate.add(number);
+                    continue;
+                }
+                try {
+                    if (!LocalDate.parse(airDate).isAfter(today)) aired.add(number);
+                } catch (DateTimeParseException ignored) {
+                    unknownDate.add(number);
+                }
+            }
+            return new TmdbEpisodeCoverage(all, aired, unknownDate, null);
+        } catch (TmdbClientException exception) {
+            return TmdbEpisodeCoverage.unavailable("TMDB 季度详情获取失败：" + safeMessage(exception.getMessage()));
+        }
     }
 
     private QasIngestPlan planSource(
@@ -1176,10 +1271,59 @@ public class QuarkMultiSourceIngestService {
             boolean ready,
             List<PlannedSource> tasks,
             List<QuarkSourcePlanResponse> sources,
+            List<QuarkSeasonCoverageResponse> seasonCoverages,
             List<String> warnings,
             String message,
             String planFingerprint
     ) {
+    }
+
+    private static final class CoverageAccumulator {
+        private final int seasonNumber;
+        private final Set<Integer> episodeNumbers = new HashSet<>();
+        private int videoCount;
+        private int unknownVideoCount;
+        private int ignoredVideoCount;
+
+        private CoverageAccumulator(int seasonNumber) {
+            this.seasonNumber = seasonNumber;
+        }
+
+        private QuarkSeasonCoverageResponse toResponse(TmdbEpisodeCoverage tmdb) {
+            List<Integer> recognized = episodeNumbers.stream().sorted().toList();
+            if (tmdb == null || tmdb.errorMessage() != null) {
+                return new QuarkSeasonCoverageResponse(
+                        seasonNumber, videoCount, recognized.size(), null, null,
+                        List.of(), List.of(), unknownVideoCount, ignoredVideoCount, List.of(),
+                        "UNAVAILABLE", tmdb == null ? "暂无法取得 TMDB 数据" : tmdb.errorMessage()
+                );
+            }
+            List<Integer> missing = tmdb.airedEpisodes().stream()
+                    .filter(episode -> !episodeNumbers.contains(episode)).sorted().toList();
+            List<Integer> extra = episodeNumbers.stream()
+                    .filter(episode -> !tmdb.allEpisodes().contains(episode)).sorted().toList();
+            String status = unknownVideoCount > 0
+                    ? "NEEDS_REVIEW" : missing.isEmpty() ? "COMPLETE" : "MISSING";
+            String message = unknownVideoCount > 0
+                    ? "存在无法识别的视频，覆盖情况需要确认"
+                    : missing.isEmpty() ? "已覆盖 TMDB 当前已播集数" : "存在缺集，仅提醒且不阻止入库";
+            return new QuarkSeasonCoverageResponse(
+                    seasonNumber, videoCount, recognized.size(), tmdb.allEpisodes().size(),
+                    tmdb.airedEpisodes().size(), missing, extra, unknownVideoCount, ignoredVideoCount,
+                    tmdb.unknownAirDates().stream().sorted().toList(), status, message
+            );
+        }
+    }
+
+    private record TmdbEpisodeCoverage(
+            Set<Integer> allEpisodes,
+            Set<Integer> airedEpisodes,
+            Set<Integer> unknownAirDates,
+            String errorMessage
+    ) {
+        private static TmdbEpisodeCoverage unavailable(String message) {
+            return new TmdbEpisodeCoverage(Set.of(), Set.of(), Set.of(), message);
+        }
     }
 
 }
