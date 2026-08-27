@@ -21,6 +21,7 @@ import java.util.List;
 import java.util.function.Consumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.concurrent.atomic.AtomicReference;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
@@ -31,12 +32,14 @@ public class QuarkDirectClient {
     private static final String DEFAULT_BASE_URL = "https://drive-pc.quark.cn";
     private static final int BATCH_SIZE = 100;
     private static final int MAX_RETRIES = 2;
+    private static final int MAX_TASK_RETRIES = 2;
     private static final Pattern SHARE_PATH = Pattern.compile("/s/([^/?#]+)(?:/([^/?#]+))?");
     private static final Pattern FID = Pattern.compile("/([0-9a-fA-F]{32})(?:[-/?#]|$)");
 
     private final QasProperties properties;
     private final ObjectMapper objectMapper;
     private final HttpClient httpClient;
+    private final AtomicReference<String> cookie;
 
     public QuarkDirectClient(QasProperties properties, ObjectMapper objectMapper) {
         this.properties = properties;
@@ -45,6 +48,7 @@ public class QuarkDirectClient {
                 .version(HttpClient.Version.HTTP_1_1)
                 .connectTimeout(properties.getTimeout() == null ? Duration.ofSeconds(15) : properties.getTimeout())
                 .build();
+        this.cookie = new AtomicReference<>(properties.getQuarkCookie() == null ? "" : properties.getQuarkCookie().trim());
     }
 
     public void transfer(QasTaskPlan plan, QasShareTree tree, Consumer<String> progress) {
@@ -85,7 +89,7 @@ public class QuarkDirectClient {
             JsonNode saved = request("POST", "/1/clouddrive/share/sharepage/save?pr=ucpro&fr=pc&uc_param_str=", savePayload);
             String taskId = extractTaskId(saved);
             if (StringUtils.hasText(taskId)) {
-                awaitTask(taskId, progress);
+                awaitTaskWithRetry(taskId, savePayload, progress);
             }
             progress.accept("Quark 已提交转存 " + Math.min(files.size(), offset + BATCH_SIZE) + "/" + files.size());
         }
@@ -151,6 +155,32 @@ public class QuarkDirectClient {
         return parentFid;
     }
 
+    private void awaitTaskWithRetry(String taskId, ObjectNode savePayload, Consumer<String> progress) {
+        QasClientException lastFailure = null;
+        for (int attempt = 1; attempt <= MAX_TASK_RETRIES + 1; attempt++) {
+            try {
+                awaitTask(taskId, progress);
+                return;
+            } catch (QasClientException exception) {
+                lastFailure = exception;
+                if (attempt > MAX_TASK_RETRIES || !isRetryableTaskFailure(exception)) {
+                    throw exception;
+                }
+                progress.accept("Quark 转存失败，正在重试 " + attempt + "/" + MAX_TASK_RETRIES);
+                sleep(1000L * attempt);
+                JsonNode retried = request("POST", "/1/clouddrive/share/sharepage/save?pr=ucpro&fr=pc&uc_param_str=", savePayload);
+                String retryTaskId = extractTaskId(retried);
+                if (!StringUtils.hasText(retryTaskId)) {
+                    throw exception;
+                }
+                taskId = retryTaskId;
+            }
+        }
+        throw lastFailure == null
+                ? new QasClientException(QasClientException.Reason.UPSTREAM, "Quark 转存失败")
+                : lastFailure;
+    }
+
     private void awaitTask(String taskId, Consumer<String> progress) {
         long deadline = System.nanoTime() + Duration.ofMinutes(30).toNanos();
         int retries = 0;
@@ -164,16 +194,29 @@ public class QuarkDirectClient {
                 sleep(Math.min(10000L, 1000L * retries));
                 continue;
             }
-            int status = result.path("data").path("status").asInt(-1);
-            if (status == 2) return;
-            if (status >= 3) {
+            JsonNode task = result.path("data");
+            int status = task.path("status").asInt(-1);
+            String statusText = firstText(task, "status_text", "statusText", "state", "status", "message");
+            if (status == 2 || task.path("success").asBoolean(false)
+                    || "success".equalsIgnoreCase(statusText)
+                    || "completed".equalsIgnoreCase(statusText)
+                    || "complete".equalsIgnoreCase(statusText)) return;
+            if (status >= 3 || "failed".equalsIgnoreCase(statusText)
+                    || "error".equalsIgnoreCase(statusText)) {
                 throw new QasClientException(QasClientException.Reason.UPSTREAM,
-                        result.path("data").path("message").asText("Quark 转存失败"));
+                        firstText(task, "message", "error", "error_msg", "errorMessage"));
             }
             progress.accept("Quark 转存处理中");
             sleep(2000L);
         }
         throw new QasClientException(QasClientException.Reason.UPSTREAM, "Quark 转存超时");
+    }
+
+    private static boolean isRetryableTaskFailure(QasClientException exception) {
+        String message = exception.getMessage() == null ? "" : exception.getMessage().toLowerCase();
+        return message.contains("timeout") || message.contains("超时")
+                || message.contains("tempor") || message.contains("network")
+                || message.contains("busy") || message.contains("系统");
     }
 
     private String fetchStoken(String shareId, String passcode) {
@@ -199,7 +242,7 @@ public class QuarkDirectClient {
                         .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
                         .header("Origin", "https://pan.quark.cn")
                         .header("Referer", "https://pan.quark.cn/")
-                        .header("X-Quark-Cookie", properties.getQuarkCookie().trim())
+                        .header("X-Quark-Cookie", cookie.get())
                         .header("Content-Type", "application/json")
                         .header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/151.0.0.0 Safari/537.36");
                 if ("POST".equals(method)) {
@@ -209,6 +252,7 @@ public class QuarkDirectClient {
                 }
                 HttpResponse<String> response = httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofString());
                 JsonNode root = objectMapper.readTree(response.body());
+                mergeResponseCookies(response);
                 int code = root == null ? -1 : root.path("code").asInt(0);
                 if (response.statusCode() == 401 || response.statusCode() == 403 || code == 401 || code == 403) {
                     String reason = root == null ? "" : root.path("message").asText("");
@@ -245,6 +289,31 @@ public class QuarkDirectClient {
         String value = root.path("data").path("task_id").asText("");
         if (StringUtils.hasText(value)) return value;
         return root.path("data").path("taskId").asText("");
+    }
+
+    private static String firstText(JsonNode node, String... fields) {
+        for (String field : fields) {
+            String value = node.path(field).asText("").trim();
+            if (StringUtils.hasText(value)) return value;
+        }
+        return "Quark 转存失败";
+    }
+
+    private void mergeResponseCookies(HttpResponse<String> response) {
+        List<String> setCookies = response.headers().allValues("set-cookie");
+        if (setCookies.isEmpty()) return;
+        java.util.LinkedHashMap<String, String> values = new java.util.LinkedHashMap<>();
+        for (String part : cookie.get().split(";\\s*")) {
+            int separator = part.indexOf('=');
+            if (separator > 0) values.put(part.substring(0, separator), part.substring(separator + 1));
+        }
+        for (String setCookie : setCookies) {
+            String pair = setCookie.split(";", 2)[0];
+            int separator = pair.indexOf('=');
+            if (separator > 0) values.put(pair.substring(0, separator), pair.substring(separator + 1));
+        }
+        cookie.set(values.entrySet().stream().map(entry -> entry.getKey() + "=" + entry.getValue())
+                .reduce((left, right) -> left + "; " + right).orElse(""));
     }
 
     private static void collectFiles(List<QasShareNode> nodes, List<QasShareNode> result) {
