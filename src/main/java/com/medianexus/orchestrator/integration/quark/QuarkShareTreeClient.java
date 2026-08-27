@@ -16,6 +16,10 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.springframework.stereotype.Component;
@@ -65,8 +69,8 @@ public class QuarkShareTreeClient {
         JsonNode data = requestDetail(ref.shareId(), stoken, fid);
         List<QasShareNode> result = new ArrayList<>();
         for (JsonNode item : data.path("list")) {
-            state.nodes++;
-            if (state.nodes > MAX_NODES) {
+            int nodeCount = state.nodes.incrementAndGet();
+            if (nodeCount > MAX_NODES) {
                 throw failure(QasClientException.Reason.INVALID_RESPONSE, "夸克分享节点数超过 " + MAX_NODES, state);
             }
             String childFid = item.path("fid").asText("");
@@ -75,17 +79,44 @@ public class QuarkShareTreeClient {
             if (!StringUtils.hasText(childFid) || !StringUtils.hasText(name)) {
                 throw failure(QasClientException.Reason.INVALID_RESPONSE, "夸克分享条目缺少 fid 或文件名", state);
             }
-            List<QasShareNode> children = directory
-                    ? inspectDirectory(ref, childFid, stoken, depth + 1, state)
-                    : List.of();
             result.add(new QasShareNode(
                     childFid,
                     name,
                     directory,
                     item.path("obj_category").asText(null),
                     item.path("size").asLong(0),
-                    children,
+                    List.of(),
                     item.path("share_fid_token").asText(null)
+            ));
+        }
+        List<CompletableFuture<List<QasShareNode>>> childLoads = new ArrayList<>();
+        List<Integer> childIndexes = new ArrayList<>();
+        for (int index = 0; index < data.path("list").size(); index++) {
+            JsonNode item = data.path("list").get(index);
+            if (!item.path("dir").asBoolean(false)) {
+                continue;
+            }
+            String childFid = item.path("fid").asText("");
+            childIndexes.add(index);
+            childLoads.add(CompletableFuture.supplyAsync(
+                    () -> inspectDirectory(ref, childFid, stoken, depth + 1, state),
+                    ForkJoinPool.commonPool()
+            ));
+        }
+        try {
+            CompletableFuture.allOf(childLoads.toArray(CompletableFuture[]::new)).join();
+        } catch (CompletionException exception) {
+            if (exception.getCause() instanceof RuntimeException runtimeException) {
+                throw runtimeException;
+            }
+            throw exception;
+        }
+        for (int i = 0; i < childLoads.size(); i++) {
+            List<QasShareNode> children = childLoads.get(i).join();
+            int resultIndex = childIndexes.get(i);
+            QasShareNode node = result.get(resultIndex);
+            result.set(resultIndex, new QasShareNode(
+                    node.fid(), node.name(), true, node.category(), node.size(), children, node.shareFidToken()
             ));
         }
         return List.copyOf(result);
@@ -207,5 +238,5 @@ public class QuarkShareTreeClient {
     }
 
     private record ShareRef(String shareId, String startFid, String passcode) { }
-    private static final class InspectionState { private int nodes; }
+    private static final class InspectionState { private final AtomicInteger nodes = new AtomicInteger(); }
 }
