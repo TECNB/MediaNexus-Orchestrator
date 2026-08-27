@@ -181,9 +181,13 @@ public class QuarkDirectClient {
             try {
                 HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(BASE_URL + path))
                         .timeout(timeout())
-                        .header("Cookie", properties.getQuarkCookie())
+                        .header("Accept", "application/json, text/plain, */*")
+                        .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+                        .header("Origin", "https://pan.quark.cn")
+                        .header("Referer", "https://pan.quark.cn/")
+                        .header("Cookie", properties.getQuarkCookie().trim())
                         .header("Content-Type", "application/json")
-                        .header("User-Agent", "Mozilla/5.0");
+                        .header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/151.0.0.0 Safari/537.36");
                 if ("POST".equals(method)) {
                     builder.POST(HttpRequest.BodyPublishers.ofString(body == null ? "{}" : body.toString()));
                 } else {
@@ -193,8 +197,11 @@ public class QuarkDirectClient {
                 JsonNode root = objectMapper.readTree(response.body());
                 int code = root == null ? -1 : root.path("code").asInt(0);
                 if (response.statusCode() == 401 || response.statusCode() == 403 || code == 401 || code == 403) {
+                    String reason = root == null ? "" : root.path("message").asText("");
                     throw new QasClientException(QasClientException.Reason.AUTHENTICATION,
-                            "夸克登录状态已失效，请联系管理员更新夸克登录凭证");
+                            StringUtils.hasText(reason)
+                                    ? "夸克接口拒绝请求：" + reason
+                                    : "夸克登录状态已失效，请联系管理员更新夸克登录凭证");
                 }
                 if (response.statusCode() < 200 || response.statusCode() >= 300 || (root != null && code != 0 && !root.path("success").asBoolean(false))) {
                     throw new QasClientException(QasClientException.Reason.UPSTREAM,
