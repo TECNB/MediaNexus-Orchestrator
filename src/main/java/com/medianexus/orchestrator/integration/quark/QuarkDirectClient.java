@@ -42,6 +42,7 @@ public class QuarkDirectClient {
         this.properties = properties;
         this.objectMapper = objectMapper;
         this.httpClient = HttpClient.newBuilder()
+                .version(HttpClient.Version.HTTP_1_1)
                 .connectTimeout(properties.getTimeout() == null ? Duration.ofSeconds(15) : properties.getTimeout())
                 .build();
     }
