@@ -6,7 +6,9 @@ import static org.mockito.Mockito.when;
 
 import com.medianexus.orchestrator.config.QasProperties;
 import com.medianexus.orchestrator.config.TmdbProperties;
+import com.medianexus.orchestrator.dto.quark.request.QuarkFileSelectionRequest;
 import com.medianexus.orchestrator.dto.quark.request.QuarkMultiSourceRequest;
+import com.medianexus.orchestrator.dto.quark.request.QuarkSourceSelectionRequest;
 import com.medianexus.orchestrator.dto.quark.response.QuarkMultiSourcePreviewResponse;
 import com.medianexus.orchestrator.integration.qas.QasClient;
 import com.medianexus.orchestrator.integration.qas.QasShareNode;
@@ -58,11 +60,168 @@ class QuarkMultiSourceIngestServiceTest {
         );
     }
 
+    @Test
+    void explainsDuplicateEpisodeAndAcceptsManualEpisodeCorrection() {
+        String shareUrl = "https://pan.quark.cn/s/share123";
+        QasShareTree tree = duplicateEpisodeTree(shareUrl);
+        QuarkMultiSourceIngestService service = serviceFor(tree, shareUrl);
+
+        QuarkMultiSourcePreviewResponse structure = service.previewStructure(
+                request(shareUrl, null, List.of()), "SERIES"
+        );
+        String candidateId = structure.sources().get(0).sourceCandidateId();
+        QuarkMultiSourcePreviewResponse blocked = service.previewPlan(
+                request(shareUrl, structure.previewId(), List.of(
+                        new QuarkSourceSelectionRequest(candidateId, 1, false, false)
+                )),
+                "SERIES"
+        );
+
+        assertThat(blocked.ready()).isFalse();
+        assertThat(blocked.sources().get(0).files())
+                .filteredOn(file -> "CONFLICT".equals(file.status()))
+                .extracting(file -> file.sourceName())
+                .containsExactlyInAnyOrder("S01E06.mkv", "S01E06 (1).mkv");
+        String duplicateFileId = blocked.sources().get(0).files().stream()
+                .filter(file -> file.sourceName().equals("S01E06 (1).mkv"))
+                .findFirst()
+                .orElseThrow()
+                .fileId();
+
+        QuarkMultiSourcePreviewResponse corrected = service.previewPlan(
+                request(shareUrl, structure.previewId(), List.of(
+                        new QuarkSourceSelectionRequest(candidateId, 1, false, false, List.of(
+                                new QuarkFileSelectionRequest(duplicateFileId, 5, false)
+                        ))
+                )),
+                "SERIES"
+        );
+
+        assertThat(corrected.ready()).isTrue();
+        assertThat(corrected.sources().get(0).files())
+                .filteredOn(file -> file.sourceName().equals("S01E06 (1).mkv"))
+                .singleElement()
+                .satisfies(file -> {
+                    assertThat(file.status()).isEqualTo("MANUAL");
+                    assertThat(file.targetName()).isEqualTo("新世界 - S01E05.mkv");
+                });
+    }
+
+    @Test
+    void completelyExcludesAnIgnoredDuplicateFile() {
+        String shareUrl = "https://pan.quark.cn/s/share123";
+        QasShareTree tree = duplicateEpisodeTree(shareUrl);
+        QuarkMultiSourceIngestService service = serviceFor(tree, shareUrl);
+        QuarkMultiSourcePreviewResponse structure = service.previewStructure(
+                request(shareUrl, null, List.of()), "SERIES"
+        );
+        String candidateId = structure.sources().get(0).sourceCandidateId();
+        QuarkMultiSourcePreviewResponse blocked = service.previewPlan(
+                request(shareUrl, structure.previewId(), List.of(
+                        new QuarkSourceSelectionRequest(candidateId, 1, false, false)
+                )),
+                "SERIES"
+        );
+        String duplicateFileId = blocked.sources().get(0).files().stream()
+                .filter(file -> file.sourceName().equals("S01E06 (1).mkv"))
+                .findFirst()
+                .orElseThrow()
+                .fileId();
+
+        QuarkMultiSourcePreviewResponse corrected = service.previewPlan(
+                request(shareUrl, structure.previewId(), List.of(
+                        new QuarkSourceSelectionRequest(candidateId, 1, false, false, List.of(
+                                new QuarkFileSelectionRequest(duplicateFileId, null, true)
+                        ))
+                )),
+                "SERIES"
+        );
+
+        assertThat(corrected.ready()).isTrue();
+        assertThat(corrected.sources().get(0).files())
+                .filteredOn(file -> file.sourceName().equals("S01E06 (1).mkv"))
+                .singleElement()
+                .satisfies(file -> {
+                    assertThat(file.status()).isEqualTo("IGNORED");
+                    assertThat(file.message()).contains("不会转存");
+                });
+    }
+
+    @Test
+    void blocksManualEpisodeThatConflictsWithAnAutomaticallyPlannedFile() {
+        String shareUrl = "https://pan.quark.cn/s/share123";
+        QasShareTree tree = duplicateEpisodeTree(shareUrl);
+        QuarkMultiSourceIngestService service = serviceFor(tree, shareUrl);
+        QuarkMultiSourcePreviewResponse structure = service.previewStructure(
+                request(shareUrl, null, List.of()), "SERIES"
+        );
+        String candidateId = structure.sources().get(0).sourceCandidateId();
+        QuarkMultiSourcePreviewResponse blocked = service.previewPlan(
+                request(shareUrl, structure.previewId(), List.of(
+                        new QuarkSourceSelectionRequest(candidateId, 1, false, false)
+                )),
+                "SERIES"
+        );
+        String duplicateFileId = blocked.sources().get(0).files().stream()
+                .filter(file -> file.sourceName().equals("S01E06 (1).mkv"))
+                .findFirst()
+                .orElseThrow()
+                .fileId();
+
+        QuarkMultiSourcePreviewResponse conflicting = service.previewPlan(
+                request(shareUrl, structure.previewId(), List.of(
+                        new QuarkSourceSelectionRequest(candidateId, 1, false, false, List.of(
+                                new QuarkFileSelectionRequest(duplicateFileId, 1, false)
+                        ))
+                )),
+                "SERIES"
+        );
+
+        assertThat(conflicting.ready()).isFalse();
+        assertThat(conflicting.sources().get(0).files())
+                .filteredOn(file -> "CONFLICT".equals(file.status()))
+                .extracting(file -> file.targetName())
+                .contains("新世界 - S01E01.mkv");
+    }
+
+    private static QuarkMultiSourceIngestService serviceFor(QasShareTree tree, String shareUrl) {
+        QuarkShareTreeService shareTreeService = mock(QuarkShareTreeService.class);
+        when(shareTreeService.inspectShare(shareUrl)).thenReturn(tree);
+        QasProperties qasProperties = new QasProperties();
+        qasProperties.setTvRootPath("/TV");
+        return new QuarkMultiSourceIngestService(
+                mock(QasClient.class), shareTreeService, qasProperties, new TmdbProperties(), mock(AuthService.class),
+                new QuarkIngestPlanner(), mock(TmdbClient.class), new QuarkShareSourceRegistry(),
+                mock(QuarkIngestTaskMapper.class), mock(QuarkIngestTaskLogMapper.class)
+        );
+    }
+
+    private static QuarkMultiSourceRequest request(
+            String shareUrl,
+            String previewId,
+            List<QuarkSourceSelectionRequest> selections
+    ) {
+        return new QuarkMultiSourceRequest(
+                shareUrl, "新世界", null, null, previewId, false, selections
+        );
+    }
+
+    private static QasShareTree duplicateEpisodeTree(String shareUrl) {
+        return new QasShareTree(shareUrl, List.of(directory(
+                "season", "新世界", video("S01E01.mkv"), video("S01E02.mkv"),
+                video("S01E06.mkv"), video("S01E06 (1).mkv"), video("S01E07.mkv")
+        )));
+    }
+
     private static QasShareNode directory(String fid, String name, QasShareNode... children) {
         return new QasShareNode(fid, name, true, null, 0, List.of(children));
     }
 
     private static QasShareNode file(String name) {
         return new QasShareNode("fid-" + name, name, false, "archive", 1, List.of());
+    }
+
+    private static QasShareNode video(String name) {
+        return new QasShareNode("fid-" + name, name, false, "video", 1, List.of());
     }
 }

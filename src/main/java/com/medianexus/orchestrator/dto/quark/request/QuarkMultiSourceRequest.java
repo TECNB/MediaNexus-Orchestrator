@@ -2,6 +2,7 @@ package com.medianexus.orchestrator.dto.quark.request;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.swagger.v3.oas.annotations.media.Schema;
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import java.util.List;
 
@@ -16,7 +17,7 @@ public record QuarkMultiSourceRequest(
         @JsonProperty("tmdb_id") Integer tmdbId,
         @JsonProperty("preview_id") String previewId,
         @JsonProperty("follow_updates_enabled") boolean followUpdatesEnabled,
-        List<QuarkSourceSelectionRequest> sources
+        List<@Valid QuarkSourceSelectionRequest> sources
 ) {
 
     public QuarkMultiSourceRequest {

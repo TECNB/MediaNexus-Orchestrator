@@ -5,6 +5,7 @@ import com.medianexus.orchestrator.common.exception.BusinessException;
 import com.medianexus.orchestrator.common.exception.ErrorCode;
 import com.medianexus.orchestrator.config.QasProperties;
 import com.medianexus.orchestrator.config.TmdbProperties;
+import com.medianexus.orchestrator.dto.quark.request.QuarkFileSelectionRequest;
 import com.medianexus.orchestrator.dto.quark.request.QuarkMultiSourceRequest;
 import com.medianexus.orchestrator.dto.quark.request.QuarkSourceSelectionRequest;
 import com.medianexus.orchestrator.dto.quark.response.QuarkMultiSourcePreviewResponse;
@@ -30,6 +31,7 @@ import com.medianexus.orchestrator.model.QuarkIngestTaskLog;
 import com.medianexus.orchestrator.model.User;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeParseException;
@@ -57,6 +59,11 @@ public class QuarkMultiSourceIngestService {
 
     private static final Pattern SHARE_PATH = Pattern.compile("^/s/[A-Za-z0-9]+(?:/[A-Fa-f0-9]{32})?/?$");
     private static final Pattern ILLEGAL_TASK_CHARACTER = Pattern.compile("[\\\\/:*?\"<>|]");
+    private static final Pattern STANDARD_EPISODE = Pattern.compile("(?i).*?[Ss]\\d{1,2}[Ee](\\d{1,3}).*");
+    private static final Pattern NXNN_EPISODE = Pattern.compile("(?i).*?\\d{1,2}[xX](\\d{1,3}).*");
+    private static final Pattern CHINESE_EPISODE = Pattern.compile(".*?第\\s*(\\d{1,3})[集话期].*");
+    private static final Pattern LEADING_EPISODE = Pattern.compile("^(\\d{1,3})(?:[ _.-].*)?\\.[^.]+$");
+    private static final String MEDIA_EXTENSIONS = "mkv|mp4|avi|mov|wmv|flv|ts|m2ts|webm|rmvb|srt|ass|ssa|vtt|sub";
     private static final List<Integer> ALL_WEEKDAYS = List.of(1, 2, 3, 4, 5, 6, 7);
 
     private final QasClient qasClient;
@@ -246,12 +253,9 @@ public class QuarkMultiSourceIngestService {
         boolean hasSubscriptions = request.followUpdatesEnabled()
                 && computation.tasks().stream().anyMatch(PlannedSource::followUpdates);
         String status = createdCount < plannedCount ? "PARTIAL" : triggered ? "STARTED" : "SCHEDULED";
-        String message = createdCount < plannedCount
-                ? "已创建 " + createdCount + "/" + plannedCount + " 个 QAS 任务"
-                    + (triggered ? "并立即执行成功创建的任务" : "，但首次立即执行失败：" + triggerError)
-                : triggered
-                ? (hasSubscriptions ? "已创建 QAS 任务并开始执行；已勾选来源按每日订阅运行" : "已创建一次性 QAS 任务并开始执行")
-                : "QAS 任务已创建，但首次立即执行失败：" + triggerError;
+        String message = executionSummary(
+                computation, hasSubscriptions, createdCount < plannedCount, triggered, triggerError
+        );
         updateLocalRecord(localTaskId, status, triggered, createdCount, plannedCount, message);
         return new QuarkMultiSourceTaskResponse(
                 localTaskId,
@@ -265,6 +269,43 @@ public class QuarkMultiSourceIngestService {
                 warnings,
                 message
         );
+    }
+
+    private String executionSummary(
+            Computation computation,
+            boolean hasSubscriptions,
+            boolean partial,
+            boolean triggered,
+            String triggerError
+    ) {
+        int videoCount = 0;
+        int manualCount = 0;
+        int ignoredCount = 0;
+        for (QuarkSourcePlanResponse source : computation.sources()) {
+            for (QuarkRenamePreviewResponse file : source.files()) {
+                if (!isPlayableVideo(file.sourceName())) {
+                    continue;
+                }
+                if ("IGNORED".equals(file.status())) {
+                    ignoredCount++;
+                } else if (!"EXCLUDED".equals(file.status()) && !"UNRECOGNIZED".equals(file.status())) {
+                    videoCount++;
+                }
+                if ("MANUAL".equals(file.status())) {
+                    manualCount++;
+                }
+            }
+        }
+        String counts = "计划入库 " + videoCount + " 个视频"
+                + (manualCount > 0 ? "，其中 " + manualCount + " 个已手动指定集数" : "")
+                + (ignoredCount > 0 ? "，已忽略 " + ignoredCount + " 个文件" : "");
+        if (partial) {
+            return counts + "；部分文件未能开始入库，请查看失败来源";
+        }
+        if (!triggered) {
+            return counts + "；首次执行未能启动：" + triggerError;
+        }
+        return counts + "，已开始执行" + (hasSubscriptions ? "；标记的更新文件夹将继续每日检查" : "");
     }
 
     private Computation compute(
@@ -321,29 +362,54 @@ public class QuarkMultiSourceIngestService {
                     joinPath(rootPath(mediaType), cleanPathSegment(request.title())),
                     String.format(Locale.ROOT, "Season %02d", seasonNumber)
             );
+            FileDecisions fileDecisions;
+            try {
+                fileDecisions = resolveFileDecisions(candidate, selection.files());
+            } catch (IllegalArgumentException exception) {
+                String message = exception.getMessage();
+                errors.add(candidate.sourceName() + "：" + message);
+                sourceResponses.add(sourceResponse(candidate, selection, seasonNumber, "BLOCKED", List.of(message), List.of()));
+                continue;
+            }
+            QuarkShareSourceRegistry.SourceCandidate automaticCandidate = withoutCorrectedFiles(candidate, fileDecisions);
             QasIngestPlan planned;
             try {
-                planned = planSource(request, mediaType, candidate, seasonNumber, savePath);
+                planned = hasPlayableVideo(automaticCandidate.entries())
+                        ? planSource(request, mediaType, automaticCandidate, seasonNumber, savePath)
+                        : new QasIngestPlan(List.of(), List.of());
             } catch (QuarkIngestPlanningException exception) {
                 String message = safeMessage(exception.getMessage());
                 errors.add(candidate.sourceName() + "：" + message);
                 sourceResponses.add(sourceResponse(candidate, selection, seasonNumber, "BLOCKED", List.of(message), List.of()));
                 continue;
             }
-            if (planned.tasks().size() != 1) {
-                String message = "一个来源产生了多个重命名规则，无法安全创建单一 QAS 任务";
+            if (planned.tasks().size() > 1) {
+                String message = "一个来源包含多组互斥命名规则，当前无法安全提交";
                 errors.add(candidate.sourceName() + "：" + message);
                 sourceResponses.add(sourceResponse(candidate, selection, seasonNumber, "BLOCKED", List.of(message), planned.warnings()));
                 continue;
             }
-            QasTaskPlan task = planned.tasks().get(0);
-            if (!StringUtils.hasText(task.pattern()) || !StringUtils.hasText(task.replace())) {
-                String message = "多季度手动规划不允许回退为空重命名规则，请修正无法识别的文件后再提交";
+            QasTaskPlan automaticTask = planned.tasks().isEmpty() ? null : planned.tasks().get(0);
+            if (automaticTask != null
+                    && (!StringUtils.hasText(automaticTask.pattern()) || !StringUtils.hasText(automaticTask.replace()))) {
+                String message = "自动重命名无法覆盖全部视频，请为标红文件指定集数或忽略";
                 errors.add(candidate.sourceName() + "：" + message);
-                sourceResponses.add(sourceResponse(candidate, selection, seasonNumber, "BLOCKED", List.of(message), planned.warnings()));
+                List<QuarkRenamePreviewResponse> files = diagnosticRenamePreview(
+                        request.title(), seasonNumber, candidate, fileDecisions
+                );
+                sourceResponses.add(sourceResponse(candidate, selection, seasonNumber, "BLOCKED", List.of(message), planned.warnings(), files, automaticTask));
                 continue;
             }
-            List<QuarkRenamePreviewResponse> files = renamePreview(candidate, task);
+            List<QasTaskPlan> sourceTasks = new ArrayList<>();
+            if (automaticTask != null) {
+                sourceTasks.add(excludingFiles(automaticTask, fileDecisions.excludedNames()));
+            }
+            sourceTasks.addAll(manualTasks(request.title(), seasonNumber, savePath, candidate, fileDecisions));
+            if (sourceTasks.isEmpty()) {
+                sourceResponses.add(sourceResponse(candidate, selection, seasonNumber, "IGNORED", List.of(), planned.warnings()));
+                continue;
+            }
+            List<QuarkRenamePreviewResponse> files = renamePreview(candidate, sourceTasks, fileDecisions);
             List<String> sourceErrors = files.stream()
                     .filter(file -> "CONFLICT".equals(file.status()) || "UNRECOGNIZED".equals(file.status()))
                     .map(file -> StringUtils.hasText(file.message()) ? file.message() : file.sourceName())
@@ -352,14 +418,17 @@ public class QuarkMultiSourceIngestService {
             if (!sourceErrors.isEmpty()) {
                 errors.addAll(sourceErrors);
             }
-            tasks.add(new PlannedSource(
-                    candidate,
-                    request.followUpdatesEnabled() && selection.followUpdates(),
-                    task,
-                    seasonNumber
-            ));
+            for (int taskIndex = 0; taskIndex < sourceTasks.size(); taskIndex++) {
+                tasks.add(new PlannedSource(
+                        candidate,
+                        taskIndex == 0 && automaticTask != null
+                                && request.followUpdatesEnabled() && selection.followUpdates(),
+                        sourceTasks.get(taskIndex),
+                        seasonNumber
+                ));
+            }
             sourceResponses.add(sourceResponse(candidate, selection, seasonNumber,
-                    sourceErrors.isEmpty() ? "READY" : "BLOCKED", sourceErrors, planned.warnings(), files, task));
+                    sourceErrors.isEmpty() ? "READY" : "BLOCKED", sourceErrors, planned.warnings(), files, sourceTasks.get(0)));
         }
 
         applyTaskNames(tasks, request.title());
@@ -368,7 +437,7 @@ public class QuarkMultiSourceIngestService {
         boolean ready = errors.isEmpty() && !tasks.isEmpty();
         String planFingerprint = planFingerprint(tasks, sourceResponses, request.followUpdatesEnabled());
         String message = ready
-                ? "改名预览完成，可以提交 QAS 任务"
+                ? "改名预览完成，可以确认入库"
                 : errors.isEmpty()
                 ? "没有可执行来源，请至少映射一个未忽略来源"
                 : String.join("；", errors);
@@ -411,23 +480,47 @@ public class QuarkMultiSourceIngestService {
             QuarkShareSourceRegistry.SourceCandidate candidate,
             QasTaskPlan task
     ) {
-        List<QuarkRenamePreviewResponse> previews = new ArrayList<>(task.renameSamples().stream()
-                .map(sample -> new QuarkRenamePreviewResponse(
+        return renamePreview(candidate, List.of(task), FileDecisions.empty());
+    }
+
+    private List<QuarkRenamePreviewResponse> renamePreview(
+            QuarkShareSourceRegistry.SourceCandidate candidate,
+            List<QasTaskPlan> tasks,
+            FileDecisions decisions
+    ) {
+        Map<String, QasRenameSample> samples = new LinkedHashMap<>();
+        tasks.stream().flatMap(task -> task.renameSamples().stream())
+                .forEach(sample -> samples.put(sample.sourceName(), sample));
+        List<QuarkRenamePreviewResponse> previews = new ArrayList<>();
+        for (QasShareNode entry : candidate.entries()) {
+            String fileId = fileId(candidate, entry);
+            if (decisions.ignoredFileIds().contains(fileId)) {
+                previews.add(new QuarkRenamePreviewResponse(
+                        fileId, entry.name(), entry.name(), episodeNumber(entry.name()), "IGNORED", "已选择忽略，不会转存"
+                ));
+                continue;
+            }
+            QasRenameSample sample = samples.get(entry.name());
+            if (sample != null) {
+                boolean manual = decisions.manualEpisodes().containsKey(fileId);
+                previews.add(new QuarkRenamePreviewResponse(
+                        fileId,
                         sample.sourceName(),
                         sample.targetName(),
                         episodeNumber(sample.targetName()),
-                        sample.sourceName().equals(sample.targetName()) ? "UNCHANGED" : "READY",
-                        null
-                ))
-                .toList());
-        Set<String> plannedNames = task.renameSamples().stream()
-                .map(QasRenameSample::sourceName)
-                .collect(java.util.stream.Collectors.toSet());
+                        manual ? "MANUAL" : sample.sourceName().equals(sample.targetName()) ? "UNCHANGED" : "READY",
+                        manual ? "已手动指定集数" : null
+                ));
+            }
+        }
+        Set<String> plannedNames = samples.keySet();
         candidate.entries().stream()
                 .filter(entry -> !plannedNames.contains(entry.name()))
+                .filter(entry -> !decisions.ignoredFileIds().contains(fileId(candidate, entry)))
                 .map(entry -> {
                     boolean unsafeVideo = isPlayableVideo(entry.name()) || isSubtitle(entry.name());
                     return new QuarkRenamePreviewResponse(
+                            fileId(candidate, entry),
                             entry.name(),
                             entry.name(),
                             episodeNumber(entry.name()),
@@ -437,6 +530,135 @@ public class QuarkMultiSourceIngestService {
                 })
                 .forEach(previews::add);
         return List.copyOf(previews);
+    }
+
+    private FileDecisions resolveFileDecisions(
+            QuarkShareSourceRegistry.SourceCandidate candidate,
+            List<QuarkFileSelectionRequest> requests
+    ) {
+        Map<String, QasShareNode> files = candidate.entries().stream().collect(
+                java.util.stream.Collectors.toMap(
+                        entry -> fileId(candidate, entry), entry -> entry, (left, right) -> left, LinkedHashMap::new
+                )
+        );
+        Map<String, Integer> manualEpisodes = new LinkedHashMap<>();
+        Set<String> ignoredFileIds = new HashSet<>();
+        Set<String> excludedNames = new HashSet<>();
+        Set<String> manualStems = new HashSet<>();
+        Set<String> seen = new HashSet<>();
+        for (QuarkFileSelectionRequest request : requests) {
+            if (request == null || !StringUtils.hasText(request.fileId()) || !seen.add(request.fileId())) {
+                throw new IllegalArgumentException("文件修正项重复或无效");
+            }
+            QasShareNode file = files.get(request.fileId());
+            if (file == null || file.directory()) {
+                throw new IllegalArgumentException("文件修正项已过期，请刷新分享目录");
+            }
+            if (request.ignored()) {
+                if (request.episodeNumber() != null) {
+                    throw new IllegalArgumentException(file.name() + " 不能同时指定集数和忽略");
+                }
+                ignoredFileIds.add(request.fileId());
+                excludedNames.add(file.name());
+                continue;
+            }
+            if (request.episodeNumber() == null || request.episodeNumber() < 1 || request.episodeNumber() > 999) {
+                throw new IllegalArgumentException(file.name() + " 的手动集数必须在 1～999 之间");
+            }
+            if (!isPlayableVideo(file.name())) {
+                throw new IllegalArgumentException("只能为视频文件手动指定集数：" + file.name());
+            }
+            manualEpisodes.put(request.fileId(), request.episodeNumber());
+            manualStems.add(stemOf(file.name()));
+        }
+        for (QasShareNode file : candidate.entries()) {
+            String fileStem = stemOf(file.name());
+            if (manualStems.stream().anyMatch(stem -> fileStem.equals(stem) || fileStem.startsWith(stem + "."))) {
+                excludedNames.add(file.name());
+            }
+        }
+        return new FileDecisions(Map.copyOf(manualEpisodes), Set.copyOf(ignoredFileIds), Set.copyOf(excludedNames));
+    }
+
+    private QuarkShareSourceRegistry.SourceCandidate withoutCorrectedFiles(
+            QuarkShareSourceRegistry.SourceCandidate candidate,
+            FileDecisions decisions
+    ) {
+        List<QasShareNode> entries = candidate.entries().stream()
+                .filter(entry -> !decisions.excludedNames().contains(entry.name()))
+                .toList();
+        return new QuarkShareSourceRegistry.SourceCandidate(
+                candidate.id(), candidate.sourceName(), candidate.relativePath(), candidate.kind(), candidate.sourceUrl(),
+                candidate.fidPath(), entries, candidate.detectedSeason(), candidate.seasonStatus()
+        );
+    }
+
+    private QasTaskPlan excludingFiles(QasTaskPlan task, Set<String> excludedNames) {
+        if (excludedNames.isEmpty()) {
+            return task;
+        }
+        String exclusions = excludedNames.stream().map(this::regexEscape).sorted()
+                .collect(java.util.stream.Collectors.joining("|"));
+        String original = task.pattern();
+        String prefix = "^(?!(?:" + exclusions + ")$)";
+        String pattern = original.startsWith("^") ? prefix + original.substring(1) : prefix + original;
+        return new QasTaskPlan(
+                task.taskName(), task.sourceUrl(), task.savePath(), pattern, task.replace(), task.versionLabel(),
+                task.renameRule(), task.matchedFileCount(), task.renameSamples()
+        );
+    }
+
+    private List<QasTaskPlan> manualTasks(
+            String title,
+            int seasonNumber,
+            String savePath,
+            QuarkShareSourceRegistry.SourceCandidate candidate,
+            FileDecisions decisions
+    ) {
+        String season = String.format(Locale.ROOT, "%02d", seasonNumber);
+        List<QasTaskPlan> tasks = new ArrayList<>();
+        for (Map.Entry<String, Integer> correction : decisions.manualEpisodes().entrySet()) {
+            QasShareNode video = candidate.entries().stream()
+                    .filter(entry -> fileId(candidate, entry).equals(correction.getKey()))
+                    .findFirst()
+                    .orElseThrow();
+            String stem = stemOf(video.name());
+            String episode = String.format(Locale.ROOT, "%02d", correction.getValue());
+            Pattern matcher = Pattern.compile(
+                    "^" + regexEscape(stem) + "((?:\\.[^.]+)*)\\.(" + MEDIA_EXTENSIONS + ")$",
+                    Pattern.CASE_INSENSITIVE
+            );
+            String targetBase = title + " - S" + season + "E" + episode;
+            List<QasRenameSample> samples = candidate.entries().stream().map(entry -> {
+                java.util.regex.Matcher match = matcher.matcher(entry.name());
+                return match.matches()
+                        ? new QasRenameSample(entry.name(), targetBase + match.group(1) + "." + match.group(2))
+                        : null;
+            }).filter(java.util.Objects::nonNull).toList();
+            tasks.add(new QasTaskPlan(
+                    title + " S" + season + " [手动 E" + episode + "]",
+                    candidate.sourceUrl(), savePath, matcher.pattern(), targetBase + "\\1.\\2", null,
+                    "手动指定 E" + episode, samples.size(), samples
+            ));
+        }
+        return List.copyOf(tasks);
+    }
+
+    private boolean hasPlayableVideo(List<QasShareNode> entries) {
+        return entries.stream().anyMatch(entry -> !entry.directory() && isPlayableVideo(entry.name()));
+    }
+
+    private String fileId(QuarkShareSourceRegistry.SourceCandidate candidate, QasShareNode entry) {
+        return UUID.nameUUIDFromBytes((candidate.id() + "\u0000" + entry.fid()).getBytes(StandardCharsets.UTF_8)).toString();
+    }
+
+    private String stemOf(String name) {
+        int extension = name.lastIndexOf('.');
+        return extension > 0 ? name.substring(0, extension) : name;
+    }
+
+    private String regexEscape(String value) {
+        return value.replaceAll("([\\\\.\\[\\]{}()*+?^$|])", "\\\\$1");
     }
 
     private boolean isPlayableVideo(String name) {
@@ -459,11 +681,82 @@ public class QuarkMultiSourceIngestService {
         return matcher.find() ? Integer.parseInt(matcher.group(1)) : 0;
     }
 
+    private List<QuarkRenamePreviewResponse> diagnosticRenamePreview(
+            String title,
+            int seasonNumber,
+            QuarkShareSourceRegistry.SourceCandidate candidate,
+            FileDecisions decisions
+    ) {
+        Map<Integer, List<QasShareNode>> videosByEpisode = new LinkedHashMap<>();
+        for (QasShareNode entry : candidate.entries()) {
+            String id = fileId(candidate, entry);
+            if (!isPlayableVideo(entry.name()) || decisions.ignoredFileIds().contains(id)) {
+                continue;
+            }
+            Integer episode = inferredEpisode(entry.name());
+            if (episode != null) {
+                videosByEpisode.computeIfAbsent(episode, ignored -> new ArrayList<>()).add(entry);
+            }
+        }
+        String season = String.format(Locale.ROOT, "%02d", seasonNumber);
+        List<QuarkRenamePreviewResponse> previews = new ArrayList<>();
+        for (QasShareNode entry : candidate.entries()) {
+            String id = fileId(candidate, entry);
+            if (decisions.ignoredFileIds().contains(id)) {
+                previews.add(new QuarkRenamePreviewResponse(
+                        id, entry.name(), entry.name(), episodeNumber(entry.name()), "IGNORED", "已选择忽略，不会转存"
+                ));
+                continue;
+            }
+            if (!isPlayableVideo(entry.name())) {
+                previews.add(new QuarkRenamePreviewResponse(
+                        id, entry.name(), entry.name(), episodeNumber(entry.name()), "EXCLUDED", "非视频附件不参与诊断"
+                ));
+                continue;
+            }
+            Integer episode = inferredEpisode(entry.name());
+            if (episode == null) {
+                previews.add(new QuarkRenamePreviewResponse(
+                        id, entry.name(), entry.name(), null, "UNRECOGNIZED",
+                        "无法从文件名提取集数，请手动指定或忽略"
+                ));
+                continue;
+            }
+            String target = title + " - S" + season + "E" + String.format(Locale.ROOT, "%02d", episode)
+                    + "." + extensionOf(entry.name());
+            List<QasShareNode> duplicates = videosByEpisode.getOrDefault(episode, List.of());
+            boolean conflict = duplicates.size() > 1;
+            String conflictNames = duplicates.stream().map(QasShareNode::name)
+                    .collect(java.util.stream.Collectors.joining("、"));
+            previews.add(new QuarkRenamePreviewResponse(
+                    id, entry.name(), target, episode, conflict ? "CONFLICT" : "READY",
+                    conflict ? "与 " + conflictNames + " 解析为同一集，请修正其中一个文件" : "已识别集数，但其他文件阻止了统一规则"
+            ));
+        }
+        return List.copyOf(previews);
+    }
+
+    private Integer inferredEpisode(String name) {
+        for (Pattern pattern : List.of(STANDARD_EPISODE, NXNN_EPISODE, CHINESE_EPISODE, LEADING_EPISODE)) {
+            java.util.regex.Matcher matcher = pattern.matcher(name);
+            if (matcher.matches()) {
+                int episode = Integer.parseInt(matcher.group(1));
+                return episode > 0 ? episode : null;
+            }
+        }
+        return null;
+    }
+
+    private String extensionOf(String name) {
+        int extension = name.lastIndexOf('.');
+        return extension >= 0 ? name.substring(extension + 1) : "mkv";
+    }
+
     private Map<String, Set<String>> detectGlobalConflicts(
             List<PlannedSource> tasks,
             List<String> errors
     ) {
-        Map<String, String> targetOwners = new HashMap<>();
+        Map<String, PlannedSource> targetOwners = new HashMap<>();
         Map<String, Set<String>> conflictingTargets = new HashMap<>();
         for (PlannedSource planned : tasks) {
             for (QuarkRenamePreviewResponse file : renamePreview(planned.candidate(), planned.task())) {
@@ -472,11 +765,12 @@ public class QuarkMultiSourceIngestService {
                 }
                 String normalizedTarget = file.targetName().toLowerCase(Locale.ROOT);
                 String key = planned.task().savePath().toLowerCase(Locale.ROOT) + "\u0000" + normalizedTarget;
-                String previous = targetOwners.putIfAbsent(key, planned.candidate().id());
-                if (previous != null && !previous.equals(planned.candidate().id())) {
+                PlannedSource previous = targetOwners.putIfAbsent(key, planned);
+                if (previous != null && previous != planned) {
                     String message = "同季目标文件名冲突：" + file.targetName();
                     errors.add(message);
-                    conflictingTargets.computeIfAbsent(previous, ignored -> new HashSet<>()).add(normalizedTarget);
+                    conflictingTargets.computeIfAbsent(previous.candidate().id(), ignored -> new HashSet<>())
+                            .add(normalizedTarget);
                     conflictingTargets.computeIfAbsent(planned.candidate().id(), ignored -> new HashSet<>())
                             .add(normalizedTarget);
                 }
@@ -510,7 +804,7 @@ public class QuarkMultiSourceIngestService {
             List<QuarkRenamePreviewResponse> files = response.files().stream()
                     .map(file -> sourceConflicts.contains(file.targetName().toLowerCase(Locale.ROOT))
                             ? new QuarkRenamePreviewResponse(
-                                    file.sourceName(), file.targetName(), file.episodeNumber(), "CONFLICT",
+                                    file.fileId(), file.sourceName(), file.targetName(), file.episodeNumber(), "CONFLICT",
                                     "与同季其他来源的目标文件名重复"
                             )
                             : file)
@@ -542,6 +836,10 @@ public class QuarkMultiSourceIngestService {
                         : label;
                 String taskName = title + " S" + String.format(Locale.ROOT, "%02d", planned.seasonNumber())
                         + (multiple ? " [" + suffix + "]" : "");
+                if (StringUtils.hasText(planned.task().renameRule())
+                        && planned.task().renameRule().startsWith("手动指定")) {
+                    taskName += " [" + planned.task().renameRule() + "]";
+                }
                 planned.setTask(withTaskName(planned.task(), taskName));
             }
         }
@@ -676,12 +974,14 @@ public class QuarkMultiSourceIngestService {
                     "任务：" + planned.taskName() + "；规则：" + rule
                             + "；匹配文件：" + planned.matchedFileCount()
                             + "；调度：" + (source.followUpdates() ? "每日订阅" : "一次性"));
-            List<QuarkRenamePreviewResponse> previews = renamePreview(source.candidate(), planned);
+        }
+        for (QuarkSourcePlanResponse source : computation.sources()) {
+            List<QuarkRenamePreviewResponse> previews = source.files();
             previews.stream().limit(20).forEach(file -> writeLog(
                     id,
                     "UNRECOGNIZED".equals(file.status()) || "CONFLICT".equals(file.status()) ? "WARN" : "INFO",
                     "rename_preview",
-                    "改名预览",
+                    "IGNORED".equals(file.status()) ? "文件已忽略" : "改名预览",
                     file.sourceName() + " → " + file.targetName()
                             + (StringUtils.hasText(file.message()) ? "（" + file.message() + "）" : "")
             ));
@@ -860,6 +1160,16 @@ public class QuarkMultiSourceIngestService {
         private QasTaskPlan task() { return task; }
         private int seasonNumber() { return seasonNumber; }
         private void setTask(QasTaskPlan replacement) { task = replacement; }
+    }
+
+    private record FileDecisions(
+            Map<String, Integer> manualEpisodes,
+            Set<String> ignoredFileIds,
+            Set<String> excludedNames
+    ) {
+        private static FileDecisions empty() {
+            return new FileDecisions(Map.of(), Set.of(), Set.of());
+        }
     }
 
     private record Computation(
