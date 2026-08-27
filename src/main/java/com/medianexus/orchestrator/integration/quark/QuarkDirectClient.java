@@ -22,6 +22,7 @@ import java.util.function.Consumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.ThreadLocalRandom;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
@@ -58,10 +59,7 @@ public class QuarkDirectClient {
         }
         ShareRef ref = parse(plan.sourceUrl());
         String stoken = fetchStoken(ref.shareId(), ref.passcode());
-        QasShareNode selected = findSelected(tree.entries(), ref.startFid());
-        String sourceParentFid = selected != null && selected.directory() ? selected.fid() : "0";
-        List<QasShareNode> files = new ArrayList<>();
-        collectFiles(selected == null ? tree.entries() : List.of(selected), files);
+        List<QasShareNode> files = loadShareFiles(ref.shareId(), stoken, ref.startFid(), 0);
         if (StringUtils.hasText(plan.pattern())) {
             Pattern selectionPattern = Pattern.compile(plan.pattern());
             files.removeIf(file -> !selectionPattern.matcher(file.name()).matches());
@@ -84,9 +82,9 @@ public class QuarkDirectClient {
             savePayload.put("to_pdir_fid", targetFid);
             savePayload.put("pwd_id", ref.shareId());
             savePayload.put("stoken", stoken);
-            savePayload.put("pdir_fid", sourceParentFid);
+            savePayload.put("pdir_fid", "0");
             savePayload.put("scene", "link");
-            JsonNode saved = request("POST", "/1/clouddrive/share/sharepage/save?pr=ucpro&fr=pc&uc_param_str=", savePayload);
+            JsonNode saved = request("POST", savePath("/1/clouddrive/share/sharepage/save"), savePayload);
             String taskId = extractTaskId(saved);
             if (StringUtils.hasText(taskId)) {
                 awaitTaskWithRetry(taskId, savePayload, progress);
@@ -168,7 +166,7 @@ public class QuarkDirectClient {
                 }
                 progress.accept("Quark 转存失败，正在重试 " + attempt + "/" + MAX_TASK_RETRIES);
                 sleep(1000L * attempt);
-                JsonNode retried = request("POST", "/1/clouddrive/share/sharepage/save?pr=ucpro&fr=pc&uc_param_str=", savePayload);
+                JsonNode retried = request("POST", savePath("/1/clouddrive/share/sharepage/save"), savePayload);
                 String retryTaskId = extractTaskId(retried);
                 if (!StringUtils.hasText(retryTaskId)) {
                     throw exception;
@@ -187,8 +185,7 @@ public class QuarkDirectClient {
         while (System.nanoTime() < deadline) {
             JsonNode result;
             try {
-                result = request("GET", "/1/clouddrive/task?pr=ucpro&fr=pc&uc_param_str="
-                        + "&task_id=" + enc(taskId) + "&retry_index=0", null);
+                result = request("GET", taskPath(taskId, retries), null);
             } catch (QasClientException exception) {
                 if (retries++ >= MAX_RETRIES) throw exception;
                 sleep(Math.min(10000L, 1000L * retries));
@@ -228,6 +225,63 @@ public class QuarkDirectClient {
                     "夸克登录状态已失效，请联系管理员更新夸克登录凭证");
         }
         return token;
+    }
+
+    private List<QasShareNode> loadShareFiles(String shareId, String stoken, String directoryFid, int depth) {
+        if (depth > 4) {
+            throw new QasClientException(QasClientException.Reason.INVALID_RESPONSE, "夸克分享目录深度超过 4");
+        }
+        List<QasShareNode> files = new ArrayList<>();
+        int page = 1;
+        while (true) {
+            String path = "/1/clouddrive/share/sharepage/detail?pr=ucpro&fr=pc"
+                    + "&pwd_id=" + enc(shareId)
+                    + "&stoken=" + enc(stoken)
+                    + "&pdir_fid=" + enc(directoryFid)
+                    + "&force=0&_page=" + page + "&_size=50&_fetch_banner=0&_fetch_share=0&_fetch_total=1"
+                    + "&_sort=file_type:asc,updated_at:desc&ver=2&fetch_share_full_path=0";
+            JsonNode data = request("GET", path, null).path("data");
+            JsonNode entries = data.path("list");
+            if (!entries.isArray()) {
+                throw new QasClientException(QasClientException.Reason.INVALID_RESPONSE,
+                        "夸克分享目录响应缺少文件列表");
+            }
+            for (JsonNode entry : entries) {
+                String fid = entry.path("fid").asText("");
+                String name = entry.path("file_name").asText("");
+                if (!StringUtils.hasText(fid) || !StringUtils.hasText(name)) continue;
+                if (entry.path("dir").asBoolean(false)) {
+                    files.addAll(loadShareFiles(shareId, stoken, fid, depth + 1));
+                } else {
+                    files.add(new QasShareNode(
+                            fid,
+                            name,
+                            false,
+                            entry.path("obj_category").asText(null),
+                            entry.path("size").asLong(0),
+                            List.of(),
+                            entry.path("share_fid_token").asText(null)
+                    ));
+                }
+            }
+            int total = data.path("metadata").path("_total").asInt(0);
+            if (entries.size() < 50 || (total > 0 && page * 50 >= total)) break;
+            page++;
+        }
+        return files;
+    }
+
+    private static String savePath(String path) {
+        return path + "?pr=ucpro&fr=pc&uc_param_str=&app=clouddrive&__dt="
+                + ThreadLocalRandom.current().nextLong(60000L, 300001L)
+                + "&__t=" + (System.currentTimeMillis() / 1000.0d);
+    }
+
+    private static String taskPath(String taskId, int retryIndex) {
+        return "/1/clouddrive/task?pr=ucpro&fr=pc&uc_param_str=&task_id=" + enc(taskId)
+                + "&retry_index=" + retryIndex
+                + "&__dt=" + ThreadLocalRandom.current().nextLong(60000L, 300001L)
+                + "&__t=" + (System.currentTimeMillis() / 1000.0d);
     }
 
     private JsonNode request(String method, String path, ObjectNode body) {
