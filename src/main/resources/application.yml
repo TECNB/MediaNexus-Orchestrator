@@ -126,6 +126,7 @@ medianexus:
     base-url: ${MEDIANEXUS_QAS_BASE_URL:}
     api-token: ${MEDIANEXUS_QAS_API_TOKEN:}
     quark-cookie: ${MEDIANEXUS_QUARK_COOKIE:}
+    smartstrm-webhook: ${MEDIANEXUS_SMARTSTRM_WEBHOOK:}
     timeout: ${MEDIANEXUS_QAS_TIMEOUT:15s}
     share-tree-cache-ttl: ${MEDIANEXUS_QUARK_SHARE_TREE_CACHE_TTL:5m}
     movie-root-path: ${MEDIANEXUS_QAS_MOVIE_ROOT_PATH:/Movie}

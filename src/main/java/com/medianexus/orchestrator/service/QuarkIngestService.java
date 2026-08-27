@@ -19,6 +19,8 @@ import com.medianexus.orchestrator.integration.qas.QasShareInspectionException;
 import com.medianexus.orchestrator.integration.qas.QasShareNode;
 import com.medianexus.orchestrator.integration.qas.QasShareTree;
 import com.medianexus.orchestrator.integration.qas.QasTaskCreateCommand;
+import com.medianexus.orchestrator.integration.quark.QuarkDirectClient;
+import com.medianexus.orchestrator.integration.smartstrm.SmartStrmWebhookClient;
 import com.medianexus.orchestrator.integration.tmdb.TmdbClient;
 import com.medianexus.orchestrator.integration.tmdb.TmdbClientException;
 import com.medianexus.orchestrator.mapper.QuarkIngestTaskLogMapper;
@@ -45,9 +47,13 @@ import java.util.Map;
 import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import jakarta.annotation.PreDestroy;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -72,7 +78,40 @@ public class QuarkIngestService {
     private final TmdbClient tmdbClient;
     private final QuarkIngestTaskMapper taskMapper;
     private final QuarkIngestTaskLogMapper taskLogMapper;
+    private final QuarkDirectClient quarkDirectClient;
+    private final SmartStrmWebhookClient smartStrmWebhookClient;
+    private final ExecutorService directExecutor = Executors.newFixedThreadPool(2);
 
+    @Autowired
+    public QuarkIngestService(
+            QasClient qasClient,
+            QuarkShareTreeService shareTreeService,
+            QasProperties qasProperties,
+            TmdbProperties tmdbProperties,
+            MovieSeriesFileRenameService renameService,
+            AuthService authService,
+            QuarkIngestPlanner ingestPlanner,
+            TmdbClient tmdbClient,
+            QuarkIngestTaskMapper taskMapper,
+            QuarkIngestTaskLogMapper taskLogMapper,
+            QuarkDirectClient quarkDirectClient,
+            SmartStrmWebhookClient smartStrmWebhookClient
+    ) {
+        this.qasClient = qasClient;
+        this.shareTreeService = shareTreeService;
+        this.qasProperties = qasProperties;
+        this.tmdbProperties = tmdbProperties;
+        this.renameService = renameService;
+        this.authService = authService;
+        this.ingestPlanner = ingestPlanner;
+        this.tmdbClient = tmdbClient;
+        this.taskMapper = taskMapper;
+        this.taskLogMapper = taskLogMapper;
+        this.quarkDirectClient = quarkDirectClient;
+        this.smartStrmWebhookClient = smartStrmWebhookClient;
+    }
+
+    /** Backward-compatible constructor used by focused unit tests. */
     public QuarkIngestService(
             QasClient qasClient,
             QuarkShareTreeService shareTreeService,
@@ -85,21 +124,15 @@ public class QuarkIngestService {
             QuarkIngestTaskMapper taskMapper,
             QuarkIngestTaskLogMapper taskLogMapper
     ) {
-        this.qasClient = qasClient;
-        this.shareTreeService = shareTreeService;
-        this.qasProperties = qasProperties;
-        this.tmdbProperties = tmdbProperties;
-        this.renameService = renameService;
-        this.authService = authService;
-        this.ingestPlanner = ingestPlanner;
-        this.tmdbClient = tmdbClient;
-        this.taskMapper = taskMapper;
-        this.taskLogMapper = taskLogMapper;
+        this(qasClient, shareTreeService, qasProperties, tmdbProperties, renameService, authService,
+                ingestPlanner, tmdbClient, taskMapper, taskLogMapper,
+                new QuarkDirectClient(qasProperties, new com.fasterxml.jackson.databind.ObjectMapper()),
+                new SmartStrmWebhookClient(qasProperties, new com.fasterxml.jackson.databind.ObjectMapper()));
     }
 
     public QuarkIngestTaskResponse ingestMovie(MovieQuarkIngestRequest request) {
         PreparedIngest prepared = prepareMovie(request, true);
-        return createAndTrigger("MOVIE", requiredText(request.title(), "电影标题不能为空"), prepared.plan());
+        return createAndTrigger("MOVIE", requiredText(request.title(), "电影标题不能为空"), prepared.plan(), prepared.shareTree());
     }
 
     public QuarkIngestTaskResponse ingestSeries(SeriesQuarkIngestRequest request) {
@@ -128,7 +161,7 @@ public class QuarkIngestService {
             String configuredRoot
     ) {
         PreparedIngest prepared = prepareSeasonMedia(request, mediaType, configuredRoot, true);
-        return createAndTrigger(mediaType, requiredText(request.title(), "标题不能为空"), prepared.plan());
+        return createAndTrigger(mediaType, requiredText(request.title(), "标题不能为空"), prepared.plan(), prepared.shareTree());
     }
 
     private PreparedIngest prepareMovie(MovieQuarkIngestRequest request, boolean allowTimeoutFallback) {
@@ -365,11 +398,24 @@ public class QuarkIngestService {
         return Map.copyOf(result);
     }
 
-    private QuarkIngestTaskResponse createAndTrigger(String mediaType, String title, QasIngestPlan plan) {
+    private QuarkIngestTaskResponse createAndTrigger(String mediaType, String title, QasIngestPlan plan, QasShareTree shareTree) {
         User user = authService.requireCurrentUser();
-        ensureNoDuplicateQasTasks(plan);
+        boolean direct = StringUtils.hasText(qasProperties.getQuarkCookie())
+                && StringUtils.hasText(qasProperties.getSmartstrmWebhook());
+        if (direct) {
         QuarkIngestTask ingestTask = createIngestRecord(user, mediaType, title, plan);
         writePlanLogs(ingestTask.getId(), mediaType, plan);
+        writeLog(ingestTask.getId(), "INFO", "submitted", "已提交 Quark 直接入库任务", null);
+        updateAcceptedIngestRecord(ingestTask.getId(), "STARTED", plan.tasks().size(), plan.tasks().size(),
+                plan.tasks().size() + " 个执行单元已提交，正在直接调用夸克");
+        directExecutor.submit(() -> executeDirectIngest(ingestTask.getId(), mediaType, plan, shareTree));
+        return new QuarkIngestTaskResponse(
+                ingestTask.getId(), "STARTED", mediaType,
+                String.join(", ", plan.tasks().stream().map(QasTaskPlan::taskName).toList()),
+                plan.tasks().get(0).savePath(), true, plan.tasks().size(), plan.tasks().size(),
+                plan.warnings(), "Quark 直接入库任务已开始执行"
+        );
+        }
         List<QasCreatedTask> createdTasks = new ArrayList<>();
         List<String> creationFailures = new ArrayList<>();
         QasClientException firstFailure = null;
@@ -457,6 +503,34 @@ public class QuarkIngestService {
                 List.copyOf(warnings),
                 message
         );
+    }
+
+    private void executeDirectIngest(String taskId, String mediaType, QasIngestPlan plan, QasShareTree shareTree) {
+        int completed = 0;
+        try {
+            for (QasTaskPlan task : plan.tasks()) {
+                writeLog(taskId, "INFO", "direct_transfer", "开始 Quark 直接转存", task.taskName());
+                quarkDirectClient.transfer(task, shareTree,
+                        message -> writeLog(taskId, "INFO", "direct_transfer", message, task.taskName()));
+                writeLog(taskId, "INFO", "renaming", "Quark 转存完成，重命名由 Quark API 执行", task.taskName());
+                smartStrmWebhookClient.trigger(task.savePath(), mediaType);
+                writeLog(taskId, "INFO", "smartstrm", "SmartStrm 任务已触发", task.savePath());
+                completed++;
+                updateIngestRecord(taskId, completed == plan.tasks().size() ? "COMPLETED" : "STARTED",
+                        completed == plan.tasks().size() ? "completed" : "direct_transfer", true,
+                        completed, plan.tasks().size(), "已完成 " + completed + "/" + plan.tasks().size() + " 个执行单元");
+            }
+        } catch (RuntimeException exception) {
+            String message = exception.getMessage() == null ? "Quark 直接入库失败" : exception.getMessage();
+            writeLog(taskId, completed > 0 ? "WARN" : "ERROR", "failed", message, null);
+            updateIngestRecord(taskId, completed > 0 ? "PARTIAL" : "FAILED", "failed", true,
+                    completed, plan.tasks().size(), message);
+        }
+    }
+
+    @PreDestroy
+    void shutdownDirectExecutor() {
+        directExecutor.shutdownNow();
     }
 
     private void ensureNoDuplicateQasTasks(QasIngestPlan plan) {

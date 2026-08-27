@@ -23,6 +23,8 @@ import com.medianexus.orchestrator.integration.qas.QasShareInspectionException;
 import com.medianexus.orchestrator.integration.qas.QasShareNode;
 import com.medianexus.orchestrator.integration.qas.QasShareTree;
 import com.medianexus.orchestrator.integration.qas.QasTaskCreateCommand;
+import com.medianexus.orchestrator.integration.quark.QuarkDirectClient;
+import com.medianexus.orchestrator.integration.smartstrm.SmartStrmWebhookClient;
 import com.medianexus.orchestrator.integration.tmdb.TmdbClient;
 import com.medianexus.orchestrator.integration.tmdb.TmdbClientException;
 import com.medianexus.orchestrator.mapper.QuarkIngestTaskLogMapper;
@@ -46,9 +48,13 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.TreeMap;
 import java.util.regex.Pattern;
 import org.springframework.http.HttpStatus;
+import org.springframework.beans.factory.annotation.Autowired;
+import jakarta.annotation.PreDestroy;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -79,7 +85,11 @@ public class QuarkMultiSourceIngestService {
     private final QuarkShareSourceRegistry registry;
     private final QuarkIngestTaskMapper taskMapper;
     private final QuarkIngestTaskLogMapper taskLogMapper;
+    private final QuarkDirectClient quarkDirectClient;
+    private final SmartStrmWebhookClient smartStrmWebhookClient;
+    private final ExecutorService directExecutor = Executors.newFixedThreadPool(2);
 
+    @Autowired
     public QuarkMultiSourceIngestService(
             QasClient qasClient,
             QuarkShareTreeService shareTreeService,
@@ -90,7 +100,9 @@ public class QuarkMultiSourceIngestService {
             TmdbClient tmdbClient,
             QuarkShareSourceRegistry registry,
             QuarkIngestTaskMapper taskMapper,
-            QuarkIngestTaskLogMapper taskLogMapper
+            QuarkIngestTaskLogMapper taskLogMapper,
+            QuarkDirectClient quarkDirectClient,
+            SmartStrmWebhookClient smartStrmWebhookClient
     ) {
         this.qasClient = qasClient;
         this.shareTreeService = shareTreeService;
@@ -102,6 +114,20 @@ public class QuarkMultiSourceIngestService {
         this.registry = registry;
         this.taskMapper = taskMapper;
         this.taskLogMapper = taskLogMapper;
+        this.quarkDirectClient = quarkDirectClient;
+        this.smartStrmWebhookClient = smartStrmWebhookClient;
+    }
+
+    public QuarkMultiSourceIngestService(
+            QasClient qasClient, QuarkShareTreeService shareTreeService, QasProperties qasProperties,
+            TmdbProperties tmdbProperties, AuthService authService, QuarkIngestPlanner planner,
+            TmdbClient tmdbClient, QuarkShareSourceRegistry registry, QuarkIngestTaskMapper taskMapper,
+            QuarkIngestTaskLogMapper taskLogMapper
+    ) {
+        this(qasClient, shareTreeService, qasProperties, tmdbProperties, authService, planner, tmdbClient,
+                registry, taskMapper, taskLogMapper,
+                new QuarkDirectClient(qasProperties, new com.fasterxml.jackson.databind.ObjectMapper()),
+                new SmartStrmWebhookClient(qasProperties, new com.fasterxml.jackson.databind.ObjectMapper()));
     }
 
     public QuarkMultiSourcePreviewResponse previewStructure(QuarkMultiSourceRequest request, String mediaType) {
@@ -200,14 +226,25 @@ public class QuarkMultiSourceIngestService {
                 || !session.planFingerprint().equals(computation.planFingerprint())) {
             throw badRequest("改名预览已过期，请刷新预览后再提交");
         }
-        checkDuplicateTasks(computation.tasks());
+        boolean directEnabled = StringUtils.hasText(qasProperties.getQuarkCookie())
+                && StringUtils.hasText(qasProperties.getSmartstrmWebhook());
+        checkDuplicateTasks(computation.tasks(), directEnabled);
 
         String localTaskId = UUID.randomUUID().toString();
         createLocalRecord(user, localTaskId, mediaType, request.title(), computation);
         List<QasCreatedTask> created = new ArrayList<>();
         List<QuarkSourceTaskResultResponse> sourceResults = new ArrayList<>();
         List<String> warnings = new ArrayList<>(computation.warnings());
+        List<PlannedSource> directSources = new ArrayList<>();
         for (PlannedSource source : computation.tasks()) {
+            if (directEnabled && (!request.followUpdatesEnabled() || !source.followUpdates())) {
+                directSources.add(source);
+                sourceResults.add(new QuarkSourceTaskResultResponse(
+                        source.candidate().id(), source.task().taskName(), "STARTED", "Quark 直接入库已提交"
+                ));
+                writeLog(localTaskId, "INFO", "submitted", "已提交 Quark 直接入库", source.task().taskName());
+                continue;
+            }
             try {
                 QasCreatedTask createdTask = qasClient.createTask(new QasTaskCreateCommand(
                         source.task().taskName(),
@@ -236,7 +273,10 @@ public class QuarkMultiSourceIngestService {
                 writeLog(localTaskId, "ERROR", "creating", "QAS 任务创建失败", source.task().taskName() + "：" + message);
             }
         }
-        if (created.isEmpty()) {
+        for (PlannedSource source : directSources) {
+            directExecutor.submit(() -> executeDirectSource(localTaskId, mediaType, source.task(), freshTree));
+        }
+        if (created.isEmpty() && directSources.isEmpty()) {
             updateLocalRecord(localTaskId, "FAILED", false, 0, computation.tasks().size(), "没有成功创建 QAS 任务");
             return new QuarkMultiSourceTaskResponse(
                     localTaskId, "FAILED", mediaType, rootPath(mediaType), false,
@@ -244,24 +284,26 @@ public class QuarkMultiSourceIngestService {
             );
         }
 
-        boolean triggered = true;
+        boolean triggered = !created.isEmpty();
         String triggerError = null;
         try {
-            qasClient.triggerTasksNow(created, executionObserver(localTaskId));
+            if (!created.isEmpty()) {
+                qasClient.triggerTasksNow(created, executionObserver(localTaskId));
+            }
         } catch (QasClientException exception) {
             triggered = false;
             triggerError = safeMessage(exception.getMessage());
             warnings.add("首次立即执行失败：" + triggerError);
         }
         int plannedCount = computation.tasks().size();
-        int createdCount = created.size();
+        int createdCount = created.size() + directSources.size();
         boolean hasSubscriptions = request.followUpdatesEnabled()
                 && computation.tasks().stream().anyMatch(PlannedSource::followUpdates);
         String status = createdCount < plannedCount ? "PARTIAL" : triggered ? "STARTED" : "SCHEDULED";
         String message = executionSummary(
                 computation, hasSubscriptions, createdCount < plannedCount, triggered, triggerError
         );
-        updateLocalRecord(localTaskId, status, triggered, createdCount, plannedCount, message);
+        updateLocalRecord(localTaskId, status, triggered || !directSources.isEmpty(), createdCount, plannedCount, message);
         return new QuarkMultiSourceTaskResponse(
                 localTaskId,
                 status,
@@ -274,6 +316,22 @@ public class QuarkMultiSourceIngestService {
                 warnings,
                 message
         );
+    }
+
+    private void executeDirectSource(String taskId, String mediaType, QasTaskPlan task, QasShareTree tree) {
+        try {
+            writeLog(taskId, "INFO", "direct_transfer", "开始 Quark 直接转存", task.taskName());
+            quarkDirectClient.transfer(task, tree, message -> writeLog(taskId, "INFO", "direct_transfer", message, task.taskName()));
+            smartStrmWebhookClient.trigger(task.savePath(), mediaType);
+            writeLog(taskId, "INFO", "smartstrm", "SmartStrm 任务已触发", task.savePath());
+        } catch (RuntimeException exception) {
+            writeLog(taskId, "ERROR", "failed", exception.getMessage() == null ? "Quark 直接入库失败" : exception.getMessage(), task.taskName());
+        }
+    }
+
+    @PreDestroy
+    void shutdownDirectExecutor() {
+        directExecutor.shutdownNow();
     }
 
     private String executionSummary(
@@ -1026,7 +1084,10 @@ public class QuarkMultiSourceIngestService {
         );
     }
 
-    private void checkDuplicateTasks(List<PlannedSource> plannedTasks) {
+    private void checkDuplicateTasks(List<PlannedSource> plannedTasks, boolean directEnabled) {
+        if (directEnabled && plannedTasks.stream().noneMatch(PlannedSource::followUpdates)) {
+            return;
+        }
         List<com.medianexus.orchestrator.integration.qas.QasExistingTask> existing;
         try {
             existing = qasClient.listTasks();
@@ -1034,6 +1095,9 @@ public class QuarkMultiSourceIngestService {
             throw badRequest("无法安全检查 QAS 现有任务，已阻止提交：" + safeMessage(exception.getMessage()));
         }
         for (PlannedSource planned : plannedTasks) {
+            if (directEnabled && !planned.followUpdates()) {
+                continue;
+            }
             boolean duplicate = existing.stream().anyMatch(task ->
                     planned.task().taskName().equals(task.taskName())
                             && planned.task().sourceUrl().equals(task.shareUrl()));

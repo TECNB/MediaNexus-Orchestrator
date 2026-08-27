@@ -8,8 +8,20 @@ public record QasShareNode(
         boolean directory,
         String category,
         long size,
-        List<QasShareNode> children
+        List<QasShareNode> children,
+        String shareFidToken
 ) {
+
+    public QasShareNode(
+            String fid,
+            String name,
+            boolean directory,
+            String category,
+            long size,
+            List<QasShareNode> children
+    ) {
+        this(fid, name, directory, category, size, children, null);
+    }
 
     public QasShareNode {
         children = children == null ? List.of() : List.copyOf(children);

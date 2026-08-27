@@ -84,7 +84,8 @@ public class QuarkShareTreeClient {
                     directory,
                     item.path("obj_category").asText(null),
                     item.path("size").asLong(0),
-                    children
+                    children,
+                    item.path("share_fid_token").asText(null)
             ));
         }
         return List.copyOf(result);

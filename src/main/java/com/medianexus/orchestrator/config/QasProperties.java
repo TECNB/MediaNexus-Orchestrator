@@ -17,6 +17,8 @@ public class QasProperties {
     /** Optional Quark account cookie used by the direct share-tree preview client. */
     private String quarkCookie;
 
+    private String smartstrmWebhook;
+
     @NotNull
     @DurationMin(seconds = 1)
     private Duration timeout;
@@ -53,6 +55,14 @@ public class QasProperties {
 
     public void setQuarkCookie(String quarkCookie) {
         this.quarkCookie = quarkCookie;
+    }
+
+    public String getSmartstrmWebhook() {
+        return smartstrmWebhook;
+    }
+
+    public void setSmartstrmWebhook(String smartstrmWebhook) {
+        this.smartstrmWebhook = smartstrmWebhook;
     }
 
     public Duration getTimeout() {
