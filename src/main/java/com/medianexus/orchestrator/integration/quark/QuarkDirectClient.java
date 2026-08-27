@@ -189,7 +189,7 @@ public class QuarkDirectClient {
                         .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
                         .header("Origin", "https://pan.quark.cn")
                         .header("Referer", "https://pan.quark.cn/")
-                        .header("Cookie", properties.getQuarkCookie().trim())
+                        .header("X-Quark-Cookie", properties.getQuarkCookie().trim())
                         .header("Content-Type", "application/json")
                         .header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/151.0.0.0 Safari/537.36");
                 if ("POST".equals(method)) {
