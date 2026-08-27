@@ -55,6 +55,7 @@ public class QuarkDirectClient {
         ShareRef ref = parse(plan.sourceUrl());
         String stoken = fetchStoken(ref.shareId(), ref.passcode());
         QasShareNode selected = findSelected(tree.entries(), ref.startFid());
+        String sourceParentFid = selected != null && selected.directory() ? selected.fid() : "0";
         List<QasShareNode> files = new ArrayList<>();
         collectFiles(selected == null ? tree.entries() : List.of(selected), files);
         if (StringUtils.hasText(plan.pattern())) {
@@ -79,9 +80,9 @@ public class QuarkDirectClient {
             savePayload.put("to_pdir_fid", targetFid);
             savePayload.put("pwd_id", ref.shareId());
             savePayload.put("stoken", stoken);
-            savePayload.put("pdir_fid", "0");
+            savePayload.put("pdir_fid", sourceParentFid);
             savePayload.put("scene", "link");
-            JsonNode saved = request("POST", "/1/clouddrive/share/sharepage/save", savePayload);
+            JsonNode saved = request("POST", "/1/clouddrive/share/sharepage/save?pr=ucpro&fr=pc&uc_param_str=", savePayload);
             String taskId = extractTaskId(saved);
             if (StringUtils.hasText(taskId)) {
                 awaitTask(taskId, progress);
@@ -121,24 +122,33 @@ public class QuarkDirectClient {
     }
 
     private String ensureDirectory(String path) {
-        ObjectNode mkdirPayload = objectMapper.createObjectNode();
-        mkdirPayload.put("pdir_fid", "0");
-        mkdirPayload.put("file_name", "");
-        mkdirPayload.put("dir_path", path);
-        mkdirPayload.put("dir_init_lock", false);
-        JsonNode result = request("POST", "/1/clouddrive/file", mkdirPayload);
-        String fid = result.path("data").path("fid").asText("");
-        if (!StringUtils.hasText(fid)) {
-            ObjectNode listPayload = objectMapper.createObjectNode();
-            listPayload.putPOJO("file_path", List.of(path));
-            listPayload.put("namespace", "0");
-            JsonNode listed = request("POST", "/1/clouddrive/file/info/path_list", listPayload);
-            fid = listed.path("data").path(0).path("fid").asText("");
+        String parentFid = "0";
+        StringBuilder currentPath = new StringBuilder();
+        for (String segment : path.split("/")) {
+            if (!StringUtils.hasText(segment)) continue;
+            currentPath.append('/').append(segment);
+            ObjectNode mkdirPayload = objectMapper.createObjectNode()
+                    .put("pdir_fid", parentFid)
+                    .put("file_name", segment)
+                    .put("dir_path", "")
+                    .put("dir_init_lock", false);
+            String fid;
+            try {
+                JsonNode result = request("POST", "/1/clouddrive/file?pr=ucpro&fr=pc&uc_param_str=", mkdirPayload);
+                fid = result.path("data").path("fid").asText("");
+            } catch (QasClientException exception) {
+                ObjectNode listPayload = objectMapper.createObjectNode();
+                listPayload.putPOJO("file_path", List.of(currentPath.toString()));
+                listPayload.put("namespace", "0");
+                JsonNode listed = request("POST", "/1/clouddrive/file/info/path_list?pr=ucpro&fr=pc&uc_param_str=", listPayload);
+                fid = listed.path("data").path(0).path("fid").asText("");
+            }
+            if (!StringUtils.hasText(fid)) {
+                throw new QasClientException(QasClientException.Reason.UPSTREAM, "无法创建或定位 Quark 保存目录：" + currentPath);
+            }
+            parentFid = fid;
         }
-        if (!StringUtils.hasText(fid)) {
-            throw new QasClientException(QasClientException.Reason.UPSTREAM, "无法创建或定位 Quark 保存目录");
-        }
-        return fid;
+        return parentFid;
     }
 
     private void awaitTask(String taskId, Consumer<String> progress) {
