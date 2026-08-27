@@ -400,10 +400,10 @@ public class QuarkIngestService {
 
     private QuarkIngestTaskResponse createAndTrigger(String mediaType, String title, QasIngestPlan plan, QasShareTree shareTree) {
         User user = authService.requireCurrentUser();
+        QuarkIngestTask ingestTask = createIngestRecord(user, mediaType, title, plan);
         boolean direct = StringUtils.hasText(qasProperties.getQuarkCookie())
                 && StringUtils.hasText(qasProperties.getSmartstrmWebhook());
         if (direct) {
-        QuarkIngestTask ingestTask = createIngestRecord(user, mediaType, title, plan);
         writePlanLogs(ingestTask.getId(), mediaType, plan);
         writeLog(ingestTask.getId(), "INFO", "submitted", "已提交 Quark 直接入库任务", null);
         updateAcceptedIngestRecord(ingestTask.getId(), "STARTED", plan.tasks().size(), plan.tasks().size(),
