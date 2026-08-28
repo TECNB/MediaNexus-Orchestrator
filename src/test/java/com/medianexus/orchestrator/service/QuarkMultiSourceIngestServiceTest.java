@@ -260,6 +260,84 @@ class QuarkMultiSourceIngestServiceTest {
                 .satisfies(file -> assertThat(file.targetName()).contains("S02E07-E08"));
     }
 
+    @Test
+    void exposesAutomaticEditionCandidateAndStableGroup() {
+        String shareUrl = "https://pan.quark.cn/s/share123";
+        QasShareTree tree = new QasShareTree(shareUrl, List.of(directory(
+                "season", "新世界", video("01 4K.mp4"), video("02 4K.mp4")
+        )));
+        QuarkMultiSourceIngestService service = serviceFor(tree, shareUrl);
+        QuarkMultiSourcePreviewResponse structure = service.previewStructure(
+                request(shareUrl, null, List.of()), "SERIES"
+        );
+        String candidateId = structure.sources().get(0).sourceCandidateId();
+
+        QuarkMultiSourcePreviewResponse preview = service.previewPlan(
+                request(shareUrl, structure.previewId(), List.of(
+                        new QuarkSourceSelectionRequest(candidateId, 1, false, false)
+                )),
+                "SERIES"
+        );
+
+        assertThat(preview.ready()).isTrue();
+        assertThat(preview.plannedTaskCount()).isEqualTo(1);
+        assertThat(preview.sources().get(0).files())
+                .filteredOn(file -> file.sourceName().equals("01 4K.mp4"))
+                .singleElement()
+                .satisfies(file -> {
+                    assertThat(file.assignmentType()).isEqualTo("EDITION");
+                    assertThat(file.editionLabel()).isEqualTo("4K");
+                    assertThat(file.groupId()).isNotBlank();
+                    assertThat(file.reasonCodes()).contains("LEADING_EPISODE", "EDITION_CANDIDATE");
+                });
+    }
+
+    @Test
+    void requiresExtraContentToHaveAnExplicitEpisodeAndKeepsSeasonPath() {
+        String shareUrl = "https://pan.quark.cn/s/share123";
+        QasShareTree tree = new QasShareTree(shareUrl, List.of(directory(
+                "season", "新世界", video("加更花絮.mp4")
+        )));
+        QuarkMultiSourceIngestService service = serviceFor(tree, shareUrl);
+        QuarkMultiSourcePreviewResponse structure = service.previewStructure(
+                request(shareUrl, null, List.of()), "SERIES"
+        );
+        String candidateId = structure.sources().get(0).sourceCandidateId();
+        QuarkMultiSourcePreviewResponse blocked = service.previewPlan(
+                request(shareUrl, structure.previewId(), List.of(
+                        new QuarkSourceSelectionRequest(candidateId, 1, false, false)
+                )),
+                "SERIES"
+        );
+        String fileId = blocked.sources().get(0).files().get(0).fileId();
+
+        QuarkMultiSourcePreviewResponse stillBlocked = service.previewPlan(
+                request(shareUrl, structure.previewId(), List.of(
+                        new QuarkSourceSelectionRequest(candidateId, 1, false, false, List.of(
+                                new QuarkFileSelectionRequest(fileId, null, false,
+                                        "EXTRA", "花絮", null, true)
+                        ))
+                )),
+                "SERIES"
+        );
+        assertThat(stillBlocked.ready()).isFalse();
+        assertThat(stillBlocked.message()).contains("额外内容，请先指定当前季度中的集数或忽略");
+
+        QuarkMultiSourcePreviewResponse ready = service.previewPlan(
+                request(shareUrl, structure.previewId(), List.of(
+                        new QuarkSourceSelectionRequest(candidateId, 1, false, false, List.of(
+                                new QuarkFileSelectionRequest(fileId, 2, false,
+                                        "EXTRA", "花絮", null, true)
+                        ))
+                )),
+                "SERIES"
+        );
+        assertThat(ready.ready()).isTrue();
+        assertThat(ready.sources().get(0).savePath()).isEqualTo("/TV/新世界/Season 01");
+        assertThat(ready.sources().get(0).files()).singleElement()
+                .satisfies(file -> assertThat(file.targetName()).contains("S01E02 - 花絮"));
+    }
+
     private static QuarkMultiSourceIngestService serviceFor(QasShareTree tree, String shareUrl) {
         return serviceFor(tree, shareUrl, mock(TmdbClient.class));
     }

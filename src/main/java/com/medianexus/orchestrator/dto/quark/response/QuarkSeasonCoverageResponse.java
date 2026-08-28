@@ -15,11 +15,35 @@ public record QuarkSeasonCoverageResponse(
         @JsonProperty("ignored_video_count") int ignoredVideoCount,
         @JsonProperty("unknown_air_date_numbers") List<Integer> unknownAirDateNumbers,
         @JsonProperty("coverage_status") String coverageStatus,
-        String message
+        String message,
+        List<QuarkSeasonEpisodeResponse> episodes
 ) {
+
+    public QuarkSeasonCoverageResponse(
+            int seasonNumber,
+            int videoCount,
+            int recognizedEpisodeCount,
+            Integer expectedEpisodeCount,
+            Integer airedEpisodeCount,
+            List<Integer> missingEpisodeNumbers,
+            List<Integer> extraEpisodeNumbers,
+            int unknownVideoCount,
+            int ignoredVideoCount,
+            List<Integer> unknownAirDateNumbers,
+            String coverageStatus,
+            String message
+    ) {
+        this(
+                seasonNumber, videoCount, recognizedEpisodeCount, expectedEpisodeCount, airedEpisodeCount,
+                missingEpisodeNumbers, extraEpisodeNumbers, unknownVideoCount, ignoredVideoCount,
+                unknownAirDateNumbers, coverageStatus, message, List.of()
+        );
+    }
+
     public QuarkSeasonCoverageResponse {
         missingEpisodeNumbers = missingEpisodeNumbers == null ? List.of() : List.copyOf(missingEpisodeNumbers);
         extraEpisodeNumbers = extraEpisodeNumbers == null ? List.of() : List.copyOf(extraEpisodeNumbers);
         unknownAirDateNumbers = unknownAirDateNumbers == null ? List.of() : List.copyOf(unknownAirDateNumbers);
+        episodes = episodes == null ? List.of() : List.copyOf(episodes);
     }
 }
