@@ -317,6 +317,46 @@ class QuarkMultiSourceIngestServiceTest {
     }
 
     @Test
+    void alignsChineseNumeralIssueNamesToTmdbEpisodes() throws Exception {
+        String shareUrl = "https://pan.quark.cn/s/share123";
+        QasShareTree tree = new QasShareTree(shareUrl, List.of(directory(
+                "season", "第二季", video("第十期.mkv"), video("第十二期.mkv")
+        )));
+        TmdbClient tmdbClient = mock(TmdbClient.class);
+        when(tmdbClient.getTvSeasonDetails(100, 2, "zh-CN")).thenReturn(new ObjectMapper().readTree("""
+                {"episodes":[
+                  {"episode_number":10,"air_date":"2016-03-20","name":"第10期"},
+                  {"episode_number":12,"air_date":"2016-04-03","name":"第12期"}
+                ]}
+                """));
+        QuarkMultiSourceIngestService service = serviceFor(tree, shareUrl, tmdbClient);
+        QuarkMultiSourcePreviewResponse structure = service.previewStructure(
+                request(shareUrl, null, List.of()), "VARIETY"
+        );
+        String candidateId = structure.sources().get(0).sourceCandidateId();
+
+        QuarkMultiSourcePreviewResponse preview = service.previewPlan(
+                new QuarkMultiSourceRequest(
+                        shareUrl, "欢乐喜剧人", null, 100, structure.previewId(), false,
+                        List.of(new QuarkSourceSelectionRequest(candidateId, 2, false, false))
+                ),
+                "VARIETY"
+        );
+
+        assertThat(preview.ready()).isTrue();
+        assertThat(preview.episodeAlignments())
+                .filteredOn(alignment -> !alignment.files().isEmpty())
+                .extracting(alignment -> alignment.episodeNumber())
+                .containsExactly(10, 12);
+        assertThat(preview.sources().get(0).files())
+                .extracting(file -> file.targetName())
+                .containsExactlyInAnyOrder(
+                        "欢乐喜剧人 - S02E10.mkv",
+                        "欢乐喜剧人 - S02E12.mkv"
+                );
+    }
+
+    @Test
     void exposesAutomaticEditionCandidateAndStableGroup() {
         String shareUrl = "https://pan.quark.cn/s/share123";
         QasShareTree tree = new QasShareTree(shareUrl, List.of(directory(

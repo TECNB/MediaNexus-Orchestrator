@@ -50,6 +50,17 @@ class QuarkFileCandidateAnalyzerTest {
     }
 
     @Test
+    void extractsIssueNumbersWithoutTheChineseOrdinalPrefix() {
+        QuarkFileCandidateAnalyzer.Candidate candidate = analyzer.analyze(
+                "source", "04期 - 上.mp4"
+        );
+
+        assertThat(candidate.detectedEpisode()).isEqualTo(4);
+        assertThat(candidate.assignmentType()).isEqualTo("SEGMENT");
+        assertThat(candidate.segmentLabel()).isEqualTo("上");
+    }
+
+    @Test
     void groupIdUsesIdentityAndNormalizedSubject() {
         String first = analyzer.analyze("source", "01 4K.mp4").groupId();
         String sameEpisodeDifferentEdition = analyzer.analyze("source", "01 VIP.mp4").groupId();

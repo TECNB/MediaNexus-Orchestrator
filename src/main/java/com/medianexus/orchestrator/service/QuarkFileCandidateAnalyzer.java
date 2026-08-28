@@ -30,7 +30,7 @@ public class QuarkFileCandidateAnalyzer {
             "(?i)(?:^|[^a-z0-9])(?:ep|episode)\\s*0?(\\d{1,3})(?:[^0-9]|$)"
     );
     private static final Pattern CHINESE_EPISODE = Pattern.compile(
-            "第\\s*(\\d{1,3}|[一二三四五六七八九十百]+)\\s*[集话期]"
+            "(?:第\\s*|(?<!\\d))(\\d{1,3}|[一二三四五六七八九十百]+)\\s*[集话期]"
     );
     private static final Pattern LEADING_EPISODE = Pattern.compile(
             "^(\\d{1,3})(?:[ _.-].*)?(?:\\.[^.]+)$"

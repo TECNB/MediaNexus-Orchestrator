@@ -71,10 +71,6 @@ public class QuarkMultiSourceIngestService {
 
     private static final Pattern SHARE_PATH = Pattern.compile("^/s/[A-Za-z0-9]+(?:/[A-Fa-f0-9]{32})?/?$");
     private static final Pattern ILLEGAL_TASK_CHARACTER = Pattern.compile("[\\\\/:*?\"<>|]");
-    private static final Pattern STANDARD_EPISODE = Pattern.compile("(?i).*?[Ss]\\d{1,2}[Ee](\\d{1,3}).*");
-    private static final Pattern NXNN_EPISODE = Pattern.compile("(?i).*?\\d{1,2}[xX](\\d{1,3}).*");
-    private static final Pattern CHINESE_EPISODE = Pattern.compile(".*?第\\s*(\\d{1,3})[集话期].*");
-    private static final Pattern LEADING_EPISODE = Pattern.compile("^(\\d{1,3})(?:[ _.-].*)?\\.[^.]+$");
     private static final Pattern FULL_DATE = Pattern.compile("(?<!\\d)(20\\d{2})[.-]?(\\d{2})[.-]?(\\d{2})(?!\\d)");
     private static final Pattern SHORT_DATE = Pattern.compile("(?<!\\d)(\\d{2})[.-](\\d{2})(?!\\d)");
     private static final Pattern SHORT_YEAR_DATE = Pattern.compile("(?<!\\d)(\\d{2})(\\d{2})(\\d{2})(?!\\d)");
@@ -1268,14 +1264,8 @@ public class QuarkMultiSourceIngestService {
     }
 
     private Integer inferredEpisode(String name) {
-        for (Pattern pattern : List.of(STANDARD_EPISODE, NXNN_EPISODE, CHINESE_EPISODE, LEADING_EPISODE)) {
-            java.util.regex.Matcher matcher = pattern.matcher(name);
-            if (matcher.matches()) {
-                int episode = Integer.parseInt(matcher.group(1));
-                return episode > 0 ? episode : null;
-            }
-        }
-        return null;
+        Integer episode = candidateAnalyzer.analyze("diagnostic", name).detectedEpisode();
+        return episode != null && episode > 0 ? episode : null;
     }
 
     private String extensionOf(String name) {

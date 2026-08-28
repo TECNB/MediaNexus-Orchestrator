@@ -64,6 +64,7 @@ public class QuarkIngestPlanner {
     private static final Set<String> NON_VERSION_DIRECTORIES = Set.of(
             "extras", "specials", "trailers", "花絮", "番外", "采访", "字幕", "海报"
     );
+    private final QuarkFileCandidateAnalyzer candidateAnalyzer = new QuarkFileCandidateAnalyzer();
 
     public QasIngestPlan planMovie(String taskName, String savePath, QasShareTree shareTree) {
         ContentRoot contentRoot = unwrapSingleDirectory(shareTree.sourceUrl(), shareTree.entries());
@@ -431,7 +432,8 @@ public class QuarkIngestPlanner {
         DateCollisionPlan dateCollisions = planDateCollisions(
                 title, season, candidates, mediaFiles, airDateEpisodes
         );
-        candidates = dateCollisions.candidates();
+        candidates = new ArrayList<>(dateCollisions.candidates());
+        candidates.addAll(exactDetectedEpisodeCandidates(title, season, mediaFiles));
         for (RuleCandidate candidate : candidates) {
             if (isSafeForAllFiles(candidate, mediaFiles)) {
                 return new QasIngestPlan(
@@ -498,6 +500,30 @@ public class QuarkIngestPlanner {
         String episodePrefix = title + " - S" + season + "E";
         List<RuleCandidate> candidates = new ArrayList<>();
         candidates.add(candidate(
+                "^.*?(?i:VIP)[ ._-]*[Ee][Pp](\\d{2,3})[ ._-]+(?:20\\d{2}[ ._-]+)?(?i:(4K(?:高码率|低码率)?|2160p|1080p|720p))(?:[ ._-].*?)?\\.(" + MEDIA_EXTENSIONS + ")$",
+                episodePrefix + "\\1 - VIP \\2.\\3",
+                matcher -> episodePrefix + matcher.group(1) + " - VIP " + matcher.group(2) + "." + matcher.group(3),
+                matcher -> matcher.group(1)
+        ));
+        candidates.add(candidate(
+                "^.*?(?i:VIP)[ ._-]*[Ee][Pp](\\d)[ ._-]+(?:20\\d{2}[ ._-]+)?(?i:(4K(?:高码率|低码率)?|2160p|1080p|720p))(?:[ ._-].*?)?\\.(" + MEDIA_EXTENSIONS + ")$",
+                episodePrefix + "0\\1 - VIP \\2.\\3",
+                matcher -> episodePrefix + "0" + matcher.group(1) + " - VIP " + matcher.group(2) + "." + matcher.group(3),
+                matcher -> matcher.group(1)
+        ));
+        candidates.add(candidate(
+                "^(?!.*(?i:VIP)).*?[Ee][Pp](\\d{2,3})[ ._-]+(?:20\\d{2}[ ._-]+)?(?i:(4K(?:高码率|低码率)?|2160p|1080p|720p))(?:[ ._-].*?)?\\.(" + MEDIA_EXTENSIONS + ")$",
+                episodePrefix + "\\1 - \\2.\\3",
+                matcher -> episodePrefix + matcher.group(1) + " - " + matcher.group(2) + "." + matcher.group(3),
+                matcher -> matcher.group(1)
+        ));
+        candidates.add(candidate(
+                "^(?!.*(?i:VIP)).*?[Ee][Pp](\\d)[ ._-]+(?:20\\d{2}[ ._-]+)?(?i:(4K(?:高码率|低码率)?|2160p|1080p|720p))(?:[ ._-].*?)?\\.(" + MEDIA_EXTENSIONS + ")$",
+                episodePrefix + "0\\1 - \\2.\\3",
+                matcher -> episodePrefix + "0" + matcher.group(1) + " - " + matcher.group(2) + "." + matcher.group(3),
+                matcher -> matcher.group(1)
+        ));
+        candidates.add(candidate(
                 "^.*?[Ss]\\d{1,2}[Ee](\\d{2,3})\\s*[-_ ]+\\s*(.+?)\\.(" + MEDIA_EXTENSIONS + ")$",
                 episodePrefix + "\\1 - \\2.\\3",
                 matcher -> episodePrefix + matcher.group(1) + " - " + matcher.group(2) + "." + matcher.group(3),
@@ -541,6 +567,30 @@ public class QuarkIngestPlanner {
         ));
         candidates.add(candidate(
                 "^.*?\\d{1,2}[xX](\\d)((?:\\.[^.]+)*)\\.(" + MEDIA_EXTENSIONS + ")$",
+                episodePrefix + "0\\1\\2.\\3",
+                matcher -> episodePrefix + "0" + matcher.group(1) + matcher.group(2) + "." + matcher.group(3),
+                matcher -> matcher.group(1)
+        ));
+        candidates.add(candidate(
+                "^(?:第\\s*)?(\\d{2,3})\\s*期\\s*[-_ ]*([上中下])((?:\\.[^.]+)*)\\.(" + MEDIA_EXTENSIONS + ")$",
+                episodePrefix + "\\1 - \\2\\3.\\4",
+                matcher -> episodePrefix + matcher.group(1) + " - " + matcher.group(2) + matcher.group(3) + "." + matcher.group(4),
+                matcher -> matcher.group(1)
+        ));
+        candidates.add(candidate(
+                "^(?:第\\s*)?(\\d)\\s*期\\s*[-_ ]*([上中下])((?:\\.[^.]+)*)\\.(" + MEDIA_EXTENSIONS + ")$",
+                episodePrefix + "0\\1 - \\2\\3.\\4",
+                matcher -> episodePrefix + "0" + matcher.group(1) + " - " + matcher.group(2) + matcher.group(3) + "." + matcher.group(4),
+                matcher -> matcher.group(1)
+        ));
+        candidates.add(candidate(
+                "^(?:第\\s*)?(\\d{2,3})\\s*期((?:\\.[^.]+)*)\\.(" + MEDIA_EXTENSIONS + ")$",
+                episodePrefix + "\\1\\2.\\3",
+                matcher -> episodePrefix + matcher.group(1) + matcher.group(2) + "." + matcher.group(3),
+                matcher -> matcher.group(1)
+        ));
+        candidates.add(candidate(
+                "^(?:第\\s*)?(\\d)\\s*期((?:\\.[^.]+)*)\\.(" + MEDIA_EXTENSIONS + ")$",
                 episodePrefix + "0\\1\\2.\\3",
                 matcher -> episodePrefix + "0" + matcher.group(1) + matcher.group(2) + "." + matcher.group(3),
                 matcher -> matcher.group(1)
@@ -628,10 +678,21 @@ public class QuarkIngestPlanner {
     private List<RuleCandidate> varietyDateCandidates(String title) {
         return List.of(
                 plainDateCandidate(
+                        "^(20\\d{2})(\\d{2})(\\d{2})\\s*期((?:\\.[^.]+)*)\\.(" + MEDIA_EXTENSIONS + ")$",
+                        title
+                ),
+                dateCandidate(
+                        "^(20\\d{2})(\\d{2})(\\d{2})\\s*期\\s*[-_ ]*(.+?)\\.(" + MEDIA_EXTENSIONS + ")$",
+                        title
+                ),
+                plainDateCandidate(
                         "^(20\\d{2})(\\d{2})(\\d{2})((?:\\.[^.]+)*)\\.(" + MEDIA_EXTENSIONS + ")$",
                         title
                 ),
-                dateCandidate("^(20\\d{2})(\\d{2})(\\d{2})(.+?)\\.(" + MEDIA_EXTENSIONS + ")$", title),
+                dateCandidate(
+                        "^(20\\d{2})(\\d{2})(\\d{2})(?!\\s*期)(.+?)\\.(" + MEDIA_EXTENSIONS + ")$",
+                        title
+                ),
                 plainDateCandidate(
                         "^(20\\d{2})[-.](\\d{2})[-.](\\d{2})((?:\\.[^.]+)*)\\.("
                                 + MEDIA_EXTENSIONS + ")$",
@@ -767,7 +828,7 @@ public class QuarkIngestPlanner {
                 Pattern.compile(pattern),
                 replace,
                 targetName,
-                matcher -> "DATE:" + sourceDate.apply(matcher),
+                matcher -> "DATE:" + sourceDate.apply(matcher) + mediaVariantKey(matcher.group(0)),
                 sourceDate
         );
     }
@@ -783,9 +844,58 @@ public class QuarkIngestPlanner {
                 Pattern.compile(pattern),
                 replace,
                 targetName,
-                matcher -> "EPISODE:" + normalizeEpisodeKey(episodeKey.apply(matcher)),
+                matcher -> "EPISODE:" + normalizeEpisodeKey(episodeKey.apply(matcher))
+                        + mediaVariantKey(matcher.group(0)),
                 null
         );
+    }
+
+    private List<RuleCandidate> exactDetectedEpisodeCandidates(
+            String title,
+            String season,
+            List<QasShareNode> mediaFiles
+    ) {
+        Set<String> stems = new HashSet<>();
+        List<RuleCandidate> candidates = new ArrayList<>();
+        for (QasShareNode file : mediaFiles) {
+            if (!isPlayableVideo(file.name())) {
+                continue;
+            }
+            QuarkFileCandidateAnalyzer.Candidate hint = candidateAnalyzer.analyze("planner", file.name());
+            if (hint.detectedEpisode() == null || hint.detectedEpisode() <= 0) {
+                continue;
+            }
+            String stem = stemOf(file.name());
+            if (!stems.add(stem.toLowerCase(Locale.ROOT))) {
+                continue;
+            }
+            candidates.add(exactEpisodeCandidate(
+                    title,
+                    season,
+                    hint.detectedEpisode(),
+                    stem,
+                    assignmentDescriptor(hint)
+            ));
+        }
+        return candidates;
+    }
+
+    private String mediaVariantKey(String fileName) {
+        QuarkFileCandidateAnalyzer.Candidate hint = candidateAnalyzer.analyze("planner", fileName);
+        String descriptor = assignmentDescriptor(hint);
+        return descriptor.isBlank() ? "" : ":" + hint.assignmentType() + ":" + descriptor.toLowerCase(Locale.ROOT);
+    }
+
+    private String assignmentDescriptor(QuarkFileCandidateAnalyzer.Candidate hint) {
+        String edition = hint.editionLabel() == null ? "" : hint.editionLabel().trim();
+        String segment = hint.segmentLabel() == null ? "" : hint.segmentLabel().trim();
+        if (edition.isBlank()) {
+            return segment;
+        }
+        if (segment.isBlank() || edition.equals(segment)) {
+            return edition;
+        }
+        return edition + " - " + segment;
     }
 
     private String ruleLabel(String pattern) {

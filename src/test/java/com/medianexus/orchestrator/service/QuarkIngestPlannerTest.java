@@ -159,6 +159,87 @@ class QuarkIngestPlannerTest {
     }
 
     @Test
+    void plansChineseNumeralIssueNamesAsTmdbEpisodes() {
+        QasShareTree tree = new QasShareTree(
+                "https://pan.quark.cn/s/share-id",
+                List.of(file("第十期.mkv"), file("第十二期.mkv"))
+        );
+
+        QasIngestPlan plan = planner.planVariety(
+                "欢乐喜剧人", 2, "/Variety/欢乐喜剧人/Season 02", tree, Map.of()
+        );
+
+        assertThat(plan.tasks()).allMatch(task -> !task.pattern().isBlank() && !task.replace().isBlank());
+        assertThat(plan.tasks()).flatExtracting(QasTaskPlan::renameSamples)
+                .extracting(QasRenameSample::targetName)
+                .containsExactlyInAnyOrder(
+                        "欢乐喜剧人 - S02E10.mkv",
+                        "欢乐喜剧人 - S02E12.mkv"
+                );
+    }
+
+    @Test
+    void plansArabicIssueSegmentsWithoutOrdinalPrefix() {
+        QasShareTree tree = new QasShareTree(
+                "https://pan.quark.cn/s/share-id",
+                List.of(file("01期 - 上.mp4"), file("01期 - 下.mp4"), file("13期.mp4"))
+        );
+
+        QasIngestPlan plan = planner.planVariety(
+                "欢乐喜剧人", 4, "/Variety/欢乐喜剧人/Season 04", tree, Map.of()
+        );
+
+        assertThat(plan.tasks()).allMatch(task -> !task.pattern().isBlank() && !task.replace().isBlank());
+        assertThat(plan.tasks()).flatExtracting(QasTaskPlan::renameSamples)
+                .extracting(QasRenameSample::targetName)
+                .containsExactlyInAnyOrder(
+                        "欢乐喜剧人 - S04E01 - 上.mp4",
+                        "欢乐喜剧人 - S04E01 - 下.mp4",
+                        "欢乐喜剧人 - S04E13.mp4"
+                );
+    }
+
+    @Test
+    void plansEpNumbersWithVipAndStandardEditions() {
+        QasShareTree tree = new QasShareTree(
+                "https://pan.quark.cn/s/share-id",
+                List.of(file(".EP06.2019.1080p.mp4"), file("VIP.EP06.2019.1080p.mp4"))
+        );
+
+        QasIngestPlan plan = planner.planVariety(
+                "欢乐喜剧人", 5, "/Variety/欢乐喜剧人/Season 05", tree, Map.of()
+        );
+
+        assertThat(plan.tasks()).allMatch(task -> !task.pattern().isBlank() && !task.replace().isBlank());
+        assertThat(plan.tasks()).flatExtracting(QasTaskPlan::renameSamples)
+                .extracting(QasRenameSample::targetName)
+                .containsExactlyInAnyOrder(
+                        "欢乐喜剧人 - S05E06 - 1080p.mp4",
+                        "欢乐喜剧人 - S05E06 - VIP 1080p.mp4"
+                );
+    }
+
+    @Test
+    void keepsDatedStandardAndCompleteEditionsDistinct() {
+        QasShareTree tree = new QasShareTree(
+                "https://pan.quark.cn/s/share-id",
+                List.of(file("20210117期.mp4"), file("20210117期-完整版.mp4"))
+        );
+
+        QasIngestPlan plan = planner.planVariety(
+                "欢乐喜剧人", 7, "/Variety/欢乐喜剧人/Season 07", tree, Map.of()
+        );
+
+        assertThat(plan.tasks()).allMatch(task -> !task.pattern().isBlank());
+        assertThat(plan.tasks()).flatExtracting(QasTaskPlan::renameSamples)
+                .extracting(QasRenameSample::targetName)
+                .containsExactlyInAnyOrder(
+                        "欢乐喜剧人 - 2021-01-17.mp4",
+                        "欢乐喜剧人 - 2021-01-17 - 完整版.mp4"
+                );
+    }
+
+    @Test
     void usesValidatedTmdbAirDatesForDateOnlyMultiVersionEpisodes() {
         QasShareTree tree = new QasShareTree(
                 "https://pan.quark.cn/s/share-id",
