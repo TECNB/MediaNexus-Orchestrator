@@ -1070,12 +1070,25 @@ public class QuarkIngestPlanner {
                             && date.getMonthValue() == month
                             && date.getDayOfMonth() == day)
                     .toList();
-            if (matches.size() != 1) {
+            if (matches.size() == 1) {
+                centuries.add(matches.get(0).getYear() / 100);
+                continue;
+            }
+            if (matches.size() > 1) {
                 throw new QuarkIngestPlanningException(
                         "TMDB 中无法唯一确认六位日期 " + matcher.group(1) + matcher.group(2) + matcher.group(3)
                 );
             }
-            centuries.add(matches.get(0).getYear() / 100);
+            Set<Integer> yearCenturies = seasonDates.stream()
+                    .filter(date -> date.getYear() % 100 == shortYear)
+                    .map(date -> date.getYear() / 100)
+                    .collect(java.util.stream.Collectors.toSet());
+            if (yearCenturies.size() != 1) {
+                throw new QuarkIngestPlanningException(
+                        "TMDB 中无法唯一确认六位日期 " + matcher.group(1) + matcher.group(2) + matcher.group(3)
+                );
+            }
+            centuries.add(yearCenturies.iterator().next());
         }
     }
 

@@ -569,6 +569,31 @@ class QuarkIngestPlannerTest {
     }
 
     @Test
+    void infersSixDigitDateCenturyFromTheRequestedTmdbSeasonEvenWhenThatDateIsMissing() {
+        QasShareTree tree = new QasShareTree(
+                "https://pan.quark.cn/s/share-id",
+                List.of(file("150725_完整版.mp4"))
+        );
+
+        QasIngestPlan plan = planner.planVariety(
+                "欢乐喜剧人",
+                1,
+                "/Variety/欢乐喜剧人/Season 01",
+                tree,
+                Map.of(
+                        LocalDate.of(2015, 5, 9), List.of(3),
+                        LocalDate.of(2015, 8, 1), List.of(13)
+                )
+        );
+
+        assertThat(plan.tasks()).singleElement().satisfies(task -> {
+            assertThat(task.renameRule()).isEqualTo("播出日期（六位日期）");
+            assertThat(task.renameSamples()).extracting(QasRenameSample::targetName)
+                    .containsExactly("欢乐喜剧人 - 2015-07-25 - 完整版.mp4");
+        });
+    }
+
+    @Test
     void ignoresShortDateFilesOutsideRequestedVarietySeason() {
         QasShareTree tree = new QasShareTree(
                 "https://pan.quark.cn/s/share-id",

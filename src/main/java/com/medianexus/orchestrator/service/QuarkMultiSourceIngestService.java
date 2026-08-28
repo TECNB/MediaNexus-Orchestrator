@@ -458,28 +458,24 @@ public class QuarkMultiSourceIngestService {
                 sourceResponses.add(sourceResponse(candidate, selection, seasonNumber, "BLOCKED", List.of(message), List.of()));
                 continue;
             }
-            if (planned.tasks().size() > 1) {
-                String message = "一个来源包含多组互斥命名规则，当前无法安全提交";
-                errors.add(candidate.sourceName() + "：" + message);
-                sourceResponses.add(sourceResponse(candidate, selection, seasonNumber, "BLOCKED", List.of(message), planned.warnings()));
-                continue;
-            }
-            QasTaskPlan automaticTask = planned.tasks().isEmpty() ? null : planned.tasks().get(0);
-            if (automaticTask != null
-                    && (!StringUtils.hasText(automaticTask.pattern()) || !StringUtils.hasText(automaticTask.replace()))
-                    && hasPlayableVideo(automaticCandidate.entries())) {
+            List<QasTaskPlan> automaticTasks = planned.tasks();
+            QasTaskPlan unsafeAutomaticTask = automaticTasks.stream()
+                    .filter(task -> !StringUtils.hasText(task.pattern()) || !StringUtils.hasText(task.replace()))
+                    .findFirst()
+                    .orElse(null);
+            if (unsafeAutomaticTask != null && hasPlayableVideo(automaticCandidate.entries())) {
                 String message = "自动重命名无法覆盖全部视频，请为标红文件指定集数或忽略";
                 errors.add(candidate.sourceName() + "：" + message);
                 List<QuarkRenamePreviewResponse> files = diagnosticRenamePreview(
                         request.title(), seasonNumber, candidate, fileDecisions
                 );
-                sourceResponses.add(sourceResponse(candidate, selection, seasonNumber, "BLOCKED", List.of(message), planned.warnings(), files, automaticTask));
+                sourceResponses.add(sourceResponse(candidate, selection, seasonNumber, "BLOCKED", List.of(message), planned.warnings(), files, unsafeAutomaticTask));
                 continue;
             }
             List<QasTaskPlan> sourceTasks = new ArrayList<>();
-            if (automaticTask != null) {
-                sourceTasks.add(excludingFiles(automaticTask, fileDecisions.excludedNames()));
-            }
+            automaticTasks.stream()
+                    .map(task -> excludingFiles(task, fileDecisions.excludedNames()))
+                    .forEach(sourceTasks::add);
             sourceTasks.addAll(manualTasks(request.title(), seasonNumber, savePath, candidate, fileDecisions));
             if (sourceTasks.isEmpty()) {
                 sourceResponses.add(sourceResponse(candidate, selection, seasonNumber, "IGNORED", List.of(), planned.warnings()));
@@ -497,7 +493,7 @@ public class QuarkMultiSourceIngestService {
             for (int taskIndex = 0; taskIndex < sourceTasks.size(); taskIndex++) {
                 tasks.add(new PlannedSource(
                         candidate,
-                        taskIndex == 0 && automaticTask != null
+                        taskIndex < automaticTasks.size()
                                 && request.followUpdatesEnabled() && selection.followUpdates(),
                         sourceTasks.get(taskIndex),
                         seasonNumber
@@ -1251,21 +1247,46 @@ public class QuarkMultiSourceIngestService {
         tasks.forEach(task -> bySeason.computeIfAbsent(task.seasonNumber(), ignored -> new ArrayList<>()).add(task));
         for (List<PlannedSource> sameSeason : bySeason.values()) {
             boolean multiple = sameSeason.size() > 1;
-            Map<String, Integer> labelCounts = sameSeason.stream()
+            Map<String, QuarkShareSourceRegistry.SourceCandidate> candidatesById = sameSeason.stream()
+                    .collect(java.util.stream.Collectors.toMap(
+                            item -> item.candidate().id(),
+                            PlannedSource::candidate,
+                            (left, right) -> left,
+                            LinkedHashMap::new
+                    ));
+            Map<String, Integer> labelCounts = candidatesById.values().stream()
                     .collect(java.util.stream.Collectors.groupingBy(
-                            item -> cleanTaskText(item.candidate().sourceName()).toLowerCase(Locale.ROOT),
+                            item -> cleanTaskText(item.sourceName()).toLowerCase(Locale.ROOT),
                             LinkedHashMap::new,
                             java.util.stream.Collectors.summingInt(ignored -> 1)
+                    ));
+            Map<String, Long> taskCountsByCandidate = sameSeason.stream()
+                    .collect(java.util.stream.Collectors.groupingBy(
+                            item -> item.candidate().id(),
+                            LinkedHashMap::new,
+                            java.util.stream.Collectors.counting()
                     ));
             for (PlannedSource planned : sameSeason) {
                 String label = cleanTaskText(planned.candidate().sourceName());
                 String suffix = labelCounts.getOrDefault(label.toLowerCase(Locale.ROOT), 0) > 1
                         ? label + " - " + cleanTaskText(planned.candidate().relativePath())
                         : label;
+                boolean candidateHasMultipleTasks = taskCountsByCandidate.getOrDefault(
+                        planned.candidate().id(), 0L
+                ) > 1;
+                if (candidateHasMultipleTasks) {
+                    String variant = StringUtils.hasText(planned.task().versionLabel())
+                            ? planned.task().versionLabel()
+                            : planned.task().renameRule();
+                    if (StringUtils.hasText(variant)) {
+                        suffix += " - " + cleanTaskText(variant);
+                    }
+                }
                 String taskName = title + " S" + String.format(Locale.ROOT, "%02d", planned.seasonNumber())
                         + (multiple ? " [" + suffix + "]" : "");
                 if (StringUtils.hasText(planned.task().renameRule())
-                        && planned.task().renameRule().startsWith("手动指定")) {
+                        && planned.task().renameRule().startsWith("手动指定")
+                        && !candidateHasMultipleTasks) {
                     taskName += " [" + planned.task().renameRule() + "]";
                 }
                 planned.setTask(withTaskName(planned.task(), taskName));

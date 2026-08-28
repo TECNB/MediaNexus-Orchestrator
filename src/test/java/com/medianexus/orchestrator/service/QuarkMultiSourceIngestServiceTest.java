@@ -293,6 +293,33 @@ class QuarkMultiSourceIngestServiceTest {
     }
 
     @Test
+    void acceptsOneSourceSplitIntoMultipleSafeRenameTasks() {
+        String shareUrl = "https://pan.quark.cn/s/share123";
+        QasShareTree tree = new QasShareTree(shareUrl, List.of(directory(
+                "season", "新世界",
+                video("01.mp4"), video("02.mp4"),
+                video("S01E03 - 第3集.mkv"), video("S01E04 - 第4集.mkv")
+        )));
+        QuarkMultiSourceIngestService service = serviceFor(tree, shareUrl);
+        QuarkMultiSourcePreviewResponse structure = service.previewStructure(
+                request(shareUrl, null, List.of()), "SERIES"
+        );
+        String candidateId = structure.sources().get(0).sourceCandidateId();
+
+        QuarkMultiSourcePreviewResponse preview = service.previewPlan(
+                request(shareUrl, structure.previewId(), List.of(
+                        new QuarkSourceSelectionRequest(candidateId, 1, false, false)
+                )),
+                "SERIES"
+        );
+
+        assertThat(preview.ready()).isTrue();
+        assertThat(preview.plannedTaskCount()).isEqualTo(2);
+        assertThat(preview.sources().get(0).files()).hasSize(4)
+                .allMatch(file -> !"UNRECOGNIZED".equals(file.status()));
+    }
+
+    @Test
     void requiresExtraContentToHaveAnExplicitEpisodeAndKeepsSeasonPath() {
         String shareUrl = "https://pan.quark.cn/s/share123";
         QasShareTree tree = new QasShareTree(shareUrl, List.of(directory(
