@@ -225,6 +225,62 @@ class QuarkMultiSourceIngestServiceTest {
     }
 
     @Test
+    void alignsDateNamedVarietyFilesToTmdbEpisodesAndLeavesOnlyUnknownDatesPending() throws Exception {
+        String shareUrl = "https://pan.quark.cn/s/share123";
+        QasShareTree tree = new QasShareTree(shareUrl, List.of(directory(
+                "season", "欢乐喜剧人 S1",
+                video("150425_超清.mp4"), video("150509_超清.mp4"), video("150725_超清.mp4")
+        )));
+        TmdbClient tmdbClient = mock(TmdbClient.class);
+        when(tmdbClient.getTvSeasonDetails(100, 1, "zh-CN")).thenReturn(new ObjectMapper().readTree("""
+                {"episodes":[
+                  {"episode_number":1,"air_date":"2015-04-25","name":"第1期"},
+                  {"episode_number":2,"air_date":"2015-05-09","name":"第2期"},
+                  {"episode_number":3,"air_date":"2015-07-18","name":"第3期"}
+                ]}
+                """));
+        QuarkMultiSourceIngestService service = serviceFor(tree, shareUrl, tmdbClient);
+        QuarkMultiSourcePreviewResponse structure = service.previewStructure(
+                request(shareUrl, null, List.of()), "VARIETY"
+        );
+        String candidateId = structure.sources().get(0).sourceCandidateId();
+
+        QuarkMultiSourcePreviewResponse preview = service.previewPlan(
+                new QuarkMultiSourceRequest(
+                        shareUrl, "欢乐喜剧人", null, 100, structure.previewId(), false,
+                        List.of(new QuarkSourceSelectionRequest(candidateId, 1, false, false))
+                ),
+                "VARIETY"
+        );
+
+        assertThat(preview.ready()).isFalse();
+        assertThat(preview.seasonCoverages()).singleElement().satisfies(coverage -> {
+            assertThat(coverage.videoCount()).isEqualTo(2);
+            assertThat(coverage.recognizedEpisodeCount()).isEqualTo(2);
+            assertThat(coverage.missingEpisodeNumbers()).containsExactly(3);
+            assertThat(coverage.unknownVideoCount()).isEqualTo(1);
+        });
+        assertThat(preview.episodeAlignments())
+                .filteredOn(alignment -> !alignment.files().isEmpty())
+                .extracting(alignment -> alignment.episodeNumber())
+                .containsExactly(1, 2);
+        assertThat(preview.sources().get(0).files())
+                .filteredOn(file -> file.sourceName().equals("150509_超清.mp4"))
+                .singleElement()
+                .satisfies(file -> {
+                    assertThat(file.episodeNumber()).isEqualTo(2);
+                    assertThat(file.tmdbAirDate()).isEqualTo("2015-05-09");
+                });
+        assertThat(preview.sources().get(0).files())
+                .filteredOn(file -> file.sourceName().equals("150725_超清.mp4"))
+                .singleElement()
+                .satisfies(file -> {
+                    assertThat(file.status()).isEqualTo("UNRECOGNIZED");
+                    assertThat(file.message()).contains("TMDB 当前季度没有对应播出日期");
+                });
+    }
+
+    @Test
     void countsOneMergedEpisodeVideoAsCoveringBothEpisodes() throws Exception {
         String shareUrl = "https://pan.quark.cn/s/share123";
         QasShareTree tree = new QasShareTree(shareUrl, List.of(directory(

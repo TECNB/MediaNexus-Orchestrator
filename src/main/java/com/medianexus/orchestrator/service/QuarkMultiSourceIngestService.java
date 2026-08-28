@@ -78,6 +78,7 @@ public class QuarkMultiSourceIngestService {
     private static final Pattern FULL_DATE = Pattern.compile("(?<!\\d)(20\\d{2})[.-]?(\\d{2})[.-]?(\\d{2})(?!\\d)");
     private static final Pattern SHORT_DATE = Pattern.compile("(?<!\\d)(\\d{2})[.-](\\d{2})(?!\\d)");
     private static final Pattern SHORT_YEAR_DATE = Pattern.compile("(?<!\\d)(\\d{2})(\\d{2})(\\d{2})(?!\\d)");
+    private static final Pattern TARGET_FULL_DATE = Pattern.compile("(?<!\\d)(20\\d{2}-\\d{2}-\\d{2})(?!\\d)");
     private static final String MEDIA_EXTENSIONS = "mkv|mp4|avi|mov|wmv|flv|ts|m2ts|webm|rmvb|srt|ass|ssa|vtt|sub";
     private static final List<Integer> ALL_WEEKDAYS = List.of(1, 2, 3, 4, 5, 6, 7);
     private static final Set<String> FILE_ASSIGNMENT_TYPES = Set.of("PRIMARY", "EDITION", "SEGMENT", "EXTRA", "UNKNOWN");
@@ -506,7 +507,11 @@ public class QuarkMultiSourceIngestService {
         applyTaskNames(tasks, request.title());
         Map<String, Set<String>> conflictingTargets = detectGlobalConflicts(tasks, errors);
         sourceResponses = updateSourceResponses(sourceResponses, tasks, conflictingTargets);
-        List<QuarkSeasonCoverageResponse> seasonCoverages = buildSeasonCoverages(request, sourceResponses);
+        Map<Integer, TmdbEpisodeCoverage> tmdbBySeason = loadEpisodeCoverages(request.tmdbId(), sourceResponses);
+        DateAlignmentResult dateAlignment = alignDateFiles(sourceResponses, tmdbBySeason);
+        sourceResponses = dateAlignment.sources();
+        errors.addAll(dateAlignment.errors());
+        List<QuarkSeasonCoverageResponse> seasonCoverages = buildSeasonCoverages(sourceResponses, tmdbBySeason);
         List<QuarkEpisodeAlignmentResponse> episodeAlignments = buildEpisodeAlignments(seasonCoverages, sourceResponses);
         boolean ready = errors.isEmpty() && !tasks.isEmpty();
         String planFingerprint = planFingerprint(tasks, sourceResponses, request.followUpdatesEnabled());
@@ -528,8 +533,8 @@ public class QuarkMultiSourceIngestService {
     }
 
     private List<QuarkSeasonCoverageResponse> buildSeasonCoverages(
-            QuarkMultiSourceRequest request,
-            List<QuarkSourcePlanResponse> sources
+            List<QuarkSourcePlanResponse> sources,
+            Map<Integer, TmdbEpisodeCoverage> tmdbBySeason
     ) {
         Map<Integer, CoverageAccumulator> coverageBySeason = new TreeMap<>();
         for (QuarkSourcePlanResponse source : sources) {
@@ -549,6 +554,19 @@ public class QuarkMultiSourceIngestService {
                 } else if (!"EXCLUDED".equals(file.status())) {
                     coverage.videoCount++;
                     Set<Integer> episodes = targetEpisodes(file.targetName());
+                    if (episodes.isEmpty() && file.episodeNumber() != null) {
+                        episodes.add(file.episodeNumber());
+                    }
+                    if (episodes.isEmpty()) {
+                        LocalDate targetDate = targetDate(file.targetName());
+                        TmdbEpisodeCoverage tmdb = tmdbBySeason.get(season);
+                        if (targetDate != null && tmdb != null && tmdb.errorMessage() == null) {
+                            tmdb.episodes().values().stream()
+                                    .filter(episode -> targetDate.toString().equals(episode.airDate()))
+                                    .map(TmdbEpisodeInfo::episodeNumber)
+                                    .forEach(episodes::add);
+                        }
+                    }
                     coverage.episodeNumbers.addAll(episodes);
                     episodes.forEach(episode -> coverage.fileIdsByEpisode
                             .computeIfAbsent(episode, ignored -> new ArrayList<>())
@@ -556,13 +574,105 @@ public class QuarkMultiSourceIngestService {
                 }
             }
         }
-        Map<Integer, TmdbEpisodeCoverage> tmdbBySeason = new HashMap<>();
-        for (Integer season : coverageBySeason.keySet()) {
-            tmdbBySeason.put(season, loadEpisodeCoverage(request.tmdbId(), season));
-        }
         return coverageBySeason.values().stream()
                 .map(coverage -> coverage.toResponse(tmdbBySeason.get(coverage.seasonNumber)))
                 .toList();
+    }
+
+    private Map<Integer, TmdbEpisodeCoverage> loadEpisodeCoverages(
+            Integer tmdbId,
+            List<QuarkSourcePlanResponse> sources
+    ) {
+        return sources.stream()
+                .filter(source -> !source.ignored() && source.selectedSeason() != null)
+                .map(QuarkSourcePlanResponse::selectedSeason)
+                .distinct()
+                .collect(java.util.stream.Collectors.toMap(
+                        season -> season,
+                        season -> loadEpisodeCoverage(tmdbId, season),
+                        (left, right) -> left,
+                        LinkedHashMap::new
+                ));
+    }
+
+    private DateAlignmentResult alignDateFiles(
+            List<QuarkSourcePlanResponse> sources,
+            Map<Integer, TmdbEpisodeCoverage> tmdbBySeason
+    ) {
+        List<String> errors = new ArrayList<>();
+        List<QuarkSourcePlanResponse> alignedSources = sources.stream().map(source -> {
+            TmdbEpisodeCoverage tmdb = source.selectedSeason() == null
+                    ? null
+                    : tmdbBySeason.get(source.selectedSeason());
+            if (source.ignored() || tmdb == null || tmdb.errorMessage() != null) {
+                return source;
+            }
+            List<String> sourceErrors = new ArrayList<>(source.errors());
+            List<QuarkRenamePreviewResponse> files = source.files().stream().map(file -> {
+                if (file.episodeNumber() != null
+                        || !targetEpisodes(file.targetName()).isEmpty()
+                        || List.of("IGNORED", "UNRECOGNIZED", "CONFLICT", "EXCLUDED").contains(file.status())) {
+                    return file;
+                }
+                LocalDate date = targetDate(file.targetName());
+                if (date == null) {
+                    return file;
+                }
+                List<TmdbEpisodeInfo> matches = tmdb.episodes().values().stream()
+                        .filter(episode -> date.toString().equals(episode.airDate()))
+                        .sorted(java.util.Comparator.comparingInt(TmdbEpisodeInfo::episodeNumber))
+                        .toList();
+                if (matches.isEmpty()) {
+                    String message = "TMDB 当前季度没有对应播出日期 " + date + "，请手动指定集数或忽略";
+                    sourceErrors.add(file.sourceName() + "：" + message);
+                    return copyPreview(file, null, date.toString(), "UNRECOGNIZED", message);
+                }
+                Integer episodeNumber = matches.size() == 1 ? matches.get(0).episodeNumber() : null;
+                return copyPreview(file, episodeNumber, date.toString(), file.status(), file.message());
+            }).toList();
+            List<String> distinctErrors = sourceErrors.stream().distinct().toList();
+            if (distinctErrors.size() > source.errors().size()) {
+                distinctErrors.stream().filter(message -> !source.errors().contains(message)).forEach(errors::add);
+            }
+            return new QuarkSourcePlanResponse(
+                    source.sourceCandidateId(), source.sourceName(), source.relativePath(), source.sourceKind(),
+                    source.detectedSeason(), source.seasonStatus(), source.selectedSeason(), source.ignored(),
+                    source.followUpdates(), source.savePath(), source.taskName(),
+                    distinctErrors.isEmpty() ? source.status() : "BLOCKED",
+                    files, distinctErrors, source.warnings()
+            );
+        }).toList();
+        return new DateAlignmentResult(alignedSources, errors.stream().distinct().toList());
+    }
+
+    private QuarkRenamePreviewResponse copyPreview(
+            QuarkRenamePreviewResponse file,
+            Integer episodeNumber,
+            String tmdbAirDate,
+            String status,
+            String message
+    ) {
+        return new QuarkRenamePreviewResponse(
+                file.fileId(), file.sourceName(), file.targetName(), episodeNumber, status, message,
+                file.detectedEpisode(), file.detectedDate(), tmdbAirDate, file.groupId(),
+                file.assignmentType(), file.editionLabel(), file.segmentLabel(), file.confidence(),
+                file.reasonCodes(), file.forced()
+        );
+    }
+
+    private LocalDate targetDate(String targetName) {
+        if (!StringUtils.hasText(targetName)) {
+            return null;
+        }
+        Matcher matcher = TARGET_FULL_DATE.matcher(targetName);
+        if (!matcher.find()) {
+            return null;
+        }
+        try {
+            return LocalDate.parse(matcher.group(1));
+        } catch (DateTimeParseException ignored) {
+            return null;
+        }
     }
 
     private List<QuarkEpisodeAlignmentResponse> buildEpisodeAlignments(
@@ -1086,12 +1196,12 @@ public class QuarkMultiSourceIngestService {
         );
     }
 
-    private int episodeNumber(String targetName) {
+    private Integer episodeNumber(String targetName) {
         if (targetName == null) {
-            return 0;
+            return null;
         }
         java.util.regex.Matcher matcher = Pattern.compile("(?i)S\\d{2}E(\\d{2,3})").matcher(targetName);
-        return matcher.find() ? Integer.parseInt(matcher.group(1)) : 0;
+        return matcher.find() ? Integer.parseInt(matcher.group(1)) : null;
     }
 
     private List<QuarkRenamePreviewResponse> diagnosticRenamePreview(
@@ -1646,6 +1756,12 @@ public class QuarkMultiSourceIngestService {
             List<String> warnings,
             String message,
             String planFingerprint
+    ) {
+    }
+
+    private record DateAlignmentResult(
+            List<QuarkSourcePlanResponse> sources,
+            List<String> errors
     ) {
     }
 
