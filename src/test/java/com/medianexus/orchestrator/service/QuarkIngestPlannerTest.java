@@ -220,6 +220,33 @@ class QuarkIngestPlannerTest {
     }
 
     @Test
+    void plansEpisodeNumbersWithShortDateAfterEPrefix() {
+        QasShareTree tree = new QasShareTree(
+                "https://pan.quark.cn/s/share-id",
+                List.of(
+                        file("【Mic迈扣】女高推理班 E01.240426 中字 1080P.mp4"),
+                        file("【Mic迈扣】女高推理班 E02.240503 中字 1080P.mp4"),
+                        file("【Mic迈扣】女高推理班 E03.240510 中字 1080P.mp4")
+                )
+        );
+
+        QasIngestPlan plan = planner.planSeries(
+                "女高推理班", 3, "/TV/女高推理班/Season 03", tree, Map.of()
+        );
+
+        assertThat(plan.tasks()).singleElement().satisfies(task -> {
+            assertThat(task.pattern()).isNotBlank();
+            assertThat(task.renameSamples())
+                    .extracting(QasRenameSample::targetName)
+                    .containsExactly(
+                            "女高推理班 - S03E01 - 2024-04-26 中字 1080P.mp4",
+                            "女高推理班 - S03E02 - 2024-05-03 中字 1080P.mp4",
+                            "女高推理班 - S03E03 - 2024-05-10 中字 1080P.mp4"
+                    );
+        });
+    }
+
+    @Test
     void keepsDatedStandardAndCompleteEditionsDistinct() {
         QasShareTree tree = new QasShareTree(
                 "https://pan.quark.cn/s/share-id",

@@ -548,6 +548,22 @@ public class QuarkIngestPlanner {
                 matcher -> matcher.group(1)
         ));
         candidates.add(candidate(
+                "^.*?[Ee](\\d{2,3})[ ._-]+(\\d{2})(\\d{2})(\\d{2})([ ._-]+.*?)?\\.(" + MEDIA_EXTENSIONS + ")$",
+                episodePrefix + "\\1 - 20\\2-\\3-\\4\\5.\\6",
+                matcher -> episodePrefix + matcher.group(1) + " - 20" + matcher.group(2) + "-"
+                        + matcher.group(3) + "-" + matcher.group(4)
+                        + (matcher.group(5) == null ? "" : matcher.group(5)) + "." + matcher.group(6),
+                matcher -> matcher.group(1)
+        ));
+        candidates.add(candidate(
+                "^.*?[Ee](\\d)[ ._-]+(\\d{2})(\\d{2})(\\d{2})([ ._-]+.*?)?\\.(" + MEDIA_EXTENSIONS + ")$",
+                episodePrefix + "0\\1 - 20\\2-\\3-\\4\\5.\\6",
+                matcher -> episodePrefix + "0" + matcher.group(1) + " - 20" + matcher.group(2) + "-"
+                        + matcher.group(3) + "-" + matcher.group(4)
+                        + (matcher.group(5) == null ? "" : matcher.group(5)) + "." + matcher.group(6),
+                matcher -> matcher.group(1)
+        ));
+        candidates.add(candidate(
                 "^.*?(?:[Ss]\\d{1,2}[ ._-]*)?[Ee][Pp](\\d{2,3})((?:\\.[^.]+)*)\\.(" + MEDIA_EXTENSIONS + ")$",
                 episodePrefix + "\\1\\2.\\3",
                 matcher -> episodePrefix + matcher.group(1) + matcher.group(2) + "." + matcher.group(3),
