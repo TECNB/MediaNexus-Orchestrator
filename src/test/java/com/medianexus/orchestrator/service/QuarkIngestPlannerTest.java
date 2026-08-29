@@ -200,6 +200,27 @@ class QuarkIngestPlannerTest {
     }
 
     @Test
+    void plansVarietyFilesWithIssueDateCopySuffixAndExtraAsMappedVersions() {
+        QasShareTree tree = new QasShareTree(
+                "https://pan.quark.cn/s/share-id",
+                List.of(
+                        file("2022-09-28第5期下：徐志胜自暴被夸绝美.mp4"),
+                        file("第5期上：鲁豫加盟(1).mp4"),
+                        file("第5期加更：孟川挑战.mp4")
+                )
+        );
+
+        QasIngestPlan plan = planner.planVariety(
+                "脱口秀大会", 5, "/Variety/脱口秀大会/Season 05", tree, Map.of()
+        );
+
+        assertThat(plan.tasks()).allMatch(task -> !task.pattern().isBlank());
+        assertThat(plan.tasks()).flatExtracting(QasTaskPlan::renameSamples)
+                .extracting(QasRenameSample::targetName)
+                .allMatch(name -> name.contains("S05E05"));
+    }
+
+    @Test
     void plansEpNumbersWithVipAndStandardEditions() {
         QasShareTree tree = new QasShareTree(
                 "https://pan.quark.cn/s/share-id",
