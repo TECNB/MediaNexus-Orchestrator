@@ -61,6 +61,16 @@ class QuarkFileCandidateAnalyzerTest {
     }
 
     @Test
+    void extractsStandaloneEpisodeTokensUsedAfterAProgramTitle() {
+        QuarkFileCandidateAnalyzer.Candidate candidate = analyzer.analyze(
+                "source", "S1游戏的法则 E01 123游戏 连胜游戏 .mp4"
+        );
+
+        assertThat(candidate.detectedEpisode()).isEqualTo(1);
+        assertThat(candidate.reasonCodes()).contains("EPISODE_TOKEN");
+    }
+
+    @Test
     void groupIdUsesIdentityAndNormalizedSubject() {
         String first = analyzer.analyze("source", "01 4K.mp4").groupId();
         String sameEpisodeDifferentEdition = analyzer.analyze("source", "01 VIP.mp4").groupId();

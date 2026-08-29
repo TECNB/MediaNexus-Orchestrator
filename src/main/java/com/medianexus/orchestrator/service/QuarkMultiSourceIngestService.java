@@ -421,8 +421,8 @@ public class QuarkMultiSourceIngestService {
                     ? selection.seasonNumber()
                     : candidate.detectedSeason();
             if ("MIXED".equals(candidate.seasonStatus())) {
-                errors.add(candidate.sourceName() + " 明确混有多个季度，不能在同一来源内自动拆分");
-                sourceResponses.add(sourceResponse(candidate, selection, null, "MIXED", List.of("混合季度来源必须拆分后再提交"), List.of()));
+                errors.add(candidate.sourceName() + " 检测到相互冲突的季度标记");
+                sourceResponses.add(sourceResponse(candidate, selection, null, "MIXED", List.of("季度标记存在冲突，请拆分来源或修正季度后再提交"), List.of()));
                 continue;
             }
             if (seasonNumber == null || seasonNumber < 1) {

@@ -122,6 +122,27 @@ class QuarkShareSourceRegistryTest {
     }
 
     @Test
+    void trustsExplicitSeasonDirectoryWhenAFileTitleMentionsAPreviousSeasonSummary() {
+        QasShareTree tree = new QasShareTree(
+                "https://pan.quark.cn/s/share-id",
+                List.of(directory(
+                        "s2", "S02",
+                        file("S2规则破坏者 E01.mp4"),
+                        file("S2规则破坏者 E00 - S1总结集.mp4")
+                ))
+        );
+
+        QuarkShareSourceRegistry.PreviewSession session = registry.create(
+                "https://pan.quark.cn/s/share-id", "VARIETY", tree
+        );
+
+        assertThat(session.candidates().values()).singleElement().satisfies(candidate -> {
+            assertThat(candidate.detectedSeason()).isEqualTo(2);
+            assertThat(candidate.seasonStatus()).isEqualTo("AUTO");
+        });
+    }
+
+    @Test
     void marksAPlayableSeasonRangeDirectoryAsMixed() {
         QasShareTree tree = new QasShareTree(
                 "https://pan.quark.cn/s/share-id",

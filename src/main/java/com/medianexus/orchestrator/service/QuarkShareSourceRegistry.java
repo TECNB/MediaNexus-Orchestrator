@@ -216,13 +216,20 @@ public class QuarkShareSourceRegistry {
         addSeasonMatches(sourceNumbers, sourceName);
         sourceNumbers = distinctNumbers(sourceNumbers);
         List<Integer> fileNumbers = new ArrayList<>();
+        List<Integer> explicitFileNumbers = new ArrayList<>();
         for (QasShareNode entry : entries) {
             addSeasonMatches(fileNumbers, entry.name());
+            addEpisodeSeasonMatches(explicitFileNumbers, entry.name());
         }
         fileNumbers = distinctNumbers(fileNumbers);
+        explicitFileNumbers = distinctNumbers(explicitFileNumbers);
         if (sourceNumbers.size() == 1) {
             Integer sourceSeason = sourceNumbers.get(0);
-            if (fileNumbers.isEmpty() || fileNumbers.stream().allMatch(sourceSeason::equals)) {
+            // An explicit season directory is authoritative unless a file declares
+            // a conflicting SxxEyy identity. Loose S1/S2 text in a programme title
+            // (for example "S1总结集") is not a reliable season declaration.
+            if (explicitFileNumbers.isEmpty()
+                    || explicitFileNumbers.stream().allMatch(sourceSeason::equals)) {
                 return new SeasonDetection(sourceSeason, "AUTO");
             }
             return new SeasonDetection(null, "MIXED");
@@ -277,6 +284,16 @@ public class QuarkShareSourceRegistry {
         Matcher chinese = CHINESE_DIGITS.matcher(value);
         while (chinese.find()) {
             numbers.add(chineseNumber(chinese.group(1)));
+        }
+    }
+
+    private static void addEpisodeSeasonMatches(List<Integer> numbers, String value) {
+        if (!StringUtils.hasText(value)) {
+            return;
+        }
+        Matcher episode = EPISODE_SEASON.matcher(value);
+        while (episode.find()) {
+            numbers.add(Integer.parseInt(episode.group(1)));
         }
     }
 
