@@ -590,13 +590,13 @@ public class QuarkIngestPlanner {
         // Prefer an issue number over an air date when both are present. The
         // remaining title/segment/extra/copy suffix becomes the version text.
         candidates.add(candidate(
-                "^.*?20\\d{2}[-.]?\\d{2}[-.]?\\d{2}\\s*第\\s*(\\d{2,3})期\\s*(.+?)\\.(" + MEDIA_EXTENSIONS + ")$",
+                "^.*?20\\d{2}(?:-\\d{2}-\\d{2}|\\.\\d{2}\\.\\d{2}|\\d{4})[._-]*第\\s*(\\d{2,3})期\\s*(.+?)\\.(" + MEDIA_EXTENSIONS + ")$",
                 episodePrefix + "\\1 - \\2.\\3",
                 matcher -> episodePrefix + matcher.group(1) + " - " + matcher.group(2) + "." + matcher.group(3),
                 matcher -> matcher.group(1)
         ));
         candidates.add(candidate(
-                "^.*?20\\d{2}[-.]?\\d{2}[-.]?\\d{2}\\s*第\\s*(\\d)期\\s*(.+?)\\.(" + MEDIA_EXTENSIONS + ")$",
+                "^.*?20\\d{2}(?:-\\d{2}-\\d{2}|\\.\\d{2}\\.\\d{2}|\\d{4})[._-]*第\\s*(\\d)期\\s*(.+?)\\.(" + MEDIA_EXTENSIONS + ")$",
                 episodePrefix + "0\\1 - \\2.\\3",
                 matcher -> episodePrefix + "0" + matcher.group(1) + " - " + matcher.group(2) + "." + matcher.group(3),
                 matcher -> matcher.group(1)

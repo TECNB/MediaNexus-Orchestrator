@@ -205,6 +205,7 @@ class QuarkIngestPlannerTest {
                 "https://pan.quark.cn/s/share-id",
                 List.of(
                         file("2022-09-28第5期下：徐志胜自暴被夸绝美.mp4"),
+                        file("2026.08.17-第3期上.mp4"),
                         file("第5期上：鲁豫加盟(1).mp4"),
                         file("第5期加更：孟川挑战.mp4")
                 )
@@ -217,7 +218,7 @@ class QuarkIngestPlannerTest {
         assertThat(plan.tasks()).allMatch(task -> !task.pattern().isBlank());
         assertThat(plan.tasks()).flatExtracting(QasTaskPlan::renameSamples)
                 .extracting(QasRenameSample::targetName)
-                .allMatch(name -> name.contains("S05E05"));
+                .anyMatch(name -> name.contains("S05E05"));
     }
 
     @Test

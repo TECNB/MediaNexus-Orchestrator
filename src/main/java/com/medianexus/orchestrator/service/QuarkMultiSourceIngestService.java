@@ -417,6 +417,10 @@ public class QuarkMultiSourceIngestService {
                 sourceResponses.add(sourceResponse(candidate, selection, null, "IGNORED", List.of(), List.of()));
                 continue;
             }
+            if (allPlayableFilesIgnored(candidate, selection.files())) {
+                sourceResponses.add(sourceResponse(candidate, selection, null, "IGNORED", List.of(), List.of()));
+                continue;
+            }
             Integer seasonNumber = selection.seasonNumber() != null
                     ? selection.seasonNumber()
                     : candidate.detectedSeason();
@@ -1044,6 +1048,20 @@ public class QuarkMultiSourceIngestService {
                 Map.copyOf(manualEpisodes), Map.copyOf(assignments),
                 Set.copyOf(ignoredFileIds), Set.copyOf(excludedNames)
         );
+    }
+
+    private boolean allPlayableFilesIgnored(
+            QuarkShareSourceRegistry.SourceCandidate candidate,
+            List<QuarkFileSelectionRequest> requests
+    ) {
+        Set<String> ignored = requests.stream()
+                .filter(request -> request != null && request.ignored())
+                .map(QuarkFileSelectionRequest::fileId)
+                .collect(java.util.stream.Collectors.toSet());
+        List<QasShareNode> videos = candidate.entries().stream()
+                .filter(entry -> isPlayableVideo(entry.name()))
+                .toList();
+        return !videos.isEmpty() && videos.stream().allMatch(entry -> ignored.contains(fileId(candidate, entry)));
     }
 
     private String normalizeAssignmentType(QuarkFileSelectionRequest request) {
