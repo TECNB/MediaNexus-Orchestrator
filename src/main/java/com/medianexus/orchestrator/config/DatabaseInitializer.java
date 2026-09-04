@@ -187,6 +187,7 @@ public class DatabaseInitializer implements ApplicationRunner {
         adultMagnetIngestTaskMapper.createTableIfNotExists();
         ensureAdultMagnetTaskAttemptChainColumns();
         ensureAdultMagnetTaskDownloadLinksColumn();
+        ensureAdultMagnetTaskSourceColumns();
         adultMagnetIngestTaskLogMapper.createTableIfNotExists();
         subtitleUploadMapper.createTableIfNotExists();
         ensureSubtitleUploadColumns();
@@ -368,6 +369,13 @@ public class DatabaseInitializer implements ApplicationRunner {
         Integer columnCount = adultMagnetIngestTaskMapper.countDownloadLinksJsonColumn();
         if (columnCount == null || columnCount == 0) {
             adultMagnetIngestTaskMapper.addDownloadLinksJsonColumn();
+        }
+    }
+
+    private void ensureAdultMagnetTaskSourceColumns() {
+        Integer columnCount = adultMagnetIngestTaskMapper.countSourceTypeColumn();
+        if (columnCount == null || columnCount == 0) {
+            adultMagnetIngestTaskMapper.addSourceTypeColumns();
         }
     }
 

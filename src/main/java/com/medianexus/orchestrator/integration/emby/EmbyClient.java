@@ -16,9 +16,11 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
@@ -338,13 +340,18 @@ public class EmbyClient {
         JsonNode root = get("/Items", params);
         JsonNode items = root.path("Items");
         if (!items.isArray()) {
-            return List.of();
+            throw new EmbyClientException("Emby items response is incomplete");
         }
 
         List<EmbyItem> result = new ArrayList<>();
+        Set<String> seenIds = new HashSet<>();
         for (JsonNode item : items) {
+            String id = text(item, "Id", "id");
+            if (!StringUtils.hasText(id) || !seenIds.add(id)) {
+                throw new EmbyClientException("Emby items response contains an invalid item id");
+            }
             result.add(new EmbyItem(
-                    text(item, "Id", "id"),
+                    id,
                     text(item, "Name", "name"),
                     text(item, "Type", "type"),
                     text(item, "Path", "path"),

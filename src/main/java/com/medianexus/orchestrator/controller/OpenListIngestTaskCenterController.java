@@ -47,8 +47,8 @@ public class OpenListIngestTaskCenterController {
             @Parameter(description = "任务产品类别：ALL、MOVIE、SERIES、ANIME 或 ADULT")
             @Pattern(regexp = "(?i)ALL|MOVIE|SERIES|ANIME|ADULT", message = "任务产品类别无效")
             @RequestParam(name = "product_type", required = false) String productType,
-            @Parameter(description = "尝试链起点来源：ALL、MANUAL_MAGNET 或 PROWLARR_RELEASE")
-            @Pattern(regexp = "(?i)ALL|MANUAL_MAGNET|PROWLARR_RELEASE", message = "任务来源无效")
+            @Parameter(description = "尝试链起点来源：ALL、MANUAL_MAGNET、PROWLARR_RELEASE 或 JAVDB_AUTOMATION")
+            @Pattern(regexp = "(?i)ALL|MANUAL_MAGNET|PROWLARR_RELEASE|JAVDB_AUTOMATION", message = "任务来源无效")
             @RequestParam(name = "source_type", required = false) String sourceType,
             @Parameter(description = "标题、发布标题或 magnet hash 关键词")
             @RequestParam(name = "keyword", required = false) String keyword,

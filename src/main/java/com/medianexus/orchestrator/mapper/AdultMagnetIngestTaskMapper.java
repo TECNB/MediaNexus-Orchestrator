@@ -14,6 +14,8 @@ public interface AdultMagnetIngestTaskMapper extends BaseMapper<AdultMagnetInges
                 id VARCHAR(36) NOT NULL,
                 created_by_user_id BIGINT NULL,
                 category VARCHAR(16) NOT NULL,
+                source_type VARCHAR(32) NOT NULL DEFAULT 'MANUAL_MAGNET',
+                automation_run_id VARCHAR(36) NULL,
                 status VARCHAR(32) NOT NULL,
                 stage VARCHAR(64) NOT NULL,
                 date_folder VARCHAR(32) NOT NULL,
@@ -39,6 +41,7 @@ public interface AdultMagnetIngestTaskMapper extends BaseMapper<AdultMagnetInges
                 KEY idx_adult_magnet_tasks_status_created_at (status, created_at),
                 KEY idx_adult_magnet_tasks_category_created_at (category, created_at),
                 KEY idx_adult_magnet_tasks_owner_created_at (created_by_user_id, created_at),
+                KEY idx_adult_magnet_tasks_source_run (source_type, automation_run_id),
                 KEY idx_adult_magnet_tasks_attempt_group (attempt_group_id, created_at)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
             """)
@@ -90,4 +93,20 @@ public interface AdultMagnetIngestTaskMapper extends BaseMapper<AdultMagnetInges
             ADD COLUMN download_links_json LONGTEXT NULL AFTER magnet_hashes
             """)
     void addDownloadLinksJsonColumn();
+
+    @Select("""
+            SELECT COUNT(*)
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'adult_magnet_ingest_tasks'
+              AND COLUMN_NAME = 'source_type'
+            """)
+    Integer countSourceTypeColumn();
+
+    @Update("""
+            ALTER TABLE adult_magnet_ingest_tasks
+            ADD COLUMN source_type VARCHAR(32) NOT NULL DEFAULT 'MANUAL_MAGNET' AFTER category,
+            ADD COLUMN automation_run_id VARCHAR(36) NULL AFTER source_type
+            """)
+    void addSourceTypeColumns();
 }

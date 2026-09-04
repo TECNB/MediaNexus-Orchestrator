@@ -76,6 +76,7 @@ public class OpenListIngestTaskCenterService {
     private static final String ADULT_PRODUCT_TYPE = "ADULT";
     private static final String MANUAL_MAGNET_SOURCE = "MANUAL_MAGNET";
     private static final String PROWLARR_RELEASE_SOURCE = "PROWLARR_RELEASE";
+    private static final String JAVDB_AUTOMATION_SOURCE = "JAVDB_AUTOMATION";
     private static final String ALL_FILTER = "ALL";
     private static final String IN_PROGRESS_VIEW = "IN_PROGRESS";
     private static final String NEEDS_ATTENTION_VIEW = "NEEDS_ATTENTION";
@@ -364,6 +365,9 @@ public class OpenListIngestTaskCenterService {
         User user = authService.requireCurrentUser();
         AdultMagnetIngestTask originalTask = getAccessibleAdultTask(taskId, user);
         ensureRecoverableStatus(originalTask.getStatus());
+        if (JAVDB_AUTOMATION_SOURCE.equals(sourceType(originalTask.getSourceType()))) {
+            throw badRequest("JAVDB 自动化任务不支持手动更换磁力");
+        }
         String newTaskId = adultMagnetIngestService.createRetryTask(
                 originalTask.getCategory(),
                 request.downloadLinks(),
@@ -773,7 +777,7 @@ public class OpenListIngestTaskCenterService {
                 adultTitle(task),
                 task.getStatus(),
                 task.getStage(),
-                MANUAL_MAGNET_SOURCE,
+                sourceType(task.getSourceType()),
                 null,
                 null,
                 null,
@@ -1071,6 +1075,8 @@ public class OpenListIngestTaskCenterService {
                         AdultMagnetIngestTask::getId,
                         AdultMagnetIngestTask::getCreatedByUserId,
                         AdultMagnetIngestTask::getCategory,
+                        AdultMagnetIngestTask::getSourceType,
+                        AdultMagnetIngestTask::getAutomationRunId,
                         AdultMagnetIngestTask::getStatus,
                         AdultMagnetIngestTask::getStage,
                         AdultMagnetIngestTask::getDateFolder,
@@ -1718,6 +1724,8 @@ public class OpenListIngestTaskCenterService {
                         AdultMagnetIngestTask::getId,
                         AdultMagnetIngestTask::getCreatedByUserId,
                         AdultMagnetIngestTask::getCategory,
+                        AdultMagnetIngestTask::getSourceType,
+                        AdultMagnetIngestTask::getAutomationRunId,
                         AdultMagnetIngestTask::getStatus,
                         AdultMagnetIngestTask::getStage,
                         AdultMagnetIngestTask::getDateFolder,
@@ -1874,7 +1882,7 @@ public class OpenListIngestTaskCenterService {
                 adultTitle(task),
                 task.getStatus(),
                 task.getStage(),
-                MANUAL_MAGNET_SOURCE,
+                sourceType(task.getSourceType()),
                 null,
                 adultProgressSummary(task),
                 1,
@@ -1979,7 +1987,7 @@ public class OpenListIngestTaskCenterService {
                 adultTitle(task),
                 task.getStatus(),
                 task.getStage(),
-                MANUAL_MAGNET_SOURCE,
+                sourceType(task.getSourceType()),
                 task.getCreatedByUserId(),
                 creatorsById == null
                         ? creatorUsername(task.getCreatedByUserId())
@@ -2253,8 +2261,13 @@ public class OpenListIngestTaskCenterService {
     }
 
     private boolean matchesSourceType(TaskCenterListingCandidate item, String sourceType) {
+        // Adult tasks historically only supported the ALL source view. Keep
+        // that behavior for manual source filters while exposing the new
+        // automation source as an explicit filter.
         if (ADULT_PRODUCT_TYPE.equals(item.response().productType())) {
-            return ALL_FILTER.equals(sourceType);
+            return ALL_FILTER.equals(sourceType)
+                    || (JAVDB_AUTOMATION_SOURCE.equals(sourceType)
+                    && sourceType.equals(item.originSourceType()));
         }
         return ALL_FILTER.equals(sourceType) || sourceType.equals(item.originSourceType());
     }

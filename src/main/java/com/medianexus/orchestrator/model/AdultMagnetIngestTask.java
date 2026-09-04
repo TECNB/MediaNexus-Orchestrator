@@ -15,6 +15,10 @@ public class AdultMagnetIngestTask {
 
     private String category;
 
+    private String sourceType;
+
+    private String automationRunId;
+
     private String status;
 
     private String stage;
@@ -79,6 +83,22 @@ public class AdultMagnetIngestTask {
 
     public void setCategory(String category) {
         this.category = category;
+    }
+
+    public String getSourceType() {
+        return sourceType;
+    }
+
+    public void setSourceType(String sourceType) {
+        this.sourceType = sourceType;
+    }
+
+    public String getAutomationRunId() {
+        return automationRunId;
+    }
+
+    public void setAutomationRunId(String automationRunId) {
+        this.automationRunId = automationRunId;
     }
 
     public String getStatus() {

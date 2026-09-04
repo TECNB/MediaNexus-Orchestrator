@@ -75,6 +75,8 @@ public class AdultMagnetIngestService {
     private static final long MIN_VIDEO_BYTES = 100L * 1024L * 1024L;
     private static final int MAX_MAGNETS_PER_BATCH = 50;
     private static final int ORGANIZE_PARALLELISM = 3;
+    private static final String MANUAL_MAGNET_SOURCE = "MANUAL_MAGNET";
+    private static final String JAVDB_AUTOMATION_SOURCE = "JAVDB_AUTOMATION";
 
     private final AdultMagnetIngestTaskMapper taskMapper;
     private final AdultMagnetIngestTaskLogMapper taskLogMapper;
@@ -207,7 +209,28 @@ public class AdultMagnetIngestService {
     }
 
     public AdultMagnetIngestTaskResponse createTask(AdultMagnetIngestTaskCreateRequest request) {
-        return createTask(request, null);
+        ensureTablesReady();
+        User admin = authService.requireAdminUser();
+        return createTaskRecord(request, null, admin.getId(), MANUAL_MAGNET_SOURCE, null);
+    }
+
+    /**
+     * Internal system entry point used by JAVDB automation. It deliberately
+     * does not read the current HTTP principal and leaves the creator empty so
+     * the task center can identify it as a system generated task.
+     */
+    public AdultMagnetIngestTaskResponse createAutomationTask(
+            List<String> downloadLinks,
+            String automationRunId
+    ) {
+        ensureTablesReady();
+        return createTaskRecord(
+                new AdultMagnetIngestTaskCreateRequest("JAV", downloadLinks),
+                null,
+                null,
+                JAVDB_AUTOMATION_SOURCE,
+                automationRunId
+        );
     }
 
     public AdultMagnetIngestTaskResponse createRetryTask(
@@ -227,6 +250,16 @@ public class AdultMagnetIngestService {
     ) {
         ensureTablesReady();
         User admin = authService.requireAdminUser();
+        return createTaskRecord(request, retryReference, admin.getId(), MANUAL_MAGNET_SOURCE, null);
+    }
+
+    private AdultMagnetIngestTaskResponse createTaskRecord(
+            AdultMagnetIngestTaskCreateRequest request,
+            TaskRetryReference retryReference,
+            Long createdByUserId,
+            String sourceType,
+            String automationRunId
+    ) {
         String taskId = UUID.randomUUID().toString();
         AdultTaskPlan plan = buildTaskPlan(request, taskId);
         if (plan.items().isEmpty()) {
@@ -236,8 +269,10 @@ public class AdultMagnetIngestService {
         LocalDateTime now = LocalDateTime.now();
         AdultMagnetIngestTask task = new AdultMagnetIngestTask();
         task.setId(taskId);
-        task.setCreatedByUserId(admin.getId());
+        task.setCreatedByUserId(createdByUserId);
         task.setCategory(plan.category());
+        task.setSourceType(sourceType);
+        task.setAutomationRunId(automationRunId);
         task.setStatus("PENDING");
         task.setStage("created");
         task.setDateFolder(plan.dateFolder());
@@ -329,9 +364,17 @@ public class AdultMagnetIngestService {
                 return;
             }
             taskMapper.createTableIfNotExists();
+            Integer sourceTypeColumnCount = taskMapper.countSourceTypeColumn();
+            if (sourceTypeColumnCount == null || sourceTypeColumnCount == 0) {
+                taskMapper.addSourceTypeColumns();
+            }
             taskLogMapper.createTableIfNotExists();
             tablesReady = true;
         }
+    }
+
+    void ensureTablesReadyForInternalUse() {
+        ensureTablesReady();
     }
 
     private void runTask(String taskId, List<AdultMagnetItem> items, String rootPath) {
