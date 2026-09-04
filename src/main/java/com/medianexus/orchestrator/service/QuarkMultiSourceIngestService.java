@@ -91,6 +91,7 @@ public class QuarkMultiSourceIngestService {
     private final QuarkIngestTaskLogMapper taskLogMapper;
     private final QuarkDirectClient quarkDirectClient;
     private final SmartStrmWebhookClient smartStrmWebhookClient;
+    private final QuarkTaskCenterRecorder taskCenterRecorder;
     private final QuarkFileCandidateAnalyzer candidateAnalyzer = new QuarkFileCandidateAnalyzer();
     private final ExecutorService directExecutor = Executors.newFixedThreadPool(2);
 
@@ -107,7 +108,8 @@ public class QuarkMultiSourceIngestService {
             QuarkIngestTaskMapper taskMapper,
             QuarkIngestTaskLogMapper taskLogMapper,
             QuarkDirectClient quarkDirectClient,
-            SmartStrmWebhookClient smartStrmWebhookClient
+            SmartStrmWebhookClient smartStrmWebhookClient,
+            QuarkTaskCenterRecorder taskCenterRecorder
     ) {
         this.qasClient = qasClient;
         this.shareTreeService = shareTreeService;
@@ -121,6 +123,7 @@ public class QuarkMultiSourceIngestService {
         this.taskLogMapper = taskLogMapper;
         this.quarkDirectClient = quarkDirectClient;
         this.smartStrmWebhookClient = smartStrmWebhookClient;
+        this.taskCenterRecorder = taskCenterRecorder;
     }
 
     public QuarkMultiSourceIngestService(
@@ -132,7 +135,8 @@ public class QuarkMultiSourceIngestService {
         this(qasClient, shareTreeService, qasProperties, tmdbProperties, authService, planner, tmdbClient,
                 registry, taskMapper, taskLogMapper,
                 new QuarkDirectClient(qasProperties, new com.fasterxml.jackson.databind.ObjectMapper()),
-                new SmartStrmWebhookClient(qasProperties, new com.fasterxml.jackson.databind.ObjectMapper()));
+                new SmartStrmWebhookClient(qasProperties, new com.fasterxml.jackson.databind.ObjectMapper()),
+                null);
     }
 
     public QuarkMultiSourcePreviewResponse previewStructure(QuarkMultiSourceRequest request, String mediaType) {
@@ -238,18 +242,33 @@ public class QuarkMultiSourceIngestService {
         checkDuplicateTasks(computation.tasks(), directEnabled);
 
         String localTaskId = UUID.randomUUID().toString();
-        createLocalRecord(user, localTaskId, mediaType, request.title(), computation);
+        createLocalRecord(user, localTaskId, mediaType, request.title(), computation, request.sourceType());
+        List<String> childIds = taskCenterRecorder == null ? List.of() : taskCenterRecorder.recordInitialPlan(
+                    localTaskId,
+                    mediaType,
+                    request.sourceType(),
+                    computation.tasks().stream().map(PlannedSource::task).toList(),
+                    computation.tasks().stream()
+                            .filter(PlannedSource::followUpdates)
+                            .map(source -> source.task().taskName())
+                            .collect(java.util.stream.Collectors.toSet()),
+                    user.getId());
         List<QasCreatedTask> created = new ArrayList<>();
         List<QuarkSourceTaskResultResponse> sourceResults = new ArrayList<>();
         List<String> warnings = new ArrayList<>(computation.warnings());
         List<PlannedSource> directSources = new ArrayList<>();
-        for (PlannedSource source : computation.tasks()) {
+        for (int sourceIndex = 0; sourceIndex < computation.tasks().size(); sourceIndex++) {
+            PlannedSource source = computation.tasks().get(sourceIndex);
+            source.setChildId(childIdAt(childIds, sourceIndex));
             if (directEnabled && (!request.followUpdatesEnabled() || !source.followUpdates())) {
                 directSources.add(source);
+                if (taskCenterRecorder != null) {
+                    taskCenterRecorder.markChildStatus(localTaskId, source.childId(), "SUBMITTED", null);
+                }
                 sourceResults.add(new QuarkSourceTaskResultResponse(
-                        source.candidate().id(), source.task().taskName(), "STARTED", "Quark 直接入库已提交"
+                        source.candidate().id(), source.task().taskName(), "STARTED", "一次性入库已提交"
                 ));
-                writeLog(localTaskId, "INFO", "submitted", "已提交 Quark 直接入库", source.task().taskName());
+                writeLog(localTaskId, "INFO", "submitted", "一次性入库已提交", source.task().taskName());
                 continue;
             }
             try {
@@ -263,13 +282,22 @@ public class QuarkMultiSourceIngestService {
                         null
                 ));
                 created.add(createdTask);
+                if (taskCenterRecorder != null) {
+                    taskCenterRecorder.markChildStatus(localTaskId, source.childId(), "SUBMITTED", null);
+                }
                 sourceResults.add(new QuarkSourceTaskResultResponse(
-                        source.candidate().id(), source.task().taskName(), "CREATED", "QAS 任务已创建"
+                        source.candidate().id(), source.task().taskName(), "CREATED",
+                        request.followUpdatesEnabled() && source.followUpdates()
+                                ? "自动更新任务已创建"
+                                : "一次性入库已提交"
                 ));
                 String schedule = request.followUpdatesEnabled() && source.followUpdates()
                         ? "每日订阅"
                         : "一次性（首次执行后不定时）";
-                writeLog(localTaskId, "INFO", "creating", "已创建 QAS 任务",
+                writeLog(localTaskId, "INFO", "creating",
+                        request.followUpdatesEnabled() && source.followUpdates()
+                                ? "自动更新任务已创建"
+                                : "一次性入库已提交",
                         source.task().taskName() + "；调度：" + schedule);
             } catch (QasClientException exception) {
                 String message = safeMessage(exception.getMessage());
@@ -277,17 +305,25 @@ public class QuarkMultiSourceIngestService {
                         source.candidate().id(), source.task().taskName(), "FAILED", message
                 ));
                 warnings.add(source.task().taskName() + "：" + message);
-                writeLog(localTaskId, "ERROR", "creating", "QAS 任务创建失败", source.task().taskName() + "：" + message);
+                if (taskCenterRecorder != null) {
+                    taskCenterRecorder.markChildStatus(localTaskId, source.childId(), "FAILED", message);
+                }
+                writeLog(localTaskId, "ERROR", "creating",
+                        request.followUpdatesEnabled() && source.followUpdates()
+                                ? "自动更新任务创建失败"
+                                : "一次性入库提交失败",
+                        source.task().taskName() + "：" + message);
             }
         }
         for (PlannedSource source : directSources) {
-            directExecutor.submit(() -> executeDirectSource(localTaskId, mediaType, source.task(), freshTree));
+            directExecutor.submit(() -> executeDirectSource(
+                    localTaskId, mediaType, source.task(), freshTree, source.childId()));
         }
         if (created.isEmpty() && directSources.isEmpty()) {
-            updateLocalRecord(localTaskId, "FAILED", false, 0, computation.tasks().size(), "没有成功创建 QAS 任务");
+            updateLocalRecord(localTaskId, "FAILED", false, 0, computation.tasks().size(), "没有成功提交入库任务");
             return new QuarkMultiSourceTaskResponse(
                     localTaskId, "FAILED", mediaType, rootPath(mediaType), false,
-                    computation.tasks().size(), 0, sourceResults, warnings, "没有成功创建 QAS 任务"
+                    computation.tasks().size(), 0, sourceResults, warnings, "没有成功提交入库任务"
             );
         }
 
@@ -325,14 +361,30 @@ public class QuarkMultiSourceIngestService {
         );
     }
 
-    private void executeDirectSource(String taskId, String mediaType, QasTaskPlan task, QasShareTree tree) {
+    private void executeDirectSource(
+            String taskId,
+            String mediaType,
+            QasTaskPlan task,
+            QasShareTree tree,
+            String childId
+    ) {
         try {
-            writeLog(taskId, "INFO", "direct_transfer", "开始 Quark 直接转存", task.taskName());
+            if (taskCenterRecorder != null) {
+                taskCenterRecorder.markChildStatus(taskId, childId, "PROCESSING", null);
+            }
+            writeLog(taskId, "INFO", "direct_transfer", "开始一次性入库", task.taskName());
             quarkDirectClient.transfer(task, tree, message -> writeLog(taskId, "INFO", "direct_transfer", message, task.taskName()));
             smartStrmWebhookClient.trigger(task.savePath(), mediaType);
-            writeLog(taskId, "INFO", "smartstrm", "SmartStrm 任务已触发", task.savePath());
+            if (taskCenterRecorder != null) {
+                taskCenterRecorder.markChildStatus(taskId, childId, "SUCCEEDED", null);
+            }
+            writeLog(taskId, "INFO", "smartstrm", "后续媒体处理已触发", task.savePath());
         } catch (RuntimeException exception) {
-            writeLog(taskId, "ERROR", "failed", exception.getMessage() == null ? "Quark 直接入库失败" : exception.getMessage(), task.taskName());
+            if (taskCenterRecorder != null) {
+                taskCenterRecorder.markChildStatus(
+                        taskId, childId, "FAILED", exception.getMessage());
+            }
+            writeLog(taskId, "ERROR", "failed", exception.getMessage() == null ? "一次性入库失败" : exception.getMessage(), task.taskName());
         }
     }
 
@@ -1521,11 +1573,19 @@ public class QuarkMultiSourceIngestService {
         }
     }
 
-    private void createLocalRecord(User user, String id, String mediaType, String title, Computation computation) {
+    private void createLocalRecord(
+            User user,
+            String id,
+            String mediaType,
+            String title,
+            Computation computation,
+            String sourceType
+    ) {
         QuarkIngestTask task = new QuarkIngestTask();
         task.setId(id);
         task.setCreatedByUserId(user.getId());
         task.setMediaType(mediaType);
+        task.setSourceType(StringUtils.hasText(sourceType) ? sourceType : "MANUAL_QUARK");
         task.setTitle(title.trim());
         task.setStatus("PLANNED");
         task.setStage("planning");
@@ -1534,7 +1594,7 @@ public class QuarkMultiSourceIngestService {
         task.setImmediateExecutionStarted(false);
         task.setCreatedTaskCount(0);
         task.setPlannedTaskCount(computation.tasks().size());
-        task.setMessage("QAS 多来源入库计划已生成");
+        task.setMessage("多来源入库计划已生成");
         LocalDateTime now = LocalDateTime.now();
         task.setCreatedAt(now);
         task.setUpdatedAt(now);
@@ -1581,13 +1641,13 @@ public class QuarkMultiSourceIngestService {
     private QasExecutionObserver executionObserver(String taskId) {
         return new QasExecutionObserver() {
             @Override public void onOutput(String level, String message) {
-                writeLog(taskId, level, "qas_running", message, null);
+                writeLog(taskId, level, "processing", message, null);
             }
             @Override public void onCompleted() {
-                writeLog(taskId, "INFO", "execution_ended", "QAS 即时执行输出已结束", null);
+                writeLog(taskId, "INFO", "execution_ended", "入库处理输出已结束", null);
             }
             @Override public void onInterrupted() {
-                writeLog(taskId, "WARN", "execution_stream_interrupted", "QAS 即时执行输出意外中断", null);
+                writeLog(taskId, "WARN", "execution_stream_interrupted", "入库处理输出意外中断", null);
             }
         };
     }
@@ -1597,8 +1657,10 @@ public class QuarkMultiSourceIngestService {
         entry.setTaskId(taskId);
         entry.setLevel(level);
         entry.setStage(stage);
-        entry.setMessage(message == null ? "" : message.length() > 1024 ? message.substring(0, 1023) + "…" : message);
-        entry.setDetail(detail);
+        String safeMessage = userFacingLogText(message);
+        String safeDetail = userFacingLogText(detail);
+        entry.setMessage(safeMessage == null ? "" : safeMessage.length() > 1024 ? safeMessage.substring(0, 1023) + "…" : safeMessage);
+        entry.setDetail(safeDetail);
         entry.setCreatedAt(LocalDateTime.now());
         taskLogMapper.insert(entry);
     }
@@ -1710,11 +1772,23 @@ public class QuarkMultiSourceIngestService {
         return StringUtils.hasText(message) ? message : "上游服务未返回错误原因";
     }
 
+    private String userFacingLogText(String value) {
+        if (value == null) {
+            return null;
+        }
+        return value.replaceAll("(?i)QAS", "入库服务");
+    }
+
+    private String childIdAt(List<String> childIds, int index) {
+        return index >= 0 && index < childIds.size() ? childIds.get(index) : null;
+    }
+
     private static final class PlannedSource {
         private final QuarkShareSourceRegistry.SourceCandidate candidate;
         private final boolean followUpdates;
         private QasTaskPlan task;
         private final int seasonNumber;
+        private String childId;
 
         private PlannedSource(
                 QuarkShareSourceRegistry.SourceCandidate candidate,
@@ -1732,6 +1806,8 @@ public class QuarkMultiSourceIngestService {
         private boolean followUpdates() { return followUpdates; }
         private QasTaskPlan task() { return task; }
         private int seasonNumber() { return seasonNumber; }
+        private String childId() { return childId; }
+        private void setChildId(String value) { childId = value; }
         private void setTask(QasTaskPlan replacement) { task = replacement; }
     }
 

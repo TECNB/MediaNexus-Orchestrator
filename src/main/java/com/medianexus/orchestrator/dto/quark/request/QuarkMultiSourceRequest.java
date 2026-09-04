@@ -17,10 +17,24 @@ public record QuarkMultiSourceRequest(
         @JsonProperty("tmdb_id") Integer tmdbId,
         @JsonProperty("preview_id") String previewId,
         @JsonProperty("follow_updates_enabled") boolean followUpdatesEnabled,
-        List<@Valid QuarkSourceSelectionRequest> sources
+        List<@Valid QuarkSourceSelectionRequest> sources,
+        @JsonProperty("source_type") String sourceType
 ) {
+
+    public QuarkMultiSourceRequest(
+            String shareUrl,
+            String title,
+            String originalTitle,
+            Integer tmdbId,
+            String previewId,
+            boolean followUpdatesEnabled,
+            List<@Valid QuarkSourceSelectionRequest> sources
+    ) {
+        this(shareUrl, title, originalTitle, tmdbId, previewId, followUpdatesEnabled, sources, "MANUAL_QUARK");
+    }
 
     public QuarkMultiSourceRequest {
         sources = sources == null ? List.of() : List.copyOf(sources);
+        sourceType = sourceType == null || sourceType.isBlank() ? "MANUAL_QUARK" : sourceType.trim().toUpperCase();
     }
 }

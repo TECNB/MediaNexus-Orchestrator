@@ -16,6 +16,9 @@ import com.medianexus.orchestrator.mapper.MovieMagnetIngestTaskLogMapper;
 import com.medianexus.orchestrator.mapper.MovieMagnetIngestTaskMapper;
 import com.medianexus.orchestrator.mapper.QuarkIngestTaskLogMapper;
 import com.medianexus.orchestrator.mapper.QuarkIngestTaskMapper;
+import com.medianexus.orchestrator.mapper.QuarkIngestTaskAttemptMapper;
+import com.medianexus.orchestrator.mapper.QuarkIngestTaskChildMapper;
+import com.medianexus.orchestrator.mapper.QuarkIngestTaskFileMapper;
 import com.medianexus.orchestrator.mapper.SeriesMagnetIngestTaskLogMapper;
 import com.medianexus.orchestrator.mapper.SeriesMagnetIngestTaskMapper;
 import com.medianexus.orchestrator.mapper.SubtitleUploadLogMapper;
@@ -49,6 +52,9 @@ public class DatabaseInitializer implements ApplicationRunner {
     private final MovieMagnetIngestTaskLogMapper movieMagnetIngestTaskLogMapper;
     private final QuarkIngestTaskMapper quarkIngestTaskMapper;
     private final QuarkIngestTaskLogMapper quarkIngestTaskLogMapper;
+    private final QuarkIngestTaskAttemptMapper quarkIngestTaskAttemptMapper;
+    private final QuarkIngestTaskChildMapper quarkIngestTaskChildMapper;
+    private final QuarkIngestTaskFileMapper quarkIngestTaskFileMapper;
     private final SeriesMagnetIngestTaskMapper seriesMagnetIngestTaskMapper;
     private final SeriesMagnetIngestTaskLogMapper seriesMagnetIngestTaskLogMapper;
     private final AdultMagnetIngestTaskMapper adultMagnetIngestTaskMapper;
@@ -76,6 +82,9 @@ public class DatabaseInitializer implements ApplicationRunner {
             MovieMagnetIngestTaskLogMapper movieMagnetIngestTaskLogMapper,
             QuarkIngestTaskMapper quarkIngestTaskMapper,
             QuarkIngestTaskLogMapper quarkIngestTaskLogMapper,
+            QuarkIngestTaskAttemptMapper quarkIngestTaskAttemptMapper,
+            QuarkIngestTaskChildMapper quarkIngestTaskChildMapper,
+            QuarkIngestTaskFileMapper quarkIngestTaskFileMapper,
             SeriesMagnetIngestTaskMapper seriesMagnetIngestTaskMapper,
             SeriesMagnetIngestTaskLogMapper seriesMagnetIngestTaskLogMapper,
             AdultMagnetIngestTaskMapper adultMagnetIngestTaskMapper,
@@ -102,6 +111,9 @@ public class DatabaseInitializer implements ApplicationRunner {
         this.movieMagnetIngestTaskLogMapper = movieMagnetIngestTaskLogMapper;
         this.quarkIngestTaskMapper = quarkIngestTaskMapper;
         this.quarkIngestTaskLogMapper = quarkIngestTaskLogMapper;
+        this.quarkIngestTaskAttemptMapper = quarkIngestTaskAttemptMapper;
+        this.quarkIngestTaskChildMapper = quarkIngestTaskChildMapper;
+        this.quarkIngestTaskFileMapper = quarkIngestTaskFileMapper;
         this.seriesMagnetIngestTaskMapper = seriesMagnetIngestTaskMapper;
         this.seriesMagnetIngestTaskLogMapper = seriesMagnetIngestTaskLogMapper;
         this.adultMagnetIngestTaskMapper = adultMagnetIngestTaskMapper;
@@ -162,7 +174,11 @@ public class DatabaseInitializer implements ApplicationRunner {
         ensureMovieMagnetTaskAttemptChainColumns();
         movieMagnetIngestTaskLogMapper.createTableIfNotExists();
         quarkIngestTaskMapper.createTableIfNotExists();
+        ensureQuarkTaskSourceTypeColumn();
         quarkIngestTaskLogMapper.createTableIfNotExists();
+        quarkIngestTaskAttemptMapper.createTableIfNotExists();
+        quarkIngestTaskChildMapper.createTableIfNotExists();
+        quarkIngestTaskFileMapper.createTableIfNotExists();
         seriesMagnetIngestTaskMapper.createTableIfNotExists();
         ensureSeriesMagnetTaskCatalogIdentityColumns();
         ensureSeriesMagnetTaskTagColumns();
@@ -186,6 +202,13 @@ public class DatabaseInitializer implements ApplicationRunner {
         adultOtherAutomationRunMapper.createTableIfNotExists();
         adultOtherAutomationRunItemMapper.createTableIfNotExists();
         adultOtherAutomationRunCollectionMapper.createTableIfNotExists();
+    }
+
+    private void ensureQuarkTaskSourceTypeColumn() {
+        Integer columnCount = quarkIngestTaskMapper.countSourceTypeColumn();
+        if (columnCount == null || columnCount == 0) {
+            quarkIngestTaskMapper.addSourceTypeColumn();
+        }
     }
 
     private void ensureUserQuotaOverrideColumn() {

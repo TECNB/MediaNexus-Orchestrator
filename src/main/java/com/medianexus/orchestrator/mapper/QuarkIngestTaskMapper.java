@@ -13,6 +13,7 @@ public interface QuarkIngestTaskMapper extends BaseMapper<QuarkIngestTask> {
                 id VARCHAR(36) NOT NULL,
                 created_by_user_id BIGINT NOT NULL,
                 media_type VARCHAR(16) NOT NULL,
+                source_type VARCHAR(32) NOT NULL DEFAULT 'MANUAL_QUARK',
                 title VARCHAR(255) NOT NULL,
                 status VARCHAR(32) NOT NULL,
                 stage VARCHAR(64) NOT NULL,
@@ -29,4 +30,16 @@ public interface QuarkIngestTaskMapper extends BaseMapper<QuarkIngestTask> {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
             """)
     void createTableIfNotExists();
+
+    @org.apache.ibatis.annotations.Select("""
+            SELECT COUNT(*)
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'quark_ingest_tasks'
+              AND COLUMN_NAME = 'source_type'
+            """)
+    Integer countSourceTypeColumn();
+
+    @Update("ALTER TABLE quark_ingest_tasks ADD COLUMN source_type VARCHAR(32) NOT NULL DEFAULT 'MANUAL_QUARK' AFTER media_type")
+    void addSourceTypeColumn();
 }

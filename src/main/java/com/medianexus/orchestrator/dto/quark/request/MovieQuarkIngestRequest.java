@@ -19,6 +19,21 @@ public record MovieQuarkIngestRequest(
         String originalTitle,
         @NotNull(message = "电影年份不能为空")
         @Schema(description = "电影上映年份")
-        Integer year
+        Integer year,
+        @JsonProperty("source_type")
+        @Schema(description = "任务来源：MANUAL_QUARK 或 PANSOU_SEARCH", nullable = true)
+        String sourceType
 ) {
+    public MovieQuarkIngestRequest(
+            String shareUrl,
+            String title,
+            String originalTitle,
+            Integer year
+    ) {
+        this(shareUrl, title, originalTitle, year, "MANUAL_QUARK");
+    }
+
+    public MovieQuarkIngestRequest {
+        sourceType = sourceType == null || sourceType.isBlank() ? "MANUAL_QUARK" : sourceType.trim().toUpperCase();
+    }
 }

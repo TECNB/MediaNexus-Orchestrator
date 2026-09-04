@@ -12,6 +12,7 @@ public class QuarkIngestTask {
     private String id;
     private Long createdByUserId;
     private String mediaType;
+    private String sourceType;
     private String title;
     private String status;
     private String stage;
@@ -30,6 +31,8 @@ public class QuarkIngestTask {
     public void setCreatedByUserId(Long createdByUserId) { this.createdByUserId = createdByUserId; }
     public String getMediaType() { return mediaType; }
     public void setMediaType(String mediaType) { this.mediaType = mediaType; }
+    public String getSourceType() { return sourceType; }
+    public void setSourceType(String sourceType) { this.sourceType = sourceType; }
     public String getTitle() { return title; }
     public void setTitle(String title) { this.title = title; }
     public String getStatus() { return status; }
