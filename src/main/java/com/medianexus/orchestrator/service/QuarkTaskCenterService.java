@@ -259,7 +259,7 @@ public class QuarkTaskCenterService {
         try {
             QasTaskPlan plan = new QasTaskPlan(
                     child.getTaskName(), child.getSourceUrl(), child.getSavePath(),
-                    nullToEmpty(child.getPattern()), nullToEmpty(child.getReplace()), child.getVersionLabel()
+                    nullToEmpty(child.getPattern()), nullToEmpty(child.getReplaceRule()), child.getVersionLabel()
             );
             if (Boolean.TRUE.equals(child.getSubscriptionEnabled())) {
                 QasCreatedTask created = qasClient.createTask(new QasTaskCreateCommand(

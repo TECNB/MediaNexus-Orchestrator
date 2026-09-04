@@ -60,7 +60,7 @@ public class QuarkTaskCenterRecorder {
             child.setSourceUrl(plan.sourceUrl());
             child.setSavePath(plan.savePath());
             child.setPattern(plan.pattern());
-            child.setReplace(plan.replace());
+            child.setReplaceRule(plan.replace());
             child.setVersionLabel(plan.versionLabel());
             child.setStatus("PENDING");
             child.setSeasonNumber(parseSeasonNumber(plan.taskName()));

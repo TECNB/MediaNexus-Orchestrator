@@ -18,7 +18,7 @@ public class QuarkIngestTaskChild {
     private String savePath;
     private String pattern;
     @TableField("replace_rule")
-    private String replace;
+    private String replaceRule;
     private String versionLabel;
     private String status;
     private String failureReason;
@@ -47,8 +47,8 @@ public class QuarkIngestTaskChild {
     public void setSavePath(String savePath) { this.savePath = savePath; }
     public String getPattern() { return pattern; }
     public void setPattern(String pattern) { this.pattern = pattern; }
-    public String getReplace() { return replace; }
-    public void setReplace(String replace) { this.replace = replace; }
+    public String getReplaceRule() { return replaceRule; }
+    public void setReplaceRule(String replaceRule) { this.replaceRule = replaceRule; }
     public String getVersionLabel() { return versionLabel; }
     public void setVersionLabel(String versionLabel) { this.versionLabel = versionLabel; }
     public String getStatus() { return status; }
