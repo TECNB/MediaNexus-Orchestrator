@@ -61,14 +61,18 @@ public class AdminJavdbAutomationController {
 
     @PostMapping("/runs/dry-run")
     @Operation(summary = "试运行 JAVDB 自动化", description = "抓取、查重并选择磁力，但不会创建 Adult 任务。")
-    public ApiResponse<JavdbAutomationRunResponse> dryRun() {
-        return ApiResponse.success(automationService.requestDryRun());
+    public ApiResponse<JavdbAutomationRunResponse> dryRun(
+            @Valid @RequestBody JavdbAutomationConfigUpdateRequest request
+    ) {
+        return ApiResponse.success(automationService.requestDryRun(request));
     }
 
     @PostMapping("/runs")
     @Operation(summary = "立即运行 JAVDB 自动化", description = "重新抓取榜单和查重后创建 Adult-JAV 批量任务。")
-    public ApiResponse<JavdbAutomationRunResponse> execute() {
-        return ApiResponse.success(automationService.requestExecution());
+    public ApiResponse<JavdbAutomationRunResponse> execute(
+            @Valid @RequestBody JavdbAutomationConfigUpdateRequest request
+    ) {
+        return ApiResponse.success(automationService.requestExecution(request));
     }
 
     @GetMapping("/runs")

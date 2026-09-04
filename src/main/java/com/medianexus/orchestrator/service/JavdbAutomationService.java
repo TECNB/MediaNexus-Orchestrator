@@ -254,15 +254,28 @@ public class JavdbAutomationService {
         return toCredentialStatus(validationState);
     }
 
-    public JavdbAutomationRunResponse requestDryRun() {
+    public JavdbAutomationRunResponse requestDryRun(JavdbAutomationConfigUpdateRequest request) {
         User admin = authService.requireAdminUser();
-        return startRun("MANUAL", admin.getId(), "DRY_RUN", loadConfig());
+        Config config = request == null ? loadConfig() : configFromRequest(request);
+        validateConfig(config);
+        return startRun("MANUAL", admin.getId(), "DRY_RUN", config);
     }
 
-    public JavdbAutomationRunResponse requestExecution() {
+    public JavdbAutomationRunResponse requestExecution(JavdbAutomationConfigUpdateRequest request) {
         User admin = authService.requireAdminUser();
-        Config config = loadConfig();
+        Config config = request == null ? loadConfig() : configFromRequest(request);
+        validateConfig(config);
         return startRun("MANUAL", admin.getId(), "EXECUTE", config);
+    }
+
+    private Config configFromRequest(JavdbAutomationConfigUpdateRequest request) {
+        return new Config(
+                Boolean.TRUE.equals(request.enabled()),
+                Boolean.TRUE.equals(request.dailyEnabled()),
+                Boolean.TRUE.equals(request.weeklyEnabled()),
+                Boolean.TRUE.equals(request.monthlyEnabled()),
+                request.limitPerRanking(), request.scheduleTime(), TIMEZONE
+        );
     }
 
     public JavdbAutomationRunListResponse listRuns(Integer page, Integer pageSize) {
