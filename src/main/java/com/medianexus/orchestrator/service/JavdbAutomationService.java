@@ -262,9 +262,6 @@ public class JavdbAutomationService {
     public JavdbAutomationRunResponse requestExecution() {
         User admin = authService.requireAdminUser();
         Config config = loadConfig();
-        if (!config.enabled()) {
-            throw badRequest("请先启用 JAVDB 自动化");
-        }
         return startRun("MANUAL", admin.getId(), "EXECUTE", config);
     }
 
@@ -374,6 +371,9 @@ public class JavdbAutomationService {
         Config config = readConfigSnapshot(run.getConfigSnapshot());
         try {
             executePipeline(run, config);
+            if ("DRY_RUN".equals(run.getExecutionMode()) && "SUCCEEDED".equals(run.getStatus())) {
+                saveValidation(new ValidationState(true, LocalDateTime.now(), "JAVDB Cookie 验证成功"));
+            }
         } catch (JavdbClientException exception) {
             if (exception.reason() == JavdbClientException.Reason.AUTHENTICATION) {
                 saveValidation(new ValidationState(
