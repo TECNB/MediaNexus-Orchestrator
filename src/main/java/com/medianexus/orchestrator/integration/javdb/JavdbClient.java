@@ -310,12 +310,10 @@ public class JavdbClient {
         }
         String lower = body.toLowerCase(Locale.ROOT);
         return lower.contains("cf-chl-")
-                || lower.contains("challenge-platform")
-                || lower.contains("cloudflare") && lower.contains("challenge")
                 || lower.contains("just a moment")
                 || lower.contains("verify you are human")
-                || lower.contains("/login")
-                && (lower.contains("登录") || lower.contains("sign in") || lower.contains("username"))
+                || lower.contains("cf-error-details")
+                || lower.contains("cf-chl-widget")
                 || lower.contains("action=\"/login")
                 || lower.contains("action='/login")
                 || lower.contains("name=\"username\"") && lower.contains("password");
