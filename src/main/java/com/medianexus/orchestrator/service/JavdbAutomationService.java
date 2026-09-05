@@ -436,6 +436,7 @@ public class JavdbAutomationService {
         Map<String, JavdbAutomationLedger> ledgerByCode = ledgerByCode();
         Map<String, AdultMagnetIngestTask> activeTasksByCode = activeTasksByCode(ledgerByCode);
         Map<String, AdultMagnetIngestTask> submittedAutomationTasksByCode = submittedAutomationTasksByCode();
+        Set<String> interruptedTaskCodes = interruptedTaskCodes();
         List<MergedMovie> detailCandidates = new ArrayList<>();
         for (MergedMovie movie : mergedMovies.values()) {
             String crossRankReason = movie.appearances().size() > 1 ? "CROSS_RANK_DUPLICATE" : null;
@@ -445,7 +446,7 @@ public class JavdbAutomationService {
                 continue;
             }
             JavdbAutomationLedger ledger = ledgerByCode.get(movie.code());
-            if (ledger != null) {
+            if (ledger != null && !interruptedTaskCodes.contains(movie.code())) {
                 boolean active = activeTasksByCode.containsKey(movie.code());
                 saveItem(run, movie, active ? "ADULT_IN_PROGRESS" : "HISTORY_SUBMITTED", crossRankReason,
                         null, null, null, ledger.getAdultTaskId());
@@ -744,10 +745,23 @@ public class JavdbAutomationService {
                 new LambdaQueryWrapper<AdultMagnetIngestTask>()
                         .eq(AdultMagnetIngestTask::getCategory, "JAV")
                         .eq(AdultMagnetIngestTask::getSourceType, ADULT_JAV_SOURCE)
+                        .ne(AdultMagnetIngestTask::getStatus, "INTERRUPTED")
         );
         Map<String, AdultMagnetIngestTask> result = new HashMap<>();
         indexTaskCodes(result, submittedTasks);
         return result;
+    }
+
+    private Set<String> interruptedTaskCodes() {
+        List<AdultMagnetIngestTask> interruptedTasks = adultTaskMapper.selectList(
+                new LambdaQueryWrapper<AdultMagnetIngestTask>()
+                        .eq(AdultMagnetIngestTask::getCategory, "JAV")
+                        .eq(AdultMagnetIngestTask::getSourceType, ADULT_JAV_SOURCE)
+                        .eq(AdultMagnetIngestTask::getStatus, "INTERRUPTED")
+        );
+        Map<String, AdultMagnetIngestTask> indexed = new HashMap<>();
+        indexTaskCodes(indexed, interruptedTasks);
+        return Set.copyOf(indexed.keySet());
     }
 
     private void indexTaskCodes(
