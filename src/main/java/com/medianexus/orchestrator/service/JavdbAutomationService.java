@@ -58,6 +58,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -87,6 +88,7 @@ public class JavdbAutomationService {
     private static final int DEFAULT_LIMIT = 10;
     private static final int MAX_LIMIT = 50;
     private static final int BATCH_SIZE = 50;
+    private static final long DETAIL_REQUEST_DELAY_MILLIS = 1000L;
     private static final String ADULT_JAV_SOURCE = "JAVDB_AUTOMATION";
     private static final String ADULT_JAV_LIBRARY_NAME = "Adult-JAV";
     private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("HH:mm");
@@ -472,8 +474,12 @@ public class JavdbAutomationService {
         updateStage(run, "FETCHING_DETAILS");
         List<PendingSubmission> pendingSubmissions = new ArrayList<>();
         boolean hasItemFailure = false;
-        for (MergedMovie movie : detailCandidates) {
+        for (int detailIndex = 0; detailIndex < detailCandidates.size(); detailIndex++) {
+            MergedMovie movie = detailCandidates.get(detailIndex);
             try {
+                if (detailIndex > 0) {
+                    LockSupport.parkNanos(DETAIL_REQUEST_DELAY_MILLIS * 1_000_000L);
+                }
                 JavdbMovieDetail detail = javdbClient.detail(movie.detailUrl(), movie.code(), cookie);
                 JavdbMagnet selected = selectMagnet(detail.magnets(), config);
                 if (selected == null) {
