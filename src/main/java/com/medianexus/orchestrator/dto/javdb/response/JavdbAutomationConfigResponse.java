@@ -9,6 +9,8 @@ public record JavdbAutomationConfigResponse(
         @JsonProperty("daily_enabled") boolean dailyEnabled,
         @JsonProperty("weekly_enabled") boolean weeklyEnabled,
         @JsonProperty("monthly_enabled") boolean monthlyEnabled,
+        @JsonProperty("cracked_only") boolean crackedOnly,
+        @JsonProperty("subtitle_only") boolean subtitleOnly,
         @JsonProperty("limit_per_ranking") int limitPerRanking,
         @JsonProperty("schedule_time") String scheduleTime,
         String timezone,

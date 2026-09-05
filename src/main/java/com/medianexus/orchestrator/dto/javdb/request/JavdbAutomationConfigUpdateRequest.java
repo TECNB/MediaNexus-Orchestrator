@@ -24,6 +24,14 @@ public record JavdbAutomationConfigUpdateRequest(
         @JsonProperty("monthly_enabled")
         @NotNull(message = "月榜开关不能为空")
         Boolean monthlyEnabled,
+        @Schema(description = "是否只保留破解版本")
+        @JsonProperty("cracked_only")
+        @NotNull(message = "破解版本筛选不能为空")
+        Boolean crackedOnly,
+        @Schema(description = "是否只保留字幕版本")
+        @JsonProperty("subtitle_only")
+        @NotNull(message = "字幕版本筛选不能为空")
+        Boolean subtitleOnly,
         @Schema(description = "每个榜单读取前 N 条，范围 1-50")
         @JsonProperty("limit_per_ranking")
         @NotNull(message = "榜单数量不能为空")
