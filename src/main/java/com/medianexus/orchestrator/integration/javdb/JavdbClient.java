@@ -29,6 +29,8 @@ import org.springframework.util.StringUtils;
 public class JavdbClient {
 
     private static final String BASE_URL = "https://javdb.com";
+    private static final Duration RANKING_REQUEST_TIMEOUT = Duration.ofSeconds(30);
+    private static final Duration DETAIL_REQUEST_TIMEOUT = Duration.ofSeconds(60);
     private static final String USER_AGENT =
             "Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 "
                     + "(KHTML, like Gecko) Chrome/128.0 Mobile Safari/537.36";
@@ -97,7 +99,7 @@ public class JavdbClient {
         if (!StringUtils.hasText(detailUrl)) {
             throw new JavdbClientException(JavdbClientException.Reason.PARSE, "JAVDB 详情地址缺失");
         }
-        String body = get(detailUrl, cookie);
+        String body = get(detailUrl, cookie, DETAIL_REQUEST_TIMEOUT);
         if (!body.toLowerCase(Locale.ROOT).contains("magnets-content")) {
             if (looksLikeAuthenticationPage(body)) {
                 throw new JavdbClientException(JavdbClientException.Reason.AUTHENTICATION, "JAVDB 登录状态已失效");
@@ -128,6 +130,10 @@ public class JavdbClient {
     }
 
     private String get(String url, String cookie) {
+        return get(url, cookie, RANKING_REQUEST_TIMEOUT);
+    }
+
+    private String get(String url, String cookie, Duration requestTimeout) {
         if (!StringUtils.hasText(cookie)) {
             throw new JavdbClientException(JavdbClientException.Reason.AUTHENTICATION, "JAVDB Cookie 未配置");
         }
@@ -145,7 +151,7 @@ public class JavdbClient {
             throw new JavdbClientException(JavdbClientException.Reason.PARSE, "JAVDB 地址不在允许范围内");
         }
         HttpRequest request = HttpRequest.newBuilder(uri)
-                .timeout(Duration.ofSeconds(30))
+                .timeout(requestTimeout)
                 .header("Accept", "text/html,application/xhtml+xml")
                 .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
                 .header("Cookie", normalizedCookie)
