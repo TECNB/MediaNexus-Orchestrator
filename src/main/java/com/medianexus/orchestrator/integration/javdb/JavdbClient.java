@@ -31,6 +31,7 @@ public class JavdbClient {
     private static final String BASE_URL = "https://javdb.com";
     private static final Duration RANKING_REQUEST_TIMEOUT = Duration.ofSeconds(30);
     private static final Duration DETAIL_REQUEST_TIMEOUT = Duration.ofSeconds(60);
+    private static final int MAX_TRANSIENT_RETRIES = 2;
     private static final String USER_AGENT =
             "Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 "
                     + "(KHTML, like Gecko) Chrome/128.0 Mobile Safari/537.36";
@@ -160,29 +161,45 @@ public class JavdbClient {
                 .GET()
                 .build();
         try {
-            HttpResponse<String> response = httpClient.send(
-                    request,
-                    HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
-            );
-            if (response.statusCode() == 403 || response.statusCode() == 401) {
-                throw new JavdbClientException(JavdbClientException.Reason.AUTHENTICATION,
-                        "JAVDB 请求被拒绝或需要验证");
+            for (int attempt = 0; attempt <= MAX_TRANSIENT_RETRIES; attempt++) {
+                HttpResponse<String> response;
+                try {
+                    response = httpClient.send(
+                            request,
+                            HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
+                    );
+                } catch (IOException exception) {
+                    if (attempt >= MAX_TRANSIENT_RETRIES) {
+                        throw exception;
+                    }
+                    pauseBeforeRetry(attempt);
+                    continue;
+                }
+                if (response.statusCode() == 429) {
+                    if (attempt >= MAX_TRANSIENT_RETRIES) {
+                        throw new JavdbClientException(JavdbClientException.Reason.UPSTREAM,
+                                "JAVDB 请求频率受限");
+                    }
+                    pauseBeforeRetry(attempt);
+                    continue;
+                }
+                if (response.statusCode() == 403 || response.statusCode() == 401) {
+                    throw new JavdbClientException(JavdbClientException.Reason.AUTHENTICATION,
+                            "JAVDB 请求被拒绝或需要验证");
+                }
+                if (response.statusCode() == 404) {
+                    throw new JavdbClientException(JavdbClientException.Reason.NOT_FOUND, "JAVDB 页面不存在");
+                }
+                if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                    throw new JavdbClientException(JavdbClientException.Reason.UPSTREAM, "JAVDB 请求失败");
+                }
+                String body = response.body();
+                if (looksLikeAuthenticationPage(body)) {
+                    throw new JavdbClientException(JavdbClientException.Reason.AUTHENTICATION, "JAVDB 登录状态已失效");
+                }
+                return body;
             }
-            if (response.statusCode() == 429) {
-                throw new JavdbClientException(JavdbClientException.Reason.UPSTREAM,
-                        "JAVDB 请求频率受限");
-            }
-            if (response.statusCode() == 404) {
-                throw new JavdbClientException(JavdbClientException.Reason.NOT_FOUND, "JAVDB 页面不存在");
-            }
-            if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                throw new JavdbClientException(JavdbClientException.Reason.UPSTREAM, "JAVDB 请求失败");
-            }
-            String body = response.body();
-            if (looksLikeAuthenticationPage(body)) {
-                throw new JavdbClientException(JavdbClientException.Reason.AUTHENTICATION, "JAVDB 登录状态已失效");
-            }
-            return body;
+            throw new JavdbClientException(JavdbClientException.Reason.UPSTREAM, "JAVDB 请求失败");
         } catch (JavdbClientException exception) {
             throw exception;
         } catch (HttpTimeoutException exception) {
@@ -193,6 +210,10 @@ public class JavdbClient {
             Thread.currentThread().interrupt();
             throw new JavdbClientException(JavdbClientException.Reason.UPSTREAM, "JAVDB 请求被中断", exception);
         }
+    }
+
+    private void pauseBeforeRetry(int attempt) throws InterruptedException {
+        Thread.sleep(1000L * (attempt + 1));
     }
 
     private List<JavdbRankingMovie> parseRanking(String body, String period, String rankingUrl) {
