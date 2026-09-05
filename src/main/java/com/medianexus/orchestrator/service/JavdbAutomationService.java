@@ -54,6 +54,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
@@ -389,6 +390,9 @@ public class JavdbAutomationService {
         }
         Config config = readConfigSnapshot(run.getConfigSnapshot());
         try {
+            if ("EXECUTE".equals(run.getExecutionMode()) && executeFromLatestDryRun(run, config)) {
+                return;
+            }
             executePipeline(run, config);
             if ("DRY_RUN".equals(run.getExecutionMode()) && "SUCCEEDED".equals(run.getStatus())) {
                 saveValidation(new ValidationState(true, LocalDateTime.now(), "JAVDB Cookie 验证成功"));
@@ -516,6 +520,14 @@ public class JavdbAutomationService {
         }
 
         updateStage(run, "SUBMITTING_ADULT_TASKS");
+        submitPendingSubmissions(run, pendingSubmissions, hasItemFailure);
+    }
+
+    private void submitPendingSubmissions(
+            JavdbAutomationRun run,
+            List<PendingSubmission> pendingSubmissions,
+            boolean hasItemFailure
+    ) {
         boolean hasSubmissionFailure = false;
         int successfulTaskCount = 0;
         for (int start = 0; start < pendingSubmissions.size(); start += BATCH_SIZE) {
@@ -552,6 +564,80 @@ public class JavdbAutomationService {
                 ? "同步部分成功，失败批次下次可重试"
                 : hasItemFailure ? "同步部分成功，部分影片处理失败" : "同步成功";
         finishRun(run, status, message);
+    }
+
+    private boolean executeFromLatestDryRun(JavdbAutomationRun run, Config config) {
+        JavdbAutomationRun dryRun = runMapper.selectOne(new LambdaQueryWrapper<JavdbAutomationRun>()
+                .eq(JavdbAutomationRun::getExecutionMode, "DRY_RUN")
+                .eq(JavdbAutomationRun::getStatus, "SUCCEEDED")
+                .orderByDesc(JavdbAutomationRun::getFinishedAt)
+                .last("LIMIT 1"));
+        if (dryRun == null || !Objects.equals(readConfigSnapshot(dryRun.getConfigSnapshot()), config)) {
+            return false;
+        }
+
+        List<JavdbAutomationRunItem> sourceItems = itemMapper.selectList(new LambdaQueryWrapper<JavdbAutomationRunItem>()
+                .eq(JavdbAutomationRunItem::getRunId, dryRun.getId())
+                .orderByAsc(JavdbAutomationRunItem::getCreatedAt));
+        List<PendingSubmission> pending = new ArrayList<>();
+        for (JavdbAutomationRunItem source : sourceItems) {
+            JavdbAutomationRunItem copy = copyRunItem(source, run.getId());
+            itemMapper.insert(copy);
+            if ("READY_TO_SUBMIT".equals(source.getStatus()) && StringUtils.hasText(source.getSelectedMagnet())) {
+                List<JavdbMagnetCandidateResponse> candidates = readJsonList(
+                        source.getCandidatesJson(), new TypeReference<List<JavdbMagnetCandidateResponse>>() { }
+                );
+                JavdbMagnet selected = candidates.stream()
+                        .filter(candidate -> Objects.equals(candidate.magnet(), source.getSelectedMagnet()))
+                        .findFirst()
+                        .map(this::toMagnet)
+                        .orElse(new JavdbMagnet(source.getSelectedMagnet(), null, source.getSelectedInfohash(), false, false, List.of(), null));
+                pending.add(new PendingSubmission(
+                        new MergedMovie(source.getCode(), source.getTitle(), source.getDetailUrl(), new ArrayList<>()),
+                        candidates.stream().map(this::toMagnet).toList(), selected, source.getSelectedReason()
+                ));
+            }
+        }
+        run.setRankingEntries(dryRun.getRankingEntries());
+        run.setUniqueMovies(dryRun.getUniqueMovies());
+        run.setDuplicateEntriesRemoved(dryRun.getDuplicateEntriesRemoved());
+        run.setAlreadyInEmby(dryRun.getAlreadyInEmby());
+        run.setHistoryDuplicates(dryRun.getHistoryDuplicates());
+        run.setActiveDuplicates(dryRun.getActiveDuplicates());
+        run.setRemainingMovies(pending.size());
+        persistRun(run);
+        writeLog(run.getId(), "INFO", "FETCHING_DETAILS", "复用最近一次成功试运行结果",
+                "sourceRunId=" + dryRun.getId() + ", pending=" + pending.size());
+        if (pending.isEmpty()) {
+            finishRun(run, "SUCCEEDED", "同步成功，试运行结果无新增入库内容");
+        } else {
+            updateStage(run, "SUBMITTING_ADULT_TASKS");
+            submitPendingSubmissions(run, pending, false);
+        }
+        return true;
+    }
+
+    private JavdbAutomationRunItem copyRunItem(JavdbAutomationRunItem source, String runId) {
+        JavdbAutomationRunItem copy = new JavdbAutomationRunItem();
+        copy.setId(UUID.randomUUID().toString());
+        copy.setRunId(runId);
+        copy.setCode(source.getCode());
+        copy.setTitle(source.getTitle());
+        copy.setDetailUrl(source.getDetailUrl());
+        copy.setAppearancesJson(source.getAppearancesJson());
+        copy.setStatus(source.getStatus());
+        copy.setReason(source.getReason());
+        copy.setCandidatesJson(source.getCandidatesJson());
+        copy.setSelectedInfohash(source.getSelectedInfohash());
+        copy.setSelectedMagnet(source.getSelectedMagnet());
+        copy.setSelectedReason(source.getSelectedReason());
+        copy.setCreatedAt(LocalDateTime.now());
+        return copy;
+    }
+
+    private JavdbMagnet toMagnet(JavdbMagnetCandidateResponse candidate) {
+        return new JavdbMagnet(candidate.magnet(), candidate.originalName(), candidate.infohash(),
+                candidate.hasSubtitle(), candidate.cracked(), candidate.labels(), candidate.detectionSource());
     }
 
     private Map<String, List<JavdbRankingMovie>> fetchRankings(Config config, String cookie) {
