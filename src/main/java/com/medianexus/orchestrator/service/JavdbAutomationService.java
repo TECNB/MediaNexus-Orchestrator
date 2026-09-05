@@ -488,7 +488,6 @@ public class JavdbAutomationService {
                 JavdbMagnet selected = selectMagnet(detail.magnets(), config);
                 if (selected == null) {
                     saveItem(run, movie, "NO_MAGNET", reasonFor(movie), detail.magnets(), null, null, null);
-                    hasItemFailure = true;
                     continue;
                 }
                 String selectionReason = selectionReason(selected);
