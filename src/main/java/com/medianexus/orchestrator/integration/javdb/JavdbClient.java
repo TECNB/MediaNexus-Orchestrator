@@ -31,7 +31,7 @@ public class JavdbClient {
     private static final String BASE_URL = "https://javdb.com";
     private static final Duration RANKING_REQUEST_TIMEOUT = Duration.ofSeconds(30);
     private static final Duration DETAIL_REQUEST_TIMEOUT = Duration.ofSeconds(60);
-    private static final int MAX_TRANSIENT_RETRIES = 2;
+    private static final int MAX_TRANSIENT_RETRIES = 3;
     private static final String USER_AGENT =
             "Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 "
                     + "(KHTML, like Gecko) Chrome/128.0 Mobile Safari/537.36";
@@ -179,6 +179,14 @@ public class JavdbClient {
                     if (attempt >= MAX_TRANSIENT_RETRIES) {
                         throw new JavdbClientException(JavdbClientException.Reason.UPSTREAM,
                                 "JAVDB 请求频率受限");
+                    }
+                    pauseBeforeRetry(attempt);
+                    continue;
+                }
+                if (response.statusCode() >= 500 && response.statusCode() < 600) {
+                    if (attempt >= MAX_TRANSIENT_RETRIES) {
+                        throw new JavdbClientException(JavdbClientException.Reason.UPSTREAM,
+                                "JAVDB 请求失败");
                     }
                     pauseBeforeRetry(attempt);
                     continue;
