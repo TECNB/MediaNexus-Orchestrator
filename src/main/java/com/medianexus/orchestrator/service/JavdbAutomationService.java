@@ -390,7 +390,9 @@ public class JavdbAutomationService {
         }
         Config config = readConfigSnapshot(run.getConfigSnapshot());
         try {
-            if ("EXECUTE".equals(run.getExecutionMode()) && executeFromLatestDryRun(run, config)) {
+            if ("EXECUTE".equals(run.getExecutionMode())
+                    && "MANUAL".equals(run.getTriggerType())
+                    && executeFromLatestDryRun(run, config)) {
                 return;
             }
             executePipeline(run, config);
@@ -579,11 +581,23 @@ public class JavdbAutomationService {
         List<JavdbAutomationRunItem> sourceItems = itemMapper.selectList(new LambdaQueryWrapper<JavdbAutomationRunItem>()
                 .eq(JavdbAutomationRunItem::getRunId, dryRun.getId())
                 .orderByAsc(JavdbAutomationRunItem::getCreatedAt));
+        Map<String, JavdbAutomationLedger> existingLedgers = ledgerByCode();
+        Map<String, AdultMagnetIngestTask> activeTasks = activeTasksByCode(existingLedgers);
+        Map<String, AdultMagnetIngestTask> submittedTasks = submittedAutomationTasksByCode();
         List<PendingSubmission> pending = new ArrayList<>();
         for (JavdbAutomationRunItem source : sourceItems) {
             JavdbAutomationRunItem copy = copyRunItem(source, run.getId());
+            if ("READY_TO_SUBMIT".equals(source.getStatus())) {
+                if (existingLedgers.containsKey(source.getCode())) {
+                    copy.setStatus("HISTORY_SUBMITTED");
+                } else if (activeTasks.containsKey(source.getCode())) {
+                    copy.setStatus("ADULT_IN_PROGRESS");
+                } else if (submittedTasks.containsKey(source.getCode())) {
+                    copy.setStatus("HISTORY_SUBMITTED");
+                }
+            }
             itemMapper.insert(copy);
-            if ("READY_TO_SUBMIT".equals(source.getStatus()) && StringUtils.hasText(source.getSelectedMagnet())) {
+            if ("READY_TO_SUBMIT".equals(copy.getStatus()) && StringUtils.hasText(source.getSelectedMagnet())) {
                 List<JavdbMagnetCandidateResponse> candidates = readJsonList(
                         source.getCandidatesJson(), new TypeReference<List<JavdbMagnetCandidateResponse>>() { }
                 );
