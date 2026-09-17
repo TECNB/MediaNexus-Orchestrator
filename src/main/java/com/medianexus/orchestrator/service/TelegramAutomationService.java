@@ -19,6 +19,7 @@ import com.medianexus.orchestrator.dto.telegram.TelegramAutomationContract.Overv
 import com.medianexus.orchestrator.dto.telegram.TelegramAutomationContract.ResolvedSourceResponse;
 import com.medianexus.orchestrator.dto.telegram.TelegramAutomationContract.RunListResponse;
 import com.medianexus.orchestrator.dto.telegram.TelegramAutomationContract.RunResponse;
+import com.medianexus.orchestrator.integration.clouddrive.TelegramCloudInboxMover;
 import com.medianexus.orchestrator.integration.telegram.TelegramWorkerClient;
 import com.medianexus.orchestrator.integration.telegram.TelegramWorkerClientException;
 import com.medianexus.orchestrator.mapper.SystemSettingMapper;
@@ -32,6 +33,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
@@ -62,6 +64,8 @@ public class TelegramAutomationService {
     private final SystemSettingMapper settingMapper;
     private final TelegramAutomationRunMapper runMapper;
     private final TelegramWorkerClient workerClient;
+    private final Optional<TelegramCloudInboxMover> cloudInboxMover;
+    private final AutoSymlinkRefreshService autoSymlinkRefreshService;
     private final ObjectMapper objectMapper;
     private final ExecutorService executor = Executors.newSingleThreadExecutor(runnable -> {
         Thread thread = new Thread(runnable, "telegram-automation-worker");
@@ -76,12 +80,16 @@ public class TelegramAutomationService {
             SystemSettingMapper settingMapper,
             TelegramAutomationRunMapper runMapper,
             TelegramWorkerClient workerClient,
+            Optional<TelegramCloudInboxMover> cloudInboxMover,
+            AutoSymlinkRefreshService autoSymlinkRefreshService,
             ObjectMapper objectMapper
     ) {
         this.authService = authService;
         this.settingMapper = settingMapper;
         this.runMapper = runMapper;
         this.workerClient = workerClient;
+        this.cloudInboxMover = cloudInboxMover;
+        this.autoSymlinkRefreshService = autoSymlinkRefreshService;
         this.objectMapper = objectMapper;
     }
 
@@ -306,17 +314,23 @@ public class TelegramAutomationService {
             List<ChannelConfig> channels
     ) {
         List<ChannelRunResponse> results = new ArrayList<>();
-        run.setStage("FORWARDING_CHANNELS");
-        persist(run, results);
-        for (ChannelConfig channel : channels) {
-            String requestId = run.getId() + ":" + channel.id() + ":FOLLOW";
-            ObjectNode body = followBody(config.target(), channel, requestId);
-            body.put("dryRun", false);
-            CallOutcome outcome = callWithRetries(() -> workerClient.forwardUnread(body));
-            results.add(channelResult(channel, outcome));
+        try {
+            int baselineFileCount = captureInboxBaseline(run, results);
+            run.setStage("FORWARDING_CHANNELS");
             persist(run, results);
+            for (ChannelConfig channel : channels) {
+                String requestId = run.getId() + ":" + channel.id() + ":FOLLOW";
+                ObjectNode body = followBody(config.target(), channel, requestId);
+                body.put("dryRun", false);
+                CallOutcome outcome = callWithRetries(() -> workerClient.forwardUnread(body));
+                results.add(channelResult(channel, outcome));
+                persist(run, results);
+            }
+            completeMediaDelivery(run, results, baselineFileCount);
+            finish(run, results);
+        } catch (RuntimeException exception) {
+            failMediaDelivery(run, results, exception);
         }
-        finish(run, results);
     }
 
     private void executeBackfillDryRun(
@@ -343,14 +357,74 @@ public class TelegramAutomationService {
             BackfillRequest request
     ) {
         List<ChannelRunResponse> results = new ArrayList<>();
-        run.setStage("BACKFILLING_CHANNEL");
+        try {
+            int baselineFileCount = captureInboxBaseline(run, results);
+            run.setStage("BACKFILLING_CHANNEL");
+            persist(run, results);
+            String requestId = run.getId() + ":" + channel.id() + ":BACKFILL";
+            ObjectNode body = backfillBody(config.target(), channel, request, requestId);
+            body.put("dryRun", false);
+            CallOutcome outcome = callWithRetries(() -> workerClient.backfill(body));
+            results.add(channelResult(channel, outcome));
+            persist(run, results);
+            completeMediaDelivery(run, results, baselineFileCount);
+            finish(run, results);
+        } catch (RuntimeException exception) {
+            failMediaDelivery(run, results, exception);
+        }
+    }
+
+    private int captureInboxBaseline(
+            TelegramAutomationRun run,
+            List<ChannelRunResponse> results
+    ) {
+        run.setStage("COUNTING_PIKPAK_INBOX");
         persist(run, results);
-        String requestId = run.getId() + ":" + channel.id() + ":BACKFILL";
-        ObjectNode body = backfillBody(config.target(), channel, request, requestId);
-        body.put("dryRun", false);
-        CallOutcome outcome = callWithRetries(() -> workerClient.backfill(body));
-        results.add(channelResult(channel, outcome));
-        finish(run, results);
+        return cloudInboxMover().countInboxFiles();
+    }
+
+    private void completeMediaDelivery(
+            TelegramAutomationRun run,
+            List<ChannelRunResponse> results,
+            int baselineFileCount
+    ) {
+        int expectedNewFileCount = results.stream()
+                .mapToInt(ChannelRunResponse::forwardedMessageCount)
+                .sum();
+        run.setStage("WAITING_PIKPAK_FILES");
+        persist(run, results);
+        TelegramCloudInboxMover.MoveOutcome outcome = cloudInboxMover()
+                .awaitExpectedFilesAndMove(baselineFileCount, expectedNewFileCount);
+        log.info(
+                "Telegram PikPak inbox moved runId={} entries={} files={} expectedNewFiles={}",
+                run.getId(), outcome.movedEntryCount(), outcome.movedFileCount(), outcome.expectedNewFileCount()
+        );
+        run.setStage("REFRESHING_ADULT_AUTOSYMLINK");
+        persist(run, results);
+        AutoSymlinkRefreshService.RefreshOutcome refresh = autoSymlinkRefreshService.refreshAdult();
+        if (refresh.status() != AutoSymlinkRefreshService.Status.SUBMITTED) {
+            throw new IllegalStateException(refresh.message());
+        }
+        log.info("Telegram Adult AutoSymlink refresh submitted runId={} detail={}", run.getId(), refresh.detail());
+    }
+
+    private TelegramCloudInboxMover cloudInboxMover() {
+        return cloudInboxMover.orElseThrow(() -> new IllegalStateException("Telegram 文件移动需要启用 CloudDrive2"));
+    }
+
+    private void failMediaDelivery(
+            TelegramAutomationRun run,
+            List<ChannelRunResponse> results,
+            RuntimeException exception
+    ) {
+        boolean forwardingStarted = !results.isEmpty();
+        run.setStatus(forwardingStarted ? "PARTIAL_SUCCESS" : "FAILED");
+        run.setStage("MEDIA_DELIVERY_FAILED");
+        run.setFinishedAt(LocalDateTime.now());
+        run.setErrorMessage((forwardingStarted ? "Telegram 转发完成，但媒体入库失败：" : "媒体入库准备失败：")
+                + exception.getMessage());
+        persist(run, results);
+        log.warn("Telegram media delivery failed runId={}", run.getId(), exception);
     }
 
     private CallOutcome callWithRetries(Supplier<JsonNode> call) {
