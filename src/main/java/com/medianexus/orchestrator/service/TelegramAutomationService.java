@@ -18,6 +18,7 @@ import com.medianexus.orchestrator.dto.telegram.TelegramAutomationContract.Confi
 import com.medianexus.orchestrator.dto.telegram.TelegramAutomationContract.OverviewResponse;
 import com.medianexus.orchestrator.dto.telegram.TelegramAutomationContract.ResolvedSourceResponse;
 import com.medianexus.orchestrator.dto.telegram.TelegramAutomationContract.RunListResponse;
+import com.medianexus.orchestrator.dto.telegram.TelegramAutomationContract.RunProgressResponse;
 import com.medianexus.orchestrator.dto.telegram.TelegramAutomationContract.RunResponse;
 import com.medianexus.orchestrator.integration.clouddrive.TelegramCloudInboxMover;
 import com.medianexus.orchestrator.integration.telegram.TelegramWorkerClient;
@@ -38,6 +39,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
@@ -73,6 +75,7 @@ public class TelegramAutomationService {
         return thread;
     });
     private final ReentrantLock runCreationLock = new ReentrantLock();
+    private final Map<String, ActiveWorkerRequest> activeWorkerRequests = new ConcurrentHashMap<>();
     private volatile boolean tablesReady;
 
     public TelegramAutomationService(
@@ -200,8 +203,9 @@ public class TelegramAutomationService {
         User admin = authService.requireAdminUser();
         ConfigResponse config = loadConfig();
         List<ChannelConfig> channels = enabledChannels(config);
+        Map<Long, String> reusable = latestDryRunRequests("FOLLOW_DRY_RUN");
         TelegramAutomationRun run = createRun("MANUAL", admin.getId(), "FOLLOW", channels.size());
-        executor.submit(() -> executeFollow(run, config, channels));
+        executor.submit(() -> executeFollow(run, config, channels, reusable));
         return toResponse(run, true);
     }
 
@@ -218,9 +222,10 @@ public class TelegramAutomationService {
         User admin = authService.requireAdminUser();
         ConfigResponse config = loadConfig();
         ChannelConfig channel = channel(config, channelId);
+        String reusable = latestDryRunRequests("BACKFILL_DRY_RUN").get(channel.sourceId());
         String mode = Boolean.TRUE.equals(request.forceResend()) ? "BACKFILL_FORCE" : "BACKFILL";
         TelegramAutomationRun run = createRun("MANUAL", admin.getId(), mode, 1);
-        executor.submit(() -> executeBackfill(run, config, channel, request));
+        executor.submit(() -> executeBackfill(run, config, channel, request, reusable));
         return toResponse(run, true);
     }
 
@@ -251,7 +256,7 @@ public class TelegramAutomationService {
     private void startScheduledFollowRun(ConfigResponse config) {
         List<ChannelConfig> channels = enabledChannels(config);
         TelegramAutomationRun run = createRun("SCHEDULED", null, "FOLLOW", channels.size());
-        executor.submit(() -> executeFollow(run, config, channels));
+        executor.submit(() -> executeFollow(run, config, channels, Map.of()));
     }
 
     private TelegramAutomationRun createRun(
@@ -302,7 +307,9 @@ public class TelegramAutomationService {
             String requestId = run.getId() + ":" + channel.id() + ":FOLLOW";
             ObjectNode body = followBody(config.target(), channel, requestId);
             body.put("dryRun", true);
-            CallOutcome outcome = callWithRetries(() -> workerClient.forwardUnread(body));
+            CallOutcome outcome = callWorker(
+                    run, channel, requestId, () -> workerClient.forwardUnread(body)
+            );
             results.add(channelResult(channel, outcome));
             persist(run, results);
         }
@@ -312,7 +319,8 @@ public class TelegramAutomationService {
     private void executeFollow(
             TelegramAutomationRun run,
             ConfigResponse config,
-            List<ChannelConfig> channels
+            List<ChannelConfig> channels,
+            Map<Long, String> reusableRequests
     ) {
         List<ChannelRunResponse> results = new ArrayList<>();
         try {
@@ -323,7 +331,10 @@ public class TelegramAutomationService {
                 String requestId = run.getId() + ":" + channel.id() + ":FOLLOW";
                 ObjectNode body = followBody(config.target(), channel, requestId);
                 body.put("dryRun", false);
-                CallOutcome outcome = callWithRetries(() -> workerClient.forwardUnread(body));
+                putIfText(body, "reuseRequestId", reusableRequests.get(channel.sourceId()));
+                CallOutcome outcome = callWorker(
+                        run, channel, requestId, () -> workerClient.forwardUnread(body)
+                );
                 results.add(channelResult(channel, outcome));
                 persist(run, results);
             }
@@ -346,7 +357,7 @@ public class TelegramAutomationService {
         String requestId = run.getId() + ":" + channel.id() + ":BACKFILL";
         ObjectNode body = backfillBody(config.target(), channel, request, requestId);
         body.put("dryRun", true);
-        CallOutcome outcome = callWithRetries(() -> workerClient.backfill(body));
+        CallOutcome outcome = callWorker(run, channel, requestId, () -> workerClient.backfill(body));
         results.add(channelResult(channel, outcome));
         finish(run, results);
     }
@@ -355,7 +366,8 @@ public class TelegramAutomationService {
             TelegramAutomationRun run,
             ConfigResponse config,
             ChannelConfig channel,
-            BackfillRequest request
+            BackfillRequest request,
+            String reusableRequest
     ) {
         List<ChannelRunResponse> results = new ArrayList<>();
         try {
@@ -365,7 +377,8 @@ public class TelegramAutomationService {
             String requestId = run.getId() + ":" + channel.id() + ":BACKFILL";
             ObjectNode body = backfillBody(config.target(), channel, request, requestId);
             body.put("dryRun", false);
-            CallOutcome outcome = callWithRetries(() -> workerClient.backfill(body));
+            putIfText(body, "reuseRequestId", reusableRequest);
+            CallOutcome outcome = callWorker(run, channel, requestId, () -> workerClient.backfill(body));
             results.add(channelResult(channel, outcome));
             persist(run, results);
             completeMediaDelivery(run, results, baselineFileCount);
@@ -455,6 +468,20 @@ public class TelegramAutomationService {
         throw new IllegalStateException("unreachable");
     }
 
+    private CallOutcome callWorker(
+            TelegramAutomationRun run,
+            ChannelConfig channel,
+            String requestId,
+            Supplier<JsonNode> call
+    ) {
+        activeWorkerRequests.put(run.getId(), new ActiveWorkerRequest(requestId, channel.sourceTitle()));
+        try {
+            return callWithRetries(call);
+        } finally {
+            activeWorkerRequests.remove(run.getId());
+        }
+    }
+
     private ChannelRunResponse channelResult(ChannelConfig channel, CallOutcome outcome) {
         JsonNode response = outcome.response();
         return new ChannelRunResponse(
@@ -505,6 +532,12 @@ public class TelegramAutomationService {
         body.put("resourceMode", channel.resourceMode());
         body.put("requestId", requestId);
         return body;
+    }
+
+    private void putIfText(ObjectNode body, String field, String value) {
+        if (StringUtils.hasText(value)) {
+            body.put(field, value);
+        }
     }
 
     private List<ChannelConfig> enabledChannels(ConfigResponse config) {
@@ -591,6 +624,65 @@ public class TelegramAutomationService {
         }
     }
 
+    private Map<Long, String> latestDryRunRequests(String executionMode) {
+        ensureTablesReady();
+        TelegramAutomationRun latest = runMapper.selectOne(new LambdaQueryWrapper<TelegramAutomationRun>()
+                .orderByDesc(TelegramAutomationRun::getStartedAt)
+                .last("LIMIT 1"));
+        if (latest == null
+                || !"SUCCEEDED".equals(latest.getStatus())
+                || !executionMode.equals(latest.getExecutionMode())) {
+            return Map.of();
+        }
+        Map<Long, String> requests = new HashMap<>();
+        for (ChannelRunResponse channel : readChannelResults(latest.getResultJson())) {
+            JsonNode response = channel.workerResponse();
+            String requestId = response == null ? null : response.path("requestId").asText(null);
+            if ("SUCCEEDED".equals(channel.status()) && StringUtils.hasText(requestId)) {
+                requests.put(channel.sourceId(), requestId);
+            }
+        }
+        return requests;
+    }
+
+    private RunProgressResponse progressFor(TelegramAutomationRun run) {
+        if (!"RUNNING".equals(run.getStatus())) {
+            return null;
+        }
+        ActiveWorkerRequest active = activeWorkerRequests.get(run.getId());
+        if (active == null) {
+            return new RunProgressResponse(
+                    run.getStage(), null, 0, 0, 0, 0,
+                    count(run.getSelectedResourceCount()), 0,
+                    count(run.getForwardedResourceCount()), count(run.getForwardedMessageCount())
+            );
+        }
+        try {
+            JsonNode progress = workerClient.progress(active.requestId());
+            if (progress == null) {
+                return new RunProgressResponse(
+                        run.getStage(), active.channelTitle(), 0, 0, 0, 0, 0, 0, 0, 0
+                );
+            }
+            return new RunProgressResponse(
+                    progress.path("phase").asText(run.getStage()), active.channelTitle(),
+                    intValue(progress, "scannedMessages"),
+                    intValue(progress, "baselineScannedMessages"),
+                    intValue(progress, "discoveredResourceCount"),
+                    intValue(progress, "eligibleResourceCount"),
+                    intValue(progress, "selectedResourceCount"),
+                    intValue(progress, "processedResourceCount"),
+                    intValue(progress, "forwardedResourceCount"),
+                    intValue(progress, "forwardedMessageCount")
+            );
+        } catch (TelegramWorkerClientException exception) {
+            log.debug("Telegram Worker progress unavailable runId={}: {}", run.getId(), exception.getMessage());
+            return new RunProgressResponse(
+                    run.getStage(), active.channelTitle(), 0, 0, 0, 0, 0, 0, 0, 0
+            );
+        }
+    }
+
     private RunResponse toResponse(TelegramAutomationRun run, boolean includeDetails) {
         List<ChannelRunResponse> channels = includeDetails
                 ? readChannelResults(run.getResultJson())
@@ -601,7 +693,8 @@ public class TelegramAutomationService {
                 count(run.getSucceededChannelCount()), count(run.getFailedChannelCount()),
                 count(run.getSelectedResourceCount()), count(run.getDuplicateResourceCount()),
                 count(run.getForwardedResourceCount()), count(run.getForwardedMessageCount()),
-                run.getErrorMessage(), run.getStartedAt(), run.getFinishedAt(), channels
+                run.getErrorMessage(), run.getStartedAt(), run.getFinishedAt(), channels,
+                progressFor(run)
         );
     }
 
@@ -662,5 +755,8 @@ public class TelegramAutomationService {
     }
 
     private record CallOutcome(JsonNode response, String errorMessage, int attemptCount) {
+    }
+
+    private record ActiveWorkerRequest(String requestId, String channelTitle) {
     }
 }

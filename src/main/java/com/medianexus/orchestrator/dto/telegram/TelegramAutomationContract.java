@@ -126,6 +126,20 @@ public final class TelegramAutomationContract {
     ) {
     }
 
+    public record RunProgressResponse(
+            String phase,
+            @JsonProperty("channel_title") String channelTitle,
+            @JsonProperty("scanned_messages") int scannedMessages,
+            @JsonProperty("baseline_scanned_messages") int baselineScannedMessages,
+            @JsonProperty("discovered_resource_count") int discoveredResourceCount,
+            @JsonProperty("eligible_resource_count") int eligibleResourceCount,
+            @JsonProperty("selected_resource_count") int selectedResourceCount,
+            @JsonProperty("processed_resource_count") int processedResourceCount,
+            @JsonProperty("forwarded_resource_count") int forwardedResourceCount,
+            @JsonProperty("forwarded_message_count") int forwardedMessageCount
+    ) {
+    }
+
     public record RunResponse(
             String id,
             @JsonProperty("trigger_type") String triggerType,
@@ -143,7 +157,8 @@ public final class TelegramAutomationContract {
             @JsonProperty("error_message") String errorMessage,
             @JsonProperty("started_at") LocalDateTime startedAt,
             @JsonProperty("finished_at") LocalDateTime finishedAt,
-            List<ChannelRunResponse> channels
+            List<ChannelRunResponse> channels,
+            RunProgressResponse progress
     ) {
     }
 

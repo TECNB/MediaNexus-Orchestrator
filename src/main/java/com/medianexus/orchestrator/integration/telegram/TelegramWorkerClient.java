@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.medianexus.orchestrator.config.TelegramWorkerProperties;
 import java.io.IOException;
 import java.net.URI;
+import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -61,6 +62,17 @@ public class TelegramWorkerClient {
 
     public JsonNode backfill(ObjectNode body) {
         return post("/backfill", body);
+    }
+
+    public JsonNode progress(String requestId) {
+        validateConfiguration();
+        String encoded = URLEncoder.encode(requestId, StandardCharsets.UTF_8).replace("+", "%20");
+        HttpRequest request = HttpRequest.newBuilder(uri("/operations/" + encoded))
+                .timeout(properties.getTimeout())
+                .header("Authorization", "Bearer " + properties.getApiToken().trim())
+                .GET()
+                .build();
+        return send(request);
     }
 
     private JsonNode post(String path, JsonNode body) {
