@@ -218,7 +218,8 @@ public class TelegramAutomationService {
         User admin = authService.requireAdminUser();
         ConfigResponse config = loadConfig();
         ChannelConfig channel = channel(config, channelId);
-        TelegramAutomationRun run = createRun("MANUAL", admin.getId(), "BACKFILL", 1);
+        String mode = Boolean.TRUE.equals(request.forceResend()) ? "BACKFILL_FORCE" : "BACKFILL";
+        TelegramAutomationRun run = createRun("MANUAL", admin.getId(), mode, 1);
         executor.submit(() -> executeBackfill(run, config, channel, request));
         return toResponse(run, true);
     }
@@ -490,6 +491,7 @@ public class TelegramAutomationService {
         body.put("lookbackDays", request.lookbackDays());
         body.put("maxMessages", request.maxMessages());
         body.put("startMode", request.startMode());
+        body.put("forceResend", Boolean.TRUE.equals(request.forceResend()));
         return body;
     }
 

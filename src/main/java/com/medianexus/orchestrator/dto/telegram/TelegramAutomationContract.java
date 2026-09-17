@@ -73,7 +73,8 @@ public final class TelegramAutomationContract {
             @Max(value = 10000, message = "扫描消息数最多为 10000") Integer maxMessages,
             @JsonProperty("start_mode")
             @NotBlank(message = "回溯起点不能为空")
-            @Pattern(regexp = "continue|latest", message = "回溯起点不正确") String startMode
+            @Pattern(regexp = "continue|latest", message = "回溯起点不正确") String startMode,
+            @JsonProperty("force_resend") Boolean forceResend
     ) {
     }
 

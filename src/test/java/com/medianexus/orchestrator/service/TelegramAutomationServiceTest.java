@@ -5,12 +5,14 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.medianexus.orchestrator.common.exception.BusinessException;
+import com.medianexus.orchestrator.dto.telegram.TelegramAutomationContract.BackfillRequest;
 import com.medianexus.orchestrator.dto.telegram.TelegramAutomationContract.RunResponse;
 import com.medianexus.orchestrator.integration.clouddrive.TelegramCloudInboxMover;
 import com.medianexus.orchestrator.integration.telegram.TelegramWorkerClient;
@@ -26,6 +28,66 @@ import org.mockito.ArgumentCaptor;
 import org.springframework.http.HttpStatus;
 
 class TelegramAutomationServiceTest {
+
+    @Test
+    void forceBackfillPassesDedupBypassToWorker() throws Exception {
+        AuthService authService = mock(AuthService.class);
+        SystemSettingMapper settingMapper = mock(SystemSettingMapper.class);
+        TelegramAutomationRunMapper runMapper = mock(TelegramAutomationRunMapper.class);
+        TelegramWorkerClient workerClient = mock(TelegramWorkerClient.class);
+        TelegramCloudInboxMover inboxMover = mock(TelegramCloudInboxMover.class);
+        AutoSymlinkRefreshService refreshService = mock(AutoSymlinkRefreshService.class);
+        ObjectMapper objectMapper = new ObjectMapper();
+        User admin = new User();
+        admin.setId(7L);
+        when(authService.requireAdminUser()).thenReturn(admin);
+        when(settingMapper.selectSettingValue("telegram_automation_config")).thenReturn("""
+                {
+                  "enabled": true,
+                  "target": "@PikPak_Bot",
+                  "channels": [{
+                    "id": "channel-1",
+                    "source_id": -100123,
+                    "source_title": "测试频道",
+                    "enabled": true,
+                    "percentile": 0.9,
+                    "resource_mode": "group",
+                    "min_video_duration": 300,
+                    "min_views": 5000,
+                    "min_forwards": 10,
+                    "min_age_hours": 24
+                  }]
+                }
+                """);
+        when(runMapper.selectOne(any())).thenReturn(null);
+        when(workerClient.backfill(any())).thenReturn(objectMapper.readTree("""
+                {
+                  "selectedResourceCount": 1,
+                  "duplicateResourceCount": 0,
+                  "forwardedResourceCount": 1,
+                  "forwardedMessageCount": 1,
+                  "selectedResources": []
+                }
+                """));
+        when(inboxMover.awaitExpectedFilesAndMove(0, 1))
+                .thenReturn(new TelegramCloudInboxMover.MoveOutcome(1, 1, 1));
+        when(refreshService.refreshAdult()).thenReturn(new AutoSymlinkRefreshService.RefreshOutcome(
+                AutoSymlinkRefreshService.Status.SUBMITTED, "已提交", "task=adult"
+        ));
+        TelegramAutomationService service = new TelegramAutomationService(
+                authService, settingMapper, runMapper, workerClient,
+                Optional.of(inboxMover), refreshService, objectMapper
+        );
+
+        RunResponse run = service.requestBackfillExecution(
+                "channel-1", new BackfillRequest(5, 180, 5000, "latest", true)
+        );
+
+        ArgumentCaptor<ObjectNode> body = ArgumentCaptor.forClass(ObjectNode.class);
+        verify(workerClient, timeout(1000)).backfill(body.capture());
+        assertEquals("BACKFILL_FORCE", run.executionMode());
+        assertEquals(true, body.getValue().path("forceResend").asBoolean());
+    }
 
     @Test
     void formalFollowMovesExpectedPikPakFilesAndRefreshesAdultAutoSymlink() throws Exception {
