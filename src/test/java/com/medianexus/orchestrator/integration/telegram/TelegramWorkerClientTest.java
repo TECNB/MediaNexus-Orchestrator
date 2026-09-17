@@ -17,6 +17,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 
 class TelegramWorkerClientTest {
 
@@ -63,6 +64,22 @@ class TelegramWorkerClientTest {
         );
         assertTrue(exception.isRetryable());
         assertEquals(42, exception.getRetryAfterSeconds());
+    }
+
+    @Test
+    void springCanInstantiateClientWithItsProductionConstructor() {
+        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            context.registerBean(TelegramWorkerProperties.class, () -> {
+                TelegramWorkerProperties properties = new TelegramWorkerProperties();
+                properties.setTimeout(Duration.ofSeconds(2));
+                return properties;
+            });
+            context.registerBean(ObjectMapper.class);
+            context.register(TelegramWorkerClient.class);
+            context.refresh();
+
+            assertTrue(context.containsBean("telegramWorkerClient"));
+        }
     }
 
     private static void respond(HttpExchange exchange, int status, String body) throws IOException {

@@ -12,6 +12,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
@@ -22,6 +23,7 @@ public class TelegramWorkerClient {
     private final ObjectMapper objectMapper;
     private final HttpClient httpClient;
 
+    @Autowired
     public TelegramWorkerClient(TelegramWorkerProperties properties, ObjectMapper objectMapper) {
         this(properties, objectMapper, HttpClient.newBuilder()
                 .connectTimeout(properties.getTimeout())
