@@ -180,6 +180,29 @@ public class EmbyClient {
         ));
     }
 
+    public EmbyMediaLibraryPage listTopLevelMediaItems(
+            String libraryId,
+            String itemType,
+            int startIndex,
+            int limit,
+            String searchTerm
+    ) {
+        Map<String, String> params = new LinkedHashMap<>();
+        params.put("ParentId", libraryId);
+        params.put("Recursive", "true");
+        params.put("IncludeItemTypes", itemType);
+        params.put("Fields", "DateCreated,ProductionYear,ImageTags");
+        params.put("GroupItemsIntoCollections", "false");
+        params.put("SortBy", "DateCreated");
+        params.put("SortOrder", "Descending");
+        params.put("StartIndex", String.valueOf(startIndex));
+        params.put("Limit", String.valueOf(limit));
+        if (StringUtils.hasText(searchTerm)) {
+            params.put("SearchTerm", searchTerm.trim());
+        }
+        return mediaLibraryPage(params);
+    }
+
     public List<EmbyCollection> listCollections(String parentId) {
         return items(Map.of(
                 "IncludeItemTypes", "BoxSet",
@@ -274,7 +297,11 @@ public class EmbyClient {
     }
 
     public byte[] getPrimaryImage(String itemId) {
-        return sendBytes(
+        return getPrimaryImageWithContentType(itemId).bytes();
+    }
+
+    public EmbyPrimaryImage getPrimaryImageWithContentType(String itemId) {
+        return sendPrimaryImage(
                 HttpRequest.newBuilder(uri(
                                 "/Items/" + encodePath(itemId) + "/Images/Primary",
                                 Map.of()
@@ -381,6 +408,28 @@ public class EmbyClient {
         return result;
     }
 
+    private EmbyMediaLibraryPage mediaLibraryPage(Map<String, String> params) {
+        JsonNode root = get("/Items", params);
+        JsonNode items = root.path("Items");
+        JsonNode totalRecordCount = root.path("TotalRecordCount");
+        if (!items.isArray() || !totalRecordCount.canConvertToInt()) {
+            throw new EmbyClientException("Emby media library response is incomplete");
+        }
+
+        List<EmbyMediaLibraryItem> result = new ArrayList<>();
+        for (JsonNode item : items) {
+            result.add(new EmbyMediaLibraryItem(
+                    text(item, "Id", "id"),
+                    text(item, "Name", "name"),
+                    text(item, "Type", "type"),
+                    integerOrNull(item, "ProductionYear", "productionYear"),
+                    text(item, "DateCreated", "dateCreated"),
+                    StringUtils.hasText(item.path("ImageTags").path("Primary").asText(null))
+            ));
+        }
+        return new EmbyMediaLibraryPage(result, totalRecordCount.asInt());
+    }
+
     private JsonNode get(String path, Map<String, String> params) {
         return send("GET", path, params);
     }
@@ -483,6 +532,30 @@ public class EmbyClient {
                 throw new EmbyClientException("Emby returned non-success status " + response.statusCode());
             }
             return response.body();
+        } catch (HttpTimeoutException exception) {
+            throw new EmbyClientException("Emby request timed out after " + timeoutHint(), exception);
+        } catch (IOException exception) {
+            throw new EmbyClientException("Emby request failed", exception);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new EmbyClientException("Emby request interrupted", exception);
+        }
+    }
+
+    private EmbyPrimaryImage sendPrimaryImage(HttpRequest request) {
+        validateConfiguration();
+        try {
+            HttpResponse<byte[]> response = httpClient.send(
+                    request,
+                    HttpResponse.BodyHandlers.ofByteArray()
+            );
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                throw new EmbyClientException("Emby returned non-success status " + response.statusCode());
+            }
+            String contentType = response.headers()
+                    .firstValue("Content-Type")
+                    .orElse("application/octet-stream");
+            return new EmbyPrimaryImage(response.body(), contentType);
         } catch (HttpTimeoutException exception) {
             throw new EmbyClientException("Emby request timed out after " + timeoutHint(), exception);
         } catch (IOException exception) {

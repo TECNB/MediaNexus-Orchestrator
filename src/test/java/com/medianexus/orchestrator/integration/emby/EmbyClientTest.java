@@ -139,6 +139,7 @@ class EmbyClientTest {
         AtomicReference<byte[]> uploadBody = new AtomicReference<>();
         server.createContext("/Items/item-id/Images/Primary", exchange -> {
             if ("GET".equals(exchange.getRequestMethod())) {
+                exchange.getResponseHeaders().set("Content-Type", "image/png");
                 exchange.sendResponseHeaders(200, sourceImage.length);
                 exchange.getResponseBody().write(sourceImage);
             } else {
@@ -158,13 +159,95 @@ class EmbyClientTest {
         properties.setTimeout(Duration.ofSeconds(2));
         EmbyClient client = new EmbyClient(properties, new ObjectMapper());
 
-        assertThat(client.getPrimaryImage("item-id")).containsExactly(sourceImage);
+        EmbyPrimaryImage image = client.getPrimaryImageWithContentType("item-id");
+        assertThat(image.bytes()).containsExactly(sourceImage);
+        assertThat(image.contentType()).isEqualTo("image/png");
         client.uploadPrimaryImage("item-id", uploadedImage);
 
         assertThat(uploadMethod.get()).isEqualTo("POST");
         assertThat(uploadContentType.get()).isEqualTo("image/jpeg");
         assertThat(uploadToken.get()).isEqualTo("emby-token");
         assertThat(uploadBody.get()).containsExactly(Base64.getEncoder().encode(uploadedImage));
+    }
+
+    @Test
+    void listsMediaLibraryItemsWithSearchPagingAndDateCreatedOrder() {
+        AtomicReference<String> query = new AtomicReference<>();
+        server.createContext("/Items", exchange -> {
+            query.set(exchange.getRequestURI().getRawQuery());
+            byte[] body = """
+                    {
+                      "Items": [{
+                        "Id": "movie-1",
+                        "Name": "Movie title",
+                        "Type": "Movie",
+                        "ProductionYear": 2026,
+                        "DateCreated": "2026-07-20T12:34:56.0000000Z",
+                        "ImageTags": {"Primary": "tag"}
+                      }],
+                      "TotalRecordCount": 25
+                    }
+                    """.getBytes();
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.start();
+
+        EmbyClient client = new EmbyClient(properties(), new ObjectMapper());
+
+        EmbyMediaLibraryPage page = client.listTopLevelMediaItems(
+                "movies-id",
+                "Movie",
+                24,
+                24,
+                " Movie title "
+        );
+
+        assertThat(page.totalRecordCount()).isEqualTo(25);
+        assertThat(page.items()).containsExactly(new EmbyMediaLibraryItem(
+                "movie-1",
+                "Movie title",
+                "Movie",
+                2026,
+                "2026-07-20T12:34:56.0000000Z",
+                true
+        ));
+        assertThat(queryParameters(query.get())).contains(
+                "ParentId=movies-id",
+                "Recursive=true",
+                "IncludeItemTypes=Movie",
+                "Fields=DateCreated%2CProductionYear%2CImageTags",
+                "GroupItemsIntoCollections=false",
+                "SortBy=DateCreated",
+                "SortOrder=Descending",
+                "StartIndex=24",
+                "Limit=24",
+                "SearchTerm=Movie+title"
+        );
+    }
+
+    @Test
+    void rejectsIncompleteMediaLibraryResponseInsteadOfTreatingItAsEmpty() {
+        server.createContext("/Items", exchange -> {
+            byte[] body = "{}".getBytes();
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.start();
+
+        EmbyClient client = new EmbyClient(properties(), new ObjectMapper());
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> client.listTopLevelMediaItems(
+                        "movies-id",
+                        "Movie",
+                        0,
+                        24,
+                        null
+                ))
+                .isInstanceOf(EmbyClientException.class)
+                .hasMessage("Emby media library response is incomplete");
     }
 
     @Test

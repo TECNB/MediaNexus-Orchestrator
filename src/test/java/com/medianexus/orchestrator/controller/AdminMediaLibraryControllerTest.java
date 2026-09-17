@@ -1,0 +1,43 @@
+package com.medianexus.orchestrator.controller;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+import com.medianexus.orchestrator.dto.admin.response.AdminMediaLibraryPageResponse;
+import com.medianexus.orchestrator.service.AdminMediaLibraryCatalogService;
+import com.medianexus.orchestrator.service.AdminMediaLibraryPoster;
+import java.util.List;
+import org.junit.jupiter.api.Test;
+import org.springframework.http.MediaType;
+
+class AdminMediaLibraryControllerTest {
+
+    private final AdminMediaLibraryCatalogService catalogService = mock(AdminMediaLibraryCatalogService.class);
+    private final AdminMediaLibraryController controller = new AdminMediaLibraryController(catalogService);
+
+    @Test
+    void delegatesListQueryWithoutChangingItsPagingContract() {
+        AdminMediaLibraryPageResponse page = new AdminMediaLibraryPageResponse(List.of(), 3, 24, 50);
+        when(catalogService.listItems("anime", 3, 24, "title")).thenReturn(page);
+
+        var response = controller.listItems("anime", 3, 24, "title");
+
+        verify(catalogService).listItems("anime", 3, 24, "title");
+        assertThat(response.data()).isSameAs(page);
+    }
+
+    @Test
+    void returnsPosterContentTypeAndPrivateBrowserCacheHeaders() {
+        when(catalogService.getPoster("item-1"))
+                .thenReturn(new AdminMediaLibraryPoster(new byte[]{1, 2}, "image/webp"));
+
+        var response = controller.getPoster("item-1");
+
+        assertThat(response.getHeaders().getContentType()).isEqualTo(MediaType.parseMediaType("image/webp"));
+        assertThat(response.getHeaders().getCacheControl()).contains("private", "max-age=86400");
+        assertThat(response.getHeaders().getFirst("X-Content-Type-Options")).isEqualTo("nosniff");
+        assertThat(response.getBody()).containsExactly(1, 2);
+    }
+}
