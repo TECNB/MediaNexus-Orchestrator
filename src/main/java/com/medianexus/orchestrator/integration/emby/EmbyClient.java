@@ -12,11 +12,14 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collection;
 import java.util.HashSet;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -201,6 +204,142 @@ public class EmbyClient {
             params.put("SearchTerm", searchTerm.trim());
         }
         return mediaLibraryPage(params);
+    }
+
+    public EmbyMediaLibraryItem getTopLevelMediaItem(
+            String libraryId,
+            String itemType,
+            String itemId
+    ) {
+        Map<String, String> params = new LinkedHashMap<>();
+        params.put("ParentId", libraryId);
+        params.put("Recursive", "true");
+        params.put("IncludeItemTypes", itemType);
+        params.put("Ids", itemId);
+        params.put("Fields", "DateCreated,ProductionYear,ImageTags");
+        params.put("GroupItemsIntoCollections", "false");
+        params.put("Limit", "1");
+        EmbyMediaLibraryPage page = mediaLibraryPage(params);
+        return page.items().stream()
+                .filter(item -> itemId.equals(item.id()) && itemType.equals(item.type()))
+                .findFirst()
+                .orElse(null);
+    }
+
+    public List<EmbyRemoteSearchCandidate> searchRemoteMetadata(
+            String itemId,
+            String itemType,
+            String title,
+            Integer year
+    ) {
+        Map<String, Object> searchInfo = new LinkedHashMap<>();
+        searchInfo.put("Name", title);
+        searchInfo.put("MetadataLanguage", "zh-CN");
+        searchInfo.put("ProviderIds", Map.of());
+        searchInfo.put("IsAutomated", false);
+        if (year != null) {
+            searchInfo.put("Year", year);
+        }
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("SearchInfo", searchInfo);
+        request.put("ItemId", numericItemId(itemId));
+        request.put("IncludeDisabledProviders", false);
+        JsonNode root = postJson(
+                "/Items/RemoteSearch/" + ("Movie".equals(itemType) ? "Movie" : "Series"),
+                Map.of(),
+                writeJson(request)
+        );
+        if (!root.isArray()) {
+            throw new EmbyClientException("Emby remote metadata search response is incomplete");
+        }
+        List<EmbyRemoteSearchCandidate> candidates = new ArrayList<>();
+        for (JsonNode item : root) {
+            Map<String, String> providerIds = stringMap(item.path("ProviderIds"));
+            String provider = text(item, "SearchProviderName");
+            String name = text(item, "Name");
+            if (!StringUtils.hasText(name)) {
+                continue;
+            }
+            candidates.add(new EmbyRemoteSearchCandidate(
+                    candidateId(provider, new java.util.TreeMap<>(providerIds).toString(),
+                            name, String.valueOf(integerOrNull(item, "ProductionYear"))),
+                    name,
+                    text(item, "OriginalTitle"),
+                    integerOrNull(item, "ProductionYear"),
+                    providerIds,
+                    provider,
+                    text(item, "Overview"),
+                    text(item, "ImageUrl"),
+                    item.deepCopy()
+            ));
+        }
+        return candidates;
+    }
+
+    public void applyRemoteMetadata(
+            String itemId,
+            EmbyRemoteSearchCandidate candidate,
+            boolean replaceAllImages
+    ) {
+        postJson(
+                "/Items/RemoteSearch/Apply/" + encodePath(itemId),
+                Map.of("ReplaceAllImages", String.valueOf(replaceAllImages)),
+                candidate.raw().toString()
+        );
+    }
+
+    public List<EmbyRemoteImageCandidate> listRemotePrimaryImages(String itemId) {
+        JsonNode root = get("/Items/" + encodePath(itemId) + "/RemoteImages", Map.of(
+                "Type", "Primary",
+                "StartIndex", "0",
+                "Limit", "40",
+                "IncludeAllLanguages", "true"
+        ));
+        JsonNode images = root.path("Images");
+        if (!images.isArray()) {
+            throw new EmbyClientException("Emby remote image response is incomplete");
+        }
+        List<EmbyRemoteImageCandidate> candidates = new ArrayList<>();
+        for (JsonNode image : images) {
+            String provider = text(image, "ProviderName");
+            String url = text(image, "Url");
+            if (!StringUtils.hasText(provider) || !StringUtils.hasText(url)) {
+                continue;
+            }
+            candidates.add(new EmbyRemoteImageCandidate(
+                    candidateId(provider, url),
+                    provider,
+                    url,
+                    text(image, "ThumbnailUrl"),
+                    integerOrNull(image, "Width"),
+                    integerOrNull(image, "Height"),
+                    text(image, "Language")
+            ));
+        }
+        return candidates;
+    }
+
+    public EmbyPrimaryImage getRemoteImage(String providerName, String imageUrl) {
+        return sendPrimaryImage(HttpRequest.newBuilder(uri("/Items/RemoteSearch/Image", Map.of(
+                                "ProviderName", providerName,
+                                "ImageUrl", imageUrl
+                        )))
+                .timeout(Duration.ofSeconds(60))
+                .header("X-Emby-Token", cleanConfigValue(properties.getApiKey()))
+                .GET()
+                .build());
+    }
+
+    public void downloadRemotePrimaryImage(String itemId, EmbyRemoteImageCandidate candidate) {
+        postJson(
+                "/Items/" + encodePath(itemId) + "/RemoteImages/Download",
+                Map.of(
+                        "Type", "Primary",
+                        "ProviderName", candidate.providerName(),
+                        "ImageUrl", candidate.url()
+                ),
+                "{}"
+        );
     }
 
     public List<EmbyCollection> listCollections(String parentId) {
@@ -424,7 +563,7 @@ public class EmbyClient {
                     text(item, "Type", "type"),
                     integerOrNull(item, "ProductionYear", "productionYear"),
                     text(item, "DateCreated", "dateCreated"),
-                    StringUtils.hasText(item.path("ImageTags").path("Primary").asText(null))
+                    item.path("ImageTags").path("Primary").asText(null)
             ));
         }
         return new EmbyMediaLibraryPage(result, totalRecordCount.asInt());
@@ -462,7 +601,8 @@ public class EmbyClient {
         validateConfiguration();
         URI uri = uri(path, params);
         HttpRequest.Builder builder = HttpRequest.newBuilder(uri)
-                .timeout(timeout())
+                .timeout(path.contains("/RemoteSearch/") || path.contains("/RemoteImages")
+                        ? Duration.ofSeconds(60) : timeout())
                 .header("Accept", "application/json")
                 .header("X-Emby-Token", cleanConfigValue(properties.getApiKey()));
         HttpRequest request = switch (method) {
@@ -611,6 +751,39 @@ public class EmbyClient {
             }
         }
         return null;
+    }
+
+    private Map<String, String> stringMap(JsonNode node) {
+        Map<String, String> values = new LinkedHashMap<>();
+        if (node.isObject()) {
+            node.fields().forEachRemaining(entry -> {
+                if (!entry.getValue().isNull()) {
+                    values.put(entry.getKey(), entry.getValue().asText());
+                }
+            });
+        }
+        return values;
+    }
+
+    private String candidateId(String... values) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            for (String value : values) {
+                digest.update((value == null ? "" : value).getBytes(StandardCharsets.UTF_8));
+                digest.update((byte) 0);
+            }
+            return HexFormat.of().formatHex(digest.digest());
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 is unavailable", exception);
+        }
+    }
+
+    private Object numericItemId(String itemId) {
+        try {
+            return Long.parseLong(itemId);
+        } catch (NumberFormatException exception) {
+            return itemId;
+        }
     }
 
     private String encode(String value) {

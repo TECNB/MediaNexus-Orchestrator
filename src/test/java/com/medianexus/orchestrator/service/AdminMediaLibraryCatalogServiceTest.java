@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import com.medianexus.orchestrator.common.exception.BusinessException;
@@ -40,7 +41,7 @@ class AdminMediaLibraryCatalogServiceTest {
                         "Movie",
                         1999,
                         "2026-07-20T12:00:00Z",
-                        true
+                        "tag"
                 )), 25));
 
         var response = service.listItems("MOVIES", 2, 24, "matrix");
@@ -58,11 +59,27 @@ class AdminMediaLibraryCatalogServiceTest {
     }
 
     @Test
-    void rejectsLibrariesOutsideMoviesTvAndAnimeBeforeCallingEmby() {
+    void listsAdultJavFromItsExactVirtualLibrary() {
+        when(embyClient.listLibraries()).thenReturn(List.of(
+                new EmbyLibrary("adult-other-id", "Adult - Other", List.of("/adult/other")),
+                new EmbyLibrary("adult-jav-id", "Adult-JAV", List.of("/adult/jav"))
+        ));
+        when(embyClient.listTopLevelMediaItems("adult-jav-id", "Movie", 0, 24, null))
+                .thenReturn(new EmbyMediaLibraryPage(List.of(), 501));
+
+        var response = service.listItems("adult-jav", 1, 24, null);
+
+        verify(authService).requireAdminUser();
+        verify(embyClient).listTopLevelMediaItems("adult-jav-id", "Movie", 0, 24, null);
+        assertThat(response.total()).isEqualTo(501);
+    }
+
+    @Test
+    void rejectsLibrariesOutsideTheAllowedSetBeforeCallingEmby() {
         assertThatThrownBy(() -> service.listItems("adult", 1, 24, null))
                 .isInstanceOfSatisfying(BusinessException.class, exception -> {
                     assertThat(exception.getHttpStatus()).isEqualTo(HttpStatus.BAD_REQUEST);
-                    assertThat(exception.getMessage()).contains("movies、tv 或 anime");
+                    assertThat(exception.getMessage()).contains("adult-other 或 adult-jav");
                 });
 
         verify(authService).requireAdminUser();
@@ -102,5 +119,26 @@ class AdminMediaLibraryCatalogServiceTest {
         assertThatThrownBy(() -> service.getPoster("missing"))
                 .isInstanceOfSatisfying(BusinessException.class, exception ->
                         assertThat(exception.getHttpStatus()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE));
+    }
+
+    @Test
+    void refusesMetadataChangesForItemsOutsideTheSelectedLibrary() {
+        when(embyClient.listLibraries()).thenReturn(List.of(
+                new EmbyLibrary("anime-id", "Anime", List.of("/anime"))
+        ));
+        when(embyClient.getTopLevelMediaItem("anime-id", "Series", "movie-item"))
+                .thenReturn(null);
+
+        assertThatThrownBy(() -> service.applyMetadataCandidate(
+                "movie-item", "anime", "title", 2018, "candidate", false
+        )).isInstanceOfSatisfying(BusinessException.class, exception -> {
+            assertThat(exception.getHttpStatus()).isEqualTo(HttpStatus.NOT_FOUND);
+            assertThat(exception.getMessage()).contains("指定媒体库");
+        });
+
+        verify(authService).requireAdminUser();
+        verify(embyClient).listLibraries();
+        verify(embyClient).getTopLevelMediaItem("anime-id", "Series", "movie-item");
+        verifyNoMoreInteractions(embyClient);
     }
 }

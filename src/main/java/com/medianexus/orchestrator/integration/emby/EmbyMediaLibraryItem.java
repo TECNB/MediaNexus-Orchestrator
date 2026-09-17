@@ -6,6 +6,9 @@ public record EmbyMediaLibraryItem(
         String type,
         Integer year,
         String dateCreated,
-        boolean hasPrimaryImage
+        String primaryImageTag
 ) {
+    public boolean hasPrimaryImage() {
+        return primaryImageTag != null && !primaryImageTag.isBlank();
+    }
 }

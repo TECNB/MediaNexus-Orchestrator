@@ -23,6 +23,9 @@ public record AdminMediaLibraryItemResponse(
         @JsonProperty("has_primary_image")
         boolean hasPrimaryImage,
 
+        @JsonProperty("primary_image_tag")
+        String primaryImageTag,
+
         @Schema(description = "Emby 虚拟媒体库 id")
         @JsonProperty("library_id")
         String libraryId,
