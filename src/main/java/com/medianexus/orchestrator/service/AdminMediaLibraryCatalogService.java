@@ -21,6 +21,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
+import java.util.function.Predicate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -56,24 +58,46 @@ public class AdminMediaLibraryCatalogService {
             int pageSize,
             String search
     ) {
+        return listItems(library, page, pageSize, search, false);
+    }
+
+    public AdminMediaLibraryPageResponse listItems(
+            String library,
+            int page,
+            int pageSize,
+            String search,
+            boolean missingPoster
+    ) {
         authService.requireAdminUser();
         AllowedLibrary allowedLibrary = AllowedLibrary.fromRequest(library);
         try {
             EmbyLibrary embyLibrary = resolveLibrary(allowedLibrary);
+            // ponytail: current libraries are far below 10k items; paginate upstream if that ceiling is reached.
             EmbyMediaLibraryPage result = embyClient.listTopLevelMediaItems(
                     embyLibrary.id(),
                     allowedLibrary.itemType,
-                    (page - 1) * pageSize,
-                    pageSize,
+                    missingPoster ? 0 : (page - 1) * pageSize,
+                    missingPoster ? 10_000 : pageSize,
                     search
             );
+            List<EmbyMediaLibraryItem> items = result.items();
+            int total = result.totalRecordCount();
+            if (missingPoster) {
+                List<EmbyMediaLibraryItem> missingItems = items.stream()
+                        .filter(item -> !item.hasPrimaryImage())
+                        .toList();
+                int start = Math.min((page - 1) * pageSize, missingItems.size());
+                int end = Math.min(start + pageSize, missingItems.size());
+                items = missingItems.subList(start, end);
+                total = missingItems.size();
+            }
             return new AdminMediaLibraryPageResponse(
-                    result.items().stream()
+                    items.stream()
                             .map(item -> responseItem(item, embyLibrary))
                             .toList(),
                     page,
                     pageSize,
-                    result.totalRecordCount()
+                    total
             );
         } catch (EmbyClientException exception) {
             throw unavailable("list", allowedLibrary, null, exception);
@@ -144,7 +168,7 @@ public class AdminMediaLibraryCatalogService {
         }
     }
 
-    public void applyMetadataCandidate(
+    public AdminMediaLibraryItemResponse applyMetadataCandidate(
             String itemId,
             String library,
             String query,
@@ -155,12 +179,17 @@ public class AdminMediaLibraryCatalogService {
         authService.requireAdminUser();
         AllowedLibrary allowedLibrary = AllowedLibrary.fromRequest(library);
         try {
-            requireAllowedItem(itemId, allowedLibrary);
+            EmbyLibrary embyLibrary = resolveLibrary(allowedLibrary);
+            EmbyMediaLibraryItem previous = requireAllowedItem(itemId, allowedLibrary, embyLibrary);
             EmbyRemoteSearchCandidate candidate = requireMetadataCandidate(
                     itemId, allowedLibrary, query, year, candidateId
             );
             embyClient.applyRemoteMetadata(itemId, candidate, replaceAllImages);
             invalidatePreviews(itemId);
+            return responseItem(
+                    waitForMetadata(itemId, allowedLibrary, embyLibrary, previous, candidate, replaceAllImages),
+                    embyLibrary
+            );
         } catch (EmbyClientException exception) {
             throw unavailable("identify-apply", allowedLibrary, itemId, exception);
         }
@@ -212,14 +241,23 @@ public class AdminMediaLibraryCatalogService {
         }
     }
 
-    public void selectPosterCandidate(String itemId, String library, String candidateId) {
+    public AdminMediaLibraryItemResponse selectPosterCandidate(
+            String itemId,
+            String library,
+            String candidateId
+    ) {
         authService.requireAdminUser();
         AllowedLibrary allowedLibrary = AllowedLibrary.fromRequest(library);
         try {
-            requireAllowedItem(itemId, allowedLibrary);
+            EmbyLibrary embyLibrary = resolveLibrary(allowedLibrary);
+            EmbyMediaLibraryItem previous = requireAllowedItem(itemId, allowedLibrary, embyLibrary);
             EmbyRemoteImageCandidate candidate = requirePosterCandidate(itemId, candidateId);
             embyClient.downloadRemotePrimaryImage(itemId, candidate);
             invalidatePreviews(itemId);
+            return responseItem(
+                    waitForPoster(itemId, allowedLibrary, embyLibrary, previous),
+                    embyLibrary
+            );
         } catch (EmbyClientException exception) {
             throw unavailable("poster-apply", allowedLibrary, itemId, exception);
         }
@@ -253,6 +291,14 @@ public class AdminMediaLibraryCatalogService {
 
     private EmbyMediaLibraryItem requireAllowedItem(String itemId, AllowedLibrary allowedLibrary) {
         EmbyLibrary library = resolveLibrary(allowedLibrary);
+        return requireAllowedItem(itemId, allowedLibrary, library);
+    }
+
+    private EmbyMediaLibraryItem requireAllowedItem(
+            String itemId,
+            AllowedLibrary allowedLibrary,
+            EmbyLibrary library
+    ) {
         EmbyMediaLibraryItem item = embyClient.getTopLevelMediaItem(
                 library.id(), allowedLibrary.itemType, itemId
         );
@@ -264,6 +310,60 @@ public class AdminMediaLibraryCatalogService {
             );
         }
         return item;
+    }
+
+    private EmbyMediaLibraryItem waitForMetadata(
+            String itemId,
+            AllowedLibrary allowedLibrary,
+            EmbyLibrary library,
+            EmbyMediaLibraryItem previous,
+            EmbyRemoteSearchCandidate candidate,
+            boolean replaceAllImages
+    ) {
+        return waitForItem(itemId, allowedLibrary, library, item -> {
+            boolean metadataChanged = candidate.name().equalsIgnoreCase(item.title())
+                    && (candidate.productionYear() == null
+                    || candidate.productionYear().equals(item.year()));
+            boolean imageChanged = !replaceAllImages
+                    || !StringUtils.hasText(candidate.imageUrl())
+                    || !Objects.equals(previous.primaryImageTag(), item.primaryImageTag());
+            return metadataChanged && imageChanged;
+        });
+    }
+
+    private EmbyMediaLibraryItem waitForPoster(
+            String itemId,
+            AllowedLibrary allowedLibrary,
+            EmbyLibrary library,
+            EmbyMediaLibraryItem previous
+    ) {
+        return waitForItem(itemId, allowedLibrary, library,
+                item -> item.hasPrimaryImage()
+                        && !Objects.equals(previous.primaryImageTag(), item.primaryImageTag()));
+    }
+
+    private EmbyMediaLibraryItem waitForItem(
+            String itemId,
+            AllowedLibrary allowedLibrary,
+            EmbyLibrary library,
+            Predicate<EmbyMediaLibraryItem> ready
+    ) {
+        EmbyMediaLibraryItem latest = null;
+        for (int attempt = 0; attempt < 5; attempt++) {
+            latest = requireAllowedItem(itemId, allowedLibrary, library);
+            if (ready.test(latest)) {
+                return latest;
+            }
+            if (attempt < 4) {
+                try {
+                    Thread.sleep(300);
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    return latest;
+                }
+            }
+        }
+        return latest;
     }
 
     private String metadataCacheKey(String itemId, String library, String query, Integer year) {

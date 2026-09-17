@@ -4,10 +4,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
+import com.fasterxml.jackson.databind.node.NullNode;
 import com.medianexus.orchestrator.common.exception.BusinessException;
 import com.medianexus.orchestrator.integration.emby.EmbyClient;
 import com.medianexus.orchestrator.integration.emby.EmbyClientException;
@@ -15,7 +17,9 @@ import com.medianexus.orchestrator.integration.emby.EmbyLibrary;
 import com.medianexus.orchestrator.integration.emby.EmbyMediaLibraryItem;
 import com.medianexus.orchestrator.integration.emby.EmbyMediaLibraryPage;
 import com.medianexus.orchestrator.integration.emby.EmbyPrimaryImage;
+import com.medianexus.orchestrator.integration.emby.EmbyRemoteSearchCandidate;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
 
@@ -72,6 +76,25 @@ class AdminMediaLibraryCatalogServiceTest {
         verify(authService).requireAdminUser();
         verify(embyClient).listTopLevelMediaItems("adult-jav-id", "Movie", 0, 24, null);
         assertThat(response.total()).isEqualTo(501);
+    }
+
+    @Test
+    void filtersMissingPostersBeforeApplyingPagination() {
+        when(embyClient.listLibraries()).thenReturn(List.of(
+                new EmbyLibrary("movies-id", "Movies", List.of("/movies"))
+        ));
+        when(embyClient.listTopLevelMediaItems("movies-id", "Movie", 0, 10_000, null))
+                .thenReturn(new EmbyMediaLibraryPage(List.of(
+                        mediaItem("with-poster", "With poster", "tag"),
+                        mediaItem("without-poster", "Without poster", null)
+                ), 2));
+
+        var response = service.listItems("movies", 1, 24, null, true);
+
+        assertThat(response.total()).isEqualTo(1);
+        assertThat(response.items()).singleElement()
+                .extracting(item -> item.itemId())
+                .isEqualTo("without-poster");
     }
 
     @Test
@@ -140,5 +163,36 @@ class AdminMediaLibraryCatalogServiceTest {
         verify(embyClient).listLibraries();
         verify(embyClient).getTopLevelMediaItem("anime-id", "Series", "movie-item");
         verifyNoMoreInteractions(embyClient);
+    }
+
+    @Test
+    void waitsForCorrectedMetadataBeforeReturningTheUpdatedItem() {
+        EmbyMediaLibraryItem oldItem = mediaItem("item-1", "FF05", "old-tag");
+        EmbyMediaLibraryItem updatedItem = mediaItem("item-1", "MAA", "new-tag");
+        var candidate = new EmbyRemoteSearchCandidate(
+                "candidate", "MAA", null, 2024, Map.of("Tmdb", "123"),
+                "TheMovieDb", null, null,
+                NullNode.getInstance()
+        );
+        when(embyClient.listLibraries()).thenReturn(List.of(
+                new EmbyLibrary("movies-id", "Movies", List.of("/movies"))
+        ));
+        when(embyClient.getTopLevelMediaItem("movies-id", "Movie", "item-1"))
+                .thenReturn(oldItem, oldItem, updatedItem);
+        when(embyClient.searchRemoteMetadata("item-1", "Movie", "MAA", 2024))
+                .thenReturn(List.of(candidate));
+
+        var response = service.applyMetadataCandidate(
+                "item-1", "movies", "MAA", 2024, "candidate", false
+        );
+
+        assertThat(response.title()).isEqualTo("MAA");
+        assertThat(response.primaryImageTag()).isEqualTo("new-tag");
+        verify(embyClient).applyRemoteMetadata("item-1", candidate, false);
+        verify(embyClient, times(3)).getTopLevelMediaItem("movies-id", "Movie", "item-1");
+    }
+
+    private EmbyMediaLibraryItem mediaItem(String id, String title, String imageTag) {
+        return new EmbyMediaLibraryItem(id, title, "Movie", 2024, "2026-09-17T10:00:00Z", imageTag);
     }
 }

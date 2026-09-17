@@ -20,11 +20,11 @@ class AdminMediaLibraryControllerTest {
     @Test
     void delegatesListQueryWithoutChangingItsPagingContract() {
         AdminMediaLibraryPageResponse page = new AdminMediaLibraryPageResponse(List.of(), 3, 24, 50);
-        when(catalogService.listItems("anime", 3, 24, "title")).thenReturn(page);
+        when(catalogService.listItems("anime", 3, 24, "title", true)).thenReturn(page);
 
-        var response = controller.listItems("anime", 3, 24, "title");
+        var response = controller.listItems("anime", 3, 24, "title", true);
 
-        verify(catalogService).listItems("anime", 3, 24, "title");
+        verify(catalogService).listItems("anime", 3, 24, "title", true);
         assertThat(response.data()).isSameAs(page);
     }
 

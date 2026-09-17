@@ -3,6 +3,7 @@ package com.medianexus.orchestrator.controller;
 import com.medianexus.orchestrator.common.response.ApiResponse;
 import com.medianexus.orchestrator.dto.admin.request.AdminMediaIdentifyRequest;
 import com.medianexus.orchestrator.dto.admin.request.AdminMediaPosterSelectRequest;
+import com.medianexus.orchestrator.dto.admin.response.AdminMediaLibraryItemResponse;
 import com.medianexus.orchestrator.dto.admin.response.AdminMediaLibraryPageResponse;
 import com.medianexus.orchestrator.dto.admin.response.AdminMediaMetadataCandidateResponse;
 import com.medianexus.orchestrator.dto.admin.response.AdminMediaPosterCandidateResponse;
@@ -58,9 +59,11 @@ public class AdminMediaLibraryController {
             @Min(value = PAGE_SIZE, message = "每页条数必须为 24")
             @Max(value = PAGE_SIZE, message = "每页条数必须为 24") int pageSize,
             @Parameter(description = "可选的标题关键词")
-            @RequestParam(required = false) @Size(max = 200, message = "搜索关键词不能超过 200 个字符") String search
+            @RequestParam(required = false) @Size(max = 200, message = "搜索关键词不能超过 200 个字符") String search,
+            @Parameter(description = "是否只返回没有 Primary 封面的作品")
+            @RequestParam(name = "missing_poster", defaultValue = "false") boolean missingPoster
     ) {
-        return ApiResponse.success(catalogService.listItems(library, page, pageSize, search));
+        return ApiResponse.success(catalogService.listItems(library, page, pageSize, search, missingPoster));
     }
 
     @GetMapping("/items/{itemId}/poster")
@@ -101,13 +104,14 @@ public class AdminMediaLibraryController {
 
     @PostMapping("/items/{itemId}/identify")
     @Operation(summary = "应用重新识别候选", description = "重查候选后更新作品身份和元数据；可显式替换所有图片。")
-    public ApiResponse<Void> identify(
+    public ApiResponse<AdminMediaLibraryItemResponse> identify(
             @PathVariable @NotBlank String itemId,
             @Valid @RequestBody AdminMediaIdentifyRequest request
     ) {
-        catalogService.applyMetadataCandidate(itemId, request.library(), request.query(), request.year(),
-                request.candidateId(), request.replaceAllImages());
-        return ApiResponse.success();
+        return ApiResponse.success(catalogService.applyMetadataCandidate(
+                itemId, request.library(), request.query(), request.year(), request.candidateId(),
+                request.replaceAllImages()
+        ));
     }
 
     @GetMapping("/items/{itemId}/poster-candidates")
@@ -130,12 +134,13 @@ public class AdminMediaLibraryController {
 
     @PostMapping("/items/{itemId}/poster-selection")
     @Operation(summary = "选择封面", description = "仅替换 Primary 封面，不更新作品 ID 或元数据。")
-    public ApiResponse<Void> selectPoster(
+    public ApiResponse<AdminMediaLibraryItemResponse> selectPoster(
             @PathVariable @NotBlank String itemId,
             @Valid @RequestBody AdminMediaPosterSelectRequest request
     ) {
-        catalogService.selectPosterCandidate(itemId, request.library(), request.candidateId());
-        return ApiResponse.success();
+        return ApiResponse.success(catalogService.selectPosterCandidate(
+                itemId, request.library(), request.candidateId()
+        ));
     }
 
     private ResponseEntity<byte[]> preview(AdminMediaLibraryPoster image) {
