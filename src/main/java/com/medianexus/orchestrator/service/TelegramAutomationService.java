@@ -136,13 +136,7 @@ public class TelegramAutomationService {
 
     public ResolvedSourceResponse resolveSource(String sourceRef) {
         authService.requireAdminUser();
-        JsonNode source = workerClient.resolveSource(sourceRef);
-        return new ResolvedSourceResponse(
-                source.path("sourceId").asLong(),
-                source.path("title").asText(null),
-                source.path("username").asText(null),
-                source.path("forwardsRestricted").asBoolean(false)
-        );
+        return resolveSourceWithoutAuthorization(sourceRef);
     }
 
     public ConfigResponse updateConfig(ConfigUpdateRequest request) {
@@ -481,11 +475,22 @@ public class TelegramAutomationService {
     }
 
     private ResolvedSourceResponse resolveSourceWithoutAuthorization(String sourceRef) {
-        JsonNode source = workerClient.resolveSource(sourceRef);
-        return new ResolvedSourceResponse(
-                source.path("sourceId").asLong(), source.path("title").asText(null),
-                source.path("username").asText(null), source.path("forwardsRestricted").asBoolean(false)
-        );
+        try {
+            JsonNode source = workerClient.resolveSource(sourceRef);
+            return new ResolvedSourceResponse(
+                    source.path("sourceId").asLong(), source.path("title").asText(null),
+                    source.path("username").asText(null), source.path("forwardsRestricted").asBoolean(false)
+            );
+        } catch (TelegramWorkerClientException exception) {
+            if (exception.isRetryable()) {
+                throw new BusinessException(
+                        ErrorCode.SERVICE_UNAVAILABLE,
+                        exception.getMessage(),
+                        HttpStatus.SERVICE_UNAVAILABLE
+                );
+            }
+            throw badRequest(exception.getMessage());
+        }
     }
 
     private ConfigResponse loadConfig() {

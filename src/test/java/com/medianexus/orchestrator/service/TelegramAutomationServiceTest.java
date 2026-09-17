@@ -2,6 +2,7 @@ package com.medianexus.orchestrator.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -9,8 +10,10 @@ import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.medianexus.orchestrator.common.exception.BusinessException;
 import com.medianexus.orchestrator.dto.telegram.TelegramAutomationContract.RunResponse;
 import com.medianexus.orchestrator.integration.telegram.TelegramWorkerClient;
+import com.medianexus.orchestrator.integration.telegram.TelegramWorkerClientException;
 import com.medianexus.orchestrator.mapper.SystemSettingMapper;
 import com.medianexus.orchestrator.mapper.TelegramAutomationRunMapper;
 import com.medianexus.orchestrator.model.TelegramAutomationRun;
@@ -18,8 +21,31 @@ import com.medianexus.orchestrator.model.User;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.http.HttpStatus;
 
 class TelegramAutomationServiceTest {
+
+    @Test
+    void resolveSourceMapsWorkerValidationFailureToBadRequest() {
+        AuthService authService = mock(AuthService.class);
+        SystemSettingMapper settingMapper = mock(SystemSettingMapper.class);
+        TelegramAutomationRunMapper runMapper = mock(TelegramAutomationRunMapper.class);
+        TelegramWorkerClient workerClient = mock(TelegramWorkerClient.class);
+        String source = "https://t.me/c/3789958298/602";
+        when(workerClient.resolveSource(source)).thenThrow(new TelegramWorkerClientException(
+                "无法访问来源频道，请确认当前 Telegram 账号已加入该频道", false, null
+        ));
+        TelegramAutomationService service = new TelegramAutomationService(
+                authService, settingMapper, runMapper, workerClient, new ObjectMapper()
+        );
+
+        BusinessException exception = assertThrows(
+                BusinessException.class, () -> service.resolveSource(source)
+        );
+
+        assertEquals(HttpStatus.BAD_REQUEST, exception.getHttpStatus());
+        assertEquals("无法访问来源频道，请确认当前 Telegram 账号已加入该频道", exception.getMessage());
+    }
 
     @Test
     void followDryRunUsesStoredChannelRulesAndPersistsWorkerSummary() throws Exception {
