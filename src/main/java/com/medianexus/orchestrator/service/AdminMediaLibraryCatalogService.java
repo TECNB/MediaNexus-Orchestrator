@@ -8,6 +8,7 @@ import com.medianexus.orchestrator.dto.admin.response.AdminMediaMetadataCandidat
 import com.medianexus.orchestrator.dto.admin.response.AdminMediaPosterCandidateResponse;
 import com.medianexus.orchestrator.integration.emby.EmbyClient;
 import com.medianexus.orchestrator.integration.emby.EmbyClientException;
+import com.medianexus.orchestrator.integration.emby.EmbyCollection;
 import com.medianexus.orchestrator.integration.emby.EmbyLibrary;
 import com.medianexus.orchestrator.integration.emby.EmbyMediaLibraryItem;
 import com.medianexus.orchestrator.integration.emby.EmbyMediaLibraryPage;
@@ -20,6 +21,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.function.Predicate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -71,23 +73,25 @@ public class AdminMediaLibraryCatalogService {
         try {
             EmbyLibrary embyLibrary = resolveLibrary(allowedLibrary);
             // ponytail: current libraries are far below 10k items; paginate upstream if that ceiling is reached.
-            EmbyMediaLibraryPage result = embyClient.listTopLevelMediaItems(
-                    embyLibrary.id(),
-                    allowedLibrary.listingItemType(),
-                    missingPoster ? 0 : (page - 1) * pageSize,
-                    missingPoster ? 10_000 : pageSize,
-                    search
-            );
+            EmbyMediaLibraryPage result = allowedLibrary == AdminMediaLibraryScope.ADULT_OTHER
+                    ? listAdultOtherItems(embyLibrary, search)
+                    : embyClient.listTopLevelMediaItems(
+                            embyLibrary.id(),
+                            allowedLibrary.listingItemType(),
+                            missingPoster ? 0 : (page - 1) * pageSize,
+                            missingPoster ? 10_000 : pageSize,
+                            search
+                    );
             List<EmbyMediaLibraryItem> items = result.items();
             int total = result.totalRecordCount();
-            if (missingPoster) {
-                List<EmbyMediaLibraryItem> missingItems = items.stream()
-                        .filter(item -> !item.hasPrimaryImage())
+            if (missingPoster || allowedLibrary == AdminMediaLibraryScope.ADULT_OTHER) {
+                List<EmbyMediaLibraryItem> filteredItems = items.stream()
+                        .filter(item -> !missingPoster || !item.hasPrimaryImage())
                         .toList();
-                int start = Math.min((page - 1) * pageSize, missingItems.size());
-                int end = Math.min(start + pageSize, missingItems.size());
-                items = missingItems.subList(start, end);
-                total = missingItems.size();
+                int start = Math.min((page - 1) * pageSize, filteredItems.size());
+                int end = Math.min(start + pageSize, filteredItems.size());
+                items = filteredItems.subList(start, end);
+                total = filteredItems.size();
             }
             return new AdminMediaLibraryPageResponse(
                     items.stream()
@@ -100,6 +104,20 @@ public class AdminMediaLibraryCatalogService {
         } catch (EmbyClientException exception) {
             throw unavailable("list", allowedLibrary, null, exception);
         }
+    }
+
+    private EmbyMediaLibraryPage listAdultOtherItems(EmbyLibrary library, String search) {
+        List<String> collectionIds = embyClient.listCollections(library.id()).stream()
+                .map(EmbyCollection::id)
+                .toList();
+        Set<String> collectionMemberIds = embyClient.listCollectionMemberIds(collectionIds);
+        EmbyMediaLibraryPage allItems = embyClient.listTopLevelMediaItems(
+                library.id(), "BoxSet,Movie", 0, 10_000, search
+        );
+        List<EmbyMediaLibraryItem> visibleItems = allItems.items().stream()
+                .filter(item -> "BoxSet".equals(item.type()) || !collectionMemberIds.contains(item.id()))
+                .toList();
+        return new EmbyMediaLibraryPage(visibleItems, visibleItems.size());
     }
 
     public AdminMediaLibraryPoster getPoster(String itemId) {

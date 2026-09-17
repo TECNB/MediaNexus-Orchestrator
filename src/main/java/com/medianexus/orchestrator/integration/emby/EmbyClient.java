@@ -24,6 +24,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
@@ -427,6 +428,18 @@ public class EmbyClient {
                 "IncludeItemTypes", "Movie,Video,Episode",
                 "Limit", "10000"
         ));
+    }
+
+    public Set<String> listCollectionMemberIds(Collection<String> collectionIds) {
+        if (collectionIds.isEmpty()) {
+            return Set.of();
+        }
+        return items(Map.of(
+                "CollectionIds", String.join(",", collectionIds),
+                "IncludeItemTypes", "Movie,Video",
+                "Recursive", "true",
+                "Limit", "10000"
+        )).stream().map(EmbyItem::id).collect(Collectors.toSet());
     }
 
     public List<EmbyItemState> listItemStates(Collection<String> itemIds) {
