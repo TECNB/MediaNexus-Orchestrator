@@ -18,6 +18,7 @@ Java 后端负责把前端用户动作转成稳定的后端编排能力：
 - 动漫 Mikan 搜索、字幕组预览和 Ani-RSS 追更订阅。
 - 字幕上传、上传日志和后续处理状态查询。
 - 部分管理端能力，例如用户、注册码、AutoSymlink 刷新、观看统计和 Adult 相关编排。
+- Telegram 来源频道追更、历史 Top N 回溯及运行历史；消息筛选与跨模式去重由独立 Telethon Worker 执行。
 
 ## 用户流程对应关系
 
@@ -130,6 +131,9 @@ MEDIANEXUS_DB_PASSWORD='...'
 MEDIANEXUS_ANI_RSS_BASE_URL='http://example.invalid:7789'
 MEDIANEXUS_ANI_RSS_API_KEY=''
 MEDIANEXUS_ANI_RSS_TIMEOUT='10s'
+MEDIANEXUS_TELEGRAM_WORKER_BASE_URL='http://127.0.0.1:8081'
+MEDIANEXUS_TELEGRAM_WORKER_API_TOKEN='与 Worker 的 WORKER_API_TOKEN 一致'
+MEDIANEXUS_TELEGRAM_WORKER_TIMEOUT='30m'
 MEDIANEXUS_AUTH_REGISTRATION_CODE='your-registration-code'
 MEDIANEXUS_EMBY_REGISTRATION_PASSWORD_SECRET='a-stable-random-secret-at-least-16-characters'
 MEDIANEXUS_EMBY_REGISTRATION_TEMPLATE_USERNAME='csy'

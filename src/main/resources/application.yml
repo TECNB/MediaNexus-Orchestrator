@@ -140,6 +140,10 @@ medianexus:
     fallback-language: ${MEDIANEXUS_TMDB_FALLBACK_LANGUAGE:en-US}
     image-base-url: ${MEDIANEXUS_TMDB_IMAGE_BASE_URL:https://image.tmdb.org/t/p/w500}
     timeout: ${MEDIANEXUS_TMDB_TIMEOUT:10s}
+  telegram-worker:
+    base-url: ${MEDIANEXUS_TELEGRAM_WORKER_BASE_URL:http://127.0.0.1:8081}
+    api-token: ${MEDIANEXUS_TELEGRAM_WORKER_API_TOKEN:${WORKER_API_TOKEN:}}
+    timeout: ${MEDIANEXUS_TELEGRAM_WORKER_TIMEOUT:30m}
   auth:
     registration-code: ${MEDIANEXUS_AUTH_REGISTRATION_CODE:}
   quota:
