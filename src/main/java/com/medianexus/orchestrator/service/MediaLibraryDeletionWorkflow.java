@@ -136,7 +136,7 @@ public class MediaLibraryDeletionWorkflow {
         return taskMapper.countReingestAllowedTarget(embyItemId) > 0;
     }
 
-    @Scheduled(fixedDelay = 2_000L)
+    @Scheduled(initialDelay = 15_000L, fixedDelay = 2_000L)
     public void executeNext() {
         if (!executing.compareAndSet(false, true)) {
             return;
