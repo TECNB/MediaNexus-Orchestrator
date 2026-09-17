@@ -8,6 +8,7 @@ import static org.mockito.Mockito.when;
 import com.medianexus.orchestrator.dto.admin.response.AdminMediaLibraryPageResponse;
 import com.medianexus.orchestrator.service.AdminMediaLibraryCatalogService;
 import com.medianexus.orchestrator.service.AdminMediaLibraryPoster;
+import com.medianexus.orchestrator.service.MediaLibraryDeletionWorkflow;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
@@ -15,7 +16,10 @@ import org.springframework.http.MediaType;
 class AdminMediaLibraryControllerTest {
 
     private final AdminMediaLibraryCatalogService catalogService = mock(AdminMediaLibraryCatalogService.class);
-    private final AdminMediaLibraryController controller = new AdminMediaLibraryController(catalogService);
+    private final MediaLibraryDeletionWorkflow deletionWorkflow = mock(MediaLibraryDeletionWorkflow.class);
+    private final AdminMediaLibraryController controller = new AdminMediaLibraryController(
+            catalogService, deletionWorkflow
+    );
 
     @Test
     void delegatesListQueryWithoutChangingItsPagingContract() {

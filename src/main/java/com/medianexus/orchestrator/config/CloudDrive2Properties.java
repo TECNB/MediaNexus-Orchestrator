@@ -37,6 +37,10 @@ public class CloudDrive2Properties {
 
     private String cloudDrivePathPrefix = "/WebDAV";
 
+    private String mediaSourcePathPrefix = "/srv/media/CloudNAS/PikPak";
+
+    private String strmPathPrefix = "/srv/media/STRM";
+
     @NotNull
     @DurationMin(seconds = 1)
     private Duration operationTimeout = Duration.ofMinutes(2);
@@ -127,6 +131,22 @@ public class CloudDrive2Properties {
 
     public void setCloudDrivePathPrefix(String cloudDrivePathPrefix) {
         this.cloudDrivePathPrefix = cloudDrivePathPrefix;
+    }
+
+    public String getMediaSourcePathPrefix() {
+        return mediaSourcePathPrefix;
+    }
+
+    public void setMediaSourcePathPrefix(String mediaSourcePathPrefix) {
+        this.mediaSourcePathPrefix = mediaSourcePathPrefix;
+    }
+
+    public String getStrmPathPrefix() {
+        return strmPathPrefix;
+    }
+
+    public void setStrmPathPrefix(String strmPathPrefix) {
+        this.strmPathPrefix = strmPathPrefix;
     }
 
     public Duration getOperationTimeout() {

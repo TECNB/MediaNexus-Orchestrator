@@ -13,6 +13,7 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
+import java.nio.charset.StandardCharsets;
 import java.util.stream.Collectors;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -62,6 +63,33 @@ class EmbyClientTest {
                 "ImageRefreshMode=Default",
                 "ReplaceAllMetadata=false",
                 "ReplaceAllImages=false"
+        );
+    }
+
+    @Test
+    void notifiesEmbyOfExactDeletedPaths() {
+        AtomicReference<String> method = new AtomicReference<>();
+        AtomicReference<String> requestBody = new AtomicReference<>();
+        server.createContext("/Library/Media/Updated", exchange -> {
+            method.set(exchange.getRequestMethod());
+            requestBody.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            exchange.sendResponseHeaders(204, -1);
+            exchange.close();
+        });
+        server.start();
+
+        EmbyProperties properties = new EmbyProperties();
+        properties.setBaseUrl("http://127.0.0.1:" + server.getAddress().getPort());
+        properties.setApiKey("emby-token");
+        properties.setTimeout(Duration.ofSeconds(2));
+        EmbyClient client = new EmbyClient(properties, new ObjectMapper());
+
+        client.notifyMediaDeleted(List.of("/srv/media/STRM/TV/Series/Season 1/Episode.strm"));
+
+        assertThat(method.get()).isEqualTo("POST");
+        assertThat(requestBody.get()).contains(
+                "\"Path\":\"/srv/media/STRM/TV/Series/Season 1/Episode.strm\"",
+                "\"UpdateType\":\"Deleted\""
         );
     }
 

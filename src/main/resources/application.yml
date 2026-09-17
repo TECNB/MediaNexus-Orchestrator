@@ -99,6 +99,8 @@ medianexus:
     api-token: ${MEDIANEXUS_CLOUDDRIVE2_API_TOKEN:}
     ingest-path-prefix: ${MEDIANEXUS_CLOUDDRIVE2_INGEST_PATH_PREFIX:/pikpak}
     cloud-drive-path-prefix: ${MEDIANEXUS_CLOUDDRIVE2_PATH_PREFIX:/WebDAV}
+    media-source-path-prefix: ${MEDIANEXUS_CLOUDDRIVE2_MEDIA_SOURCE_PATH_PREFIX:/srv/media/CloudNAS/PikPak}
+    strm-path-prefix: ${MEDIANEXUS_STRM_PATH_PREFIX:/srv/media/STRM}
     operation-timeout: ${MEDIANEXUS_CLOUDDRIVE2_OPERATION_TIMEOUT:120s}
     visibility-timeout: ${MEDIANEXUS_CLOUDDRIVE2_VISIBILITY_TIMEOUT:120s}
     visibility-poll-interval: ${MEDIANEXUS_CLOUDDRIVE2_VISIBILITY_POLL_INTERVAL:1s}

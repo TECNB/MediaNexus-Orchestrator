@@ -15,11 +15,9 @@ import com.medianexus.orchestrator.integration.emby.EmbyPrimaryImage;
 import com.medianexus.orchestrator.integration.emby.EmbyRemoteImageCandidate;
 import com.medianexus.orchestrator.integration.emby.EmbyRemoteSearchCandidate;
 import java.time.Instant;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.function.Predicate;
@@ -69,13 +67,13 @@ public class AdminMediaLibraryCatalogService {
             boolean missingPoster
     ) {
         authService.requireAdminUser();
-        AllowedLibrary allowedLibrary = AllowedLibrary.fromRequest(library);
+        AdminMediaLibraryScope allowedLibrary = AdminMediaLibraryScope.fromRequest(library);
         try {
             EmbyLibrary embyLibrary = resolveLibrary(allowedLibrary);
             // ponytail: current libraries are far below 10k items; paginate upstream if that ceiling is reached.
             EmbyMediaLibraryPage result = embyClient.listTopLevelMediaItems(
                     embyLibrary.id(),
-                    allowedLibrary.itemType,
+                    allowedLibrary.itemType(),
                     missingPoster ? 0 : (page - 1) * pageSize,
                     missingPoster ? 10_000 : pageSize,
                     search
@@ -121,11 +119,11 @@ public class AdminMediaLibraryCatalogService {
             Integer year
     ) {
         authService.requireAdminUser();
-        AllowedLibrary allowedLibrary = AllowedLibrary.fromRequest(library);
+        AdminMediaLibraryScope allowedLibrary = AdminMediaLibraryScope.fromRequest(library);
         try {
             requireAllowedItem(itemId, allowedLibrary);
             List<EmbyRemoteSearchCandidate> candidates = embyClient.searchRemoteMetadata(
-                    itemId, allowedLibrary.itemType, query.trim(), year
+                    itemId, allowedLibrary.itemType(), query.trim(), year
             );
             previewCache.put(metadataCacheKey(itemId, library, query, year),
                     new CachedCandidates(Instant.now().plusSeconds(120), candidates, null));
@@ -146,7 +144,7 @@ public class AdminMediaLibraryCatalogService {
             String candidateId
     ) {
         authService.requireAdminUser();
-        AllowedLibrary allowedLibrary = AllowedLibrary.fromRequest(library);
+        AdminMediaLibraryScope allowedLibrary = AdminMediaLibraryScope.fromRequest(library);
         try {
             requireAllowedItem(itemId, allowedLibrary);
             CachedCandidates cached = validPreview(metadataCacheKey(itemId, library, query, year));
@@ -177,7 +175,7 @@ public class AdminMediaLibraryCatalogService {
             boolean replaceAllImages
     ) {
         authService.requireAdminUser();
-        AllowedLibrary allowedLibrary = AllowedLibrary.fromRequest(library);
+        AdminMediaLibraryScope allowedLibrary = AdminMediaLibraryScope.fromRequest(library);
         try {
             EmbyLibrary embyLibrary = resolveLibrary(allowedLibrary);
             EmbyMediaLibraryItem previous = requireAllowedItem(itemId, allowedLibrary, embyLibrary);
@@ -200,7 +198,7 @@ public class AdminMediaLibraryCatalogService {
             String library
     ) {
         authService.requireAdminUser();
-        AllowedLibrary allowedLibrary = AllowedLibrary.fromRequest(library);
+        AdminMediaLibraryScope allowedLibrary = AdminMediaLibraryScope.fromRequest(library);
         try {
             requireAllowedItem(itemId, allowedLibrary);
             List<EmbyRemoteImageCandidate> candidates = embyClient.listRemotePrimaryImages(itemId);
@@ -226,7 +224,7 @@ public class AdminMediaLibraryCatalogService {
             String candidateId
     ) {
         authService.requireAdminUser();
-        AllowedLibrary allowedLibrary = AllowedLibrary.fromRequest(library);
+        AdminMediaLibraryScope allowedLibrary = AdminMediaLibraryScope.fromRequest(library);
         try {
             requireAllowedItem(itemId, allowedLibrary);
             CachedCandidates cached = validPreview(itemId + ":posters");
@@ -247,7 +245,7 @@ public class AdminMediaLibraryCatalogService {
             String candidateId
     ) {
         authService.requireAdminUser();
-        AllowedLibrary allowedLibrary = AllowedLibrary.fromRequest(library);
+        AdminMediaLibraryScope allowedLibrary = AdminMediaLibraryScope.fromRequest(library);
         try {
             EmbyLibrary embyLibrary = resolveLibrary(allowedLibrary);
             EmbyMediaLibraryItem previous = requireAllowedItem(itemId, allowedLibrary, embyLibrary);
@@ -263,12 +261,12 @@ public class AdminMediaLibraryCatalogService {
         }
     }
 
-    private EmbyLibrary resolveLibrary(AllowedLibrary allowedLibrary) {
+    EmbyLibrary resolveLibrary(AdminMediaLibraryScope allowedLibrary) {
         return embyClient.listLibraries().stream()
-                .filter(library -> allowedLibrary.embyName.equalsIgnoreCase(library.name()))
+                .filter(library -> allowedLibrary.embyName().equalsIgnoreCase(library.name()))
                 .findFirst()
                 .orElseThrow(() -> new EmbyClientException(
-                        "Allowed Emby library is missing: " + allowedLibrary.embyName
+                        "Allowed Emby library is missing: " + allowedLibrary.embyName()
                 ));
     }
 
@@ -289,18 +287,18 @@ public class AdminMediaLibraryCatalogService {
         );
     }
 
-    private EmbyMediaLibraryItem requireAllowedItem(String itemId, AllowedLibrary allowedLibrary) {
+    EmbyMediaLibraryItem requireAllowedItem(String itemId, AdminMediaLibraryScope allowedLibrary) {
         EmbyLibrary library = resolveLibrary(allowedLibrary);
         return requireAllowedItem(itemId, allowedLibrary, library);
     }
 
-    private EmbyMediaLibraryItem requireAllowedItem(
+    EmbyMediaLibraryItem requireAllowedItem(
             String itemId,
-            AllowedLibrary allowedLibrary,
+            AdminMediaLibraryScope allowedLibrary,
             EmbyLibrary library
     ) {
         EmbyMediaLibraryItem item = embyClient.getTopLevelMediaItem(
-                library.id(), allowedLibrary.itemType, itemId
+                library.id(), allowedLibrary.itemType(), itemId
         );
         if (item == null) {
             throw new BusinessException(
@@ -314,7 +312,7 @@ public class AdminMediaLibraryCatalogService {
 
     private EmbyMediaLibraryItem waitForMetadata(
             String itemId,
-            AllowedLibrary allowedLibrary,
+            AdminMediaLibraryScope allowedLibrary,
             EmbyLibrary library,
             EmbyMediaLibraryItem previous,
             EmbyRemoteSearchCandidate candidate,
@@ -333,7 +331,7 @@ public class AdminMediaLibraryCatalogService {
 
     private EmbyMediaLibraryItem waitForPoster(
             String itemId,
-            AllowedLibrary allowedLibrary,
+            AdminMediaLibraryScope allowedLibrary,
             EmbyLibrary library,
             EmbyMediaLibraryItem previous
     ) {
@@ -344,7 +342,7 @@ public class AdminMediaLibraryCatalogService {
 
     private EmbyMediaLibraryItem waitForItem(
             String itemId,
-            AllowedLibrary allowedLibrary,
+            AdminMediaLibraryScope allowedLibrary,
             EmbyLibrary library,
             Predicate<EmbyMediaLibraryItem> ready
     ) {
@@ -390,12 +388,12 @@ public class AdminMediaLibraryCatalogService {
 
     private EmbyRemoteSearchCandidate requireMetadataCandidate(
             String itemId,
-            AllowedLibrary allowedLibrary,
+            AdminMediaLibraryScope allowedLibrary,
             String query,
             Integer year,
             String candidateId
     ) {
-        return embyClient.searchRemoteMetadata(itemId, allowedLibrary.itemType, query.trim(), year)
+        return embyClient.searchRemoteMetadata(itemId, allowedLibrary.itemType(), query.trim(), year)
                 .stream()
                 .filter(candidate -> candidate.candidateId().equals(candidateId))
                 .findFirst()
@@ -434,14 +432,14 @@ public class AdminMediaLibraryCatalogService {
 
     private BusinessException unavailable(
             String operation,
-            AllowedLibrary library,
+            AdminMediaLibraryScope library,
             String itemId,
             EmbyClientException exception
     ) {
         log.warn(
                 "Admin Emby media library unavailable operation={} library={} itemId={} reason={}",
                 operation,
-                library == null ? null : library.requestValue,
+                library == null ? null : library.requestValue(),
                 itemId,
                 exception.getMessage()
         );
@@ -452,34 +450,4 @@ public class AdminMediaLibraryCatalogService {
         );
     }
 
-    private enum AllowedLibrary {
-        MOVIES("movies", "Movies", "Movie"),
-        TV("tv", "TV", "Series"),
-        ANIME("anime", "Anime", "Series"),
-        ADULT_OTHER("adult-other", "Adult - Other", "Movie"),
-        ADULT_JAV("adult-jav", "Adult-JAV", "Movie");
-
-        private final String requestValue;
-        private final String embyName;
-        private final String itemType;
-
-        AllowedLibrary(String requestValue, String embyName, String itemType) {
-            this.requestValue = requestValue;
-            this.embyName = embyName;
-            this.itemType = itemType;
-        }
-
-        private static AllowedLibrary fromRequest(String library) {
-            String normalized = StringUtils.hasText(library)
-                    ? library.trim().toLowerCase(Locale.ROOT)
-                    : "";
-            return Arrays.stream(values())
-                    .filter(candidate -> candidate.requestValue.equals(normalized))
-                    .findFirst()
-                    .orElseThrow(() -> new BusinessException(
-                            ErrorCode.BAD_REQUEST,
-                            "媒体库只能是 movies、tv、anime、adult-other 或 adult-jav"
-                    ));
-        }
-    }
 }

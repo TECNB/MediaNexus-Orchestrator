@@ -165,6 +165,62 @@ public class EmbyClient {
         ));
     }
 
+    public List<EmbyDeletionItem> listSeriesSeasonsForDeletion(String seriesId) {
+        return deletionItems(Map.of(
+                "ParentId", seriesId,
+                "IncludeItemTypes", "Season",
+                "Fields", "Path,DateCreated",
+                "SortBy", "IndexNumber",
+                "SortOrder", "Ascending",
+                "Limit", "100"
+        ));
+    }
+
+    public List<EmbyDeletionItem> listSeasonEpisodesForDeletion(String seasonId) {
+        return deletionItems(Map.of(
+                "ParentId", seasonId,
+                "Recursive", "true",
+                "IncludeItemTypes", "Episode",
+                "Fields", "Path,DateCreated,MediaSources",
+                "Limit", "10000"
+        ));
+    }
+
+    public EmbyDeletionItem getMediaItemForDeletion(
+            String libraryId,
+            String itemType,
+            String itemId
+    ) {
+        List<EmbyDeletionItem> matches = deletionItems(Map.of(
+                "ParentId", libraryId,
+                "Recursive", "true",
+                "IncludeItemTypes", itemType,
+                "Ids", itemId,
+                "Fields", "Path,DateCreated,MediaSources",
+                "Limit", "1"
+        ));
+        return matches.stream()
+                .filter(item -> itemId.equals(item.id()) && itemType.equals(item.type()))
+                .findFirst()
+                .orElse(null);
+    }
+
+    public boolean itemExists(String itemId) {
+        return deletionItems(Map.of("Ids", itemId, "Limit", "1")).stream()
+                .anyMatch(item -> itemId.equals(item.id()));
+    }
+
+    public void notifyMediaDeleted(Collection<String> paths) {
+        List<Map<String, String>> updates = paths.stream()
+                .filter(StringUtils::hasText)
+                .distinct()
+                .map(path -> Map.of("Path", path, "UpdateType", "Deleted"))
+                .toList();
+        if (!updates.isEmpty()) {
+            postJson("/Library/Media/Updated", Map.of(), writeJson(Map.of("Updates", updates)));
+        }
+    }
+
     public List<EmbyItem> listLibraryVideoItemsByDateCreated(
             String libraryId,
             int startIndex,
@@ -567,6 +623,37 @@ public class EmbyClient {
             ));
         }
         return new EmbyMediaLibraryPage(result, totalRecordCount.asInt());
+    }
+
+    private List<EmbyDeletionItem> deletionItems(Map<String, String> params) {
+        JsonNode root = get("/Items", params);
+        JsonNode itemNodes = root.path("Items");
+        if (!itemNodes.isArray()) {
+            throw new EmbyClientException("Emby deletion item response is incomplete");
+        }
+        List<EmbyDeletionItem> result = new ArrayList<>();
+        for (JsonNode item : itemNodes) {
+            List<String> sourcePaths = new ArrayList<>();
+            JsonNode mediaSources = item.path("MediaSources");
+            if (mediaSources.isArray()) {
+                for (JsonNode mediaSource : mediaSources) {
+                    String sourcePath = text(mediaSource, "Path", "path");
+                    if (StringUtils.hasText(sourcePath)) {
+                        sourcePaths.add(sourcePath);
+                    }
+                }
+            }
+            result.add(new EmbyDeletionItem(
+                    text(item, "Id", "id"),
+                    text(item, "Name", "name"),
+                    text(item, "Type", "type"),
+                    text(item, "Path", "path"),
+                    integerOrNull(item, "IndexNumber", "indexNumber"),
+                    text(item, "DateCreated", "dateCreated"),
+                    sourcePaths.stream().distinct().toList()
+            ));
+        }
+        return result;
     }
 
     private JsonNode get(String path, Map<String, String> params) {

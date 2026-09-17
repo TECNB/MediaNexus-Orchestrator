@@ -22,15 +22,18 @@ public class MediaLibraryPresenceService {
     private final EmbyClient embyClient;
     private final AnimeMagnetSearchService animeMagnetSearchService;
     private final AuthService authService;
+    private final MediaLibraryDeletionWorkflow deletionWorkflow;
 
     public MediaLibraryPresenceService(
             EmbyClient embyClient,
             AnimeMagnetSearchService animeMagnetSearchService,
-            AuthService authService
+            AuthService authService,
+            MediaLibraryDeletionWorkflow deletionWorkflow
     ) {
         this.embyClient = embyClient;
         this.animeMagnetSearchService = animeMagnetSearchService;
         this.authService = authService;
+        this.deletionWorkflow = deletionWorkflow;
     }
 
     public MediaLibraryPresenceResponse check(
@@ -49,7 +52,10 @@ public class MediaLibraryPresenceService {
         try {
             if ("movie".equals(normalizedMediaType)) {
                 List<EmbyCatalogItem> movies = embyClient.findMoviesByTmdbId(resolvedTmdbId);
-                EmbyCatalogItem match = movies.stream().findFirst().orElse(null);
+                EmbyCatalogItem match = movies.stream()
+                        .filter(movie -> !deletionWorkflow.reingestAllowed(movie.id()))
+                        .findFirst()
+                        .orElse(null);
                 return new MediaLibraryPresenceResponse(
                         true,
                         match != null,
@@ -61,8 +67,12 @@ public class MediaLibraryPresenceService {
 
             int selectedSeason = validateSeasonNumber(seasonNumber);
             for (EmbyCatalogItem series : embyClient.findSeriesByTmdbId(resolvedTmdbId)) {
+                if (deletionWorkflow.reingestAllowed(series.id())) {
+                    continue;
+                }
                 boolean seasonExists = embyClient.listSeriesSeasons(series.id()).stream()
-                        .anyMatch(season -> Integer.valueOf(selectedSeason).equals(season.indexNumber()));
+                        .anyMatch(season -> Integer.valueOf(selectedSeason).equals(season.indexNumber())
+                                && !deletionWorkflow.reingestAllowed(season.id()));
                 if (seasonExists) {
                     return new MediaLibraryPresenceResponse(
                             true,

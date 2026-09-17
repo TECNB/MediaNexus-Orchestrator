@@ -21,10 +21,12 @@ class MediaLibraryPresenceServiceTest {
     private final EmbyClient embyClient = mock(EmbyClient.class);
     private final AnimeMagnetSearchService animeSearchService = mock(AnimeMagnetSearchService.class);
     private final AuthService authService = mock(AuthService.class);
+    private final MediaLibraryDeletionWorkflow deletionWorkflow = mock(MediaLibraryDeletionWorkflow.class);
     private final MediaLibraryPresenceService service = new MediaLibraryPresenceService(
             embyClient,
             animeSearchService,
-            authService
+            authService,
+            deletionWorkflow
     );
 
     @BeforeEach
@@ -114,5 +116,18 @@ class MediaLibraryPresenceServiceTest {
                             .isEqualTo("Emby 媒体库中已存在《杀不死》第 1 季，禁止重复入库");
                 });
         service.requireSeriesSeasonAbsent(93370, 2);
+    }
+
+    @Test
+    void allowsReingestAfterCloudAndLocalStrmDeletion() {
+        when(embyClient.findSeriesByTmdbId(93370)).thenReturn(List.of(
+                new EmbyCatalogItem("series-1", "杀不死", "Series", "/tv/Sha bu si", null)
+        ));
+        when(embyClient.listSeriesSeasons("series-1")).thenReturn(List.of(
+                new EmbyCatalogItem("season-1", "Season 1", "Season", "/tv/Sha bu si/Season 1", 1)
+        ));
+        when(deletionWorkflow.reingestAllowed("season-1")).thenReturn(true);
+
+        assertThat(service.check("series", 93370, null, 1).exists()).isFalse();
     }
 }

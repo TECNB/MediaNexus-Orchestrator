@@ -2,13 +2,17 @@ package com.medianexus.orchestrator.controller;
 
 import com.medianexus.orchestrator.common.response.ApiResponse;
 import com.medianexus.orchestrator.dto.admin.request.AdminMediaIdentifyRequest;
+import com.medianexus.orchestrator.dto.admin.request.AdminMediaDeletionRequest;
 import com.medianexus.orchestrator.dto.admin.request.AdminMediaPosterSelectRequest;
+import com.medianexus.orchestrator.dto.admin.response.AdminMediaDeletionTaskResponse;
 import com.medianexus.orchestrator.dto.admin.response.AdminMediaLibraryItemResponse;
 import com.medianexus.orchestrator.dto.admin.response.AdminMediaLibraryPageResponse;
 import com.medianexus.orchestrator.dto.admin.response.AdminMediaMetadataCandidateResponse;
 import com.medianexus.orchestrator.dto.admin.response.AdminMediaPosterCandidateResponse;
+import com.medianexus.orchestrator.dto.admin.response.AdminMediaSeasonResponse;
 import com.medianexus.orchestrator.service.AdminMediaLibraryCatalogService;
 import com.medianexus.orchestrator.service.AdminMediaLibraryPoster;
+import com.medianexus.orchestrator.service.MediaLibraryDeletionWorkflow;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -40,9 +44,14 @@ public class AdminMediaLibraryController {
     private static final int PAGE_SIZE = 24;
 
     private final AdminMediaLibraryCatalogService catalogService;
+    private final MediaLibraryDeletionWorkflow deletionWorkflow;
 
-    public AdminMediaLibraryController(AdminMediaLibraryCatalogService catalogService) {
+    public AdminMediaLibraryController(
+            AdminMediaLibraryCatalogService catalogService,
+            MediaLibraryDeletionWorkflow deletionWorkflow
+    ) {
         this.catalogService = catalogService;
+        this.deletionWorkflow = deletionWorkflow;
     }
 
     @GetMapping("/items")
@@ -141,6 +150,38 @@ public class AdminMediaLibraryController {
         return ApiResponse.success(catalogService.selectPosterCandidate(
                 itemId, request.library(), request.candidateId()
         ));
+    }
+
+    @GetMapping("/items/{itemId}/seasons")
+    @Operation(summary = "查看剧集季度", description = "返回电视剧或动漫在 Emby 中已经存在的季度。")
+    public ApiResponse<List<AdminMediaSeasonResponse>> listSeasons(
+            @PathVariable @NotBlank String itemId,
+            @RequestParam @NotBlank String library
+    ) {
+        return ApiResponse.success(deletionWorkflow.listSeasons(itemId, library));
+    }
+
+    @PostMapping("/items/{itemId}/deletions")
+    @Operation(summary = "创建媒体删除任务", description = "删除 CD2 源内容和本地 STRM，并精确通知 Emby；不会触发 AS。")
+    public ApiResponse<AdminMediaDeletionTaskResponse> deleteMedia(
+            @PathVariable @NotBlank String itemId,
+            @Valid @RequestBody AdminMediaDeletionRequest request
+    ) {
+        return ApiResponse.success(deletionWorkflow.start(itemId, request.library(), request.seasonId()));
+    }
+
+    @GetMapping("/deletions")
+    @Operation(summary = "查看媒体删除任务")
+    public ApiResponse<List<AdminMediaDeletionTaskResponse>> listDeletions() {
+        return ApiResponse.success(deletionWorkflow.listTasks());
+    }
+
+    @PostMapping("/deletions/{taskId}/retry")
+    @Operation(summary = "重试媒体删除任务")
+    public ApiResponse<AdminMediaDeletionTaskResponse> retryDeletion(
+            @PathVariable @NotBlank String taskId
+    ) {
+        return ApiResponse.success(deletionWorkflow.retry(taskId));
     }
 
     private ResponseEntity<byte[]> preview(AdminMediaLibraryPoster image) {

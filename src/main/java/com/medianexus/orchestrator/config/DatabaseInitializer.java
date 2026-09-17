@@ -14,6 +14,7 @@ import com.medianexus.orchestrator.mapper.EmbyActivePlaybackSessionMapper;
 import com.medianexus.orchestrator.mapper.EmbyWatchSessionMapper;
 import com.medianexus.orchestrator.mapper.MovieMagnetIngestTaskLogMapper;
 import com.medianexus.orchestrator.mapper.MovieMagnetIngestTaskMapper;
+import com.medianexus.orchestrator.mapper.MediaDeletionTaskMapper;
 import com.medianexus.orchestrator.mapper.QuarkIngestTaskLogMapper;
 import com.medianexus.orchestrator.mapper.QuarkIngestTaskMapper;
 import com.medianexus.orchestrator.mapper.QuarkIngestTaskAttemptMapper;
@@ -49,6 +50,7 @@ public class DatabaseInitializer implements ApplicationRunner {
     private final AnimeMagnetIngestTaskMapper animeMagnetIngestTaskMapper;
     private final AnimeMagnetIngestTaskLogMapper animeMagnetIngestTaskLogMapper;
     private final MovieMagnetIngestTaskMapper movieMagnetIngestTaskMapper;
+    private final MediaDeletionTaskMapper mediaDeletionTaskMapper;
     private final MovieMagnetIngestTaskLogMapper movieMagnetIngestTaskLogMapper;
     private final QuarkIngestTaskMapper quarkIngestTaskMapper;
     private final QuarkIngestTaskLogMapper quarkIngestTaskLogMapper;
@@ -79,6 +81,7 @@ public class DatabaseInitializer implements ApplicationRunner {
             AnimeMagnetIngestTaskMapper animeMagnetIngestTaskMapper,
             AnimeMagnetIngestTaskLogMapper animeMagnetIngestTaskLogMapper,
             MovieMagnetIngestTaskMapper movieMagnetIngestTaskMapper,
+            MediaDeletionTaskMapper mediaDeletionTaskMapper,
             MovieMagnetIngestTaskLogMapper movieMagnetIngestTaskLogMapper,
             QuarkIngestTaskMapper quarkIngestTaskMapper,
             QuarkIngestTaskLogMapper quarkIngestTaskLogMapper,
@@ -108,6 +111,7 @@ public class DatabaseInitializer implements ApplicationRunner {
         this.animeMagnetIngestTaskMapper = animeMagnetIngestTaskMapper;
         this.animeMagnetIngestTaskLogMapper = animeMagnetIngestTaskLogMapper;
         this.movieMagnetIngestTaskMapper = movieMagnetIngestTaskMapper;
+        this.mediaDeletionTaskMapper = mediaDeletionTaskMapper;
         this.movieMagnetIngestTaskLogMapper = movieMagnetIngestTaskLogMapper;
         this.quarkIngestTaskMapper = quarkIngestTaskMapper;
         this.quarkIngestTaskLogMapper = quarkIngestTaskLogMapper;
@@ -173,6 +177,7 @@ public class DatabaseInitializer implements ApplicationRunner {
         ensureMovieMagnetTaskTagColumns();
         ensureMovieMagnetTaskAttemptChainColumns();
         movieMagnetIngestTaskLogMapper.createTableIfNotExists();
+        mediaDeletionTaskMapper.createTableIfNotExists();
         quarkIngestTaskMapper.createTableIfNotExists();
         ensureQuarkTaskSourceTypeColumn();
         quarkIngestTaskLogMapper.createTableIfNotExists();
