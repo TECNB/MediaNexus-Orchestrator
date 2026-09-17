@@ -1,11 +1,18 @@
 package com.medianexus.orchestrator.integration.clouddrive;
 
+import static com.medianexus.orchestrator.service.organization.LibraryOrganizationPlan.join;
+import static com.medianexus.orchestrator.service.organization.LibraryOrganizationPlan.normalizePath;
+
 import com.medianexus.orchestrator.config.CloudDrive2Properties;
+import io.grpc.Status;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
+import java.util.ArrayDeque;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
@@ -14,14 +21,19 @@ import org.springframework.stereotype.Component;
 public class TelegramCloudInboxMover {
     private static final String INBOX_DIRECTORY = "My Telegram";
     private static final String LIBRARY_DIRECTORY = "Media/Adult/Other/电报";
+    private final CloudDrive2FileOperations fileOperations;
     private final CloudDrive2Properties properties;
 
-    TelegramCloudInboxMover(CloudDrive2Properties properties) {
+    TelegramCloudInboxMover(
+            CloudDrive2FileOperations fileOperations,
+            CloudDrive2Properties properties
+    ) {
+        this.fileOperations = fileOperations;
         this.properties = properties;
     }
 
     public int countInboxFiles() {
-        return countFiles(inboxPath());
+        return countCloudFiles(cloudInboxPath());
     }
 
     public MoveOutcome awaitExpectedFilesAndMove(int baselineFileCount, int expectedNewFileCount) {
@@ -43,9 +55,10 @@ public class TelegramCloudInboxMover {
             throw failure("等待 PikPak 保存文件超时：expected=" + expectedTotal + ", actual=" + actualTotal);
         }
 
-        List<Path> entries = topLevelEntries(inboxPath());
+        List<CloudDrive2FileEntry> entries = list(cloudInboxPath());
         Path targetDirectory = libraryPath();
-        for (Path source : entries) {
+        for (CloudDrive2FileEntry entry : entries) {
+            Path source = inboxPath().resolve(entry.name());
             Path target = targetDirectory.resolve(source.getFileName());
             if (Files.exists(target)) {
                 throw failure("Telegram 目标目录已存在同名条目：" + target.getFileName());
@@ -56,31 +69,42 @@ public class TelegramCloudInboxMover {
                 throw failure("Telegram 文件移动失败：" + source.getFileName(), exception);
             }
         }
-        if (!topLevelEntries(inboxPath()).isEmpty()) {
-            throw failure("Telegram 文件移动后收件箱仍有残留内容");
-        }
         return new MoveOutcome(entries.size(), actualTotal, expectedNewFileCount);
     }
 
-    private int countFiles(Path root) {
-        if (!Files.exists(root)) return 0;
-        try (var paths = Files.walk(root)) {
-            return Math.toIntExact(paths.filter(Files::isRegularFile).count());
-        } catch (IOException exception) {
-            throw failure("无法读取 Telegram 收件箱", exception);
+    private int countCloudFiles(String rootPath) {
+        int count = 0;
+        ArrayDeque<String> pending = new ArrayDeque<>();
+        Set<String> visited = new HashSet<>();
+        pending.add(normalizePath(rootPath));
+        while (!pending.isEmpty()) {
+            String directory = pending.removeFirst();
+            if (!visited.add(directory)) continue;
+            for (CloudDrive2FileEntry entry : list(directory)) {
+                if (entry.directory()) {
+                    pending.addLast(entry.fullPath());
+                } else {
+                    count++;
+                }
+            }
         }
+        return count;
     }
 
-    private List<Path> topLevelEntries(Path directory) {
-        if (!Files.exists(directory)) return List.of();
-        try (var paths = Files.list(directory)) {
-            return paths.toList();
-        } catch (IOException exception) {
-            throw failure("无法读取 Telegram 收件箱顶层内容", exception);
+    private List<CloudDrive2FileEntry> list(String path) {
+        try {
+            return fileOperations.list(path, true);
+        } catch (CloudDrive2ClientException exception) {
+            if (exception.getStatusCode() == Status.Code.NOT_FOUND) return List.of();
+            throw exception;
         }
     }
 
     private Path inboxPath() { return mediaRoot().resolve(INBOX_DIRECTORY); }
+
+    private String cloudInboxPath() {
+        return join(properties.getCloudDrivePathPrefix(), INBOX_DIRECTORY);
+    }
 
     private Path libraryPath() {
         Path path = mediaRoot().resolve(LIBRARY_DIRECTORY);
