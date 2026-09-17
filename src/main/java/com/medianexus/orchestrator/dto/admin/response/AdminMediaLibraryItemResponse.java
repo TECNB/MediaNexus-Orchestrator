@@ -34,7 +34,7 @@ public record AdminMediaLibraryItemResponse(
         @JsonProperty("library_name")
         String libraryName,
 
-        @Schema(description = "Emby 媒体类型：Movie 或 Series")
+        @Schema(description = "Emby 媒体类型：Movie、Series 或 BoxSet")
         String type
 ) {
 }

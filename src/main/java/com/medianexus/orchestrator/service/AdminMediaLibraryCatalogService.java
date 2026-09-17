@@ -73,7 +73,7 @@ public class AdminMediaLibraryCatalogService {
             // ponytail: current libraries are far below 10k items; paginate upstream if that ceiling is reached.
             EmbyMediaLibraryPage result = embyClient.listTopLevelMediaItems(
                     embyLibrary.id(),
-                    allowedLibrary.itemType(),
+                    allowedLibrary.listingItemType(),
                     missingPoster ? 0 : (page - 1) * pageSize,
                     missingPoster ? 10_000 : pageSize,
                     search
@@ -304,6 +304,27 @@ public class AdminMediaLibraryCatalogService {
             throw new BusinessException(
                     ErrorCode.NOT_FOUND,
                     "未在指定媒体库中找到该作品",
+                    HttpStatus.NOT_FOUND
+            );
+        }
+        return item;
+    }
+
+    EmbyMediaLibraryItem requireDeletableItem(
+            String itemId,
+            AdminMediaLibraryScope allowedLibrary,
+            EmbyLibrary library
+    ) {
+        EmbyMediaLibraryItem item = embyClient.getTopLevelMediaItem(
+                library.id(), allowedLibrary.listingItemType(), itemId
+        );
+        if (item == null && !allowedLibrary.listingItemType().equals(allowedLibrary.itemType())) {
+            item = embyClient.getTopLevelMediaItem(library.id(), allowedLibrary.itemType(), itemId);
+        }
+        if (item == null) {
+            throw new BusinessException(
+                    ErrorCode.NOT_FOUND,
+                    "未在指定媒体库中找到该作品或合集",
                     HttpStatus.NOT_FOUND
             );
         }

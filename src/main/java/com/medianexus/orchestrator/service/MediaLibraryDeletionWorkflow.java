@@ -36,6 +36,7 @@ public class MediaLibraryDeletionWorkflow {
     private static final Logger log = LoggerFactory.getLogger(MediaLibraryDeletionWorkflow.class);
     private static final Duration EMBY_CONFIRMATION_TIMEOUT = Duration.ofMinutes(2);
     private static final TypeReference<List<String>> STRING_LIST = new TypeReference<>() { };
+    private static final String COLLECTION_TARGET_LABEL = "整套合集";
 
     private final AuthService authService;
     private final AdminMediaLibraryCatalogService catalogService;
@@ -86,14 +87,16 @@ public class MediaLibraryDeletionWorkflow {
         authService.requireAdminUser();
         AdminMediaLibraryScope scope = AdminMediaLibraryScope.fromRequest(library);
         EmbyLibrary embyLibrary = catalogService.resolveLibrary(scope);
-        EmbyMediaLibraryItem item = catalogService.requireAllowedItem(itemId, scope, embyLibrary);
+        EmbyMediaLibraryItem item = catalogService.requireDeletableItem(itemId, scope, embyLibrary);
         if (taskMapper.countActiveTarget(StringUtils.hasText(seasonId) ? seasonId : itemId) > 0) {
             throw new BusinessException(ErrorCode.CONFLICT, "该媒体已有删除任务正在执行", HttpStatus.CONFLICT);
         }
 
-        DeletionPlan plan = scope.episodic()
-                ? episodicPlan(embyLibrary, scope, item, seasonId)
-                : moviePlan(embyLibrary, scope, item);
+        DeletionPlan plan = "BoxSet".equals(item.type())
+                ? collectionPlan(embyLibrary, scope, item)
+                : scope.episodic()
+                        ? episodicPlan(embyLibrary, scope, item, seasonId)
+                        : moviePlan(embyLibrary, scope, item);
         MediaDeletionTask task = new MediaDeletionTask();
         task.setId(UUID.randomUUID().toString());
         task.setLibrary(scope.requestValue());
@@ -169,6 +172,10 @@ public class MediaLibraryDeletionWorkflow {
 
             saveStage(task, "VERIFYING");
             waitUntilEmbyItemsDisappear(read(task.getEmbyItemIds()));
+            if (isCollectionTask(task) && embyClient.itemExists(task.getItemId())) {
+                embyClient.deleteCollection(task.getItemId());
+                waitUntilEmbyItemsDisappear(List.of(task.getItemId()));
+            }
             task.setStatus("SUCCEEDED");
             task.setStage("COMPLETED");
             task.setErrorMessage(null);
@@ -204,6 +211,36 @@ public class MediaLibraryDeletionWorkflow {
                 deletionItem.mediaSourcePaths(),
                 List.of(deletionItem.path()),
                 List.of(deletionItem.id())
+        );
+    }
+
+    private DeletionPlan collectionPlan(
+            EmbyLibrary library,
+            AdminMediaLibraryScope scope,
+            EmbyMediaLibraryItem collection
+    ) {
+        if (scope != AdminMediaLibraryScope.ADULT_OTHER) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "只有 Adult - Other 支持整套合集删除");
+        }
+        List<EmbyDeletionItem> members = embyClient.listCollectionItemsForDeletion(collection.id());
+        if (members.isEmpty()) {
+            throw new BusinessException(ErrorCode.NOT_FOUND, "该合集没有可删除的媒体", HttpStatus.NOT_FOUND);
+        }
+
+        Set<String> sources = new LinkedHashSet<>();
+        Set<String> strmPaths = new LinkedHashSet<>();
+        Set<String> embyIds = new LinkedHashSet<>();
+        for (EmbyDeletionItem member : members) {
+            requireBelowLibraryRoot(member.path(), library);
+            requirePaths(member.mediaSourcePaths(), List.of(member.path()));
+            sources.addAll(member.mediaSourcePaths());
+            strmPaths.add(member.path());
+            embyIds.add(member.id());
+        }
+        requirePaths(List.copyOf(sources), List.copyOf(strmPaths));
+        return new DeletionPlan(
+                null, null, COLLECTION_TARGET_LABEL,
+                List.copyOf(sources), List.copyOf(strmPaths), List.copyOf(embyIds)
         );
     }
 
@@ -309,6 +346,11 @@ public class MediaLibraryDeletionWorkflow {
             sleep(Duration.ofSeconds(2));
         } while (Instant.now().isBefore(deadline));
         throw new IllegalStateException("文件已删除，但 Emby 尚未完成媒体库同步");
+    }
+
+    private boolean isCollectionTask(MediaDeletionTask task) {
+        return AdminMediaLibraryScope.ADULT_OTHER.requestValue().equals(task.getLibrary())
+                && COLLECTION_TARGET_LABEL.equals(task.getTargetLabel());
     }
 
     private void saveStage(MediaDeletionTask task, String stage) {

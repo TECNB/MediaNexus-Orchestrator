@@ -79,6 +79,31 @@ class AdminMediaLibraryCatalogServiceTest {
     }
 
     @Test
+    void listsAdultOtherAsCollectionsInsteadOfEveryMovie() {
+        when(embyClient.listLibraries()).thenReturn(List.of(
+                new EmbyLibrary("adult-other-id", "Adult - Other", List.of("/adult/other"))
+        ));
+        when(embyClient.listTopLevelMediaItems("adult-other-id", "BoxSet", 0, 24, null))
+                .thenReturn(new EmbyMediaLibraryPage(List.of(new EmbyMediaLibraryItem(
+                        "collection-1",
+                        "Creator collection",
+                        "BoxSet",
+                        null,
+                        "2026-09-16T16:12:21Z",
+                        "poster-tag"
+                )), 135));
+
+        var response = service.listItems("adult-other", 1, 24, null);
+
+        verify(embyClient).listTopLevelMediaItems("adult-other-id", "BoxSet", 0, 24, null);
+        assertThat(response.total()).isEqualTo(135);
+        assertThat(response.items()).singleElement().satisfies(item -> {
+            assertThat(item.type()).isEqualTo("BoxSet");
+            assertThat(item.title()).isEqualTo("Creator collection");
+        });
+    }
+
+    @Test
     void filtersMissingPostersBeforeApplyingPagination() {
         when(embyClient.listLibraries()).thenReturn(List.of(
                 new EmbyLibrary("movies-id", "Movies", List.of("/movies"))

@@ -35,6 +35,10 @@ public enum AdminMediaLibraryScope {
         return itemType;
     }
 
+    public String listingItemType() {
+        return this == ADULT_OTHER ? "BoxSet" : itemType;
+    }
+
     public boolean episodic() {
         return "Series".equals(itemType);
     }

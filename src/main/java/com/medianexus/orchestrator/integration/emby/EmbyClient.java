@@ -186,6 +186,16 @@ public class EmbyClient {
         ));
     }
 
+    public List<EmbyDeletionItem> listCollectionItemsForDeletion(String collectionId) {
+        return deletionItems(Map.of(
+                "ParentId", collectionId,
+                "Recursive", "true",
+                "IncludeItemTypes", "Movie,Video,Episode",
+                "Fields", "Path,DateCreated,MediaSources",
+                "Limit", "10000"
+        ));
+    }
+
     public EmbyDeletionItem getMediaItemForDeletion(
             String libraryId,
             String itemType,
