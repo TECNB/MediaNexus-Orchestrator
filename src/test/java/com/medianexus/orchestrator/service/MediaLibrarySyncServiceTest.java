@@ -21,4 +21,13 @@ class MediaLibrarySyncServiceTest {
                 false
         )).isEqualTo("/TV/繁花/Season 01");
     }
+
+    @Test
+    void shallowAnimeCheckStopsAtAnimeSeriesDirectory() {
+        assertThat(MediaLibrarySyncService.remotePath(
+                "/srv/media/CloudNAS/PikPak/Media/Anime/黄金神威 第二季/Season 2/黄金神威 第二季 S02E01.mp4",
+                false,
+                AdminMediaLibraryScope.ANIME
+        )).isEqualTo("/srv/media/CloudNAS/PikPak/Media/Anime/黄金神威 第二季");
+    }
 }

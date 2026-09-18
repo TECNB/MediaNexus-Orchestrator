@@ -69,7 +69,7 @@ public class MediaLibrarySyncService {
                 skipped++;
                 continue;
             }
-            String remoteTarget = remotePath(source, deep);
+            String remoteTarget = remotePath(source, deep, scope);
             if (remoteTarget == null || !StringUtils.hasText(item.path())) {
                 skipped++;
                 continue;
@@ -163,6 +163,10 @@ public class MediaLibrarySyncService {
     }
 
     static String remotePath(String source, boolean deep) {
+        return remotePath(source, deep, null);
+    }
+
+    static String remotePath(String source, boolean deep, AdminMediaLibraryScope scope) {
         if (!StringUtils.hasText(source)) {
             return null;
         }
@@ -185,6 +189,12 @@ public class MediaLibrarySyncService {
             if (deep) {
                 return ensureLeadingSlash(path);
             }
+            if (scope == AdminMediaLibraryScope.ANIME) {
+                String animeTarget = animeRootTarget(path);
+                if (animeTarget != null) {
+                    return animeTarget;
+                }
+            }
             int fileStart = path.lastIndexOf('/');
             return fileStart >= 0 ? ensureLeadingSlash(path.substring(0, fileStart)) : null;
         } catch (IllegalArgumentException exception) {
@@ -194,6 +204,21 @@ public class MediaLibrarySyncService {
 
     private static String ensureLeadingSlash(String path) {
         return path.startsWith("/") ? path : "/" + path;
+    }
+
+    private static String animeRootTarget(String path) {
+        int marker = path.indexOf("/Media/Anime/");
+        if (marker < 0) {
+            marker = path.indexOf("/Anime/");
+            if (marker < 0) {
+                return null;
+            }
+            marker += "/Anime/".length();
+        } else {
+            marker += "/Media/Anime/".length();
+        }
+        int nextSlash = path.indexOf('/', marker);
+        return nextSlash > marker ? path.substring(0, nextSlash) : null;
     }
 
     private static final class SyncTarget {
