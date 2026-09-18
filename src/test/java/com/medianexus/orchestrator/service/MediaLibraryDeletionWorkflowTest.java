@@ -107,6 +107,45 @@ class MediaLibraryDeletionWorkflowTest {
         });
     }
 
+    @Test
+    void allowsDeletingASelectedSeasonWhenEmbyPlacesItOutsideSeriesDirectory() throws Exception {
+        EmbyLibrary library = new EmbyLibrary(
+                "tv-id", "电视剧", List.of("/srv/media/STRM/TV")
+        );
+        EmbyMediaLibraryItem series = new EmbyMediaLibraryItem(
+                "series-1", "新世界：虚拟货币争霸战", "Series", null,
+                "2026-09-16T16:12:21Z", "poster-tag"
+        );
+        EmbyDeletionItem season = new EmbyDeletionItem(
+                "season-1", "Season 01", "Season", "/srv/media/STRM/TV/Season 01",
+                1, "2026-09-16T16:12:21Z", List.of()
+        );
+        EmbyDeletionItem episode = new EmbyDeletionItem(
+                "episode-1", "E01", "Episode", "/srv/media/STRM/TV/Season 01/E01.strm",
+                1, "2026-09-16T16:12:21Z", List.of(
+                        "/srv/media/CloudNAS/PikPak/TV/新世界：虚拟货币争霸战/Season 01/E01.mp4"
+                )
+        );
+        when(catalogService.resolveLibrary(AdminMediaLibraryScope.TV)).thenReturn(library);
+        when(catalogService.requireDeletableItem("series-1", AdminMediaLibraryScope.TV, library))
+                .thenReturn(series);
+        when(embyClient.getMediaItemForDeletion("tv-id", "Series", "series-1"))
+                .thenReturn(new EmbyDeletionItem(
+                        "series-1", series.title(), "Series", "/srv/media/STRM/TV/新世界：虚拟货币争霸战",
+                        null, series.dateCreated(), List.of()
+                ));
+        when(embyClient.listSeriesSeasonsForDeletion("series-1")).thenReturn(List.of(season));
+        when(embyClient.listSeasonEpisodesForDeletion("season-1")).thenReturn(List.of(episode));
+        when(taskMapper.countActiveTarget("season-1")).thenReturn(0);
+
+        var response = workflow.start("series-1", "tv", "season-1");
+
+        assertThat(response.targetLabel()).isEqualTo("Season 01");
+        ArgumentCaptor<MediaDeletionTask> taskCaptor = ArgumentCaptor.forClass(MediaDeletionTask.class);
+        verify(taskMapper).insert(taskCaptor.capture());
+        assertThat(taskCaptor.getValue().getSeasonNumber()).isEqualTo(1);
+    }
+
     private EmbyDeletionItem deletionItem(String id, String name) {
         return new EmbyDeletionItem(
                 id,

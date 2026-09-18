@@ -300,7 +300,14 @@ public class MediaLibraryDeletionWorkflow {
         Set<String> strmPaths = new LinkedHashSet<>();
         Set<String> embyIds = new LinkedHashSet<>();
         for (EmbyDeletionItem season : targets) {
-            requireBelow(season.path(), seriesPath, "季度 STRM 路径不在剧集目录内");
+            if (StringUtils.hasText(seasonId)) {
+                // Some Emby libraries flatten a single season directly under the
+                // library root. It is still safe to delete when the season is
+                // within the selected library and every episode stays below it.
+                requireBelowLibraryRoot(season.path(), library);
+            } else {
+                requireBelow(season.path(), seriesPath, "季度 STRM 路径不在剧集目录内");
+            }
             Path seasonPath = Path.of(season.path()).toAbsolutePath().normalize();
             List<EmbyDeletionItem> episodes = embyClient.listSeasonEpisodesForDeletion(season.id());
             strmPaths.add(season.path());
