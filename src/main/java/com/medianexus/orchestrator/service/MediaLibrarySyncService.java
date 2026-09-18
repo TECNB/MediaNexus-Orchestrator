@@ -3,6 +3,7 @@ package com.medianexus.orchestrator.service;
 import com.medianexus.orchestrator.common.exception.BusinessException;
 import com.medianexus.orchestrator.common.exception.ErrorCode;
 import com.medianexus.orchestrator.dto.admin.response.AdminMediaLibrarySyncResponse;
+import com.medianexus.orchestrator.dto.admin.response.AdminMediaLibrarySyncTargetResponse;
 import com.medianexus.orchestrator.integration.clouddrive.CloudDrive2MediaDeletion;
 import com.medianexus.orchestrator.config.CloudDrive2Properties;
 import com.medianexus.orchestrator.integration.emby.EmbyDeletionItem;
@@ -18,6 +19,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.Locale;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -57,6 +59,10 @@ public class MediaLibrarySyncService {
     }
 
     public AdminMediaLibrarySyncResponse sync(String library, boolean deep) {
+        return sync(library, deep, List.of());
+    }
+
+    public AdminMediaLibrarySyncResponse sync(String library, boolean deep, Collection<String> selectedPaths) {
         authService.requireAdminUser();
         AdminMediaLibraryScope scope = AdminMediaLibraryScope.fromRequest(library);
         EmbyLibrary embyLibrary = catalogService.resolveLibrary(scope);
@@ -64,6 +70,14 @@ public class MediaLibrarySyncService {
         Map<String, SyncTarget> targets = new LinkedHashMap<>();
         int skipped = 0;
         for (EmbyDeletionItem item : embyClient.listLibraryMediaItemsForSync(embyLibrary.id())) {
+            if (deep && !selectedPaths.isEmpty() && StringUtils.hasText(item.path()) && selectedPaths.stream()
+                    .noneMatch(path -> item.path().equals(path) || item.path().startsWith(path + "/"))) {
+                continue;
+            }
+            if (deep && !selectedPaths.isEmpty() && !StringUtils.hasText(item.path())) {
+                skipped++;
+                continue;
+            }
             String source = item.mediaSourcePaths().stream().filter(StringUtils::hasText).findFirst().orElse(null);
             if (!supportedSource(source)) {
                 skipped++;
@@ -116,6 +130,48 @@ public class MediaLibrarySyncService {
                 (System.nanoTime() - started) / 1_000_000L,
                 deep
         );
+    }
+
+    public List<AdminMediaLibrarySyncTargetResponse> searchTargets(String library, String query) {
+        authService.requireAdminUser();
+        AdminMediaLibraryScope scope = AdminMediaLibraryScope.fromRequest(library);
+        String normalizedQuery = query == null ? "" : query.trim().toLowerCase(Locale.ROOT);
+        if (normalizedQuery.isEmpty()) {
+            return List.of();
+        }
+        Map<String, AdminMediaLibrarySyncTargetResponse> results = new LinkedHashMap<>();
+        for (EmbyDeletionItem item : embyClient.listLibraryMediaItemsForSync(catalogService.resolveLibrary(scope).id())) {
+            String source = item.mediaSourcePaths().stream().filter(StringUtils::hasText).findFirst().orElse(null);
+            if (!supportedSource(source) || !StringUtils.hasText(item.path())) {
+                continue;
+            }
+            String haystack = (item.name() + " " + item.path() + " " + source).toLowerCase(Locale.ROOT);
+            if (!haystack.contains(normalizedQuery)) {
+                continue;
+            }
+            Path file = Path.of(item.path()).toAbsolutePath().normalize();
+            addTarget(results, file, item.name(), "file", item.path());
+            addTarget(results, file.getParent(), file.getParent() == null ? item.name() : file.getParent().getFileName().toString(), "folder", item.path());
+            Path seriesDirectory = file.getParent() == null ? null : file.getParent().getParent();
+            addTarget(results, seriesDirectory, seriesDirectory == null ? item.name() : seriesDirectory.getFileName().toString(), "folder", item.path());
+            if (results.size() >= 30) {
+                break;
+            }
+        }
+        return List.copyOf(results.values());
+    }
+
+    private void addTarget(
+            Map<String, AdminMediaLibrarySyncTargetResponse> results,
+            Path path,
+            String label,
+            String targetType,
+            String detail
+    ) {
+        if (path == null || !StringUtils.hasText(label) || results.containsKey(path.toString())) {
+            return;
+        }
+        results.put(path.toString(), new AdminMediaLibrarySyncTargetResponse(label, path.toString(), targetType, detail));
     }
 
     private CloudDrive2MediaDeletion.MediaSourceCheckResult existingCloudPaths(Collection<SyncTarget> targets) {

@@ -8,6 +8,7 @@ import com.medianexus.orchestrator.dto.admin.response.AdminMediaDeletionTaskResp
 import com.medianexus.orchestrator.dto.admin.response.AdminMediaLibraryItemResponse;
 import com.medianexus.orchestrator.dto.admin.response.AdminMediaLibraryPageResponse;
 import com.medianexus.orchestrator.dto.admin.response.AdminMediaLibrarySyncResponse;
+import com.medianexus.orchestrator.dto.admin.response.AdminMediaLibrarySyncTargetResponse;
 import com.medianexus.orchestrator.dto.admin.response.AdminMediaMetadataCandidateResponse;
 import com.medianexus.orchestrator.dto.admin.response.AdminMediaPosterCandidateResponse;
 import com.medianexus.orchestrator.dto.admin.response.AdminMediaSeasonResponse;
@@ -63,9 +64,19 @@ public class AdminMediaLibraryController {
     @Operation(summary = "同步媒体库", description = "检查网盘中已删除的媒体，并同步清理本地失效记录；不会删除网盘内容。")
     public ApiResponse<AdminMediaLibrarySyncResponse> sync(
             @RequestParam @NotBlank String library,
-            @RequestParam(defaultValue = "false") boolean deep
+            @RequestParam(defaultValue = "false") boolean deep,
+            @RequestParam(name = "target", required = false) List<String> targets
     ) {
-        return ApiResponse.success(syncService.sync(library, deep));
+        return ApiResponse.success(syncService.sync(library, deep, targets == null ? List.of() : targets));
+    }
+
+    @GetMapping("/sync-targets")
+    @Operation(summary = "搜索深度检查目标", description = "按名称或路径搜索可进行深度检查的媒体文件夹或文件。")
+    public ApiResponse<List<AdminMediaLibrarySyncTargetResponse>> searchSyncTargets(
+            @RequestParam @NotBlank String library,
+            @RequestParam @NotBlank @Size(max = 200) String query
+    ) {
+        return ApiResponse.success(syncService.searchTargets(library, query));
     }
 
     @GetMapping("/items")
