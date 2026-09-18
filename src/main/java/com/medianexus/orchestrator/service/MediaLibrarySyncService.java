@@ -157,18 +157,19 @@ public class MediaLibrarySyncService {
         return StringUtils.hasText(path) ? path.trim().replaceAll("/+$", "") : "";
     }
 
-    private String remotePath(String source, boolean deep) {
+    static String remotePath(String source, boolean deep) {
         if (!StringUtils.hasText(source)) {
             return null;
         }
         try {
-            URI uri = URI.create(source);
-            String path = uri.getPath();
-            if (!StringUtils.hasText(path)) {
-                return null;
-            }
+            String path = source;
             int marker = path.indexOf("/smartstrm_fid/");
             if (marker >= 0) {
+                path = URI.create(source).getPath();
+                if (!StringUtils.hasText(path)) {
+                    return null;
+                }
+                marker = path.indexOf("/smartstrm_fid/");
                 String afterMarker = path.substring(marker + "/smartstrm_fid/".length());
                 int fileIdEnd = afterMarker.indexOf('/');
                 if (fileIdEnd < 0 || fileIdEnd == afterMarker.length() - 1) {
@@ -186,7 +187,7 @@ public class MediaLibrarySyncService {
         }
     }
 
-    private String ensureLeadingSlash(String path) {
+    private static String ensureLeadingSlash(String path) {
         return path.startsWith("/") ? path : "/" + path;
     }
 
