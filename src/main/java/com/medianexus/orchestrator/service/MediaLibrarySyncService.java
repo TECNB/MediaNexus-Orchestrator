@@ -68,6 +68,7 @@ public class MediaLibrarySyncService {
         EmbyLibrary embyLibrary = catalogService.resolveLibrary(scope);
         long started = System.nanoTime();
         Map<String, SyncTarget> targets = new LinkedHashMap<>();
+        List<String> skippedMedia = new ArrayList<>();
         int skipped = 0;
         for (EmbyDeletionItem item : embyClient.listLibraryMediaItemsForSync(embyLibrary.id())) {
             if (deep && !selectedPaths.isEmpty() && StringUtils.hasText(item.path()) && selectedPaths.stream()
@@ -76,22 +77,26 @@ public class MediaLibrarySyncService {
             }
             if (deep && !selectedPaths.isEmpty() && !StringUtils.hasText(item.path())) {
                 skipped++;
+                addDetail(skippedMedia, item.name(), item.path());
                 continue;
             }
             String source = item.mediaSourcePaths().stream().filter(StringUtils::hasText).findFirst().orElse(null);
             if (!supportedSource(source)) {
                 skipped++;
+                addDetail(skippedMedia, item.name(), item.path());
                 continue;
             }
             String remoteTarget = remotePath(source, deep, scope);
             if (remoteTarget == null || !StringUtils.hasText(item.path())) {
                 skipped++;
+                addDetail(skippedMedia, item.name(), item.path());
                 continue;
             }
             Path localPath = Path.of(item.path()).toAbsolutePath().normalize();
             Path localDirectory = localPath.getParent();
             if (localDirectory == null) {
                 skipped++;
+                addDetail(skippedMedia, item.name(), item.path());
                 continue;
             }
             Path localTarget = deep ? localPath : localDirectory;
@@ -106,9 +111,12 @@ public class MediaLibrarySyncService {
         Set<String> existingCloudPaths = cloudCheck.existing();
         Set<String> failedCloudPaths = cloudCheck.failed();
         int errors = failedCloudPaths.size();
+        List<String> removedMedia = new ArrayList<>();
+        List<String> failedMedia = new ArrayList<>();
         for (SyncTarget target : targets.values()) {
             try {
                 if (failedCloudPaths.contains(target.remoteDirectory)) {
+                    addDetail(failedMedia, target.label(), target.remoteDirectory);
                     continue;
                 }
                 if (isCloudPath(target.remoteDirectory)
@@ -120,16 +128,25 @@ public class MediaLibrarySyncService {
                 embyClient.notifyMediaDeleted(target.paths);
                 removedDirectories++;
                 removedItems += target.paths.size();
+                addDetail(removedMedia, target.label(), target.remoteDirectory);
             } catch (RuntimeException exception) {
                 errors++;
+                addDetail(failedMedia, target.label(), target.remoteDirectory);
             }
         }
         return new AdminMediaLibrarySyncResponse(
                 deep ? 0 : targets.size(), deep ? targets.size() : 0,
                 removedDirectories, removedItems, skipped, errors,
                 (System.nanoTime() - started) / 1_000_000L,
-                deep
+                deep, removedMedia, skippedMedia, failedMedia
         );
+    }
+
+    private void addDetail(List<String> details, String preferred, String fallback) {
+        String value = StringUtils.hasText(preferred) ? preferred : fallback;
+        if (StringUtils.hasText(value) && details.size() < 50 && !details.contains(value)) {
+            details.add(value);
+        }
     }
 
     public List<AdminMediaLibrarySyncTargetResponse> searchTargets(String library, String query) {
@@ -285,6 +302,11 @@ public class MediaLibrarySyncService {
         private SyncTarget(String remoteDirectory, Path localTarget) {
             this.remoteDirectory = remoteDirectory;
             this.localTarget = localTarget;
+        }
+
+        private String label() {
+            Path name = Path.of(remoteDirectory).getFileName();
+            return name == null ? remoteDirectory : name.toString();
         }
     }
 }

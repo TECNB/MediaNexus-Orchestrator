@@ -1,6 +1,7 @@
 package com.medianexus.orchestrator.dto.admin.response;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import java.util.List;
 
 public record AdminMediaLibrarySyncResponse(
         @JsonProperty("checked_directories") int checkedDirectories,
@@ -10,6 +11,9 @@ public record AdminMediaLibrarySyncResponse(
         @JsonProperty("skipped_items") int skippedItems,
         @JsonProperty("error_count") int errorCount,
         @JsonProperty("elapsed_ms") long elapsedMs,
-        boolean deep
+        boolean deep,
+        @JsonProperty("removed_media") List<String> removedMedia,
+        @JsonProperty("skipped_media") List<String> skippedMedia,
+        @JsonProperty("failed_media") List<String> failedMedia
 ) {
 }
