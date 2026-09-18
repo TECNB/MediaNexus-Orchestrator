@@ -21,12 +21,16 @@ public class MediaSourceDeletion {
     }
 
     public void delete(List<String> mediaSourcePaths) {
+        delete(mediaSourcePaths, null);
+    }
+
+    public void delete(List<String> mediaSourcePaths, String targetDirectoryName) {
         List<String> quarkPaths = mediaSourcePaths.stream().filter(quarkDeletion::supports).toList();
         List<String> cloudDrivePaths = mediaSourcePaths.stream()
                 .filter(path -> !quarkDeletion.supports(path))
                 .toList();
         if (!quarkPaths.isEmpty()) {
-            quarkDeletion.deleteMediaSourcePaths(quarkPaths);
+            quarkDeletion.deleteMediaSourcePaths(quarkPaths, targetDirectoryName);
         }
         if (!cloudDrivePaths.isEmpty()) {
             CloudDrive2MediaDeletion deletion = cloudDriveDeletion.getIfAvailable();

@@ -22,9 +22,9 @@ class MediaSourceDeletionTest {
         String source = "http://host/smartstrm_fid/QuarkTV/8a98133a4d99445096bf722f8c628dd1/TV/01.mp4";
         when(quark.supports(source)).thenReturn(true);
 
-        deletion.delete(List.of(source));
+        deletion.delete(List.of(source), "Series title");
 
-        verify(quark).deleteMediaSourcePaths(List.of(source));
+        verify(quark).deleteMediaSourcePaths(List.of(source), "Series title");
         verify(cloudDrive, never()).getIfAvailable();
     }
 }

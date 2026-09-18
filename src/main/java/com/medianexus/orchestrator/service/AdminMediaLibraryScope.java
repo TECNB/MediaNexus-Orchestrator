@@ -9,6 +9,7 @@ import org.springframework.util.StringUtils;
 public enum AdminMediaLibraryScope {
     MOVIES("movies", "Movies", "Movie"),
     TV("tv", "TV", "Series"),
+    VARIETY("variety", "综艺", "Series"),
     ANIME("anime", "Anime", "Series"),
     ADULT_OTHER("adult-other", "Adult - Other", "Movie"),
     ADULT_JAV("adult-jav", "Adult-JAV", "Movie");
@@ -52,7 +53,7 @@ public enum AdminMediaLibraryScope {
                 .findFirst()
                 .orElseThrow(() -> new BusinessException(
                         ErrorCode.BAD_REQUEST,
-                        "媒体库只能是 movies、tv、anime、adult-other 或 adult-jav"
+                        "媒体库只能是 movies、tv、variety、anime、adult-other 或 adult-jav"
                 ));
     }
 }

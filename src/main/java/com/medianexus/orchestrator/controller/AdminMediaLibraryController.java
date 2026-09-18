@@ -57,7 +57,7 @@ public class AdminMediaLibraryController {
     @GetMapping("/items")
     @Operation(summary = "分页浏览媒体库", description = "仅返回指定虚拟媒体库中的 Movie 或 Series 作品，按入库时间倒序。")
     public ApiResponse<AdminMediaLibraryPageResponse> listItems(
-            @Parameter(description = "媒体库：movies、tv、anime、adult-other 或 adult-jav")
+            @Parameter(description = "媒体库：movies、tv、variety、anime、adult-other 或 adult-jav")
             @RequestParam @NotBlank String library,
             @Parameter(description = "页码，从 1 开始")
             @RequestParam(defaultValue = "1")

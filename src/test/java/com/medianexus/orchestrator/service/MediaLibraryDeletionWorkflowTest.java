@@ -79,9 +79,10 @@ class MediaLibraryDeletionWorkflowTest {
         when(taskMapper.findNextActive()).thenReturn(task);
         workflow.executeNext();
 
-        verify(mediaSourceDeletion).delete(List.of(
-                "/srv/media/CloudNAS/PikPak/Media/Adult/Other/Creator collection"
-        ));
+        verify(mediaSourceDeletion).delete(
+                List.of("/srv/media/CloudNAS/PikPak/Media/Adult/Other/Creator collection"),
+                "Creator collection"
+        );
         verify(localStrmDeletion).delete(List.of(
                 "/srv/media/STRM/Adult/Other/Creator collection"
         ));

@@ -79,6 +79,20 @@ class AdminMediaLibraryCatalogServiceTest {
     }
 
     @Test
+    void listsVarietyFromItsExactVirtualLibrary() {
+        when(embyClient.listLibraries()).thenReturn(List.of(
+                new EmbyLibrary("variety-id", "综艺", List.of("/variety"))
+        ));
+        when(embyClient.listTopLevelMediaItems("variety-id", "Series", 0, 24, null))
+                .thenReturn(new EmbyMediaLibraryPage(List.of(), 18));
+
+        var response = service.listItems("variety", 1, 24, null);
+
+        verify(embyClient).listTopLevelMediaItems("variety-id", "Series", 0, 24, null);
+        assertThat(response.total()).isEqualTo(18);
+    }
+
+    @Test
     void listsAdultOtherAsCollectionsAndStandaloneMoviesWithoutDuplicatingCollectionMembers() {
         when(embyClient.listLibraries()).thenReturn(List.of(
                 new EmbyLibrary("adult-other-id", "Adult - Other", List.of("/adult/other"))
@@ -138,7 +152,7 @@ class AdminMediaLibraryCatalogServiceTest {
         assertThatThrownBy(() -> service.listItems("adult", 1, 24, null))
                 .isInstanceOfSatisfying(BusinessException.class, exception -> {
                     assertThat(exception.getHttpStatus()).isEqualTo(HttpStatus.BAD_REQUEST);
-                    assertThat(exception.getMessage()).contains("adult-other 或 adult-jav");
+                    assertThat(exception.getMessage()).contains("variety、anime");
                 });
 
         verify(authService).requireAdminUser();

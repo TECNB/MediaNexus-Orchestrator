@@ -164,7 +164,7 @@ public class MediaLibraryDeletionWorkflow {
                 sourceDeletionTargets = collectionDeletionTargets(task.getTitle(), sourcePaths);
                 strmDeletionTargets = collectionDeletionTargets(task.getTitle(), strmPaths);
             }
-            mediaSourceDeletion.delete(sourceDeletionTargets);
+            mediaSourceDeletion.delete(sourceDeletionTargets, sourceDirectoryName(task));
 
             saveStage(task, "CLEANING_STRM");
             localStrmDeletion.delete(strmDeletionTargets);
@@ -375,6 +375,12 @@ public class MediaLibraryDeletionWorkflow {
     private boolean isCollectionTask(MediaDeletionTask task) {
         return AdminMediaLibraryScope.ADULT_OTHER.requestValue().equals(task.getLibrary())
                 && COLLECTION_TARGET_LABEL.equals(task.getTargetLabel());
+    }
+
+    private String sourceDirectoryName(MediaDeletionTask task) {
+        return task.getSeasonNumber() == null
+                ? task.getTitle()
+                : "Season %02d".formatted(task.getSeasonNumber());
     }
 
     private void saveStage(MediaDeletionTask task, String stage) {

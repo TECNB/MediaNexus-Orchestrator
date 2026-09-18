@@ -115,6 +115,23 @@ public class QuarkDirectClient {
         }
     }
 
+    public boolean deleteOwnedPath(String path) {
+        ObjectNode payload = objectMapper.createObjectNode();
+        payload.putPOJO("file_path", List.of(path));
+        payload.put("namespace", "0");
+        JsonNode entries = request(
+                "POST",
+                "/1/clouddrive/file/info/path_list?pr=ucpro&fr=pc&uc_param_str=",
+                payload
+        ).path("data");
+        String fileId = entries.path(0).path("fid").asText("");
+        if (!StringUtils.hasText(fileId)) {
+            return false;
+        }
+        deleteOwnedFiles(List.of(fileId));
+        return true;
+    }
+
     private void deleteOwnedFileIfPresent(List<String> fileIds) {
         try {
             deleteOwnedFileBatch(fileIds);
