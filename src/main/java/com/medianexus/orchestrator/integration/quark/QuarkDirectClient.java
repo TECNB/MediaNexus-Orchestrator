@@ -17,6 +17,8 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.function.Consumer;
 import java.util.regex.Matcher;
@@ -92,6 +94,57 @@ public class QuarkDirectClient {
             progress.accept("Quark 已提交转存 " + Math.min(files.size(), offset + BATCH_SIZE) + "/" + files.size());
         }
         renameTransferred(plan, targetFid, progress);
+    }
+
+    public void deleteOwnedFiles(Collection<String> fileIds) {
+        if (!StringUtils.hasText(properties.getQuarkCookie())) {
+            throw new QasClientException(QasClientException.Reason.AUTHENTICATION,
+                    "夸克登录状态已失效，请联系管理员更新夸克登录凭证");
+        }
+        List<String> distinctIds = new ArrayList<>(new LinkedHashSet<>(fileIds));
+        for (int offset = 0; offset < distinctIds.size(); offset += BATCH_SIZE) {
+            List<String> batch = distinctIds.subList(offset, Math.min(distinctIds.size(), offset + BATCH_SIZE));
+            try {
+                deleteOwnedFileBatch(batch);
+            } catch (QasClientException exception) {
+                if (!alreadyDeleted(exception)) {
+                    throw exception;
+                }
+                batch.forEach(fileId -> deleteOwnedFileIfPresent(List.of(fileId)));
+            }
+        }
+    }
+
+    private void deleteOwnedFileIfPresent(List<String> fileIds) {
+        try {
+            deleteOwnedFileBatch(fileIds);
+        } catch (QasClientException exception) {
+            if (!alreadyDeleted(exception)) {
+                throw exception;
+            }
+        }
+    }
+
+    private void deleteOwnedFileBatch(List<String> fileIds) {
+        ObjectNode payload = objectMapper.createObjectNode()
+                .put("action_type", 2)
+                .putPOJO("filelist", fileIds)
+                .putPOJO("exclude_fids", List.of());
+        JsonNode result = request("POST", "/1/clouddrive/file/delete?pr=ucpro&fr=pc&uc_param_str=", payload);
+        if (result.path("code").asInt() == 23004) {
+            if (fileIds.size() > 1) {
+                throw new QasClientException(QasClientException.Reason.UPSTREAM, "部分文件已经删除");
+            }
+            return;
+        }
+        String taskId = extractTaskId(result);
+        if (StringUtils.hasText(taskId)) {
+            awaitTask(taskId, ignored -> { });
+        }
+    }
+
+    private boolean alreadyDeleted(QasClientException exception) {
+        return exception.getMessage() != null && exception.getMessage().contains("文件已经删除");
     }
 
     private void renameTransferred(QasTaskPlan plan, String targetFid, Consumer<String> progress) {
@@ -315,7 +368,9 @@ public class QuarkDirectClient {
                                     ? "夸克接口拒绝请求：" + reason
                                     : "夸克登录状态已失效，请联系管理员更新夸克登录凭证");
                 }
-                if (response.statusCode() < 200 || response.statusCode() >= 300 || (root != null && code != 0 && !root.path("success").asBoolean(false))) {
+                boolean alreadyDeleted = code == 23004;
+                if (!alreadyDeleted && (response.statusCode() < 200 || response.statusCode() >= 300
+                        || (root != null && code != 0 && !root.path("success").asBoolean(false)))) {
                     throw new QasClientException(QasClientException.Reason.UPSTREAM,
                             root == null ? "Quark API 请求失败" : root.path("message").asText("Quark API 请求失败"));
                 }

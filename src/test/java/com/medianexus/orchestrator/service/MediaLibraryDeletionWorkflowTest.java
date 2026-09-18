@@ -6,7 +6,6 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.medianexus.orchestrator.integration.clouddrive.CloudDrive2MediaDeletion;
 import com.medianexus.orchestrator.integration.emby.EmbyClient;
 import com.medianexus.orchestrator.integration.emby.EmbyDeletionItem;
 import com.medianexus.orchestrator.integration.emby.EmbyLibrary;
@@ -16,22 +15,20 @@ import com.medianexus.orchestrator.model.MediaDeletionTask;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
-import org.springframework.beans.factory.ObjectProvider;
 
 class MediaLibraryDeletionWorkflowTest {
 
     private final AuthService authService = mock(AuthService.class);
     private final AdminMediaLibraryCatalogService catalogService = mock(AdminMediaLibraryCatalogService.class);
     private final EmbyClient embyClient = mock(EmbyClient.class);
-    @SuppressWarnings("unchecked")
-    private final ObjectProvider<CloudDrive2MediaDeletion> cloudDeletion = mock(ObjectProvider.class);
+    private final MediaSourceDeletion mediaSourceDeletion = mock(MediaSourceDeletion.class);
     private final LocalStrmDeletion localStrmDeletion = mock(LocalStrmDeletion.class);
     private final MediaDeletionTaskMapper taskMapper = mock(MediaDeletionTaskMapper.class);
     private final MediaLibraryDeletionWorkflow workflow = new MediaLibraryDeletionWorkflow(
             authService,
             catalogService,
             embyClient,
-            cloudDeletion,
+            mediaSourceDeletion,
             localStrmDeletion,
             taskMapper,
             new ObjectMapper()

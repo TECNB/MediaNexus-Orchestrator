@@ -7,7 +7,6 @@ import com.medianexus.orchestrator.common.exception.BusinessException;
 import com.medianexus.orchestrator.common.exception.ErrorCode;
 import com.medianexus.orchestrator.dto.admin.response.AdminMediaDeletionTaskResponse;
 import com.medianexus.orchestrator.dto.admin.response.AdminMediaSeasonResponse;
-import com.medianexus.orchestrator.integration.clouddrive.CloudDrive2MediaDeletion;
 import com.medianexus.orchestrator.integration.emby.EmbyClient;
 import com.medianexus.orchestrator.integration.emby.EmbyDeletionItem;
 import com.medianexus.orchestrator.integration.emby.EmbyLibrary;
@@ -25,7 +24,6 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.http.HttpStatus;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -41,7 +39,7 @@ public class MediaLibraryDeletionWorkflow {
     private final AuthService authService;
     private final AdminMediaLibraryCatalogService catalogService;
     private final EmbyClient embyClient;
-    private final ObjectProvider<CloudDrive2MediaDeletion> cloudDeletion;
+    private final MediaSourceDeletion mediaSourceDeletion;
     private final LocalStrmDeletion localStrmDeletion;
     private final MediaDeletionTaskMapper taskMapper;
     private final ObjectMapper objectMapper;
@@ -51,7 +49,7 @@ public class MediaLibraryDeletionWorkflow {
             AuthService authService,
             AdminMediaLibraryCatalogService catalogService,
             EmbyClient embyClient,
-            ObjectProvider<CloudDrive2MediaDeletion> cloudDeletion,
+            MediaSourceDeletion mediaSourceDeletion,
             LocalStrmDeletion localStrmDeletion,
             MediaDeletionTaskMapper taskMapper,
             ObjectMapper objectMapper
@@ -59,7 +57,7 @@ public class MediaLibraryDeletionWorkflow {
         this.authService = authService;
         this.catalogService = catalogService;
         this.embyClient = embyClient;
-        this.cloudDeletion = cloudDeletion;
+        this.mediaSourceDeletion = mediaSourceDeletion;
         this.localStrmDeletion = localStrmDeletion;
         this.taskMapper = taskMapper;
         this.objectMapper = objectMapper;
@@ -158,11 +156,7 @@ public class MediaLibraryDeletionWorkflow {
         try {
             task.setStatus("RUNNING");
             saveStage(task, "DELETING_CLOUD");
-            CloudDrive2MediaDeletion deletion = cloudDeletion.getIfAvailable();
-            if (deletion == null) {
-                throw new IllegalStateException("CD2 文件操作未启用");
-            }
-            deletion.deleteMediaSourcePaths(read(task.getSourcePaths()));
+            mediaSourceDeletion.delete(read(task.getSourcePaths()));
 
             saveStage(task, "CLEANING_STRM");
             localStrmDeletion.delete(read(task.getStrmPaths()));
