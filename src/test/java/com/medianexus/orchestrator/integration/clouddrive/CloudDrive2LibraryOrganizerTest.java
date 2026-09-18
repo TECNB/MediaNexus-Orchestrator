@@ -57,10 +57,10 @@ class CloudDrive2LibraryOrganizerTest {
         properties.setMediaSourcePathPrefix("/srv/media/CloudNAS/PikPak");
         CloudDrive2MediaDeletion deletion = new CloudDrive2MediaDeletion(fileOperations, properties);
 
-        assertThat(deletion.existingMediaSourcePaths(List.of(
+        assertThat(deletion.checkMediaSourcePaths(List.of(
                 "/srv/media/CloudNAS/PikPak/Media/Adult/JAV/9.18/START-604-U/one.mp4",
                 "/srv/media/CloudNAS/PikPak/Media/Adult/JAV/9.18/START-604-U/two.mp4"
-        ))).hasSize(2);
+        )).existing()).hasSize(2);
         assertThat(fileOperations.forcedListedPaths).containsExactly(parent);
     }
 

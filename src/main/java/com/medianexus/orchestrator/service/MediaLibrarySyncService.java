@@ -88,10 +88,15 @@ public class MediaLibrarySyncService {
 
         int removedDirectories = 0;
         int removedItems = 0;
-        int errors = 0;
-        Set<String> existingCloudPaths = existingCloudPaths(targets.values());
+        CloudDrive2MediaDeletion.MediaSourceCheckResult cloudCheck = existingCloudPaths(targets.values());
+        Set<String> existingCloudPaths = cloudCheck.existing();
+        Set<String> failedCloudPaths = cloudCheck.failed();
+        int errors = failedCloudPaths.size();
         for (SyncTarget target : targets.values()) {
             try {
+                if (failedCloudPaths.contains(target.remoteDirectory)) {
+                    continue;
+                }
                 if (isCloudPath(target.remoteDirectory)
                         ? existingCloudPaths.contains(target.remoteDirectory)
                         : exists(target.remoteDirectory)) {
@@ -113,19 +118,19 @@ public class MediaLibrarySyncService {
         );
     }
 
-    private Set<String> existingCloudPaths(Collection<SyncTarget> targets) {
+    private CloudDrive2MediaDeletion.MediaSourceCheckResult existingCloudPaths(Collection<SyncTarget> targets) {
         Set<String> cloudPaths = targets.stream()
                 .map(target -> target.remoteDirectory)
                 .filter(this::isCloudPath)
                 .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
         if (cloudPaths.isEmpty()) {
-            return Set.of();
+            return new CloudDrive2MediaDeletion.MediaSourceCheckResult(Set.of(), Set.of());
         }
         CloudDrive2MediaDeletion deletion = cloudDriveDeletion.getIfAvailable();
         if (deletion == null) {
             throw new BusinessException(ErrorCode.SERVICE_UNAVAILABLE, "CloudDrive2 未启用", HttpStatus.SERVICE_UNAVAILABLE);
         }
-        return deletion.existingMediaSourcePaths(cloudPaths);
+        return deletion.checkMediaSourcePaths(cloudPaths);
     }
 
     private boolean isCloudPath(String path) {

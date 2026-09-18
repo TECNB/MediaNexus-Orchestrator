@@ -64,7 +64,7 @@ public class CloudDrive2MediaDeletion {
         return exists(toCloudDrivePath(mediaSourcePath));
     }
 
-    public Set<String> existingMediaSourcePaths(Collection<String> mediaSourcePaths) {
+    public MediaSourceCheckResult checkMediaSourcePaths(Collection<String> mediaSourcePaths) {
         Map<String, String> cloudPaths = new LinkedHashMap<>();
         Map<String, Set<String>> namesByParent = new LinkedHashMap<>();
         for (String mediaSourcePath : mediaSourcePaths) {
@@ -75,6 +75,7 @@ public class CloudDrive2MediaDeletion {
         }
 
         Set<String> existing = new LinkedHashSet<>();
+        Set<String> failed = new LinkedHashSet<>();
         for (Map.Entry<String, Set<String>> entry : namesByParent.entrySet()) {
             Set<String> names;
             try {
@@ -85,7 +86,12 @@ public class CloudDrive2MediaDeletion {
                 if (exception.getStatusCode() == Status.Code.NOT_FOUND) {
                     continue;
                 }
-                throw exception;
+                cloudPaths.forEach((source, cloudPath) -> {
+                    if (entry.getKey().equals(parentPath(cloudPath))) {
+                        failed.add(source);
+                    }
+                });
+                continue;
             }
             cloudPaths.forEach((source, cloudPath) -> {
                 if (entry.getKey().equals(parentPath(cloudPath)) && names.contains(fileName(cloudPath))) {
@@ -93,7 +99,10 @@ public class CloudDrive2MediaDeletion {
                 }
             });
         }
-        return existing;
+        return new MediaSourceCheckResult(existing, failed);
+    }
+
+    public record MediaSourceCheckResult(Set<String> existing, Set<String> failed) {
     }
 
     private boolean exists(String cloudPath) {
