@@ -9,6 +9,7 @@ import com.medianexus.orchestrator.dto.admin.response.AdminMediaLibraryPageRespo
 import com.medianexus.orchestrator.service.AdminMediaLibraryCatalogService;
 import com.medianexus.orchestrator.service.AdminMediaLibraryPoster;
 import com.medianexus.orchestrator.service.MediaLibraryDeletionWorkflow;
+import com.medianexus.orchestrator.service.MediaLibrarySyncService;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
@@ -17,8 +18,9 @@ class AdminMediaLibraryControllerTest {
 
     private final AdminMediaLibraryCatalogService catalogService = mock(AdminMediaLibraryCatalogService.class);
     private final MediaLibraryDeletionWorkflow deletionWorkflow = mock(MediaLibraryDeletionWorkflow.class);
+    private final MediaLibrarySyncService syncService = mock(MediaLibrarySyncService.class);
     private final AdminMediaLibraryController controller = new AdminMediaLibraryController(
-            catalogService, deletionWorkflow
+            catalogService, deletionWorkflow, syncService
     );
 
     @Test

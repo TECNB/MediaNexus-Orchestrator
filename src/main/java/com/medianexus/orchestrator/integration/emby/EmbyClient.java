@@ -133,6 +133,17 @@ public class EmbyClient {
         ));
     }
 
+    public List<EmbyDeletionItem> listLibraryMediaItemsForSync(String libraryId) {
+        return deletionItems(Map.of(
+                "ParentId", libraryId,
+                "Recursive", "true",
+                "Fields", "Path,MediaSources",
+                "IncludeItemTypes", "Movie,Video,Episode",
+                "GroupItemsIntoCollections", "false",
+                "Limit", "10000"
+        ));
+    }
+
     public List<EmbyCatalogItem> findMoviesByTmdbId(int tmdbId) {
         return catalogItems(Map.of(
                 "Recursive", "true",

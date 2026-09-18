@@ -7,12 +7,14 @@ import com.medianexus.orchestrator.dto.admin.request.AdminMediaPosterSelectReque
 import com.medianexus.orchestrator.dto.admin.response.AdminMediaDeletionTaskResponse;
 import com.medianexus.orchestrator.dto.admin.response.AdminMediaLibraryItemResponse;
 import com.medianexus.orchestrator.dto.admin.response.AdminMediaLibraryPageResponse;
+import com.medianexus.orchestrator.dto.admin.response.AdminMediaLibrarySyncResponse;
 import com.medianexus.orchestrator.dto.admin.response.AdminMediaMetadataCandidateResponse;
 import com.medianexus.orchestrator.dto.admin.response.AdminMediaPosterCandidateResponse;
 import com.medianexus.orchestrator.dto.admin.response.AdminMediaSeasonResponse;
 import com.medianexus.orchestrator.service.AdminMediaLibraryCatalogService;
 import com.medianexus.orchestrator.service.AdminMediaLibraryPoster;
 import com.medianexus.orchestrator.service.MediaLibraryDeletionWorkflow;
+import com.medianexus.orchestrator.service.MediaLibrarySyncService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -45,13 +47,24 @@ public class AdminMediaLibraryController {
 
     private final AdminMediaLibraryCatalogService catalogService;
     private final MediaLibraryDeletionWorkflow deletionWorkflow;
+    private final MediaLibrarySyncService syncService;
 
     public AdminMediaLibraryController(
             AdminMediaLibraryCatalogService catalogService,
-            MediaLibraryDeletionWorkflow deletionWorkflow
+            MediaLibraryDeletionWorkflow deletionWorkflow,
+            MediaLibrarySyncService syncService
     ) {
         this.catalogService = catalogService;
         this.deletionWorkflow = deletionWorkflow;
+        this.syncService = syncService;
+    }
+
+    @PostMapping("/sync")
+    @Operation(summary = "同步媒体库", description = "检查网盘中已删除的媒体，并同步清理本地失效记录；不会删除网盘内容。")
+    public ApiResponse<AdminMediaLibrarySyncResponse> sync(
+            @RequestParam @NotBlank String library
+    ) {
+        return ApiResponse.success(syncService.sync(library));
     }
 
     @GetMapping("/items")

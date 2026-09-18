@@ -57,6 +57,10 @@ public class CloudDrive2MediaDeletion {
         throw new CloudDrive2ClientException("CD2 删除结果可见性超时");
     }
 
+    public boolean mediaSourcePathExists(String mediaSourcePath) {
+        return exists(toCloudDrivePath(mediaSourcePath));
+    }
+
     private boolean exists(String cloudPath) {
         try {
             return fileOperations.list(parentPath(cloudPath), true).stream()
