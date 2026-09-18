@@ -48,6 +48,23 @@ class CloudDrive2LibraryOrganizerTest {
     }
 
     @Test
+    void checksMultipleFilesInOneDirectoryWithOneForcedListing() {
+        FakeFileOperations fileOperations = new FakeFileOperations();
+        String parent = "/WebDAV/Media/Adult/JAV/9.18/START-604-U";
+        fileOperations.addFile(parent, "one.mp4", 1L);
+        fileOperations.addFile(parent, "two.mp4", 1L);
+        CloudDrive2Properties properties = properties();
+        properties.setMediaSourcePathPrefix("/srv/media/CloudNAS/PikPak");
+        CloudDrive2MediaDeletion deletion = new CloudDrive2MediaDeletion(fileOperations, properties);
+
+        assertThat(deletion.existingMediaSourcePaths(List.of(
+                "/srv/media/CloudNAS/PikPak/Media/Adult/JAV/9.18/START-604-U/one.mp4",
+                "/srv/media/CloudNAS/PikPak/Media/Adult/JAV/9.18/START-604-U/two.mp4"
+        ))).hasSize(2);
+        assertThat(fileOperations.forcedListedPaths).containsExactly(parent);
+    }
+
+    @Test
     void refreshesAncestorChainAndRetriesWhenDirectParentIsNotFound() {
         FakeFileOperations fileOperations = new FakeFileOperations();
         String target = "/WebDAV/Media/Adult/JAV/7.15";

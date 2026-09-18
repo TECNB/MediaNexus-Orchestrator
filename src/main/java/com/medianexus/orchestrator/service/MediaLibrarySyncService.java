@@ -12,9 +12,12 @@ import com.medianexus.orchestrator.integration.quark.QuarkDirectClient;
 import java.net.URI;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -86,12 +89,15 @@ public class MediaLibrarySyncService {
         int removedDirectories = 0;
         int removedItems = 0;
         int errors = 0;
+        Set<String> existingCloudPaths = existingCloudPaths(targets.values());
         for (SyncTarget target : targets.values()) {
             try {
-                if (exists(target.remoteDirectory)) {
+                if (isCloudPath(target.remoteDirectory)
+                        ? existingCloudPaths.contains(target.remoteDirectory)
+                        : exists(target.remoteDirectory)) {
                     continue;
                 }
-                localStrmDeletion.delete(List.of(target.localDirectory.toString()));
+                localStrmDeletion.delete(List.of(target.localTarget.toString()));
                 embyClient.notifyMediaDeleted(target.paths);
                 removedDirectories++;
                 removedItems += target.paths.size();
@@ -105,6 +111,25 @@ public class MediaLibrarySyncService {
                 (System.nanoTime() - started) / 1_000_000L,
                 deep
         );
+    }
+
+    private Set<String> existingCloudPaths(Collection<SyncTarget> targets) {
+        Set<String> cloudPaths = targets.stream()
+                .map(target -> target.remoteDirectory)
+                .filter(this::isCloudPath)
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+        if (cloudPaths.isEmpty()) {
+            return Set.of();
+        }
+        CloudDrive2MediaDeletion deletion = cloudDriveDeletion.getIfAvailable();
+        if (deletion == null) {
+            throw new BusinessException(ErrorCode.SERVICE_UNAVAILABLE, "CloudDrive2 未启用", HttpStatus.SERVICE_UNAVAILABLE);
+        }
+        return deletion.existingMediaSourcePaths(cloudPaths);
+    }
+
+    private boolean isCloudPath(String path) {
+        return path.startsWith(normalize(cloudDriveProperties.getMediaSourcePathPrefix()));
     }
 
     private boolean exists(String remoteDirectory) {
@@ -167,12 +192,12 @@ public class MediaLibrarySyncService {
 
     private static final class SyncTarget {
         private final String remoteDirectory;
-        private final Path localDirectory;
+        private final Path localTarget;
         private final List<String> paths = new ArrayList<>();
 
-        private SyncTarget(String remoteDirectory, Path localDirectory) {
+        private SyncTarget(String remoteDirectory, Path localTarget) {
             this.remoteDirectory = remoteDirectory;
-            this.localDirectory = localDirectory;
+            this.localTarget = localTarget;
         }
     }
 }

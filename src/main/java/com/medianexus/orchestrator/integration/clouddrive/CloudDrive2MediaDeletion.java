@@ -7,8 +7,11 @@ import static com.medianexus.orchestrator.service.organization.LibraryOrganizati
 import com.medianexus.orchestrator.config.CloudDrive2Properties;
 import io.grpc.Status;
 import java.time.Instant;
+import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
@@ -59,6 +62,38 @@ public class CloudDrive2MediaDeletion {
 
     public boolean mediaSourcePathExists(String mediaSourcePath) {
         return exists(toCloudDrivePath(mediaSourcePath));
+    }
+
+    public Set<String> existingMediaSourcePaths(Collection<String> mediaSourcePaths) {
+        Map<String, String> cloudPaths = new LinkedHashMap<>();
+        Map<String, Set<String>> namesByParent = new LinkedHashMap<>();
+        for (String mediaSourcePath : mediaSourcePaths) {
+            String cloudPath = toCloudDrivePath(mediaSourcePath);
+            cloudPaths.put(mediaSourcePath, cloudPath);
+            namesByParent.computeIfAbsent(parentPath(cloudPath), ignored -> new LinkedHashSet<>())
+                    .add(fileName(cloudPath));
+        }
+
+        Set<String> existing = new LinkedHashSet<>();
+        for (Map.Entry<String, Set<String>> entry : namesByParent.entrySet()) {
+            Set<String> names;
+            try {
+                names = fileOperations.list(entry.getKey(), true).stream()
+                        .map(CloudDrive2FileEntry::name)
+                        .collect(java.util.stream.Collectors.toSet());
+            } catch (CloudDrive2ClientException exception) {
+                if (exception.getStatusCode() == Status.Code.NOT_FOUND) {
+                    continue;
+                }
+                throw exception;
+            }
+            cloudPaths.forEach((source, cloudPath) -> {
+                if (entry.getKey().equals(parentPath(cloudPath)) && names.contains(fileName(cloudPath))) {
+                    existing.add(source);
+                }
+            });
+        }
+        return existing;
     }
 
     private boolean exists(String cloudPath) {
