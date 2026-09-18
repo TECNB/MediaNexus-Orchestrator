@@ -1,6 +1,8 @@
 package com.medianexus.orchestrator.model;
 
+import com.baomidou.mybatisplus.annotation.FieldStrategy;
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import java.time.LocalDateTime;
@@ -20,9 +22,11 @@ public class MediaDeletionTask {
     private String sourcePaths;
     private String strmPaths;
     private String embyItemIds;
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private String errorMessage;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private LocalDateTime finishedAt;
 
     public String getId() { return id; }

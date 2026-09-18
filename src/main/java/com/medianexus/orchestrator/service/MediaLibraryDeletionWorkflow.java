@@ -156,13 +156,21 @@ public class MediaLibraryDeletionWorkflow {
         try {
             task.setStatus("RUNNING");
             saveStage(task, "DELETING_CLOUD");
-            mediaSourceDeletion.delete(read(task.getSourcePaths()));
+            List<String> sourcePaths = read(task.getSourcePaths());
+            List<String> strmPaths = read(task.getStrmPaths());
+            List<String> sourceDeletionTargets = sourcePaths;
+            List<String> strmDeletionTargets = strmPaths;
+            if (isCollectionTask(task)) {
+                sourceDeletionTargets = collectionDeletionTargets(task.getTitle(), sourcePaths);
+                strmDeletionTargets = collectionDeletionTargets(task.getTitle(), strmPaths);
+            }
+            mediaSourceDeletion.delete(sourceDeletionTargets);
 
             saveStage(task, "CLEANING_STRM");
-            localStrmDeletion.delete(read(task.getStrmPaths()));
+            localStrmDeletion.delete(strmDeletionTargets);
 
             saveStage(task, "NOTIFYING_EMBY");
-            embyClient.notifyMediaDeleted(read(task.getStrmPaths()));
+            embyClient.notifyMediaDeleted(strmPaths);
 
             saveStage(task, "VERIFYING");
             waitUntilEmbyItemsDisappear(read(task.getEmbyItemIds()));
@@ -236,6 +244,28 @@ public class MediaLibraryDeletionWorkflow {
                 null, null, COLLECTION_TARGET_LABEL,
                 List.copyOf(sources), List.copyOf(strmPaths), List.copyOf(embyIds)
         );
+    }
+
+    private List<String> collectionDeletionTargets(String collectionTitle, List<String> paths) {
+        if (!StringUtils.hasText(collectionTitle) || paths.isEmpty()) {
+            return paths;
+        }
+        Path sharedParent = null;
+        for (String value : paths) {
+            if (!StringUtils.hasText(value)) {
+                return paths;
+            }
+            Path parent = Path.of(value).toAbsolutePath().normalize().getParent();
+            if (parent == null || parent.getFileName() == null
+                    || !collectionTitle.equals(parent.getFileName().toString())) {
+                return paths;
+            }
+            if (sharedParent != null && !sharedParent.equals(parent)) {
+                return paths;
+            }
+            sharedParent = parent;
+        }
+        return sharedParent == null ? paths : List.of(sharedParent.toString());
     }
 
     private DeletionPlan episodicPlan(

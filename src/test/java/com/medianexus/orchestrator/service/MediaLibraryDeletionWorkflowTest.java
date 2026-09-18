@@ -5,6 +5,8 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.baomidou.mybatisplus.annotation.FieldStrategy;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.medianexus.orchestrator.integration.emby.EmbyClient;
 import com.medianexus.orchestrator.integration.emby.EmbyDeletionItem;
@@ -13,6 +15,7 @@ import com.medianexus.orchestrator.integration.emby.EmbyMediaLibraryItem;
 import com.medianexus.orchestrator.mapper.MediaDeletionTaskMapper;
 import com.medianexus.orchestrator.model.MediaDeletionTask;
 import java.util.List;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -35,7 +38,7 @@ class MediaLibraryDeletionWorkflowTest {
     );
 
     @Test
-    void createsOneDeletionTaskForEveryMemberOfAnAdultOtherCollection() throws Exception {
+    void deletesAnAdultOtherCollectionByItsSharedDirectory() throws Exception {
         EmbyLibrary library = new EmbyLibrary(
                 "adult-other-id", "Adult - Other", List.of("/srv/media/STRM/Adult/Other")
         );
@@ -63,10 +66,44 @@ class MediaLibraryDeletionWorkflowTest {
                 .containsExactly("movie-1", "movie-2");
         assertThat(new ObjectMapper().readValue(task.getSourcePaths(), String[].class))
                 .containsExactly(
-                        "/srv/media/CloudNAS/PikPak/Media/Adult/Other/one.mp4",
-                        "/srv/media/CloudNAS/PikPak/Media/Adult/Other/two.mp4"
+                        "/srv/media/CloudNAS/PikPak/Media/Adult/Other/Creator collection/one.mp4",
+                        "/srv/media/CloudNAS/PikPak/Media/Adult/Other/Creator collection/two.mp4"
+                );
+        assertThat(new ObjectMapper().readValue(task.getStrmPaths(), String[].class))
+                .containsExactly(
+                        "/srv/media/STRM/Adult/Other/Creator collection/one.strm",
+                        "/srv/media/STRM/Adult/Other/Creator collection/two.strm"
                 );
         verify(taskMapper).countActiveTarget("collection-1");
+
+        when(taskMapper.findNextActive()).thenReturn(task);
+        workflow.executeNext();
+
+        verify(mediaSourceDeletion).delete(List.of(
+                "/srv/media/CloudNAS/PikPak/Media/Adult/Other/Creator collection"
+        ));
+        verify(localStrmDeletion).delete(List.of(
+                "/srv/media/STRM/Adult/Other/Creator collection"
+        ));
+        verify(embyClient).notifyMediaDeleted(List.of(
+                "/srv/media/STRM/Adult/Other/Creator collection/one.strm",
+                "/srv/media/STRM/Adult/Other/Creator collection/two.strm"
+        ));
+        assertThat(task.getStatus()).isEqualTo("SUCCEEDED");
+    }
+
+    @Test
+    void persistsNullWhenRetryAndSuccessClearPreviousTaskState() {
+        Stream.of("errorMessage", "finishedAt").forEach(fieldName -> {
+            try {
+                TableField mapping = MediaDeletionTask.class.getDeclaredField(fieldName)
+                        .getAnnotation(TableField.class);
+                assertThat(mapping).isNotNull();
+                assertThat(mapping.updateStrategy()).isEqualTo(FieldStrategy.ALWAYS);
+            } catch (NoSuchFieldException exception) {
+                throw new AssertionError(exception);
+            }
+        });
     }
 
     private EmbyDeletionItem deletionItem(String id, String name) {
@@ -74,10 +111,10 @@ class MediaLibraryDeletionWorkflowTest {
                 id,
                 name,
                 "Movie",
-                "/srv/media/STRM/Adult/Other/" + name + ".strm",
+                "/srv/media/STRM/Adult/Other/Creator collection/" + name + ".strm",
                 null,
                 "2026-09-16T16:12:21Z",
-                List.of("/srv/media/CloudNAS/PikPak/Media/Adult/Other/" + name + ".mp4")
+                List.of("/srv/media/CloudNAS/PikPak/Media/Adult/Other/Creator collection/" + name + ".mp4")
         );
     }
 }
