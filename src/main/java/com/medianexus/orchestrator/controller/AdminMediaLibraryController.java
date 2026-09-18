@@ -62,9 +62,10 @@ public class AdminMediaLibraryController {
     @PostMapping("/sync")
     @Operation(summary = "同步媒体库", description = "检查网盘中已删除的媒体，并同步清理本地失效记录；不会删除网盘内容。")
     public ApiResponse<AdminMediaLibrarySyncResponse> sync(
-            @RequestParam @NotBlank String library
+            @RequestParam @NotBlank String library,
+            @RequestParam(defaultValue = "false") boolean deep
     ) {
-        return ApiResponse.success(syncService.sync(library));
+        return ApiResponse.success(syncService.sync(library, deep));
     }
 
     @GetMapping("/items")

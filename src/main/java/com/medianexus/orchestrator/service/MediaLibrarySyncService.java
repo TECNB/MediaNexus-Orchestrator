@@ -50,6 +50,10 @@ public class MediaLibrarySyncService {
     }
 
     public AdminMediaLibrarySyncResponse sync(String library) {
+        return sync(library, false);
+    }
+
+    public AdminMediaLibrarySyncResponse sync(String library, boolean deep) {
         authService.requireAdminUser();
         AdminMediaLibraryScope scope = AdminMediaLibraryScope.fromRequest(library);
         EmbyLibrary embyLibrary = catalogService.resolveLibrary(scope);
@@ -62,8 +66,8 @@ public class MediaLibrarySyncService {
                 skipped++;
                 continue;
             }
-            String remoteDirectory = remoteDirectory(source);
-            if (remoteDirectory == null || !StringUtils.hasText(item.path())) {
+            String remoteTarget = remotePath(source, deep);
+            if (remoteTarget == null || !StringUtils.hasText(item.path())) {
                 skipped++;
                 continue;
             }
@@ -73,8 +77,9 @@ public class MediaLibrarySyncService {
                 skipped++;
                 continue;
             }
-            String key = remoteDirectory + "\n" + localDirectory;
-            targets.computeIfAbsent(key, ignored -> new SyncTarget(remoteDirectory, localDirectory))
+            Path localTarget = deep ? localPath : localDirectory;
+            String key = remoteTarget + "\n" + localTarget;
+            targets.computeIfAbsent(key, ignored -> new SyncTarget(remoteTarget, localTarget))
                     .paths.add(item.path());
         }
 
@@ -95,8 +100,10 @@ public class MediaLibrarySyncService {
             }
         }
         return new AdminMediaLibrarySyncResponse(
-                targets.size(), removedDirectories, removedItems, skipped, errors,
-                (System.nanoTime() - started) / 1_000_000L
+                deep ? 0 : targets.size(), deep ? targets.size() : 0,
+                removedDirectories, removedItems, skipped, errors,
+                (System.nanoTime() - started) / 1_000_000L,
+                deep
         );
     }
 
@@ -108,10 +115,7 @@ public class MediaLibrarySyncService {
             }
             return deletion.mediaSourcePathExists(remoteDirectory);
         }
-        if (remoteDirectory.contains("/smartstrm_fid/")) {
-            return quarkClient.ownedPathExists(remoteDirectory);
-        }
-        throw new IllegalArgumentException("不支持的媒体源路径");
+        return quarkClient.ownedPathExists(remoteDirectory);
     }
 
     private boolean supportedSource(String source) {
@@ -128,7 +132,7 @@ public class MediaLibrarySyncService {
         return StringUtils.hasText(path) ? path.trim().replaceAll("/+$", "") : "";
     }
 
-    private String remoteDirectory(String source) {
+    private String remotePath(String source, boolean deep) {
         if (!StringUtils.hasText(source)) {
             return null;
         }
@@ -147,11 +151,18 @@ public class MediaLibrarySyncService {
                 }
                 path = afterMarker.substring(fileIdEnd + 1);
             }
+            if (deep) {
+                return ensureLeadingSlash(path);
+            }
             int fileStart = path.lastIndexOf('/');
-            return fileStart >= 0 ? "/" + path.substring(0, fileStart) : null;
+            return fileStart >= 0 ? ensureLeadingSlash(path.substring(0, fileStart)) : null;
         } catch (IllegalArgumentException exception) {
             return null;
         }
+    }
+
+    private String ensureLeadingSlash(String path) {
+        return path.startsWith("/") ? path : "/" + path;
     }
 
     private static final class SyncTarget {
