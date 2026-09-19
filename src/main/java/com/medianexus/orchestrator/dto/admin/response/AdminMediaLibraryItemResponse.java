@@ -12,6 +12,10 @@ public record AdminMediaLibraryItemResponse(
         @Schema(description = "媒体标题")
         String title,
 
+        @Schema(description = "Emby 媒体路径中的真实文件名；路径缺失时为 null", nullable = true)
+        @JsonProperty("file_name")
+        String fileName,
+
         @Schema(description = "媒体年份；Emby 未提供时为 null", nullable = true)
         Integer year,
 

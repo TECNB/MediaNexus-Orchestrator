@@ -330,7 +330,7 @@ public class EmbyClient {
         params.put("ParentId", libraryId);
         params.put("Recursive", "true");
         params.put("IncludeItemTypes", itemType);
-        params.put("Fields", "DateCreated,ProductionYear,ImageTags");
+        params.put("Fields", "Path,DateCreated,ProductionYear,ImageTags");
         params.put("GroupItemsIntoCollections", "false");
         params.put("SortBy", "DateCreated");
         params.put("SortOrder", "Descending");
@@ -352,7 +352,7 @@ public class EmbyClient {
         params.put("Recursive", "true");
         params.put("IncludeItemTypes", itemType);
         params.put("Ids", itemId);
-        params.put("Fields", "DateCreated,ProductionYear,ImageTags");
+        params.put("Fields", "Path,DateCreated,ProductionYear,ImageTags");
         params.put("GroupItemsIntoCollections", "false");
         params.put("Limit", "1");
         EmbyMediaLibraryPage page = mediaLibraryPage(params);
@@ -713,6 +713,7 @@ public class EmbyClient {
             result.add(new EmbyMediaLibraryItem(
                     text(item, "Id", "id"),
                     text(item, "Name", "name"),
+                    fileName(item),
                     text(item, "Type", "type"),
                     integerOrNull(item, "ProductionYear", "productionYear"),
                     text(item, "DateCreated", "dateCreated"),
@@ -720,6 +721,15 @@ public class EmbyClient {
             ));
         }
         return new EmbyMediaLibraryPage(result, totalRecordCount.asInt());
+    }
+
+    private String fileName(JsonNode item) {
+        String path = text(item, "Path", "path");
+        if (!StringUtils.hasText(path)) {
+            return null;
+        }
+        int separator = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+        return separator < 0 ? path : path.substring(separator + 1);
     }
 
     private List<EmbyDeletionItem> deletionItems(Map<String, String> params) {

@@ -208,6 +208,7 @@ class EmbyClientTest {
                       "Items": [{
                         "Id": "movie-1",
                         "Name": "Movie title",
+                        "Path": "/srv/media/STRM/Movies/original-file-name.strm",
                         "Type": "Movie",
                         "ProductionYear": 2026,
                         "DateCreated": "2026-07-20T12:34:56.0000000Z",
@@ -236,6 +237,7 @@ class EmbyClientTest {
         assertThat(page.items()).containsExactly(new EmbyMediaLibraryItem(
                 "movie-1",
                 "Movie title",
+                "original-file-name.strm",
                 "Movie",
                 2026,
                 "2026-07-20T12:34:56.0000000Z",
@@ -245,7 +247,7 @@ class EmbyClientTest {
                 "ParentId=movies-id",
                 "Recursive=true",
                 "IncludeItemTypes=Movie",
-                "Fields=DateCreated%2CProductionYear%2CImageTags",
+                "Fields=Path%2CDateCreated%2CProductionYear%2CImageTags",
                 "GroupItemsIntoCollections=false",
                 "SortBy=DateCreated",
                 "SortOrder=Descending",

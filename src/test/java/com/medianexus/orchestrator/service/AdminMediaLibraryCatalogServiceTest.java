@@ -42,6 +42,7 @@ class AdminMediaLibraryCatalogServiceTest {
                 .thenReturn(new EmbyMediaLibraryPage(List.of(new EmbyMediaLibraryItem(
                         "item-1",
                         "The Matrix",
+                        "The.Matrix.1999.strm",
                         "Movie",
                         1999,
                         "2026-07-20T12:00:00Z",
@@ -56,6 +57,7 @@ class AdminMediaLibraryCatalogServiceTest {
         assertThat(response.total()).isEqualTo(25);
         assertThat(response.items()).singleElement().satisfies(item -> {
             assertThat(item.itemId()).isEqualTo("item-1");
+            assertThat(item.fileName()).isEqualTo("The.Matrix.1999.strm");
             assertThat(item.libraryId()).isEqualTo("movies-id");
             assertThat(item.libraryName()).isEqualTo("Movies");
             assertThat(item.hasPrimaryImage()).isTrue();
@@ -108,15 +110,16 @@ class AdminMediaLibraryCatalogServiceTest {
                 .thenReturn(new EmbyMediaLibraryPage(List.of(new EmbyMediaLibraryItem(
                         "collection-1",
                         "Creator collection",
+                        "Creator collection",
                         "BoxSet",
                         null,
                         "2026-09-16T16:12:21Z",
                         "poster-tag"
                 ), new EmbyMediaLibraryItem(
-                        "member-1", "Collection member", "Movie", null,
+                        "member-1", "Collection member", "member.strm", "Movie", null,
                         "2026-09-16T16:12:20Z", null
                 ), new EmbyMediaLibraryItem(
-                        "standalone-1", "Standalone video", "Movie", null,
+                        "standalone-1", "Standalone video", "standalone.strm", "Movie", null,
                         "2026-09-16T16:12:19Z", null
                 )), 3));
 
@@ -243,6 +246,8 @@ class AdminMediaLibraryCatalogServiceTest {
     }
 
     private EmbyMediaLibraryItem mediaItem(String id, String title, String imageTag) {
-        return new EmbyMediaLibraryItem(id, title, "Movie", 2024, "2026-09-17T10:00:00Z", imageTag);
+        return new EmbyMediaLibraryItem(
+                id, title, title + ".strm", "Movie", 2024, "2026-09-17T10:00:00Z", imageTag
+        );
     }
 }

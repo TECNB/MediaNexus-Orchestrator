@@ -295,6 +295,7 @@ public class AdminMediaLibraryCatalogService {
         return new AdminMediaLibraryItemResponse(
                 item.id(),
                 item.title(),
+                item.fileName(),
                 item.year(),
                 item.dateCreated(),
                 item.hasPrimaryImage(),

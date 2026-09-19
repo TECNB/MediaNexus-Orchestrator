@@ -43,7 +43,7 @@ class MediaLibraryDeletionWorkflowTest {
                 "adult-other-id", "Adult - Other", List.of("/srv/media/STRM/Adult/Other")
         );
         EmbyMediaLibraryItem collection = new EmbyMediaLibraryItem(
-                "collection-1", "Creator collection", "BoxSet", null,
+                "collection-1", "Creator collection", "Creator collection", "BoxSet", null,
                 "2026-09-16T16:12:21Z", "poster-tag"
         );
         when(catalogService.resolveLibrary(AdminMediaLibraryScope.ADULT_OTHER)).thenReturn(library);
@@ -113,7 +113,7 @@ class MediaLibraryDeletionWorkflowTest {
                 "tv-id", "电视剧", List.of("/srv/media/STRM/TV")
         );
         EmbyMediaLibraryItem series = new EmbyMediaLibraryItem(
-                "series-1", "新世界：虚拟货币争霸战", "Series", null,
+                "series-1", "新世界：虚拟货币争霸战", "新世界：虚拟货币争霸战", "Series", null,
                 "2026-09-16T16:12:21Z", "poster-tag"
         );
         EmbyDeletionItem season = new EmbyDeletionItem(
