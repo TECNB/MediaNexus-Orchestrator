@@ -10,6 +10,7 @@ import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.Year;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -21,8 +22,8 @@ import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
 /**
- * Small read-only JAVDB client for the three censored ranking pages and their
- * movie detail pages. The parser intentionally follows the HTML contract used
+ * Small read-only JAVDB client for ranking and movie detail pages. The parser
+ * intentionally follows the HTML contract used
  * by the probe script and keeps all request credentials inside this class.
  */
 @Component
@@ -36,7 +37,7 @@ public class JavdbClient {
             "Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 "
                     + "(KHTML, like Gecko) Chrome/128.0 Mobile Safari/537.36";
     private static final Pattern CODE_PATTERN = Pattern.compile(
-            "(?<![A-Z0-9])([A-Z]{2,12})[-_ ]?(\\d{2,7})(?![A-Z0-9])",
+            "(?<![A-Z0-9])((?:FC2[-_ ]?(?:PPV[-_ ]?)?)|[A-Z]{2,12}[-_ ]?)(\\d{2,7})(?![A-Z0-9])",
             Pattern.CASE_INSENSITIVE
     );
     private static final Pattern BOX_ANCHOR_PATTERN = Pattern.compile(
@@ -112,6 +113,44 @@ public class JavdbClient {
                 + "&t=censored";
         String body = get(url, cookie);
         return parseRanking(body, normalizedPeriod, url);
+    }
+
+    public List<JavdbRankingMovie> topRanking(int year, int limit, String cookie) {
+        if (year < 2008 || year > Year.now().getValue()) {
+            throw new JavdbClientException(JavdbClientException.Reason.PARSE, "JAVDB Top 250 年份无效");
+        }
+        if (limit < 1 || limit > 250) {
+            throw new JavdbClientException(JavdbClientException.Reason.PARSE, "JAVDB Top 250 数量无效");
+        }
+        String period = "top_" + year;
+        List<JavdbRankingMovie> result = new ArrayList<>();
+        for (int page = 1; result.size() < limit; page++) {
+            String url = BASE_URL + "/rankings/top?page=" + page + "&t=y" + year;
+            List<JavdbRankingMovie> pageMovies = parseRanking(get(url, cookie), period, url);
+            int offset = result.size();
+            for (JavdbRankingMovie movie : pageMovies) {
+                result.add(new JavdbRankingMovie(
+                        movie.code(), movie.title(), movie.detailUrl(), movie.releaseDate(), movie.period(),
+                        offset + movie.rank(), movie.hasMagnetBadge(), movie.rating(), movie.reviewCount()
+                ));
+                if (result.size() >= limit) {
+                    break;
+                }
+            }
+            if (pageMovies.size() < 40) {
+                break;
+            }
+        }
+        return result;
+    }
+
+    public void validateTop(String cookie) {
+        if (!StringUtils.hasText(cookie)) {
+            throw new JavdbClientException(JavdbClientException.Reason.AUTHENTICATION, "JAVDB Top 250 Cookie 未配置");
+        }
+        if (topRanking(Year.now().getValue(), 1, cookie).isEmpty()) {
+            throw new JavdbClientException(JavdbClientException.Reason.AUTHENTICATION, "JAVDB Top 250 为空或登录状态无效");
+        }
     }
 
     public JavdbMovieDetail detail(String detailUrl, String expectedCode, String cookie) {
@@ -451,13 +490,18 @@ public class JavdbClient {
             if (result != null) {
                 return result;
             }
-            result = matcher.group(1).toUpperCase(Locale.ROOT) + "-" + matcher.group(2);
+            result = normalizeCodeParts(matcher.group(1), matcher.group(2));
         }
         return result;
     }
 
     private String normalizeCode(String value) {
         return extractSingleCode(value);
+    }
+
+    private String normalizeCodeParts(String prefix, String digits) {
+        String normalizedPrefix = prefix.toUpperCase(Locale.ROOT).replaceAll("[-_ ]", "");
+        return (normalizedPrefix.startsWith("FC2") ? "FC2" : normalizedPrefix) + "-" + digits;
     }
 
     private String textFromHtml(String html) {

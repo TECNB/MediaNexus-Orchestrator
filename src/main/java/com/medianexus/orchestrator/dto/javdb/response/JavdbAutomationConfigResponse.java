@@ -19,6 +19,9 @@ public record JavdbAutomationConfigResponse(
         String timezone,
         @JsonProperty("credential_configured") boolean credentialConfigured,
         @JsonProperty("credential_valid") boolean credentialValid,
-        @JsonProperty("last_validated_at") String lastValidatedAt
+        @JsonProperty("last_validated_at") String lastValidatedAt,
+        @JsonProperty("top_credential_configured") boolean topCredentialConfigured,
+        @JsonProperty("top_credential_valid") boolean topCredentialValid,
+        @JsonProperty("top_last_validated_at") String topLastValidatedAt
 ) {
 }

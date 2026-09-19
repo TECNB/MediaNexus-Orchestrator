@@ -59,6 +59,17 @@ public record JavdbAutomationConfigUpdateRequest(
         @JsonProperty("schedule_time")
         @NotNull(message = "执行时间不能为空")
         @Pattern(regexp = "(?:[01]\\d|2[0-3]):[0-5]\\d", message = "执行时间格式必须为 HH:mm")
-        String scheduleTime
+        String scheduleTime,
+        @Schema(description = "手动运行来源：STANDARD 或 TOP_250")
+        @JsonProperty("ranking_source")
+        String rankingSource,
+        @Schema(description = "Top 250 年份")
+        @JsonProperty("top_year")
+        Integer topYear,
+        @Schema(description = "Top 250 读取前 N 条，范围 1-250")
+        @JsonProperty("top_limit")
+        @Min(value = 1, message = "Top 250 至少读取 1 条")
+        @Max(value = 250, message = "Top 250 最多读取 250 条")
+        Integer topLimit
 ) {
 }

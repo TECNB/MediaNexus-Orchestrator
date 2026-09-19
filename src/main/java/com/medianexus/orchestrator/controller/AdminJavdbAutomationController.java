@@ -59,6 +59,14 @@ public class AdminJavdbAutomationController {
         return ApiResponse.success(automationService.updateCookie(request));
     }
 
+    @PutMapping("/credential/top")
+    @Operation(summary = "覆盖 JAVDB Top 250 会员 Cookie", description = "保存后仅访问一次 Top 250 验证；响应不返回 Cookie 原文。")
+    public ApiResponse<JavdbCredentialStatusResponse> updateTopCredential(
+            @Valid @RequestBody JavdbCookieUpdateRequest request
+    ) {
+        return ApiResponse.success(automationService.updateTopCookie(request));
+    }
+
     @PostMapping("/runs/dry-run")
     @Operation(summary = "试运行 JAVDB 自动化", description = "抓取、查重并选择磁力，但不会创建 Adult 任务。")
     public ApiResponse<JavdbAutomationRunResponse> dryRun(

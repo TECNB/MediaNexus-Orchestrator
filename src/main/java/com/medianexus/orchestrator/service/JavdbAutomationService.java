@@ -43,6 +43,7 @@ import java.text.Normalizer;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.Year;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
@@ -83,6 +84,8 @@ public class JavdbAutomationService {
     private static final String CONFIG_KEY = "javdb_automation_config";
     private static final String COOKIE_KEY = "javdb_automation_cookie";
     private static final String VALIDATION_KEY = "javdb_automation_cookie_validation";
+    private static final String TOP_COOKIE_KEY = "javdb_top_cookie";
+    private static final String TOP_VALIDATION_KEY = "javdb_top_cookie_validation";
     private static final String TIMEZONE = "Asia/Shanghai";
     private static final ZoneId ZONE_ID = ZoneId.of(TIMEZONE);
     private static final String DEFAULT_SCHEDULE_TIME = "03:00";
@@ -91,13 +94,14 @@ public class JavdbAutomationService {
     private static final double DEFAULT_MINIMUM_RATING = 4.5D;
     private static final int DEFAULT_MINIMUM_REVIEW_COUNT = 100;
     private static final int MAX_LIMIT = 60;
+    private static final int DEFAULT_TOP_LIMIT = 10;
     private static final int BATCH_SIZE = 50;
     private static final long DETAIL_REQUEST_DELAY_MILLIS = 1000L;
     private static final String ADULT_JAV_SOURCE = "JAVDB_AUTOMATION";
     private static final String ADULT_JAV_LIBRARY_NAME = "Adult-JAV";
     private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("HH:mm");
     private static final Pattern CODE_PATTERN = Pattern.compile(
-            "(?<![A-Z0-9])([A-Z]{2,12})[-_ ]?(\\d{2,7})(?![A-Z0-9])",
+            "(?<![A-Z0-9])((?:FC2[-_ ]?(?:PPV[-_ ]?)?)|[A-Z]{2,12}[-_ ]?)(\\d{2,7})(?![A-Z0-9])",
             Pattern.CASE_INSENSITIVE
     );
     private static final Set<String> RUNNING_STATUSES = Set.of("RUNNING");
@@ -234,7 +238,7 @@ public class JavdbAutomationService {
                 request.minimumReviewCount() == null ? DEFAULT_MINIMUM_REVIEW_COUNT : request.minimumReviewCount(),
                 request.limitPerRanking() == null ? DEFAULT_LIMIT : request.limitPerRanking(),
                 StringUtils.hasText(request.scheduleTime()) ? request.scheduleTime() : DEFAULT_SCHEDULE_TIME,
-                TIMEZONE
+                TIMEZONE, "STANDARD", Year.now().getValue(), DEFAULT_TOP_LIMIT
         );
         validateConfig(config);
         if (config.enabled()) {
@@ -265,6 +269,24 @@ public class JavdbAutomationService {
         return toCredentialStatus(validationState);
     }
 
+    public JavdbCredentialStatusResponse updateTopCookie(JavdbCookieUpdateRequest request) {
+        authService.requireAdminUser();
+        if (request == null || !StringUtils.hasText(request.cookie())) {
+            throw badRequest("JAVDB Top 250 Cookie 不能为空");
+        }
+        String cookie = request.cookie().trim();
+        systemSettingMapper.upsertSetting(TOP_COOKIE_KEY, cookie);
+        ValidationState validationState;
+        try {
+            javdbClient.validateTop(cookie);
+            validationState = new ValidationState(true, LocalDateTime.now(), "JAVDB Top 250 Cookie 验证成功");
+        } catch (JavdbClientException exception) {
+            validationState = new ValidationState(false, LocalDateTime.now(), safeCredentialMessage(exception));
+        }
+        saveValidation(TOP_VALIDATION_KEY, validationState);
+        return toCredentialStatus(TOP_COOKIE_KEY, validationState);
+    }
+
     public JavdbAutomationRunResponse requestDryRun(JavdbAutomationConfigUpdateRequest request) {
         User admin = authService.requireAdminUser();
         Config config = request == null ? loadConfig() : configFromRequest(request);
@@ -290,7 +312,10 @@ public class JavdbAutomationService {
                 normalizeExcludedTags(request.excludedTags()),
                 request.minimumRating() == null ? DEFAULT_MINIMUM_RATING : request.minimumRating(),
                 request.minimumReviewCount() == null ? DEFAULT_MINIMUM_REVIEW_COUNT : request.minimumReviewCount(),
-                request.limitPerRanking(), request.scheduleTime(), TIMEZONE
+                request.limitPerRanking(), request.scheduleTime(), TIMEZONE,
+                StringUtils.hasText(request.rankingSource()) ? request.rankingSource().trim().toUpperCase(Locale.ROOT) : "STANDARD",
+                request.topYear() == null ? Year.now().getValue() : request.topYear(),
+                request.topLimit() == null ? DEFAULT_TOP_LIMIT : request.topLimit()
         );
     }
 
@@ -406,16 +431,23 @@ public class JavdbAutomationService {
             }
             executePipeline(run, config);
             if ("DRY_RUN".equals(run.getExecutionMode()) && "SUCCEEDED".equals(run.getStatus())) {
-                saveValidation(new ValidationState(true, LocalDateTime.now(), "JAVDB Cookie 验证成功"));
+                if (config.isTop()) {
+                    saveValidation(TOP_VALIDATION_KEY,
+                            new ValidationState(true, LocalDateTime.now(), "JAVDB Top 250 Cookie 验证成功"));
+                } else {
+                    saveValidation(new ValidationState(true, LocalDateTime.now(), "JAVDB Cookie 验证成功"));
+                }
             }
         } catch (JavdbClientException exception) {
             if (exception.reason() == JavdbClientException.Reason.AUTHENTICATION) {
-                saveValidation(new ValidationState(
-                        false,
-                        LocalDateTime.now(),
-                        "JAVDB Cookie 已失效，请更新登录凭证"
-                ));
-                disableAfterInvalidCredential();
+                if (config.isTop() && "FETCHING_RANKINGS".equals(run.getStage())) {
+                    saveValidation(TOP_VALIDATION_KEY, new ValidationState(
+                            false, LocalDateTime.now(), "JAVDB Top 250 Cookie 已失效，请更新会员凭证"));
+                } else {
+                    saveValidation(new ValidationState(
+                            false, LocalDateTime.now(), "JAVDB Cookie 已失效，请更新登录凭证"));
+                    disableAfterInvalidCredential();
+                }
             }
             markFailed(runId, safeRunMessage(exception));
         } catch (EmbyClientException exception) {
@@ -674,6 +706,16 @@ public class JavdbAutomationService {
 
     private Map<String, List<JavdbRankingMovie>> fetchRankings(Config config, String cookie) {
         Map<String, List<JavdbRankingMovie>> rankings = new LinkedHashMap<>();
+        if (config.isTop()) {
+            String topCookie = loadTopCookie();
+            if (!StringUtils.hasText(topCookie)) {
+                throw new JavdbClientException(JavdbClientException.Reason.AUTHENTICATION,
+                        "JAVDB Top 250 Cookie 未配置");
+            }
+            String period = "top_" + config.topYear();
+            rankings.put(period, javdbClient.topRanking(config.topYear(), config.topLimit(), topCookie));
+            return rankings;
+        }
         if (config.dailyEnabled()) {
             rankings.put("daily", limitedRanking("daily", config.limitPerRanking(), cookie));
         }
@@ -1082,6 +1124,7 @@ public class JavdbAutomationService {
     private JavdbAutomationConfigResponse toConfigResponse() {
         Config config = loadConfig();
         ValidationState validation = loadValidation();
+        ValidationState topValidation = loadValidation(TOP_VALIDATION_KEY);
         boolean configured = StringUtils.hasText(loadCookie());
         return new JavdbAutomationConfigResponse(
                 config.enabled(), config.dailyEnabled(), config.weeklyEnabled(), config.monthlyEnabled(),
@@ -1089,14 +1132,19 @@ public class JavdbAutomationService {
                 config.minimumReviewCount(),
                 config.limitPerRanking(), config.scheduleTime(),
                 TIMEZONE, configured, validation.valid(),
-                validation.validatedAt() == null ? null : validation.validatedAt().toString()
+                validation.validatedAt() == null ? null : validation.validatedAt().toString(),
+                StringUtils.hasText(loadTopCookie()), topValidation.valid(),
+                topValidation.validatedAt() == null ? null : topValidation.validatedAt().toString()
         );
     }
 
     private JavdbCredentialStatusResponse toCredentialStatus(ValidationState validation) {
-        return new JavdbCredentialStatusResponse(
-                StringUtils.hasText(loadCookie()), validation.valid(), validation.validatedAt()
-        );
+        return toCredentialStatus(COOKIE_KEY, validation);
+    }
+
+    private JavdbCredentialStatusResponse toCredentialStatus(String cookieKey, ValidationState validation) {
+        return new JavdbCredentialStatusResponse(StringUtils.hasText(systemSettingMapper.selectSettingValue(cookieKey)),
+                validation.valid(), validation.validatedAt());
     }
 
     private Config loadConfig() {
@@ -1124,7 +1172,7 @@ public class JavdbAutomationService {
                     legacyConfig ? DEFAULT_LIMIT
                             : node.path("limitPerRanking").asInt(node.path("limit_per_ranking").asInt(DEFAULT_LIMIT)),
                     node.path("scheduleTime").asText(node.path("schedule_time").asText(DEFAULT_SCHEDULE_TIME)),
-                    TIMEZONE
+                    TIMEZONE, "STANDARD", Year.now().getValue(), DEFAULT_TOP_LIMIT
             );
         } catch (JsonProcessingException exception) {
             log.warn("Invalid JAVDB automation config, using defaults");
@@ -1135,7 +1183,8 @@ public class JavdbAutomationService {
     private Config defaultConfig() {
         return new Config(false, true, true, true, false, false, DEFAULT_EXCLUDED_TAGS,
                 DEFAULT_MINIMUM_RATING, DEFAULT_MINIMUM_REVIEW_COUNT,
-                DEFAULT_LIMIT, DEFAULT_SCHEDULE_TIME, TIMEZONE);
+                DEFAULT_LIMIT, DEFAULT_SCHEDULE_TIME, TIMEZONE,
+                "STANDARD", Year.now().getValue(), DEFAULT_TOP_LIMIT);
     }
 
     private Config readConfigSnapshot(String raw) {
@@ -1157,8 +1206,16 @@ public class JavdbAutomationService {
         return systemSettingMapper.selectSettingValue(COOKIE_KEY);
     }
 
+    private String loadTopCookie() {
+        return systemSettingMapper.selectSettingValue(TOP_COOKIE_KEY);
+    }
+
     private ValidationState loadValidation() {
-        String raw = systemSettingMapper.selectSettingValue(VALIDATION_KEY);
+        return loadValidation(VALIDATION_KEY);
+    }
+
+    private ValidationState loadValidation(String key) {
+        String raw = systemSettingMapper.selectSettingValue(key);
         if (!StringUtils.hasText(raw)) {
             return new ValidationState(false, null, "尚未验证 JAVDB Cookie");
         }
@@ -1174,11 +1231,15 @@ public class JavdbAutomationService {
     }
 
     private void saveValidation(ValidationState state) {
+        saveValidation(VALIDATION_KEY, state);
+    }
+
+    private void saveValidation(String key, ValidationState state) {
         Map<String, Object> value = new LinkedHashMap<>();
         value.put("valid", state.valid());
         value.put("validatedAt", state.validatedAt() == null ? null : state.validatedAt().toString());
         value.put("message", truncate(state.message(), 256));
-        systemSettingMapper.upsertSetting(VALIDATION_KEY, writeJson(value));
+        systemSettingMapper.upsertSetting(key, writeJson(value));
     }
 
     private void disableAfterInvalidCredential() {
@@ -1190,7 +1251,8 @@ public class JavdbAutomationService {
                 config.crackedOnly(), config.subtitleOnly(),
                 config.excludedTags(), config.minimumRating(),
                 config.minimumReviewCount(),
-                config.limitPerRanking(), config.scheduleTime(), TIMEZONE));
+                config.limitPerRanking(), config.scheduleTime(), TIMEZONE,
+                "STANDARD", Year.now().getValue(), DEFAULT_TOP_LIMIT));
     }
 
     private void ensureCanEnable() {
@@ -1212,13 +1274,24 @@ public class JavdbAutomationService {
     }
 
     private void validateConfig(Config config) {
+        if (!Set.of("STANDARD", "TOP_250").contains(config.rankingSource())) {
+            throw badRequest("JAVDB 榜单来源无效");
+        }
+        if (config.isTop()) {
+            if (config.topYear() < 2008 || config.topYear() > Year.now().getValue()) {
+                throw badRequest("Top 250 年份必须为 2008-" + Year.now().getValue());
+            }
+            if (config.topLimit() < 1 || config.topLimit() > 250) {
+                throw badRequest("Top 250 数量必须为 1-250");
+            }
+        }
         if (config.limitPerRanking() < 1 || config.limitPerRanking() > MAX_LIMIT) {
             throw badRequest("每个榜单数量必须为 1-60");
         }
         if (config.minimumRating() < 0 || config.minimumRating() > 5) {
             throw badRequest("最低评分必须为 0-5");
         }
-        if (!config.dailyEnabled() && !config.weeklyEnabled() && !config.monthlyEnabled()) {
+        if (!config.isTop() && !config.dailyEnabled() && !config.weeklyEnabled() && !config.monthlyEnabled()) {
             throw badRequest("至少选择一个 JAVDB 榜单");
         }
         try {
@@ -1240,7 +1313,7 @@ public class JavdbAutomationService {
         }
         Matcher matcher = CODE_PATTERN.matcher(Normalizer.normalize(value, Normalizer.Form.NFKC).toUpperCase(Locale.ROOT));
         while (matcher.find()) {
-            codes.add(matcher.group(1) + "-" + matcher.group(2));
+            codes.add(normalizeCodeParts(matcher.group(1), matcher.group(2)));
         }
     }
 
@@ -1251,7 +1324,12 @@ public class JavdbAutomationService {
         Matcher matcher = CODE_PATTERN.matcher(
                 Normalizer.normalize(value, Normalizer.Form.NFKC).toUpperCase(Locale.ROOT)
         );
-        return matcher.find() ? matcher.group(1) + "-" + matcher.group(2) : null;
+        return matcher.find() ? normalizeCodeParts(matcher.group(1), matcher.group(2)) : null;
+    }
+
+    private String normalizeCodeParts(String prefix, String digits) {
+        String normalizedPrefix = prefix.replaceAll("[-_ ]", "");
+        return (normalizedPrefix.startsWith("FC2") ? "FC2" : normalizedPrefix) + "-" + digits;
     }
 
     private String writeJson(Object value) {
@@ -1322,8 +1400,14 @@ public class JavdbAutomationService {
             int minimumReviewCount,
             int limitPerRanking,
             String scheduleTime,
-            String timezone
+            String timezone,
+            String rankingSource,
+            int topYear,
+            int topLimit
     ) {
+        private boolean isTop() {
+            return "TOP_250".equals(rankingSource);
+        }
     }
 
     private record ValidationState(boolean valid, LocalDateTime validatedAt, String message) {

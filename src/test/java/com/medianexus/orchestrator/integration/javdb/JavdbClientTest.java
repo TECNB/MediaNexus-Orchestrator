@@ -41,6 +41,23 @@ class JavdbClientTest {
     }
 
     @Test
+    void normalizesFc2RankingCodes() {
+        String html = """
+                <a class="box" href="/v/fc2" title="FC2-PPV-4828968 / title">
+                  <span class="video-title"><strong>FC2-PPV-4828968</strong></span>
+                </a>
+                """;
+
+        @SuppressWarnings("unchecked")
+        List<JavdbRankingMovie> movies = (List<JavdbRankingMovie>) ReflectionTestUtils.invokeMethod(
+                client, "parseRanking", html, "top_2026", "https://javdb.com/rankings/top?page=1&t=y2026"
+        );
+
+        assertThat(movies).extracting(JavdbRankingMovie::code).containsExactly("FC2-4828968");
+        assertThat(movies.get(0).period()).isEqualTo("top_2026");
+    }
+
+    @Test
     void parsesAndDeduplicatesMagnetsWhileKeepingFilenameLabels() {
         String html = """
                 <section id="magnets-content">
