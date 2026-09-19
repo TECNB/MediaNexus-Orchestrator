@@ -1,8 +1,10 @@
 package com.medianexus.orchestrator.service;
 
-import com.medianexus.orchestrator.dto.emby.response.AdultOtherAutomationRunResponse;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.medianexus.orchestrator.dto.emby.response.AdultOtherAutomationCollectionResponse;
 import com.medianexus.orchestrator.dto.emby.response.AdultOtherAutomationItemResponse;
+import com.medianexus.orchestrator.dto.emby.response.AdultOtherAutomationRunListResponse;
+import com.medianexus.orchestrator.dto.emby.response.AdultOtherAutomationRunResponse;
 import com.medianexus.orchestrator.dto.emby.response.AdultOtherCollectionSyncRunResponse;
 import com.medianexus.orchestrator.integration.emby.EmbyItemState;
 import com.medianexus.orchestrator.mapper.AdultOtherAutomationRunCollectionMapper;
@@ -237,11 +239,22 @@ public class AdultOtherAutomationRunRecorder {
         });
     }
 
-    public List<AdultOtherAutomationRunResponse> recent(int limit) {
+    public AdultOtherAutomationRunListResponse page(int page, int pageSize) {
         ensureTable();
-        return mapper.selectRecent(Math.max(1, Math.min(limit, 50))).stream()
+        int normalizedPage = Math.max(1, page);
+        int normalizedPageSize = Math.max(1, Math.min(pageSize, 50));
+        int offset = (normalizedPage - 1) * normalizedPageSize;
+        int total = Math.toIntExact(mapper.selectCount(null));
+        List<AdultOtherAutomationRunResponse> items = mapper.selectList(
+                        new LambdaQueryWrapper<AdultOtherAutomationRun>()
+                                .orderByDesc(AdultOtherAutomationRun::getStartedAt)
+                                .last("LIMIT " + normalizedPageSize + " OFFSET " + offset)
+                ).stream()
                 .map(run -> toResponse(run, List.of(), List.of()))
                 .toList();
+        return new AdultOtherAutomationRunListResponse(
+                items, total, normalizedPage, normalizedPageSize
+        );
     }
 
     public AdultOtherAutomationRunResponse details(String runId) {

@@ -2,6 +2,7 @@ package com.medianexus.orchestrator.controller;
 
 import com.medianexus.orchestrator.common.response.ApiResponse;
 import com.medianexus.orchestrator.dto.emby.request.AdultOtherCollectionSyncRequest;
+import com.medianexus.orchestrator.dto.emby.response.AdultOtherAutomationRunListResponse;
 import com.medianexus.orchestrator.dto.emby.response.AdultOtherAutomationRunResponse;
 import com.medianexus.orchestrator.dto.emby.response.AdultOtherCollectionInventoryResponse;
 import com.medianexus.orchestrator.dto.emby.response.AdultOtherCollectionSyncRunResponse;
@@ -11,7 +12,10 @@ import com.medianexus.orchestrator.service.AdultOtherLibraryAutomationRunner;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import java.util.List;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -23,6 +27,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/api/v1/admin/emby/adult-other-collections")
 @Tag(name = "Adult-Other 合集同步", description = "管理员将 Adult - Other 外层资源文件夹同步为 Emby Collection")
+@Validated
 public class AdminAdultOtherCollectionController {
 
     private final AdultOtherCollectionSyncService syncService;
@@ -46,11 +51,15 @@ public class AdminAdultOtherCollectionController {
     }
 
     @GetMapping("/automation/runs")
-    @Operation(summary = "读取 Adult-Other 最近自动化运行记录")
-    public ApiResponse<List<AdultOtherAutomationRunResponse>> getAutomationRuns(
-            @RequestParam(defaultValue = "10") int limit
+    @Operation(summary = "分页读取 Adult-Other 自动化运行记录")
+    public ApiResponse<AdultOtherAutomationRunListResponse> getAutomationRuns(
+            @Min(value = 1, message = "页码必须大于 0")
+            @RequestParam(defaultValue = "1") int page,
+            @Min(value = 1, message = "每页条数必须大于 0")
+            @Max(value = 50, message = "每页条数不能大于 50")
+            @RequestParam(name = "page_size", defaultValue = "10") int pageSize
     ) {
-        return ApiResponse.success(automationRunRecorder.recent(limit));
+        return ApiResponse.success(automationRunRecorder.page(page, pageSize));
     }
 
     @GetMapping("/automation/runs/{runId}")
