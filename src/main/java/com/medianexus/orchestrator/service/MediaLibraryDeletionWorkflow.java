@@ -156,7 +156,7 @@ public class MediaLibraryDeletionWorkflow {
         try {
             task.setStatus("RUNNING");
             saveStage(task, "DELETING_CLOUD");
-            List<String> sourcePaths = read(task.getSourcePaths());
+            List<String> sourcePaths = resolveMediaSourcePaths(read(task.getSourcePaths()));
             List<String> strmPaths = read(task.getStrmPaths());
             List<String> sourceDeletionTargets = sourcePaths;
             List<String> strmDeletionTargets = strmPaths;
