@@ -489,7 +489,8 @@ public class JavdbAutomationService {
             }
         } catch (JavdbClientException exception) {
             if (exception.reason() == JavdbClientException.Reason.AUTHENTICATION) {
-                if (config.isTop() && "FETCHING_RANKINGS".equals(run.getStage())) {
+                if (exception instanceof TopCredentialException
+                        || config.isTop() && "FETCHING_RANKINGS".equals(run.getStage())) {
                     saveValidation(TOP_VALIDATION_KEY, new ValidationState(
                             false, LocalDateTime.now(), "JAVDB Top 250 Cookie 已失效，请更新会员凭证"));
                 } else {
@@ -593,7 +594,16 @@ public class JavdbAutomationService {
                 if (detailIndex > 0) {
                     LockSupport.parkNanos(DETAIL_REQUEST_DELAY_MILLIS * 1_000_000L);
                 }
-                JavdbMovieDetail detail = javdbClient.detail(movie.detailUrl(), movie.code(), cookie);
+                JavdbMovieDetail detail;
+                try {
+                    detail = javdbClient.detail(movie.detailUrl(), movie.code(), detailCookie(movie.code(), cookie));
+                } catch (JavdbClientException exception) {
+                    if (isFc2(movie.code())
+                            && exception.reason() == JavdbClientException.Reason.AUTHENTICATION) {
+                        throw new TopCredentialException(exception);
+                    }
+                    throw exception;
+                }
                 if (!matchesMovieFilters(detail, config)) {
                     saveItem(run, movie, "NO_MAGNET", reasonFor(movie), detail.magnets(), null, null, null);
                     continue;
@@ -1646,6 +1656,21 @@ public class JavdbAutomationService {
         return systemSettingMapper.selectSettingValue(TOP_COOKIE_KEY);
     }
 
+    private String detailCookie(String code, String regularCookie) {
+        if (!isFc2(code)) {
+            return regularCookie;
+        }
+        String topCookie = loadTopCookie();
+        if (!StringUtils.hasText(topCookie)) {
+            throw new TopCredentialException("FC2 详情需要配置 JAVDB 会员 Cookie");
+        }
+        return topCookie;
+    }
+
+    private boolean isFc2(String code) {
+        return StringUtils.hasText(code) && code.toUpperCase(Locale.ROOT).startsWith("FC2-");
+    }
+
     private ValidationState loadValidation() {
         return loadValidation(VALIDATION_KEY);
     }
@@ -1799,6 +1824,9 @@ public class JavdbAutomationService {
     }
 
     private String safeRunMessage(RuntimeException exception) {
+        if (exception instanceof TopCredentialException) {
+            return "JAVDB 会员凭证失效或需要验证";
+        }
         if (exception instanceof JavdbClientException javdbException) {
             return switch (javdbException.reason()) {
                 case AUTHENTICATION -> "JAVDB 登录凭证失效或需要验证";
@@ -1847,6 +1875,16 @@ public class JavdbAutomationService {
     }
 
     private record ValidationState(boolean valid, LocalDateTime validatedAt, String message) {
+    }
+
+    private static final class TopCredentialException extends JavdbClientException {
+        private TopCredentialException(String message) {
+            super(Reason.AUTHENTICATION, message);
+        }
+
+        private TopCredentialException(JavdbClientException cause) {
+            super(Reason.AUTHENTICATION, cause.getMessage(), cause);
+        }
     }
 
     private record MergedMovie(
