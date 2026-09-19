@@ -61,6 +61,10 @@ public class JavdbClient {
             "(?is)<[^>]*\\bclass\\s*=\\s*[\\\"'][^\\\"']*\\bscore\\b[^\\\"']*[\\\"'][^>]*>(.*?)</[^>]+>"
     );
     private static final Pattern SCORE_VALUE_PATTERN = Pattern.compile("\\b(\\d+(?:\\.\\d+)?)\\b");
+    private static final Pattern REVIEW_COUNT_PATTERN = Pattern.compile("由\\s*(\\d+)\\s*人評價");
+    private static final Pattern CATEGORY_BLOCK_PATTERN = Pattern.compile(
+            "(?is)<div\\b[^>]*class\\s*=\\s*[\\\"'][^\\\"']*\\bpanel-block\\b[^\\\"']*[\\\"'][^>]*>\\s*<strong>類別[:：]</strong>(.*?)</div>"
+    );
     private static final Pattern TAG_ANCHOR_PATTERN = Pattern.compile(
             "(?is)<a\\b([^>]*\\bhref\\s*=\\s*[\\\"']/tags?(?:/|\\?)[^\\\"']*[\\\"'][^>]*)>(.*?)</a>"
     );
@@ -127,7 +131,7 @@ public class JavdbClient {
         if (!StringUtils.hasText(code)) {
             throw new JavdbClientException(JavdbClientException.Reason.PARSE, "JAVDB 详情页番号无法识别");
         }
-        return new JavdbMovieDetail(code, title, detailUrl, magnets, parseRating(body), parseTags(body));
+        return new JavdbMovieDetail(code, title, detailUrl, magnets, parseRating(body), parseReviewCount(body), parseTags(body));
     }
 
     public void validate(String cookie) {
@@ -261,6 +265,8 @@ public class JavdbClient {
                 title = textFromHtml(anchorHtml);
             }
             Matcher dateMatcher = DATE_PATTERN.matcher(textFromHtml(anchorHtml));
+            String scoreText = firstMatch(anchorHtml, SCORE_ELEMENT_PATTERN);
+            String scoreBody = textFromHtml(scoreText);
             movies.add(new JavdbRankingMovie(
                     code,
                     limit(title, 512),
@@ -268,7 +274,9 @@ public class JavdbClient {
                     dateMatcher.find() ? dateMatcher.group() : null,
                     period,
                     itemRank,
-                    textFromHtml(anchorHtml).contains("含磁")
+                    textFromHtml(anchorHtml).contains("含磁"),
+                    parseRating(scoreBody),
+                    parseReviewCount(scoreBody)
             ));
         }
         if (movies.isEmpty()) {
@@ -340,13 +348,26 @@ public class JavdbClient {
         }
     }
 
+    private Integer parseReviewCount(String body) {
+        Matcher matcher = REVIEW_COUNT_PATTERN.matcher(textFromHtml(body == null ? "" : body));
+        if (!matcher.find()) {
+            return null;
+        }
+        try {
+            return Integer.valueOf(matcher.group(1));
+        } catch (NumberFormatException exception) {
+            return null;
+        }
+    }
+
     private List<String> parseTags(String body) {
         Set<String> tags = new java.util.LinkedHashSet<>();
-        Matcher anchors = TAG_ANCHOR_PATTERN.matcher(body == null ? "" : body);
+        String categoryScope = firstMatch(body, CATEGORY_BLOCK_PATTERN);
+        Matcher anchors = TAG_ANCHOR_PATTERN.matcher(categoryScope);
         while (anchors.find()) {
             addTag(tags, anchors.group(2));
         }
-        Matcher elements = TAG_ELEMENT_PATTERN.matcher(body == null ? "" : body);
+        Matcher elements = TAG_ELEMENT_PATTERN.matcher(categoryScope);
         while (elements.find()) {
             addTag(tags, elements.group(1));
         }

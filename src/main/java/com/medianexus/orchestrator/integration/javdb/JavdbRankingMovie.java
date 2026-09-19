@@ -7,6 +7,8 @@ public record JavdbRankingMovie(
         String releaseDate,
         String period,
         int rank,
-        boolean hasMagnetBadge
+        boolean hasMagnetBadge,
+        Double rating,
+        Integer reviewCount
 ) {
 }

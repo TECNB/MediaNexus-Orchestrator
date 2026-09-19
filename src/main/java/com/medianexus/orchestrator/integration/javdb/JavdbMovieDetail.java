@@ -8,6 +8,7 @@ public record JavdbMovieDetail(
         String detailUrl,
         List<JavdbMagnet> magnets,
         Double rating,
+        Integer reviewCount,
         List<String> tags
 ) {
 }

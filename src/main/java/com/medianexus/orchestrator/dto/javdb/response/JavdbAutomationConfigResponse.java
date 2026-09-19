@@ -13,6 +13,7 @@ public record JavdbAutomationConfigResponse(
         @JsonProperty("subtitle_only") boolean subtitleOnly,
         @JsonProperty("excluded_tags") String excludedTags,
         @JsonProperty("minimum_rating") double minimumRating,
+        @JsonProperty("minimum_review_count") int minimumReviewCount,
         @JsonProperty("limit_per_ranking") int limitPerRanking,
         @JsonProperty("schedule_time") String scheduleTime,
         String timezone,

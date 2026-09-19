@@ -64,9 +64,8 @@ class JavdbClientTest {
     void parsesDetailRatingAndTags() {
         String html = """
                 <h1>ABC-123 测试影片</h1>
-                <div class="score">4.35 分</div>
-                <a href="/tags?c=熟女">熟女</a>
-                <a href="/tags/中文">中文字幕</a>
+                <div class="panel-block"><strong>評分:</strong><span class="value"><span class="score">4.35 分, 由27人評價</span></span></div>
+                <div class="panel-block"><strong>類別:</strong><span class="value"><a href="/tags?c=熟女">熟女</a>, <a href="/tags/中文">中文字幕</a></span></div>
                 <section id="magnets-content">
                   <a href="magnet:?xt=urn:btih:abcdef1234567890&amp;dn=ABC-123">磁力</a>
                 </section>
@@ -77,6 +76,8 @@ class JavdbClientTest {
         List<String> tags = ReflectionTestUtils.invokeMethod(client, "parseTags", html);
 
         assertThat(rating).isEqualTo(4.35D);
+        Integer reviewCount = ReflectionTestUtils.invokeMethod(client, "parseReviewCount", html);
+        assertThat(reviewCount).isEqualTo(27);
         assertThat(tags).containsExactly("熟女", "中文字幕");
     }
 }

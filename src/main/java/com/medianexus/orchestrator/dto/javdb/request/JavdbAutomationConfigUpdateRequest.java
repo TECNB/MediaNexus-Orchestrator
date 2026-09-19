@@ -44,6 +44,11 @@ public record JavdbAutomationConfigUpdateRequest(
         @DecimalMin(value = "0.0", message = "最低评分不能小于 0")
         @DecimalMax(value = "5.0", message = "最低评分不能大于 5")
         Double minimumRating,
+        @Schema(description = "最低评价人数")
+        @JsonProperty("minimum_review_count")
+        @NotNull(message = "最低评价人数不能为空")
+        @Min(value = 0, message = "最低评价人数不能小于 0")
+        Integer minimumReviewCount,
         @Schema(description = "每个榜单读取前 N 条，范围 1-50")
         @JsonProperty("limit_per_ranking")
         @NotNull(message = "榜单数量不能为空")
