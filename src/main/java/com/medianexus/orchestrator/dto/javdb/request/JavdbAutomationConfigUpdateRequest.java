@@ -49,11 +49,11 @@ public record JavdbAutomationConfigUpdateRequest(
         @NotNull(message = "最低评价人数不能为空")
         @Min(value = 0, message = "最低评价人数不能小于 0")
         Integer minimumReviewCount,
-        @Schema(description = "每个榜单读取前 N 条，范围 1-50")
+        @Schema(description = "每个榜单读取前 N 条，范围 1-60")
         @JsonProperty("limit_per_ranking")
         @NotNull(message = "榜单数量不能为空")
         @Min(value = 1, message = "每个榜单至少读取 1 条")
-        @Max(value = 50, message = "每个榜单最多读取 50 条")
+        @Max(value = 60, message = "每个榜单最多读取 60 条")
         Integer limitPerRanking,
         @Schema(description = "每日执行时间，格式 HH:mm")
         @JsonProperty("schedule_time")

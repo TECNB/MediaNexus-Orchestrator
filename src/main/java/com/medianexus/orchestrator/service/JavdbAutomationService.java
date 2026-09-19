@@ -88,7 +88,8 @@ public class JavdbAutomationService {
     private static final String DEFAULT_SCHEDULE_TIME = "03:00";
     private static final int DEFAULT_LIMIT = 60;
     private static final String DEFAULT_EXCLUDED_TAGS = "熟女";
-    private static final double DEFAULT_MINIMUM_RATING = 4.2D;
+    private static final double DEFAULT_MINIMUM_RATING = 4.5D;
+    private static final int DEFAULT_MINIMUM_REVIEW_COUNT = 100;
     private static final int MAX_LIMIT = 60;
     private static final int BATCH_SIZE = 50;
     private static final long DETAIL_REQUEST_DELAY_MILLIS = 1000L;
@@ -230,7 +231,7 @@ public class JavdbAutomationService {
                 Boolean.TRUE.equals(request.subtitleOnly()),
                 normalizeExcludedTags(request.excludedTags()),
                 request.minimumRating() == null ? DEFAULT_MINIMUM_RATING : request.minimumRating(),
-                request.minimumReviewCount() == null ? 0 : request.minimumReviewCount(),
+                request.minimumReviewCount() == null ? DEFAULT_MINIMUM_REVIEW_COUNT : request.minimumReviewCount(),
                 request.limitPerRanking() == null ? DEFAULT_LIMIT : request.limitPerRanking(),
                 StringUtils.hasText(request.scheduleTime()) ? request.scheduleTime() : DEFAULT_SCHEDULE_TIME,
                 TIMEZONE
@@ -288,7 +289,7 @@ public class JavdbAutomationService {
                 Boolean.TRUE.equals(request.subtitleOnly()),
                 normalizeExcludedTags(request.excludedTags()),
                 request.minimumRating() == null ? DEFAULT_MINIMUM_RATING : request.minimumRating(),
-                request.minimumReviewCount() == null ? 0 : request.minimumReviewCount(),
+                request.minimumReviewCount() == null ? DEFAULT_MINIMUM_REVIEW_COUNT : request.minimumReviewCount(),
                 request.limitPerRanking(), request.scheduleTime(), TIMEZONE
         );
     }
@@ -1098,6 +1099,8 @@ public class JavdbAutomationService {
         }
         try {
             JsonNode node = objectMapper.readTree(raw);
+            boolean legacyConfig = !node.has("minimumRating") && !node.has("minimum_rating")
+                    && !node.has("minimumReviewCount") && !node.has("minimum_review_count");
             return new Config(
                     node.path("enabled").asBoolean(false),
                     node.path("dailyEnabled").asBoolean(node.path("daily_enabled").asBoolean(true)),
@@ -1110,8 +1113,9 @@ public class JavdbAutomationService {
                     node.path("minimumRating")
                             .asDouble(node.path("minimum_rating").asDouble(DEFAULT_MINIMUM_RATING)),
                     node.path("minimumReviewCount")
-                            .asInt(node.path("minimum_review_count").asInt(0)),
-                    node.path("limitPerRanking").asInt(node.path("limit_per_ranking").asInt(DEFAULT_LIMIT)),
+                            .asInt(node.path("minimum_review_count").asInt(DEFAULT_MINIMUM_REVIEW_COUNT)),
+                    legacyConfig ? DEFAULT_LIMIT
+                            : node.path("limitPerRanking").asInt(node.path("limit_per_ranking").asInt(DEFAULT_LIMIT)),
                     node.path("scheduleTime").asText(node.path("schedule_time").asText(DEFAULT_SCHEDULE_TIME)),
                     TIMEZONE
             );
@@ -1123,7 +1127,8 @@ public class JavdbAutomationService {
 
     private Config defaultConfig() {
         return new Config(false, true, true, true, false, false, DEFAULT_EXCLUDED_TAGS,
-                DEFAULT_MINIMUM_RATING, 0, DEFAULT_LIMIT, DEFAULT_SCHEDULE_TIME, TIMEZONE);
+                DEFAULT_MINIMUM_RATING, DEFAULT_MINIMUM_REVIEW_COUNT,
+                DEFAULT_LIMIT, DEFAULT_SCHEDULE_TIME, TIMEZONE);
     }
 
     private Config readConfigSnapshot(String raw) {
@@ -1201,7 +1206,7 @@ public class JavdbAutomationService {
 
     private void validateConfig(Config config) {
         if (config.limitPerRanking() < 1 || config.limitPerRanking() > MAX_LIMIT) {
-            throw badRequest("每个榜单数量必须为 1-50");
+            throw badRequest("每个榜单数量必须为 1-60");
         }
         if (config.minimumRating() < 0 || config.minimumRating() > 5) {
             throw badRequest("最低评分必须为 0-5");
