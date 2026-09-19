@@ -3,6 +3,8 @@ package com.medianexus.orchestrator.dto.javdb.request;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.DecimalMax;
+import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
@@ -32,6 +34,16 @@ public record JavdbAutomationConfigUpdateRequest(
         @JsonProperty("subtitle_only")
         @NotNull(message = "字幕版本筛选不能为空")
         Boolean subtitleOnly,
+        @Schema(description = "需要排除的 JAVDB 标签，多个标签使用逗号分隔")
+        @JsonProperty("excluded_tags")
+        @NotNull(message = "排除标签不能为空")
+        String excludedTags,
+        @Schema(description = "允许入库的最低 JAVDB 评分")
+        @JsonProperty("minimum_rating")
+        @NotNull(message = "最低评分不能为空")
+        @DecimalMin(value = "0.0", message = "最低评分不能小于 0")
+        @DecimalMax(value = "5.0", message = "最低评分不能大于 5")
+        Double minimumRating,
         @Schema(description = "每个榜单读取前 N 条，范围 1-50")
         @JsonProperty("limit_per_ranking")
         @NotNull(message = "榜单数量不能为空")

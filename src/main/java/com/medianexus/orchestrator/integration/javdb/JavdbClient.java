@@ -57,6 +57,16 @@ public class JavdbClient {
     private static final Pattern CLIPBOARD_PATTERN = Pattern.compile(
             "(?is)\\bdata-clipboard-text\\s*=\\s*[\\\"']([^\\\"']+)[\\\"']"
     );
+    private static final Pattern SCORE_ELEMENT_PATTERN = Pattern.compile(
+            "(?is)<[^>]*\\bclass\\s*=\\s*[\\\"'][^\\\"']*\\bscore\\b[^\\\"']*[\\\"'][^>]*>(.*?)</[^>]+>"
+    );
+    private static final Pattern SCORE_VALUE_PATTERN = Pattern.compile("\\b(\\d+(?:\\.\\d+)?)\\b");
+    private static final Pattern TAG_ANCHOR_PATTERN = Pattern.compile(
+            "(?is)<a\\b([^>]*\\bhref\\s*=\\s*[\\\"']/tags?(?:/|\\?)[^\\\"']*[\\\"'][^>]*)>(.*?)</a>"
+    );
+    private static final Pattern TAG_ELEMENT_PATTERN = Pattern.compile(
+            "(?is)<(?:span|a)\\b[^>]*\\bclass\\s*=\\s*[\\\"'][^\\\"']*\\btag\\b[^\\\"']*[\\\"'][^>]*>(.*?)</(?:span|a)>"
+    );
     private static final Pattern DATE_PATTERN = Pattern.compile("\\b\\d{4}-\\d{2}-\\d{2}\\b");
     private static final Pattern MAGNET_PATTERN = Pattern.compile(
             "^magnet:\\?xt=urn:btih:[^\\s<>\\\"']+",
@@ -117,7 +127,7 @@ public class JavdbClient {
         if (!StringUtils.hasText(code)) {
             throw new JavdbClientException(JavdbClientException.Reason.PARSE, "JAVDB 详情页番号无法识别");
         }
-        return new JavdbMovieDetail(code, title, detailUrl, magnets);
+        return new JavdbMovieDetail(code, title, detailUrl, magnets, parseRating(body), parseTags(body));
     }
 
     public void validate(String cookie) {
@@ -312,6 +322,42 @@ public class JavdbClient {
             ));
         }
         return magnets;
+    }
+
+    private Double parseRating(String body) {
+        Matcher element = SCORE_ELEMENT_PATTERN.matcher(body == null ? "" : body);
+        if (!element.find()) {
+            return null;
+        }
+        Matcher value = SCORE_VALUE_PATTERN.matcher(textFromHtml(element.group(1)));
+        if (!value.find()) {
+            return null;
+        }
+        try {
+            return Double.valueOf(value.group(1));
+        } catch (NumberFormatException exception) {
+            return null;
+        }
+    }
+
+    private List<String> parseTags(String body) {
+        Set<String> tags = new java.util.LinkedHashSet<>();
+        Matcher anchors = TAG_ANCHOR_PATTERN.matcher(body == null ? "" : body);
+        while (anchors.find()) {
+            addTag(tags, anchors.group(2));
+        }
+        Matcher elements = TAG_ELEMENT_PATTERN.matcher(body == null ? "" : body);
+        while (elements.find()) {
+            addTag(tags, elements.group(1));
+        }
+        return List.copyOf(tags);
+    }
+
+    private void addTag(Set<String> tags, String html) {
+        String tag = textFromHtml(html);
+        if (StringUtils.hasText(tag) && tag.length() <= 64) {
+            tags.add(tag);
+        }
     }
 
     private String magnetName(String magnet) {

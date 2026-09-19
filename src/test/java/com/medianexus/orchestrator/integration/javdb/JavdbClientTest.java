@@ -59,4 +59,24 @@ class JavdbClientTest {
         assertThat(magnets.get(0).detectionSource()).isEqualTo("filename_rule");
         assertThat(magnets.get(1).infohash()).isEqualTo("9876543210");
     }
+
+    @Test
+    void parsesDetailRatingAndTags() {
+        String html = """
+                <h1>ABC-123 测试影片</h1>
+                <div class="score">4.35 分</div>
+                <a href="/tags?c=熟女">熟女</a>
+                <a href="/tags/中文">中文字幕</a>
+                <section id="magnets-content">
+                  <a href="magnet:?xt=urn:btih:abcdef1234567890&amp;dn=ABC-123">磁力</a>
+                </section>
+                """;
+
+        Double rating = ReflectionTestUtils.invokeMethod(client, "parseRating", html);
+        @SuppressWarnings("unchecked")
+        List<String> tags = ReflectionTestUtils.invokeMethod(client, "parseTags", html);
+
+        assertThat(rating).isEqualTo(4.35D);
+        assertThat(tags).containsExactly("熟女", "中文字幕");
+    }
 }

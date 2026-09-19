@@ -87,6 +87,8 @@ public class JavdbAutomationService {
     private static final ZoneId ZONE_ID = ZoneId.of(TIMEZONE);
     private static final String DEFAULT_SCHEDULE_TIME = "03:00";
     private static final int DEFAULT_LIMIT = 10;
+    private static final String DEFAULT_EXCLUDED_TAGS = "熟女";
+    private static final double DEFAULT_MINIMUM_RATING = 4.2D;
     private static final int MAX_LIMIT = 50;
     private static final int BATCH_SIZE = 50;
     private static final long DETAIL_REQUEST_DELAY_MILLIS = 1000L;
@@ -226,6 +228,8 @@ public class JavdbAutomationService {
                 Boolean.TRUE.equals(request.monthlyEnabled()),
                 Boolean.TRUE.equals(request.crackedOnly()),
                 Boolean.TRUE.equals(request.subtitleOnly()),
+                normalizeExcludedTags(request.excludedTags()),
+                request.minimumRating() == null ? DEFAULT_MINIMUM_RATING : request.minimumRating(),
                 request.limitPerRanking() == null ? DEFAULT_LIMIT : request.limitPerRanking(),
                 StringUtils.hasText(request.scheduleTime()) ? request.scheduleTime() : DEFAULT_SCHEDULE_TIME,
                 TIMEZONE
@@ -281,6 +285,8 @@ public class JavdbAutomationService {
                 Boolean.TRUE.equals(request.monthlyEnabled()),
                 Boolean.TRUE.equals(request.crackedOnly()),
                 Boolean.TRUE.equals(request.subtitleOnly()),
+                normalizeExcludedTags(request.excludedTags()),
+                request.minimumRating() == null ? DEFAULT_MINIMUM_RATING : request.minimumRating(),
                 request.limitPerRanking(), request.scheduleTime(), TIMEZONE
         );
     }
@@ -488,6 +494,10 @@ public class JavdbAutomationService {
                     LockSupport.parkNanos(DETAIL_REQUEST_DELAY_MILLIS * 1_000_000L);
                 }
                 JavdbMovieDetail detail = javdbClient.detail(movie.detailUrl(), movie.code(), cookie);
+                if (!matchesMovieFilters(detail, config)) {
+                    saveItem(run, movie, "NO_MAGNET", reasonFor(movie), detail.magnets(), null, null, null);
+                    continue;
+                }
                 JavdbMagnet selected = selectMagnet(detail.magnets(), config);
                 if (selected == null) {
                     saveItem(run, movie, "NO_MAGNET", reasonFor(movie), detail.magnets(), null, null, null);
@@ -807,6 +817,40 @@ public class JavdbAutomationService {
                 .orElse(null);
     }
 
+    private boolean matchesMovieFilters(JavdbMovieDetail detail, Config config) {
+        if (detail.rating() == null || detail.rating() < config.minimumRating()) {
+            return false;
+        }
+        Set<String> excludedTags = excludedTags(config.excludedTags());
+        return detail.tags() == null || detail.tags().stream()
+                .map(this::normalizeTag)
+                .noneMatch(excludedTags::contains);
+    }
+
+    private Set<String> excludedTags(String value) {
+        if (!StringUtils.hasText(value)) {
+            return Set.of();
+        }
+        Set<String> result = new HashSet<>();
+        for (String tag : value.split("[,，]")) {
+            String normalized = normalizeTag(tag);
+            if (StringUtils.hasText(normalized)) {
+                result.add(normalized);
+            }
+        }
+        return result;
+    }
+
+    private String normalizeExcludedTags(String value) {
+        return excludedTags(value).stream().sorted().collect(java.util.stream.Collectors.joining(","));
+    }
+
+    private String normalizeTag(String value) {
+        return StringUtils.hasText(value)
+                ? Normalizer.normalize(value, Normalizer.Form.NFKC).trim().toLowerCase(Locale.ROOT)
+                : "";
+    }
+
     private int magnetPriority(JavdbMagnet magnet) {
         if (magnet.isCracked() && magnet.hasSubtitle()) {
             return 4;
@@ -1018,7 +1062,8 @@ public class JavdbAutomationService {
         boolean configured = StringUtils.hasText(loadCookie());
         return new JavdbAutomationConfigResponse(
                 config.enabled(), config.dailyEnabled(), config.weeklyEnabled(), config.monthlyEnabled(),
-                config.crackedOnly(), config.subtitleOnly(), config.limitPerRanking(), config.scheduleTime(),
+                config.crackedOnly(), config.subtitleOnly(), config.excludedTags(), config.minimumRating(),
+                config.limitPerRanking(), config.scheduleTime(),
                 TIMEZONE, configured, validation.valid(),
                 validation.validatedAt() == null ? null : validation.validatedAt().toString()
         );
@@ -1033,7 +1078,7 @@ public class JavdbAutomationService {
     private Config loadConfig() {
         String raw = systemSettingMapper.selectSettingValue(CONFIG_KEY);
         if (!StringUtils.hasText(raw)) {
-            return new Config(false, true, true, true, false, false, DEFAULT_LIMIT, DEFAULT_SCHEDULE_TIME, TIMEZONE);
+            return defaultConfig();
         }
         try {
             JsonNode node = objectMapper.readTree(raw);
@@ -1044,14 +1089,23 @@ public class JavdbAutomationService {
                     node.path("monthlyEnabled").asBoolean(node.path("monthly_enabled").asBoolean(true)),
                     node.path("crackedOnly").asBoolean(node.path("cracked_only").asBoolean(false)),
                     node.path("subtitleOnly").asBoolean(node.path("subtitle_only").asBoolean(false)),
+                    normalizeExcludedTags(node.path("excludedTags")
+                            .asText(node.path("excluded_tags").asText(DEFAULT_EXCLUDED_TAGS))),
+                    node.path("minimumRating")
+                            .asDouble(node.path("minimum_rating").asDouble(DEFAULT_MINIMUM_RATING)),
                     node.path("limitPerRanking").asInt(node.path("limit_per_ranking").asInt(DEFAULT_LIMIT)),
                     node.path("scheduleTime").asText(node.path("schedule_time").asText(DEFAULT_SCHEDULE_TIME)),
                     TIMEZONE
             );
         } catch (JsonProcessingException exception) {
             log.warn("Invalid JAVDB automation config, using defaults");
-            return new Config(false, true, true, true, false, false, DEFAULT_LIMIT, DEFAULT_SCHEDULE_TIME, TIMEZONE);
+            return defaultConfig();
         }
+    }
+
+    private Config defaultConfig() {
+        return new Config(false, true, true, true, false, false, DEFAULT_EXCLUDED_TAGS,
+                DEFAULT_MINIMUM_RATING, DEFAULT_LIMIT, DEFAULT_SCHEDULE_TIME, TIMEZONE);
     }
 
     private Config readConfigSnapshot(String raw) {
@@ -1104,6 +1158,7 @@ public class JavdbAutomationService {
         }
         saveConfig(new Config(false, config.dailyEnabled(), config.weeklyEnabled(), config.monthlyEnabled(),
                 config.crackedOnly(), config.subtitleOnly(),
+                config.excludedTags(), config.minimumRating(),
                 config.limitPerRanking(), config.scheduleTime(), TIMEZONE));
     }
 
@@ -1128,6 +1183,9 @@ public class JavdbAutomationService {
     private void validateConfig(Config config) {
         if (config.limitPerRanking() < 1 || config.limitPerRanking() > MAX_LIMIT) {
             throw badRequest("每个榜单数量必须为 1-50");
+        }
+        if (config.minimumRating() < 0 || config.minimumRating() > 5) {
+            throw badRequest("最低评分必须为 0-5");
         }
         if (!config.dailyEnabled() && !config.weeklyEnabled() && !config.monthlyEnabled()) {
             throw badRequest("至少选择一个 JAVDB 榜单");
@@ -1228,6 +1286,8 @@ public class JavdbAutomationService {
             boolean monthlyEnabled,
             boolean crackedOnly,
             boolean subtitleOnly,
+            String excludedTags,
+            double minimumRating,
             int limitPerRanking,
             String scheduleTime,
             String timezone

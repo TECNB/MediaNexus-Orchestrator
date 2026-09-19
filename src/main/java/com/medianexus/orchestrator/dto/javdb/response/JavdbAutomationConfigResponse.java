@@ -11,6 +11,8 @@ public record JavdbAutomationConfigResponse(
         @JsonProperty("monthly_enabled") boolean monthlyEnabled,
         @JsonProperty("cracked_only") boolean crackedOnly,
         @JsonProperty("subtitle_only") boolean subtitleOnly,
+        @JsonProperty("excluded_tags") String excludedTags,
+        @JsonProperty("minimum_rating") double minimumRating,
         @JsonProperty("limit_per_ranking") int limitPerRanking,
         @JsonProperty("schedule_time") String scheduleTime,
         String timezone,
