@@ -126,7 +126,7 @@ public class EmbyClient {
         return items(Map.of(
                 "ParentId", libraryId,
                 "Recursive", "true",
-                "Fields", "Path,ParentId,DateCreated",
+                "Fields", "Path,ParentId,DateCreated,CommunityRating",
                 "IncludeItemTypes", "Movie,Video,Episode",
                 "GroupItemsIntoCollections", "false",
                 "Limit", "10000"
@@ -170,6 +170,15 @@ public class EmbyClient {
         }
         ((com.fasterxml.jackson.databind.node.ObjectNode) item).put("Name", name);
         postJson("/Items/" + encodePath(playlistId), Map.of(), writeJson(item));
+    }
+
+    public void updateCommunityRating(String itemId, String userId, double communityRating) {
+        JsonNode item = get("/Users/" + encodePath(userId) + "/Items/" + encodePath(itemId), Map.of());
+        if (!item.isObject()) {
+            throw new EmbyClientException("Emby item response is incomplete");
+        }
+        ((com.fasterxml.jackson.databind.node.ObjectNode) item).put("CommunityRating", communityRating);
+        postJson("/Items/" + encodePath(itemId), Map.of(), writeJson(item));
     }
 
     public void addItemsToPlaylist(String playlistId, String userId, List<String> itemIds) {
@@ -664,7 +673,8 @@ public class EmbyClient {
                     text(item, "Name", "name"),
                     text(item, "Type", "type"),
                     text(item, "Path", "path"),
-                    text(item, "DateCreated", "dateCreated")
+                    text(item, "DateCreated", "dateCreated"),
+                    doubleOrNull(item, "CommunityRating", "communityRating")
             ));
         }
         return result;
@@ -922,6 +932,16 @@ public class EmbyClient {
             JsonNode value = node.path(field);
             if (!value.isMissingNode() && !value.isNull() && value.canConvertToInt()) {
                 return value.asInt();
+            }
+        }
+        return null;
+    }
+
+    private Double doubleOrNull(JsonNode node, String... fields) {
+        for (String field : fields) {
+            JsonNode value = node.path(field);
+            if (!value.isMissingNode() && !value.isNull() && value.isNumber()) {
+                return value.asDouble();
             }
         }
         return null;

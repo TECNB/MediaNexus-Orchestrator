@@ -5,6 +5,7 @@ public record EmbyItem(
         String name,
         String type,
         String path,
-        String dateCreated
+        String dateCreated,
+        Double communityRating
 ) {
 }

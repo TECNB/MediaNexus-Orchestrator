@@ -692,7 +692,8 @@ public class AdultOtherCollectionSyncService {
                         item.getItemName(),
                         "Video",
                         item.getItemPath(),
-                        item.getDateCreated()
+                        item.getDateCreated(),
+                        null
                 ))
                 .toList();
     }

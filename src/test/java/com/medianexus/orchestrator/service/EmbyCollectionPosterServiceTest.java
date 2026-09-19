@@ -84,7 +84,7 @@ class EmbyCollectionPosterServiceTest {
     }
 
     private EmbyItem item(String id) {
-        return new EmbyItem(id, id, "Movie", null, null);
+        return new EmbyItem(id, id, "Movie", null, null, null);
     }
 
     private byte[] solidImage(Color color) throws IOException {

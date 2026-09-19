@@ -117,6 +117,6 @@ class AdultOtherCollectionInventoryTest {
     }
 
     private EmbyItem item(String id, String path) {
-        return new EmbyItem(id, id, "Movie", path, "2026-07-11T00:00:00Z");
+        return new EmbyItem(id, id, "Movie", path, "2026-07-11T00:00:00Z", null);
     }
 }

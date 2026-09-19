@@ -20,4 +20,13 @@ public interface JavdbPlaylistHistoryMapper {
             ORDER BY i.created_at, i.id
             """)
     List<JavdbPlaylistHistoryItem> selectExecutedItems();
+
+    @Select("""
+            SELECT code, appearances_json AS appearancesJson
+            FROM javdb_automation_run_items
+            WHERE appearances_json IS NOT NULL
+              AND appearances_json <> ''
+            ORDER BY created_at, id
+            """)
+    List<JavdbPlaylistHistoryItem> selectRatedItems();
 }

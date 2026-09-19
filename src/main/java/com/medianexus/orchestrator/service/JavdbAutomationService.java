@@ -1208,6 +1208,7 @@ public class JavdbAutomationService {
             String ownerId = playlistOwnerId();
             Map<String, EmbyPlaylist> playlists = ensureManagedPlaylists(ownerId, memberships);
             Map<String, EmbyItem> embyItemsByCode = adultJavItemsByCode();
+            RatingSyncCounts ratingCounts = syncRatings(ownerId, embyItemsByCode);
             List<JavdbPlaylistSyncGroupResponse> groups = new ArrayList<>();
             List<JavdbPlaylistSyncItemResponse> itemResults = new ArrayList<>();
             int added = 0;
@@ -1290,13 +1291,23 @@ public class JavdbAutomationService {
                         groupWaiting, groupFailed, playlist.id()));
             }
 
-            syncRun.setStatus(failed == 0 ? "SUCCEEDED" : added + existing > 0 ? "PARTIAL_SUCCESS" : "FAILED");
+            int totalFailed = failed + ratingCounts.failed();
+            int totalSucceeded = added + existing + ratingCounts.updated() + ratingCounts.existing();
+            syncRun.setStatus(totalFailed == 0 ? "SUCCEEDED" : totalSucceeded > 0 ? "PARTIAL_SUCCESS" : "FAILED");
             syncRun.setDesiredCount(memberships.size());
             syncRun.setAddedCount(added);
             syncRun.setExistingCount(existing);
             syncRun.setWaitingCount(waiting);
             syncRun.setFailedCount(failed);
-            syncRun.setDetailJson(writeJson(Map.of("groups", groups, "items", itemResults)));
+            syncRun.setDetailJson(writeJson(Map.of(
+                    "groups", groups,
+                    "items", itemResults,
+                    "ratingDesiredCount", ratingCounts.desired(),
+                    "ratingUpdatedCount", ratingCounts.updated(),
+                    "ratingExistingCount", ratingCounts.existing(),
+                    "ratingWaitingCount", ratingCounts.waiting(),
+                    "ratingFailedCount", ratingCounts.failed()
+            )));
             syncRun.setFinishedAt(LocalDateTime.now());
             playlistSyncRunMapper.updateById(syncRun);
             return toPlaylistSyncResponse(syncRun);
@@ -1329,6 +1340,51 @@ public class JavdbAutomationService {
             }
         }
         systemSettingMapper.upsertSetting(PLAYLIST_BACKFILL_KEY, LocalDateTime.now().toString());
+    }
+
+    private RatingSyncCounts syncRatings(String ownerId, Map<String, EmbyItem> embyItemsByCode) {
+        Map<String, Double> ratingsByCode = new LinkedHashMap<>();
+        for (JavdbPlaylistHistoryItem historyItem : playlistHistoryMapper.selectRatedItems()) {
+            String code = normalizeCode(historyItem.getCode());
+            if (code == null) {
+                continue;
+            }
+            for (JavdbRankingMovie appearance : readAppearances(historyItem.getAppearancesJson())) {
+                if (appearance.rating() != null) {
+                    ratingsByCode.put(code, toEmbyCommunityRating(appearance.rating()));
+                }
+            }
+        }
+
+        int updated = 0;
+        int existing = 0;
+        int waiting = 0;
+        int failed = 0;
+        for (Map.Entry<String, Double> entry : ratingsByCode.entrySet()) {
+            EmbyItem embyItem = embyItemsByCode.get(entry.getKey());
+            if (embyItem == null) {
+                waiting++;
+            } else if (sameRating(embyItem.communityRating(), entry.getValue())) {
+                existing++;
+            } else {
+                try {
+                    embyClient.updateCommunityRating(embyItem.id(), ownerId, entry.getValue());
+                    updated++;
+                } catch (RuntimeException exception) {
+                    failed++;
+                    log.warn("Failed to sync JAVDB rating for code {}", entry.getKey(), exception);
+                }
+            }
+        }
+        return new RatingSyncCounts(ratingsByCode.size(), updated, existing, waiting, failed);
+    }
+
+    private double toEmbyCommunityRating(double javdbRating) {
+        return Math.round(javdbRating * 20D) / 10D;
+    }
+
+    private boolean sameRating(Double current, double expected) {
+        return current != null && Math.abs(current - expected) < 0.05D;
     }
 
     private void recordTopPlaylistIntentForHistory(
@@ -1469,7 +1525,10 @@ public class JavdbAutomationService {
         return new JavdbPlaylistSyncRunResponse(
                 run.getId(), run.getTriggerType(), run.getStatus(), safeCount(run.getDesiredCount()),
                 safeCount(run.getAddedCount()), safeCount(run.getExistingCount()), safeCount(run.getWaitingCount()),
-                safeCount(run.getFailedCount()), PLAYLIST_SYNC_TIME, run.getStartedAt(), run.getFinishedAt(),
+                safeCount(run.getFailedCount()), detail.path("ratingDesiredCount").asInt(0),
+                detail.path("ratingUpdatedCount").asInt(0), detail.path("ratingExistingCount").asInt(0),
+                detail.path("ratingWaitingCount").asInt(0), detail.path("ratingFailedCount").asInt(0),
+                PLAYLIST_SYNC_TIME, run.getStartedAt(), run.getFinishedAt(),
                 run.getErrorMessage(), groups, items
         );
     }
@@ -1901,5 +1960,8 @@ public class JavdbAutomationService {
             JavdbMagnet selectedMagnet,
             String selectionReason
     ) {
+    }
+
+    private record RatingSyncCounts(int desired, int updated, int existing, int waiting, int failed) {
     }
 }

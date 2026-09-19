@@ -25,6 +25,7 @@ import com.medianexus.orchestrator.mapper.JavdbPlaylistHistoryMapper;
 import com.medianexus.orchestrator.mapper.JavdbPlaylistMembershipMapper;
 import com.medianexus.orchestrator.mapper.JavdbPlaylistSyncRunMapper;
 import com.medianexus.orchestrator.mapper.SystemSettingMapper;
+import com.medianexus.orchestrator.model.JavdbPlaylistHistoryItem;
 import com.medianexus.orchestrator.model.JavdbPlaylistMembership;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -57,7 +58,11 @@ class JavdbAutomationPlaylistSyncTest {
         JavdbPlaylistMembership top = membership("top", "ABC-123", "TOP_250_2026");
         JavdbPlaylistMembership cracked = membership("cracked", "DEF-456", "CRACKED");
         JavdbPlaylistMembership subtitle = membership("subtitle", "GHI-789", "SUBTITLE");
+        JavdbPlaylistHistoryItem ratedHistoryItem = new JavdbPlaylistHistoryItem();
+        ratedHistoryItem.setCode("ABC-123");
+        ratedHistoryItem.setAppearancesJson("[{\"period\":\"daily\",\"rank\":1,\"rating\":4.6}]");
         when(historyMapper.selectExecutedItems()).thenReturn(List.of());
+        when(historyMapper.selectRatedItems()).thenReturn(List.of(ratedHistoryItem));
         when(membershipMapper.selectList(any())).thenReturn(List.of(top, cracked, subtitle));
         when(embyClient.listUsers()).thenReturn(List.of(
                 new EmbyUserAccount("owner-id", "tecnb", false, false)
@@ -79,9 +84,19 @@ class JavdbAutomationPlaylistSyncTest {
         when(embyClient.listLibraries()).thenReturn(List.of(
                 new EmbyLibrary("adult-jav", "Adult-JAV", List.of())
         ));
-        EmbyItem topItem = new EmbyItem("movie-top", "ABC-123 title", "Movie", "/ABC-123", null);
-        EmbyItem crackedItem = new EmbyItem("movie-cracked", "DEF-456 title", "Movie", "/DEF-456", null);
-        when(embyClient.listLibraryVideoItems("adult-jav")).thenReturn(List.of(topItem, crackedItem));
+        AtomicBoolean ratingUpdated = new AtomicBoolean();
+        EmbyItem topItem = new EmbyItem("movie-top", "ABC-123 title", "Movie", "/ABC-123", null, null);
+        EmbyItem crackedItem = new EmbyItem("movie-cracked", "DEF-456 title", "Movie", "/DEF-456", null, null);
+        when(embyClient.listLibraryVideoItems("adult-jav")).thenAnswer(invocation -> List.of(
+                ratingUpdated.get()
+                        ? new EmbyItem("movie-top", "ABC-123 title", "Movie", "/ABC-123", null, 9.2D)
+                        : topItem,
+                crackedItem
+        ));
+        doAnswer(invocation -> {
+            ratingUpdated.set(true);
+            return null;
+        }).when(embyClient).updateCommunityRating("movie-top", "owner-id", 9.2D);
 
         AtomicBoolean topAdded = new AtomicBoolean();
         when(embyClient.listPlaylistVideoItems(any(), eq("owner-id"))).thenAnswer(invocation -> {
@@ -105,11 +120,14 @@ class JavdbAutomationPlaylistSyncTest {
         assertThat(first.addedCount()).isEqualTo(1);
         assertThat(first.existingCount()).isEqualTo(1);
         assertThat(first.waitingCount()).isEqualTo(1);
+        assertThat(first.ratingUpdatedCount()).isEqualTo(1);
+        assertThat(second.ratingExistingCount()).isEqualTo(1);
         assertThat(first.groups()).hasSize(5);
         assertThat(second.addedCount()).isZero();
         assertThat(second.existingCount()).isEqualTo(2);
         assertThat(second.waitingCount()).isEqualTo(1);
         verify(embyClient).addItemsToPlaylist("top-2026", "owner-id", List.of("movie-top"));
+        verify(embyClient).updateCommunityRating("movie-top", "owner-id", 9.2D);
         verify(embyClient).renamePlaylist("top-2026", "owner-id", "Top 250(2026)");
         verify(embyClient).renamePlaylist("top-2025", "owner-id", "Top 250(2025)");
         verify(embyClient).renamePlaylist("top-2024", "owner-id", "Top 250(2024)");
