@@ -923,7 +923,8 @@ public class JavdbAutomationService {
         item.setDetailUrl(movie.detailUrl());
         item.setAppearancesJson(writeJson(movie.appearances().stream()
                 .map(appearance -> new JavdbRankingAppearanceResponse(
-                        appearance.period(), appearance.rank(), appearance.hasMagnetBadge()))
+                        appearance.period(), appearance.rank(), appearance.hasMagnetBadge(),
+                        appearance.rating(), appearance.reviewCount()))
                 .toList()));
         item.setStatus(status);
         item.setReason(reason);
