@@ -96,14 +96,6 @@ public class MediaLibrarySyncService {
                 addDetail(skippedMedia, item.name(), item.path());
                 continue;
             }
-            boolean itemDeep = deep && selected && deepPaths.stream()
-                    .anyMatch(path -> item.path().equals(path) || item.path().startsWith(path + "/"));
-            String remoteTarget = remotePath(source, itemDeep, scope);
-            if (remoteTarget == null || !StringUtils.hasText(item.path())) {
-                skipped++;
-                addDetail(skippedMedia, item.name(), item.path());
-                continue;
-            }
             Path localPath = Path.of(item.path()).toAbsolutePath().normalize();
             Path localDirectory = localPath.getParent();
             if (localDirectory == null) {
@@ -111,7 +103,19 @@ public class MediaLibrarySyncService {
                 addDetail(skippedMedia, item.name(), item.path());
                 continue;
             }
-            Path localTarget = itemDeep ? localPath : localDirectory;
+            boolean deepTarget = deep && selected && deepPaths.stream()
+                    .anyMatch(path -> item.path().equals(path) || item.path().startsWith(path + "/"));
+            boolean directChild = selectedPaths.stream().anyMatch(path -> localDirectory.toString().equals(path));
+            // A shallow selected target checks direct media files and the first
+            // child folders. It does not recurse into files below those folders.
+            boolean fileCheck = !deep || selectedPaths.isEmpty() || deepTarget || directChild;
+            String remoteTarget = remotePath(source, fileCheck, scope);
+            if (remoteTarget == null || !StringUtils.hasText(item.path())) {
+                skipped++;
+                addDetail(skippedMedia, item.name(), item.path());
+                continue;
+            }
+            Path localTarget = fileCheck ? localPath : localDirectory;
             String key = remoteTarget + "\n" + localTarget;
             targets.computeIfAbsent(key, ignored -> new SyncTarget(remoteTarget, localTarget))
                     .paths.add(item.path());
