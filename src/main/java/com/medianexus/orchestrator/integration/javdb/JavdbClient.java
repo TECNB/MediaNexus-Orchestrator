@@ -57,11 +57,9 @@ public class JavdbClient {
     private static final Pattern CLIPBOARD_PATTERN = Pattern.compile(
             "(?is)\\bdata-clipboard-text\\s*=\\s*[\\\"']([^\\\"']+)[\\\"']"
     );
-    private static final Pattern SCORE_ELEMENT_PATTERN = Pattern.compile(
-            "(?is)<[^>]*\\bclass\\s*=\\s*[\\\"'][^\\\"']*\\bscore\\b[^\\\"']*[\\\"'][^>]*>(.*?)</[^>]+>"
+    private static final Pattern SCORE_SUMMARY_PATTERN = Pattern.compile(
+            "([0-5](?:\\.\\d+)?)\\s*分\\s*[,，]\\s*由\\s*(\\d+)\\s*人[評评]價"
     );
-    private static final Pattern SCORE_VALUE_PATTERN = Pattern.compile("\\b(\\d+(?:\\.\\d+)?)\\b");
-    private static final Pattern REVIEW_COUNT_PATTERN = Pattern.compile("由\\s*(\\d+)\\s*人評價");
     private static final Pattern CATEGORY_BLOCK_PATTERN = Pattern.compile(
             "(?is)<div\\b[^>]*class\\s*=\\s*[\\\"'][^\\\"']*\\bpanel-block\\b[^\\\"']*[\\\"'][^>]*>\\s*<strong>類別[:：]</strong>(.*?)</div>"
     );
@@ -265,8 +263,6 @@ public class JavdbClient {
                 title = textFromHtml(anchorHtml);
             }
             Matcher dateMatcher = DATE_PATTERN.matcher(textFromHtml(anchorHtml));
-            String scoreText = firstMatch(anchorHtml, SCORE_ELEMENT_PATTERN);
-            String scoreBody = textFromHtml(scoreText);
             movies.add(new JavdbRankingMovie(
                     code,
                     limit(title, 512),
@@ -275,8 +271,8 @@ public class JavdbClient {
                     period,
                     itemRank,
                     textFromHtml(anchorHtml).contains("含磁"),
-                    parseRating(scoreBody),
-                    parseReviewCount(scoreBody)
+                    parseRating(anchorHtml),
+                    parseReviewCount(anchorHtml)
             ));
         }
         if (movies.isEmpty()) {
@@ -333,26 +329,24 @@ public class JavdbClient {
     }
 
     private Double parseRating(String body) {
-        Matcher element = SCORE_ELEMENT_PATTERN.matcher(body == null ? "" : body);
-        String scoreText = element.find() ? textFromHtml(element.group(1)) : textFromHtml(body);
-        Matcher value = SCORE_VALUE_PATTERN.matcher(scoreText);
-        if (!value.find()) {
+        Matcher summary = SCORE_SUMMARY_PATTERN.matcher(textFromHtml(body == null ? "" : body));
+        if (!summary.find()) {
             return null;
         }
         try {
-            return Double.valueOf(value.group(1));
+            return Double.valueOf(summary.group(1));
         } catch (NumberFormatException exception) {
             return null;
         }
     }
 
     private Integer parseReviewCount(String body) {
-        Matcher matcher = REVIEW_COUNT_PATTERN.matcher(textFromHtml(body == null ? "" : body));
-        if (!matcher.find()) {
+        Matcher summary = SCORE_SUMMARY_PATTERN.matcher(textFromHtml(body == null ? "" : body));
+        if (!summary.find()) {
             return null;
         }
         try {
-            return Integer.valueOf(matcher.group(1));
+            return Integer.valueOf(summary.group(2));
         } catch (NumberFormatException exception) {
             return null;
         }

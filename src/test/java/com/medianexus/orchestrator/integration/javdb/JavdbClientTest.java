@@ -16,7 +16,7 @@ class JavdbClientTest {
                 <div class="movie-list">
                   <div class="item"><a class="box" href="/v/one" title="ABC-123 / title">
                     <span class="video-title"><strong>ABC-123</strong></span>
-                    <div class="score"><span class="value">4.59分, 由327人評價</span></div>
+                    <div class="score"><span class="value"><span class="score-stars"><i></i><i></i></span>&nbsp;4.59分, 由327人評價</span></div>
                     <div class="meta">2024-01-02</div><span>含磁</span>
                   </a></div>
                   <div class="item"><a class="box" href="/v/two">
