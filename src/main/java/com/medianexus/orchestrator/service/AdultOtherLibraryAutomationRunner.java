@@ -120,6 +120,14 @@ public class AdultOtherLibraryAutomationRunner {
         }
     }
 
+    public void retryMissingItems(String runId) {
+        Set<String> missingItemIds = new LinkedHashSet<>(automationRunRecorder.missingItemIds(runId));
+        if (missingItemIds.isEmpty()) {
+            throw new IllegalArgumentException("该运行中没有可重试的缺失媒体");
+        }
+        processNewItems(missingItemIds);
+    }
+
     private void processNewItems(String automationRunId, Set<String> itemIds) {
 
         EmbyLibrary library = adultOtherLibrary();
@@ -317,10 +325,15 @@ public class AdultOtherLibraryAutomationRunner {
                 missingIds.size(),
                 Math.max(1, properties.getAdultOtherRefreshConcurrency())
         );
-        CompletableFuture<?>[] futures = missingIds.stream()
-                .map(itemId -> CompletableFuture.runAsync(() -> refreshItemSafely(itemId), refreshExecutor))
-                .toArray(CompletableFuture[]::new);
-        CompletableFuture.allOf(futures).join();
+        int batchSize = Math.max(1, properties.getAdultOtherRefreshConcurrency());
+        for (int start = 0; start < missingIds.size(); start += batchSize) {
+            List<String> batch = missingIds.subList(start, Math.min(start + batchSize, missingIds.size()));
+            CompletableFuture<?>[] futures = batch.stream()
+                    .map(itemId -> CompletableFuture.runAsync(() -> refreshItemSafely(itemId), refreshExecutor))
+                    .toArray(CompletableFuture[]::new);
+            CompletableFuture.allOf(futures).join();
+            awaitRefreshCompletion(new LinkedHashSet<>(batch));
+        }
     }
 
     private void refreshItemSafely(String itemId) {

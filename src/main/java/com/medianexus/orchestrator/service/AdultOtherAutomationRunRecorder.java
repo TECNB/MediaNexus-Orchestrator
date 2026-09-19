@@ -189,13 +189,18 @@ public class AdultOtherAutomationRunRecorder {
             int collectionImageReadyCount
     ) {
         update(runId, run -> {
-            run.setStatus("SUCCEEDED");
-            run.setStage("COMPLETED");
+            int missingCount = run.getFinalPrimaryMissingCount();
+            int readyCount = run.getFinalPrimaryReadyCount();
+            String outcome = missingCount == 0 ? "SUCCEEDED" : readyCount == 0 ? "FAILED" : "PARTIAL";
+            run.setStatus(outcome);
+            run.setStage(missingCount == 0 ? "COMPLETED" : outcome);
             run.setAffectedCollectionCount(affectedCollectionCount);
             run.setCreatedCollectionCount(createdCollectionCount);
             run.setUpdatedCollectionCount(updatedCollectionCount);
             run.setCollectionImageReadyCount(collectionImageReadyCount);
-            run.setMessage("新入库自动化完成");
+            run.setMessage(missingCount == 0
+                    ? "新入库自动化完成"
+                    : "新入库自动化完成，但仍有 " + missingCount + " 个媒体缺少 Primary 封面");
             run.setFinishedAt(LocalDateTime.now());
         });
     }
@@ -256,6 +261,11 @@ public class AdultOtherAutomationRunRecorder {
         return toResponse(run, items, collections);
     }
 
+    public List<String> missingItemIds(String runId) {
+        ensureTable();
+        return itemMapper.selectMissingItemIds(runId);
+    }
+
     private void update(String runId, Consumer<AdultOtherAutomationRun> change) {
         AdultOtherAutomationRun run = mapper.selectById(runId);
         if (run == null) {
@@ -293,8 +303,15 @@ public class AdultOtherAutomationRunRecorder {
             List<AdultOtherAutomationItemResponse> items,
             List<AdultOtherAutomationCollectionResponse> collections
     ) {
+        int missingCount = run.getFinalPrimaryMissingCount();
+        int readyCount = run.getFinalPrimaryReadyCount();
+        boolean incompleteNewItems = "NEW_ITEMS".equals(run.getTriggerType())
+                && "SUCCEEDED".equals(run.getStatus())
+                && missingCount > 0;
+        String status = incompleteNewItems ? (readyCount == 0 ? "FAILED" : "PARTIAL") : run.getStatus();
+        String stage = incompleteNewItems ? status : run.getStage();
         return new AdultOtherAutomationRunResponse(
-                run.getId(), run.getTriggerType(), run.getStatus(), run.getStage(), run.getEventCount(),
+                run.getId(), run.getTriggerType(), status, stage, run.getEventCount(),
                 run.getTargetItemCount(), run.getNaturalPrimaryReadyCount(), run.getTargetedRefreshCount(),
                 run.getFinalPrimaryReadyCount(), run.getFinalPrimaryMissingCount(),
                 run.getAffectedCollectionCount(), run.getCreatedCollectionCount(), run.getUpdatedCollectionCount(),

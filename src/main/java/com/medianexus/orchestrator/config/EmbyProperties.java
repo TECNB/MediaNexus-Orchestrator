@@ -48,7 +48,7 @@ public class EmbyProperties {
 
     private boolean adultOtherAutomationEnabled = true;
 
-    private int adultOtherRefreshConcurrency = 8;
+    private int adultOtherRefreshConcurrency = 2;
 
     private int adultOtherCollectionReadConcurrency = 8;
 

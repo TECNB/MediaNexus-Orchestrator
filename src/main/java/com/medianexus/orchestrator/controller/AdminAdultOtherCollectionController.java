@@ -7,6 +7,7 @@ import com.medianexus.orchestrator.dto.emby.response.AdultOtherCollectionInvento
 import com.medianexus.orchestrator.dto.emby.response.AdultOtherCollectionSyncRunResponse;
 import com.medianexus.orchestrator.service.AdultOtherCollectionSyncService;
 import com.medianexus.orchestrator.service.AdultOtherAutomationRunRecorder;
+import com.medianexus.orchestrator.service.AdultOtherLibraryAutomationRunner;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -26,13 +27,16 @@ public class AdminAdultOtherCollectionController {
 
     private final AdultOtherCollectionSyncService syncService;
     private final AdultOtherAutomationRunRecorder automationRunRecorder;
+    private final AdultOtherLibraryAutomationRunner automationRunner;
 
     public AdminAdultOtherCollectionController(
             AdultOtherCollectionSyncService syncService,
-            AdultOtherAutomationRunRecorder automationRunRecorder
+            AdultOtherAutomationRunRecorder automationRunRecorder,
+            AdultOtherLibraryAutomationRunner automationRunner
     ) {
         this.syncService = syncService;
         this.automationRunRecorder = automationRunRecorder;
+        this.automationRunner = automationRunner;
     }
 
     @GetMapping("/runs/latest")
@@ -55,6 +59,13 @@ public class AdminAdultOtherCollectionController {
             @PathVariable String runId
     ) {
         return ApiResponse.success(automationRunRecorder.details(runId));
+    }
+
+    @PostMapping("/automation/runs/{runId}/retry")
+    @Operation(summary = "重试自动化运行中的全部缺失封面")
+    public ApiResponse<Void> retryAutomationRun(@PathVariable String runId) {
+        automationRunner.retryMissingItems(runId);
+        return ApiResponse.success();
     }
 
     @GetMapping("/source-folders")

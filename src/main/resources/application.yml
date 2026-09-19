@@ -61,7 +61,7 @@ medianexus:
     registration-template-username: ${MEDIANEXUS_EMBY_REGISTRATION_TEMPLATE_USERNAME:csy}
     adult-other-library-name: ${MEDIANEXUS_EMBY_ADULT_OTHER_LIBRARY_NAME:Adult - Other}
     adult-other-automation-enabled: ${MEDIANEXUS_EMBY_ADULT_OTHER_AUTOMATION_ENABLED:true}
-    adult-other-refresh-concurrency: ${MEDIANEXUS_EMBY_ADULT_OTHER_REFRESH_CONCURRENCY:8}
+    adult-other-refresh-concurrency: ${MEDIANEXUS_EMBY_ADULT_OTHER_REFRESH_CONCURRENCY:2}
     adult-other-collection-read-concurrency: ${MEDIANEXUS_EMBY_ADULT_OTHER_COLLECTION_READ_CONCURRENCY:8}
     adult-other-new-event-debounce: ${MEDIANEXUS_EMBY_ADULT_OTHER_NEW_EVENT_DEBOUNCE:2s}
     adult-other-delete-event-debounce: ${MEDIANEXUS_EMBY_ADULT_OTHER_DELETE_EVENT_DEBOUNCE:5s}

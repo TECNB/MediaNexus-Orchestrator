@@ -70,6 +70,14 @@ public interface AdultOtherAutomationRunItemMapper extends BaseMapper<AdultOther
     );
 
     @Select("""
+            SELECT emby_item_id
+            FROM adult_other_automation_run_items
+            WHERE run_id = #{runId} AND status = 'MISSING'
+            ORDER BY item_name, emby_item_id
+            """)
+    List<String> selectMissingItemIds(@Param("runId") String runId);
+
+    @Select("""
             <script>
             SELECT id, run_id, emby_item_id, item_name, item_path, collection_name,
                    primary_before, refresh_requested, primary_after, status, message
