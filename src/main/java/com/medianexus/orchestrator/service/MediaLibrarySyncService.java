@@ -90,7 +90,7 @@ public class MediaLibrarySyncService {
                 addDetail(skippedMedia, item.name(), item.path());
                 continue;
             }
-            String source = item.mediaSourcePaths().stream().filter(StringUtils::hasText).findFirst().orElse(null);
+            String source = resolveMediaSourcePath(item);
             if (!supportedSource(source)) {
                 skipped++;
                 addDetail(skippedMedia, item.name(), item.path());
@@ -170,7 +170,7 @@ public class MediaLibrarySyncService {
         }
         Map<String, AdminMediaLibrarySyncTargetResponse> results = new LinkedHashMap<>();
         for (EmbyDeletionItem item : embyClient.listLibraryMediaItemsForSync(catalogService.resolveLibrary(scope).id())) {
-            String source = item.mediaSourcePaths().stream().filter(StringUtils::hasText).findFirst().orElse(null);
+            String source = resolveMediaSourcePath(item);
             if (!supportedSource(source) || !StringUtils.hasText(item.path())) {
                 continue;
             }
@@ -203,6 +203,14 @@ public class MediaLibrarySyncService {
             return;
         }
         results.put(path.toString(), new AdminMediaLibrarySyncTargetResponse(label, path.toString(), targetType, detail, false));
+    }
+
+    private String resolveMediaSourcePath(EmbyDeletionItem item) {
+        String source = item.mediaSourcePaths().stream()
+                .filter(StringUtils::hasText)
+                .findFirst()
+                .orElse(null);
+        return localStrmDeletion.resolveMediaSourcePath(source);
     }
 
     private Path topLevelFolder(Path file, String source, AdminMediaLibraryScope scope) {
