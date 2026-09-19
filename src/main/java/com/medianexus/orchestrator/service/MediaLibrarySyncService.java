@@ -82,7 +82,11 @@ public class MediaLibrarySyncService {
         for (EmbyDeletionItem item : embyClient.listLibraryMediaItemsForSync(embyLibrary.id())) {
             boolean selected = !selectedPaths.isEmpty() && StringUtils.hasText(item.path()) && selectedPaths.stream()
                     .anyMatch(path -> item.path().equals(path) || item.path().startsWith(path + "/"));
-            if (deep && !selectedPaths.isEmpty() && !selected) {
+            // When the caller supplies targets, both shallow and deep modes are
+            // scoped to those targets. Previously shallow mode still walked the
+            // whole library, making a selected-target sync report unrelated
+            // items and obscuring the actual missing entries.
+            if (!selectedPaths.isEmpty() && !selected) {
                 continue;
             }
             if (deep && !selectedPaths.isEmpty() && !StringUtils.hasText(item.path())) {
