@@ -420,7 +420,7 @@ class EmbyClientTest {
         AtomicReference<String> addQuery = new AtomicReference<>();
         server.createContext("/Users/user-id/Items", exchange -> {
             listQuery.set(exchange.getRequestURI().getRawQuery());
-            byte[] body = "{\"Items\":[{\"Id\":\"playlist-id\",\"Name\":\"Top 250 2026\"}]}".getBytes();
+            byte[] body = "{\"Items\":[{\"Id\":\"playlist-id\",\"Name\":\"Top 250(2026)\"}]}".getBytes();
             exchange.sendResponseHeaders(200, body.length);
             exchange.getResponseBody().write(body);
             exchange.close();
@@ -441,14 +441,14 @@ class EmbyClientTest {
         EmbyClient client = new EmbyClient(properties(), new ObjectMapper());
 
         assertThat(client.listPlaylists("user-id"))
-                .containsExactly(new EmbyPlaylist("playlist-id", "Top 250 2026"));
-        assertThat(client.createPlaylist("Top 250 2025", "user-id")).isEqualTo("created-playlist-id");
+                .containsExactly(new EmbyPlaylist("playlist-id", "Top 250(2026)"));
+        assertThat(client.createPlaylist("Top 250(2025)", "user-id")).isEqualTo("created-playlist-id");
         client.addItemsToPlaylist("playlist-id", "user-id", List.of("movie-1", "movie-2"));
 
         assertThat(queryParameters(listQuery.get())).containsExactlyInAnyOrder(
                 "IncludeItemTypes=Playlist", "Recursive=true", "Limit=10000");
         assertThat(queryParameters(createQuery.get())).containsExactlyInAnyOrder(
-                "Name=Top+250+2025", "UserId=user-id", "MediaType=Video");
+                "Name=Top+250%282025%29", "UserId=user-id", "MediaType=Video");
         assertThat(queryParameters(addQuery.get())).containsExactlyInAnyOrder(
                 "UserId=user-id", "Ids=movie-1%2Cmovie-2");
     }
@@ -470,10 +470,10 @@ class EmbyClientTest {
         server.start();
         EmbyClient client = new EmbyClient(properties(), new ObjectMapper());
 
-        client.renamePlaylist("playlist-id", "user-id", "Top 250 2026");
+        client.renamePlaylist("playlist-id", "user-id", "Top 250(2026)");
 
         ObjectMapper mapper = new ObjectMapper();
-        assertThat(mapper.readTree(updateBody.get()).path("Name").asText()).isEqualTo("Top 250 2026");
+        assertThat(mapper.readTree(updateBody.get()).path("Name").asText()).isEqualTo("Top 250(2026)");
         assertThat(mapper.readTree(updateBody.get()).path("Type").asText()).isEqualTo("Playlist");
     }
 

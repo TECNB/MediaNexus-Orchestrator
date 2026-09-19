@@ -62,13 +62,20 @@ class JavdbAutomationPlaylistSyncTest {
         when(embyClient.listUsers()).thenReturn(List.of(
                 new EmbyUserAccount("owner-id", "tecnb", false, false)
         ));
-        when(embyClient.listPlaylists("owner-id")).thenReturn(List.of(
-                new EmbyPlaylist("top-2026", "Top 250 2026"),
-                new EmbyPlaylist("top-2025", "Top 250 2025"),
-                new EmbyPlaylist("top-2024", "Top 250 2024"),
+        AtomicBoolean playlistNamesMigrated = new AtomicBoolean();
+        when(embyClient.listPlaylists("owner-id")).thenAnswer(invocation -> List.of(
+                new EmbyPlaylist("top-2026", playlistNamesMigrated.get() ? "Top 250(2026)" : "Top 250 2026"),
+                new EmbyPlaylist("top-2025", playlistNamesMigrated.get() ? "Top 250(2025)" : "Top 250 2025"),
+                new EmbyPlaylist("top-2024", playlistNamesMigrated.get() ? "Top 250(2024)" : "Top 250 2024"),
                 new EmbyPlaylist("cracked-list", "破解"),
                 new EmbyPlaylist("subtitle-list", "字幕")
         ));
+        doAnswer(invocation -> {
+            if ("top-2024".equals(invocation.getArgument(0))) {
+                playlistNamesMigrated.set(true);
+            }
+            return null;
+        }).when(embyClient).renamePlaylist(any(), eq("owner-id"), any());
         when(embyClient.listLibraries()).thenReturn(List.of(
                 new EmbyLibrary("adult-jav", "Adult-JAV", List.of())
         ));
@@ -103,6 +110,9 @@ class JavdbAutomationPlaylistSyncTest {
         assertThat(second.existingCount()).isEqualTo(2);
         assertThat(second.waitingCount()).isEqualTo(1);
         verify(embyClient).addItemsToPlaylist("top-2026", "owner-id", List.of("movie-top"));
+        verify(embyClient).renamePlaylist("top-2026", "owner-id", "Top 250(2026)");
+        verify(embyClient).renamePlaylist("top-2025", "owner-id", "Top 250(2025)");
+        verify(embyClient).renamePlaylist("top-2024", "owner-id", "Top 250(2024)");
         assertThat(top.getStatus()).isEqualTo("SYNCED");
         assertThat(cracked.getStatus()).isEqualTo("SYNCED");
         assertThat(subtitle.getStatus()).isEqualTo("WAITING_EMBY");

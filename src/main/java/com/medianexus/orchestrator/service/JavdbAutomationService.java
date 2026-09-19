@@ -1361,23 +1361,29 @@ public class JavdbAutomationService {
             List<JavdbPlaylistMembership> memberships
     ) {
         List<EmbyPlaylist> existing = embyClient.listPlaylists(ownerId);
-        EmbyPlaylist legacyTop = existing.stream().filter(item -> "Top 250".equals(item.name())).findFirst().orElse(null);
-        if (legacyTop != null && existing.stream().noneMatch(item -> "Top 250 2026".equals(item.name()))) {
-            embyClient.renamePlaylist(legacyTop.id(), ownerId, "Top 250 2026");
-            existing = embyClient.listPlaylists(ownerId);
-        }
-
         Set<String> keys = new java.util.LinkedHashSet<>(MANAGED_PLAYLIST_KEYS);
         memberships.stream().map(JavdbPlaylistMembership::getPlaylistKey).forEach(keys::add);
         Map<String, EmbyPlaylist> result = new LinkedHashMap<>();
         for (String key : keys) {
             String name = playlistName(key);
             EmbyPlaylist playlist = existing.stream().filter(item -> name.equals(item.name())).findFirst().orElse(null);
+            if (playlist == null && key.startsWith("TOP_250_")) {
+                String year = key.substring("TOP_250_".length());
+                playlist = existing.stream()
+                        .filter(item -> ("Top 250 " + year).equals(item.name())
+                                || ("2026".equals(year) && "Top 250".equals(item.name())))
+                        .findFirst()
+                        .orElse(null);
+                if (playlist != null) {
+                    embyClient.renamePlaylist(playlist.id(), ownerId, name);
+                    playlist = new EmbyPlaylist(playlist.id(), name);
+                }
+            }
             if (playlist == null) {
                 playlist = new EmbyPlaylist(embyClient.createPlaylist(name, ownerId), name);
-                existing = new ArrayList<>(existing);
-                existing.add(playlist);
             }
+            existing = new ArrayList<>(existing);
+            existing.add(playlist);
             result.put(key, playlist);
         }
         return result;
@@ -1385,7 +1391,7 @@ public class JavdbAutomationService {
 
     private String playlistName(String key) {
         if (key.startsWith("TOP_250_")) {
-            return "Top 250 " + key.substring("TOP_250_".length());
+            return "Top 250(" + key.substring("TOP_250_".length()) + ")";
         }
         return switch (key) {
             case "CRACKED" -> "破解";

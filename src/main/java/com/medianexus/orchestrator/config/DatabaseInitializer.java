@@ -217,7 +217,15 @@ public class DatabaseInitializer implements ApplicationRunner {
         adultOtherAutomationRunItemMapper.createTableIfNotExists();
         adultOtherAutomationRunCollectionMapper.createTableIfNotExists();
         javdbPlaylistMembershipMapper.createTableIfNotExists();
+        ensureJavdbPlaylistKeyCapacity();
         javdbPlaylistSyncRunMapper.createTableIfNotExists();
+    }
+
+    private void ensureJavdbPlaylistKeyCapacity() {
+        Integer maxLength = javdbPlaylistMembershipMapper.selectPlaylistKeyMaxLength();
+        if (maxLength == null || maxLength < 64) {
+            javdbPlaylistMembershipMapper.widenPlaylistKeyColumn();
+        }
     }
 
     private void ensureQuarkTaskSourceTypeColumn() {

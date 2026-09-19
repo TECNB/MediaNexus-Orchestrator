@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.medianexus.orchestrator.model.JavdbPlaylistMembership;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 @Mapper
@@ -13,7 +14,7 @@ public interface JavdbPlaylistMembershipMapper extends BaseMapper<JavdbPlaylistM
             CREATE TABLE IF NOT EXISTS javdb_playlist_memberships (
                 id VARCHAR(36) NOT NULL,
                 code VARCHAR(64) NOT NULL,
-                playlist_key VARCHAR(32) NOT NULL,
+                playlist_key VARCHAR(64) NOT NULL,
                 source_run_id VARCHAR(36) NULL,
                 adult_task_id VARCHAR(36) NULL,
                 source_rank INT NULL,
@@ -32,6 +33,21 @@ public interface JavdbPlaylistMembershipMapper extends BaseMapper<JavdbPlaylistM
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
             """)
     void createTableIfNotExists();
+
+    @Select("""
+            SELECT CHARACTER_MAXIMUM_LENGTH
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'javdb_playlist_memberships'
+              AND COLUMN_NAME = 'playlist_key'
+            """)
+    Integer selectPlaylistKeyMaxLength();
+
+    @Update("""
+            ALTER TABLE javdb_playlist_memberships
+            MODIFY COLUMN playlist_key VARCHAR(64) NOT NULL
+            """)
+    void widenPlaylistKeyColumn();
 
     @Insert("""
             INSERT INTO javdb_playlist_memberships (
