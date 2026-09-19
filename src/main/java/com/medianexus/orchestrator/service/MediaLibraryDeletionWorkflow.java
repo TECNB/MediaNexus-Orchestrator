@@ -207,10 +207,11 @@ public class MediaLibraryDeletionWorkflow {
             throw new BusinessException(ErrorCode.NOT_FOUND, "未找到可删除的媒体文件", HttpStatus.NOT_FOUND);
         }
         requireBelowLibraryRoot(deletionItem.path(), library);
-        requirePaths(deletionItem.mediaSourcePaths(), List.of(deletionItem.path()));
-        return new DeletionPlan(
+            List<String> sources = resolveMediaSourcePaths(deletionItem.mediaSourcePaths());
+            requirePaths(sources, List.of(deletionItem.path()));
+            return new DeletionPlan(
                 null, null, "整部作品",
-                deletionItem.mediaSourcePaths(),
+                    sources,
                 List.of(deletionItem.path()),
                 List.of(deletionItem.id())
         );
@@ -239,10 +240,11 @@ public class MediaLibraryDeletionWorkflow {
             strmPaths.add(member.path());
             embyIds.add(member.id());
         }
-        requirePaths(List.copyOf(sources), List.copyOf(strmPaths));
-        return new DeletionPlan(
+            List<String> resolvedSources = resolveMediaSourcePaths(List.copyOf(sources));
+            requirePaths(resolvedSources, List.copyOf(strmPaths));
+            return new DeletionPlan(
                 null, null, COLLECTION_TARGET_LABEL,
-                List.copyOf(sources), List.copyOf(strmPaths), List.copyOf(embyIds)
+                resolvedSources, List.copyOf(strmPaths), List.copyOf(embyIds)
         );
     }
 
@@ -314,7 +316,7 @@ public class MediaLibraryDeletionWorkflow {
             embyIds.add(season.id());
             for (EmbyDeletionItem episode : episodes) {
                 requireBelow(episode.path(), seasonPath, "剧集 STRM 路径不在季度目录内");
-                sources.addAll(episode.mediaSourcePaths());
+                sources.addAll(resolveMediaSourcePaths(episode.mediaSourcePaths()));
                 strmPaths.add(episode.path());
                 embyIds.add(episode.id());
             }
@@ -323,25 +325,31 @@ public class MediaLibraryDeletionWorkflow {
             strmPaths.add(seriesItem.path());
             embyIds.add(series.id());
         }
-        requirePaths(List.copyOf(sources), List.copyOf(strmPaths));
+        List<String> resolvedSources = resolveMediaSourcePaths(List.copyOf(sources));
+        requirePaths(resolvedSources, List.copyOf(strmPaths));
         EmbyDeletionItem selectedSeason = targets.size() == 1 ? targets.get(0) : null;
         return new DeletionPlan(
                 selectedSeason == null ? null : selectedSeason.id(),
                 selectedSeason == null ? null : selectedSeason.indexNumber(),
                 selectedSeason == null ? "整部剧集" : selectedSeason.name(),
-                List.copyOf(sources),
+                resolvedSources,
                 List.copyOf(strmPaths),
                 List.copyOf(embyIds)
         );
     }
 
     private void requirePaths(List<String> sourcePaths, List<String> strmPaths) {
-        if (sourcePaths.isEmpty() || sourcePaths.stream().anyMatch(path -> !StringUtils.hasText(path))) {
-            throw new BusinessException(ErrorCode.CONFLICT, "Emby 未返回完整的媒体源路径");
-        }
         if (strmPaths.isEmpty() || strmPaths.stream().anyMatch(path -> !StringUtils.hasText(path))) {
             throw new BusinessException(ErrorCode.CONFLICT, "Emby 未返回完整的 STRM 路径");
         }
+    }
+
+    private List<String> resolveMediaSourcePaths(List<String> paths) {
+        return paths.stream()
+                .map(localStrmDeletion::resolveMediaSourcePath)
+                .filter(StringUtils::hasText)
+                .distinct()
+                .toList();
     }
 
     private void requireBelowLibraryRoot(String value, EmbyLibrary library) {

@@ -24,6 +24,26 @@ public class LocalStrmDeletion {
                 .forEach(this::deleteRecursively);
     }
 
+    public String resolveMediaSourcePath(String value) {
+        if (value == null || !value.startsWith(root.toString())) {
+            return value;
+        }
+        Path path = Path.of(value).toAbsolutePath().normalize();
+        if (!path.startsWith(root) || !Files.isRegularFile(path)) {
+            return null;
+        }
+        try {
+            String content = Files.readString(path).lines()
+                    .map(String::trim)
+                    .filter(line -> !line.isEmpty())
+                    .findFirst()
+                    .orElse(null);
+            return content;
+        } catch (IOException exception) {
+            return null;
+        }
+    }
+
     private Path allowedPath(String value) {
         Path path = Path.of(value).toAbsolutePath().normalize();
         if (path.equals(root) || !path.startsWith(root)) {

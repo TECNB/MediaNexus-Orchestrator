@@ -31,4 +31,19 @@ class LocalStrmDeletionTest {
         assertThatThrownBy(() -> deletion.delete(List.of(root.toString())))
                 .isInstanceOf(IllegalArgumentException.class);
     }
+
+    @Test
+    void resolvesRemoteSourceFromLocalStrmFile() throws Exception {
+        Path root = temporaryDirectory.resolve("STRM");
+        Path strm = root.resolve("Anime/Title/movie.strm");
+        Files.createDirectories(strm.getParent());
+        Files.writeString(strm, "\nhttp://example.test/video.mp4\n");
+        CloudDrive2Properties properties = new CloudDrive2Properties();
+        properties.setStrmPathPrefix(root.toString());
+        LocalStrmDeletion deletion = new LocalStrmDeletion(properties);
+
+        assertThat(deletion.resolveMediaSourcePath(strm.toString()))
+                .isEqualTo("http://example.test/video.mp4");
+        assertThat(deletion.resolveMediaSourcePath(root.resolve("missing.strm").toString())).isNull();
+    }
 }
