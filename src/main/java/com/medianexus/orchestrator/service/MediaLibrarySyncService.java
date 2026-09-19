@@ -110,16 +110,21 @@ public class MediaLibrarySyncService {
             boolean deepTarget = deep && selected && deepPaths.stream()
                     .anyMatch(path -> item.path().equals(path) || item.path().startsWith(path + "/"));
             boolean directChild = selectedPaths.stream().anyMatch(path -> localDirectory.toString().equals(path));
+            boolean libraryShallow = !deep && selectedPaths.isEmpty();
             // A shallow selected target checks direct media files and the first
             // child folders. It does not recurse into files below those folders.
-            boolean fileCheck = !deep || selectedPaths.isEmpty() || deepTarget || directChild;
-            String remoteTarget = remotePath(source, fileCheck, scope);
+            boolean fileCheck = !libraryShallow && (!deep || deepTarget || directChild);
+            String remoteTarget = libraryShallow
+                    ? topLevelRemotePath(source, scope)
+                    : remotePath(source, fileCheck, scope);
             if (remoteTarget == null || !StringUtils.hasText(item.path())) {
                 skipped++;
                 addDetail(skippedMedia, item.name(), item.path());
                 continue;
             }
-            Path localTarget = fileCheck ? localPath : localDirectory;
+            Path localTarget = libraryShallow
+                    ? topLevelLocalPath(localPath, scope)
+                    : (fileCheck ? localPath : localDirectory);
             String key = remoteTarget + "\n" + localTarget;
             targets.computeIfAbsent(key, ignored -> new SyncTarget(remoteTarget, localTarget))
                     .paths.add(item.path());
@@ -343,6 +348,74 @@ public class MediaLibrarySyncService {
         } catch (IllegalArgumentException exception) {
             return null;
         }
+    }
+
+    static String topLevelRemotePath(String source, AdminMediaLibraryScope scope) {
+        if (!StringUtils.hasText(source) || scope == null) {
+            return null;
+        }
+        String path = source;
+        try {
+            int marker = path.indexOf("/smartstrm_fid/");
+            if (marker >= 0) {
+                path = URI.create(source).getPath();
+                if (!StringUtils.hasText(path)) {
+                    return null;
+                }
+                marker = path.indexOf("/smartstrm_fid/");
+                String afterMarker = path.substring(marker + "/smartstrm_fid/".length());
+                int fileIdEnd = afterMarker.indexOf('/');
+                if (fileIdEnd < 0 || fileIdEnd == afterMarker.length() - 1) {
+                    return null;
+                }
+                path = afterMarker.substring(fileIdEnd + 1);
+            }
+            path = ensureLeadingSlash(path);
+            String[] markers = switch (scope) {
+                case MOVIES -> new String[]{"/Media/Movies/", "/Media/Movie/", "/Movies/", "/Movie/"};
+                case TV -> new String[]{"/Media/TV/", "/TV/", "/Series/"};
+                case VARIETY -> new String[]{"/Media/综艺/", "/综艺/", "/Media/Variety/", "/Variety/"};
+                case ANIME -> new String[]{"/Media/Anime/", "/Anime/"};
+                case ADULT_OTHER -> new String[]{"/Media/Adult/Other/", "/Adult/Other/", "/Other/"};
+                case ADULT_JAV -> new String[]{"/Media/Adult/JAV/", "/Adult/JAV/", "/JAV/"};
+            };
+            for (String markerValue : markers) {
+                int markerIndex = path.toLowerCase(Locale.ROOT).indexOf(markerValue.toLowerCase(Locale.ROOT));
+                if (markerIndex < 0) {
+                    continue;
+                }
+                int contentStart = markerIndex + markerValue.length();
+                String rest = path.substring(contentStart);
+                int slash = rest.indexOf('/');
+                return slash < 0 ? path : path.substring(0, contentStart + slash);
+            }
+            return path;
+        } catch (IllegalArgumentException exception) {
+            return null;
+        }
+    }
+
+    private static Path topLevelLocalPath(Path file, AdminMediaLibraryScope scope) {
+        String path = file.toString().replace('\\', '/');
+        String[] markers = switch (scope) {
+            case MOVIES -> new String[]{"/Movies/", "/Movie/"};
+            case TV -> new String[]{"/TV/", "/Series/"};
+            case VARIETY -> new String[]{"/综艺/", "/Variety/"};
+            case ANIME -> new String[]{"/Anime/"};
+            case ADULT_OTHER -> new String[]{"/Adult/Other/"};
+            case ADULT_JAV -> new String[]{"/Adult/JAV/"};
+        };
+        for (String marker : markers) {
+            int index = path.toLowerCase(Locale.ROOT).indexOf(marker.toLowerCase(Locale.ROOT));
+            if (index < 0) {
+                continue;
+            }
+            int contentStart = index + marker.length();
+            String rest = path.substring(contentStart);
+            int slash = rest.indexOf('/');
+            return Path.of(slash < 0 ? path : path.substring(0, contentStart + slash));
+        }
+        return file.getParent() == null ? file : file.getParent();
     }
 
     private static String ensureLeadingSlash(String path) {

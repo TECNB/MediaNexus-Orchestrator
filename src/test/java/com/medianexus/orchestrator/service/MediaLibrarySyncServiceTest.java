@@ -30,4 +30,20 @@ class MediaLibrarySyncServiceTest {
                 AdminMediaLibraryScope.ANIME
         )).isEqualTo("/srv/media/CloudNAS/PikPak/Media/Anime/黄金神威 第二季");
     }
+
+    @Test
+    void libraryShallowCheckStopsAtAdultOtherTopLevelDirectory() {
+        assertThat(MediaLibrarySyncService.topLevelRemotePath(
+                "/srv/media/CloudNAS/PikPak/Media/Adult/Other/电报/子目录/视频.mp4",
+                AdminMediaLibraryScope.ADULT_OTHER
+        )).isEqualTo("/srv/media/CloudNAS/PikPak/Media/Adult/Other/电报");
+    }
+
+    @Test
+    void libraryShallowCheckKeepsDirectAdultOtherFile() {
+        assertThat(MediaLibrarySyncService.topLevelRemotePath(
+                "/srv/media/CloudNAS/PikPak/Media/Adult/Other/独立视频.mp4",
+                AdminMediaLibraryScope.ADULT_OTHER
+        )).isEqualTo("/srv/media/CloudNAS/PikPak/Media/Adult/Other/独立视频.mp4");
+    }
 }
