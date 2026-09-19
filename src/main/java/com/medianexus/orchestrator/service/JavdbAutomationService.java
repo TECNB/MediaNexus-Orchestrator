@@ -17,11 +17,16 @@ import com.medianexus.orchestrator.dto.javdb.response.JavdbAutomationRunLogRespo
 import com.medianexus.orchestrator.dto.javdb.response.JavdbAutomationRunResponse;
 import com.medianexus.orchestrator.dto.javdb.response.JavdbCredentialStatusResponse;
 import com.medianexus.orchestrator.dto.javdb.response.JavdbMagnetCandidateResponse;
+import com.medianexus.orchestrator.dto.javdb.response.JavdbPlaylistSyncGroupResponse;
+import com.medianexus.orchestrator.dto.javdb.response.JavdbPlaylistSyncItemResponse;
+import com.medianexus.orchestrator.dto.javdb.response.JavdbPlaylistSyncRunResponse;
 import com.medianexus.orchestrator.dto.javdb.response.JavdbRankingAppearanceResponse;
 import com.medianexus.orchestrator.integration.emby.EmbyClient;
 import com.medianexus.orchestrator.integration.emby.EmbyClientException;
 import com.medianexus.orchestrator.integration.emby.EmbyItem;
 import com.medianexus.orchestrator.integration.emby.EmbyLibrary;
+import com.medianexus.orchestrator.integration.emby.EmbyPlaylist;
+import com.medianexus.orchestrator.integration.emby.EmbyUserAccount;
 import com.medianexus.orchestrator.integration.javdb.JavdbClient;
 import com.medianexus.orchestrator.integration.javdb.JavdbClientException;
 import com.medianexus.orchestrator.integration.javdb.JavdbMagnet;
@@ -32,12 +37,18 @@ import com.medianexus.orchestrator.mapper.JavdbAutomationLedgerMapper;
 import com.medianexus.orchestrator.mapper.JavdbAutomationRunItemMapper;
 import com.medianexus.orchestrator.mapper.JavdbAutomationRunLogMapper;
 import com.medianexus.orchestrator.mapper.JavdbAutomationRunMapper;
+import com.medianexus.orchestrator.mapper.JavdbPlaylistHistoryMapper;
+import com.medianexus.orchestrator.mapper.JavdbPlaylistMembershipMapper;
+import com.medianexus.orchestrator.mapper.JavdbPlaylistSyncRunMapper;
 import com.medianexus.orchestrator.mapper.SystemSettingMapper;
 import com.medianexus.orchestrator.model.AdultMagnetIngestTask;
 import com.medianexus.orchestrator.model.JavdbAutomationLedger;
 import com.medianexus.orchestrator.model.JavdbAutomationRun;
 import com.medianexus.orchestrator.model.JavdbAutomationRunItem;
 import com.medianexus.orchestrator.model.JavdbAutomationRunLog;
+import com.medianexus.orchestrator.model.JavdbPlaylistHistoryItem;
+import com.medianexus.orchestrator.model.JavdbPlaylistMembership;
+import com.medianexus.orchestrator.model.JavdbPlaylistSyncRun;
 import com.medianexus.orchestrator.model.User;
 import java.text.Normalizer;
 import java.time.LocalDate;
@@ -86,6 +97,7 @@ public class JavdbAutomationService {
     private static final String VALIDATION_KEY = "javdb_automation_cookie_validation";
     private static final String TOP_COOKIE_KEY = "javdb_top_cookie";
     private static final String TOP_VALIDATION_KEY = "javdb_top_cookie_validation";
+    private static final String PLAYLIST_BACKFILL_KEY = "javdb_automation_playlist_backfill_v1";
     private static final String TIMEZONE = "Asia/Shanghai";
     private static final ZoneId ZONE_ID = ZoneId.of(TIMEZONE);
     private static final String DEFAULT_SCHEDULE_TIME = "03:00";
@@ -99,6 +111,11 @@ public class JavdbAutomationService {
     private static final long DETAIL_REQUEST_DELAY_MILLIS = 1000L;
     private static final String ADULT_JAV_SOURCE = "JAVDB_AUTOMATION";
     private static final String ADULT_JAV_LIBRARY_NAME = "Adult-JAV";
+    private static final String PLAYLIST_OWNER = "tecnb";
+    private static final String PLAYLIST_SYNC_TIME = "04:00";
+    private static final List<String> MANAGED_PLAYLIST_KEYS = List.of(
+            "TOP_250_2026", "TOP_250_2025", "TOP_250_2024", "CRACKED", "SUBTITLE"
+    );
     private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("HH:mm");
     private static final Pattern CODE_PATTERN = Pattern.compile(
             "(?<![A-Z0-9])((?:FC2[-_ ]?(?:PPV[-_ ]?)?)|[A-Z]{2,12}[-_ ]?)(\\d{2,7})(?![A-Z0-9])",
@@ -119,6 +136,9 @@ public class JavdbAutomationService {
     private final JavdbAutomationRunItemMapper itemMapper;
     private final JavdbAutomationLedgerMapper ledgerMapper;
     private final JavdbAutomationRunLogMapper logMapper;
+    private final JavdbPlaylistMembershipMapper playlistMembershipMapper;
+    private final JavdbPlaylistSyncRunMapper playlistSyncRunMapper;
+    private final JavdbPlaylistHistoryMapper playlistHistoryMapper;
     private final ObjectMapper objectMapper;
     private final ExecutorService executorService = Executors.newSingleThreadExecutor(runnable -> {
         Thread thread = new Thread(runnable, "javdb-automation-worker");
@@ -128,6 +148,7 @@ public class JavdbAutomationService {
     private final ReentrantLock runCreationLock = new ReentrantLock();
     private volatile boolean tablesReady;
     private volatile LocalDate lastScheduledDate;
+    private volatile LocalDate lastPlaylistSyncDate;
 
     public JavdbAutomationService(
             AuthService authService,
@@ -140,6 +161,9 @@ public class JavdbAutomationService {
             JavdbAutomationRunItemMapper itemMapper,
             JavdbAutomationLedgerMapper ledgerMapper,
             JavdbAutomationRunLogMapper logMapper,
+            JavdbPlaylistMembershipMapper playlistMembershipMapper,
+            JavdbPlaylistSyncRunMapper playlistSyncRunMapper,
+            JavdbPlaylistHistoryMapper playlistHistoryMapper,
             ObjectMapper objectMapper
     ) {
         this.authService = authService;
@@ -152,6 +176,9 @@ public class JavdbAutomationService {
         this.itemMapper = itemMapper;
         this.ledgerMapper = ledgerMapper;
         this.logMapper = logMapper;
+        this.playlistMembershipMapper = playlistMembershipMapper;
+        this.playlistSyncRunMapper = playlistSyncRunMapper;
+        this.playlistHistoryMapper = playlistHistoryMapper;
         this.objectMapper = objectMapper;
     }
 
@@ -167,6 +194,8 @@ public class JavdbAutomationService {
             itemMapper.createTableIfNotExists();
             ledgerMapper.createTableIfNotExists();
             logMapper.createTableIfNotExists();
+            playlistMembershipMapper.createTableIfNotExists();
+            playlistSyncRunMapper.createTableIfNotExists();
             adultMagnetIngestService.ensureTablesReadyForInternalUse();
             tablesReady = true;
         }
@@ -207,6 +236,25 @@ public class JavdbAutomationService {
         requestScheduledRun();
     }
 
+    @Scheduled(cron = "0 0 4 * * *", zone = TIMEZONE)
+    public void syncPlaylistsScheduled() {
+        LocalDate today = LocalDate.now(ZONE_ID);
+        if (today.equals(lastPlaylistSyncDate)) {
+            return;
+        }
+        lastPlaylistSyncDate = today;
+        try {
+            syncPlaylists("SCHEDULED");
+        } catch (RuntimeException exception) {
+            log.warn("Scheduled JAVDB playlist sync failed", exception);
+        }
+    }
+
+    public JavdbPlaylistSyncRunResponse syncPlaylistsManually() {
+        authService.requireAdminUser();
+        return syncPlaylists("MANUAL");
+    }
+
     public JavdbAutomationOverviewResponse overview() {
         authService.requireAdminUser();
         ensureTablesReady();
@@ -217,7 +265,8 @@ public class JavdbAutomationService {
         return new JavdbAutomationOverviewResponse(
                 toConfigResponse(),
                 latest == null ? null : toResponse(latest, false),
-                current == null ? null : toResponse(current, false)
+                current == null ? null : toResponse(current, false),
+                latestPlaylistSync()
         );
     }
 
@@ -484,12 +533,18 @@ public class JavdbAutomationService {
         for (MergedMovie movie : mergedMovies.values()) {
             String crossRankReason = movie.appearances().size() > 1 ? "CROSS_RANK_DUPLICATE" : null;
             if (embyCodes.contains(movie.code())) {
+                if ("EXECUTE".equals(run.getExecutionMode())) {
+                    recordTopPlaylistIntent(run, config, movie, null);
+                }
                 saveItem(run, movie, "ALREADY_IN_EMBY", crossRankReason, null, null, null, null);
                 run.setAlreadyInEmby(safeCount(run.getAlreadyInEmby()) + 1);
                 continue;
             }
             JavdbAutomationLedger ledger = ledgerByCode.get(movie.code());
             if (ledger != null && !interruptedTaskCodes.contains(movie.code())) {
+                if ("EXECUTE".equals(run.getExecutionMode())) {
+                    recordTopPlaylistIntent(run, config, movie, ledger.getAdultTaskId());
+                }
                 boolean active = activeTasksByCode.containsKey(movie.code());
                 saveItem(run, movie, active ? "ADULT_IN_PROGRESS" : "HISTORY_SUBMITTED", crossRankReason,
                         null, null, null, ledger.getAdultTaskId());
@@ -502,6 +557,9 @@ public class JavdbAutomationService {
             }
             AdultMagnetIngestTask activeTask = activeTasksByCode.get(movie.code());
             if (activeTask != null) {
+                if ("EXECUTE".equals(run.getExecutionMode())) {
+                    recordTopPlaylistIntent(run, config, movie, activeTask.getId());
+                }
                 saveItem(run, movie, "ADULT_IN_PROGRESS", crossRankReason,
                         null, null, null, activeTask.getId());
                 run.setActiveDuplicates(safeCount(run.getActiveDuplicates()) + 1);
@@ -509,6 +567,9 @@ public class JavdbAutomationService {
             }
             AdultMagnetIngestTask submittedTask = submittedAutomationTasksByCode.get(movie.code());
             if (submittedTask != null) {
+                if ("EXECUTE".equals(run.getExecutionMode())) {
+                    recordTopPlaylistIntent(run, config, movie, submittedTask.getId());
+                }
                 saveItem(run, movie, "HISTORY_SUBMITTED", crossRankReason,
                         null, null, null, submittedTask.getId());
                 run.setHistoryDuplicates(safeCount(run.getHistoryDuplicates()) + 1);
@@ -594,6 +655,8 @@ public class JavdbAutomationService {
                 for (PendingSubmission item : batch) {
                     updateItemAfterSubmission(run.getId(), item.movie().code(), "SUBMITTED", adultTaskId, null);
                     insertLedger(run, item, adultTaskId);
+                    recordTopPlaylistIntent(run, readConfigSnapshot(run.getConfigSnapshot()), item.movie(), adultTaskId);
+                    recordMagnetPlaylistIntents(run, item.movie(), item.selectedMagnet(), adultTaskId);
                 }
                 run.setSubmittedCount(safeCount(run.getSubmittedCount()) + batch.size());
                 run.setAdultTaskCount(successfulTaskCount);
@@ -636,28 +699,49 @@ public class JavdbAutomationService {
         List<PendingSubmission> pending = new ArrayList<>();
         for (JavdbAutomationRunItem source : sourceItems) {
             JavdbAutomationRunItem copy = copyRunItem(source, run.getId());
+            MergedMovie copiedMovie = new MergedMovie(
+                    source.getCode(), source.getTitle(), source.getDetailUrl(),
+                    readAppearances(source.getAppearancesJson())
+            );
             if ("READY_TO_SUBMIT".equals(source.getStatus())) {
-                if (existingLedgers.containsKey(source.getCode())) {
+                JavdbAutomationLedger existingLedger = existingLedgers.get(source.getCode());
+                AdultMagnetIngestTask activeTask = activeTasks.get(source.getCode());
+                AdultMagnetIngestTask submittedTask = submittedTasks.get(source.getCode());
+                if (existingLedger != null) {
                     copy.setStatus("HISTORY_SUBMITTED");
-                } else if (activeTasks.containsKey(source.getCode())) {
+                    copy.setAdultTaskId(existingLedger.getAdultTaskId());
+                } else if (activeTask != null) {
                     copy.setStatus("ADULT_IN_PROGRESS");
-                } else if (submittedTasks.containsKey(source.getCode())) {
+                    copy.setAdultTaskId(activeTask.getId());
+                } else if (submittedTask != null) {
                     copy.setStatus("HISTORY_SUBMITTED");
+                    copy.setAdultTaskId(submittedTask.getId());
                 }
             }
             itemMapper.insert(copy);
-            if ("READY_TO_SUBMIT".equals(copy.getStatus()) && StringUtils.hasText(source.getSelectedMagnet())) {
-                List<JavdbMagnetCandidateResponse> candidates = readJsonList(
+            JavdbMagnet selected = null;
+            List<JavdbMagnetCandidateResponse> candidates = List.of();
+            if (StringUtils.hasText(source.getSelectedMagnet())) {
+                candidates = readJsonList(
                         source.getCandidatesJson(), new TypeReference<List<JavdbMagnetCandidateResponse>>() { }
                 );
-                JavdbMagnet selected = candidates.stream()
+                selected = candidates.stream()
                         .filter(candidate -> Objects.equals(candidate.magnet(), source.getSelectedMagnet()))
                         .findFirst()
                         .map(this::toMagnet)
                         .orElse(new JavdbMagnet(source.getSelectedMagnet(), null, source.getSelectedInfohash(), null,
                                 false, false, List.of(), null));
+            }
+            if (Set.of("SUBMITTED", "ALREADY_IN_EMBY", "HISTORY_SUBMITTED", "ADULT_IN_PROGRESS")
+                    .contains(copy.getStatus())) {
+                recordTopPlaylistIntent(run, config, copiedMovie, copy.getAdultTaskId());
+                if (selected != null) {
+                    recordMagnetPlaylistIntents(run, copiedMovie, selected, copy.getAdultTaskId());
+                }
+            }
+            if ("READY_TO_SUBMIT".equals(copy.getStatus()) && selected != null) {
                 pending.add(new PendingSubmission(
-                        new MergedMovie(source.getCode(), source.getTitle(), source.getDetailUrl(), new ArrayList<>()),
+                        copiedMovie,
                         candidates.stream().map(this::toMagnet).toList(), selected, source.getSelectedReason()
                 ));
             }
@@ -1026,6 +1110,352 @@ public class JavdbAutomationService {
         ledger.setRunId(run.getId());
         ledger.setSubmittedAt(LocalDateTime.now());
         ledgerMapper.insert(ledger);
+    }
+
+    private void recordTopPlaylistIntent(
+            JavdbAutomationRun run,
+            Config config,
+            MergedMovie movie,
+            String adultTaskId
+    ) {
+        if (!config.isTop()) {
+            return;
+        }
+        Integer rank = movie.appearances().stream()
+                .filter(appearance -> ("top_" + config.topYear()).equals(appearance.period()))
+                .map(JavdbRankingMovie::rank)
+                .min(Integer::compareTo)
+                .orElse(null);
+        upsertPlaylistIntent(movie.code(), "TOP_250_" + config.topYear(), run.getId(), adultTaskId,
+                rank, config.topYear());
+    }
+
+    private void recordMagnetPlaylistIntents(
+            JavdbAutomationRun run,
+            MergedMovie movie,
+            JavdbMagnet selected,
+            String adultTaskId
+    ) {
+        if (selected.isCracked()) {
+            upsertPlaylistIntent(movie.code(), "CRACKED", run.getId(), adultTaskId, null, null);
+        }
+        if (selected.hasSubtitle()) {
+            upsertPlaylistIntent(movie.code(), "SUBTITLE", run.getId(), adultTaskId, null, null);
+        }
+    }
+
+    private void upsertPlaylistIntent(
+            String code,
+            String playlistKey,
+            String sourceRunId,
+            String adultTaskId,
+            Integer sourceRank,
+            Integer sourceYear
+    ) {
+        JavdbPlaylistMembership membership = new JavdbPlaylistMembership();
+        membership.setId(UUID.randomUUID().toString());
+        membership.setCode(code);
+        membership.setPlaylistKey(playlistKey);
+        membership.setSourceRunId(sourceRunId);
+        membership.setAdultTaskId(adultTaskId);
+        membership.setSourceRank(sourceRank);
+        membership.setSourceYear(sourceYear);
+        membership.setCreatedAt(LocalDateTime.now());
+        membership.setUpdatedAt(LocalDateTime.now());
+        playlistMembershipMapper.upsertIntent(membership);
+    }
+
+    private List<JavdbRankingMovie> readAppearances(String raw) {
+        return readJsonList(raw, new TypeReference<List<JavdbRankingAppearanceResponse>>() { }).stream()
+                .map(item -> new JavdbRankingMovie(
+                        null, null, null, null, item.period(), item.rank(), item.hasMagnetBadge(),
+                        item.rating(), item.reviewCount()
+                ))
+                .toList();
+    }
+
+    private synchronized JavdbPlaylistSyncRunResponse syncPlaylists(String triggerType) {
+        ensureTablesReady();
+        backfillPlaylistIntents();
+        JavdbPlaylistSyncRun syncRun = new JavdbPlaylistSyncRun();
+        syncRun.setId(UUID.randomUUID().toString());
+        syncRun.setTriggerType(triggerType);
+        syncRun.setStatus("RUNNING");
+        syncRun.setDesiredCount(0);
+        syncRun.setAddedCount(0);
+        syncRun.setExistingCount(0);
+        syncRun.setWaitingCount(0);
+        syncRun.setFailedCount(0);
+        syncRun.setStartedAt(LocalDateTime.now());
+        playlistSyncRunMapper.insert(syncRun);
+
+        try {
+            List<JavdbPlaylistMembership> memberships = playlistMembershipMapper.selectList(
+                    new LambdaQueryWrapper<JavdbPlaylistMembership>()
+                            .orderByAsc(JavdbPlaylistMembership::getPlaylistKey)
+                            .orderByAsc(JavdbPlaylistMembership::getSourceRank)
+                            .orderByAsc(JavdbPlaylistMembership::getCreatedAt));
+            String ownerId = playlistOwnerId();
+            Map<String, EmbyPlaylist> playlists = ensureManagedPlaylists(ownerId, memberships);
+            Map<String, EmbyItem> embyItemsByCode = adultJavItemsByCode();
+            List<JavdbPlaylistSyncGroupResponse> groups = new ArrayList<>();
+            List<JavdbPlaylistSyncItemResponse> itemResults = new ArrayList<>();
+            int added = 0;
+            int existing = 0;
+            int waiting = 0;
+            int failed = 0;
+
+            Map<String, List<JavdbPlaylistMembership>> membershipsByKey = memberships.stream()
+                    .collect(java.util.stream.Collectors.groupingBy(
+                            JavdbPlaylistMembership::getPlaylistKey, LinkedHashMap::new,
+                            java.util.stream.Collectors.toList()));
+            for (String key : playlists.keySet()) {
+                List<JavdbPlaylistMembership> playlistMemberships = membershipsByKey.getOrDefault(key, List.of());
+                String name = playlistName(key);
+                EmbyPlaylist playlist = playlists.get(key);
+                if (playlist == null) {
+                    failed += playlistMemberships.size();
+                    for (JavdbPlaylistMembership membership : playlistMemberships) {
+                        markMembership(membership, "FAILED", null, syncRun.getId(), "目标播放列表不存在");
+                        itemResults.add(new JavdbPlaylistSyncItemResponse(
+                                membership.getCode(), key, name, "FAILED"));
+                    }
+                    groups.add(new JavdbPlaylistSyncGroupResponse(
+                            key, name, playlistMemberships.size(), 0, 0, 0, playlistMemberships.size(), null));
+                    continue;
+                }
+
+                Set<String> memberIds = embyClient.listPlaylistVideoItems(playlist.id(), ownerId).stream()
+                        .map(EmbyItem::id)
+                        .collect(java.util.stream.Collectors.toSet());
+                List<JavdbPlaylistMembership> toAdd = new ArrayList<>();
+                int groupExisting = 0;
+                int groupWaiting = 0;
+                for (JavdbPlaylistMembership membership : playlistMemberships) {
+                    EmbyItem embyItem = embyItemsByCode.get(membership.getCode());
+                    if (embyItem == null) {
+                        groupWaiting++;
+                        waiting++;
+                        markMembership(membership, "WAITING_EMBY", null, syncRun.getId(), null);
+                        itemResults.add(new JavdbPlaylistSyncItemResponse(
+                                membership.getCode(), key, name, "WAITING_EMBY"));
+                    } else if (memberIds.contains(embyItem.id())) {
+                        groupExisting++;
+                        existing++;
+                        markMembership(membership, "SYNCED", embyItem.id(), syncRun.getId(), null);
+                        itemResults.add(new JavdbPlaylistSyncItemResponse(
+                                membership.getCode(), key, name, "EXISTING"));
+                    } else {
+                        membership.setEmbyItemId(embyItem.id());
+                        toAdd.add(membership);
+                    }
+                }
+
+                int groupAdded = 0;
+                int groupFailed = 0;
+                if (!toAdd.isEmpty()) {
+                    try {
+                        embyClient.addItemsToPlaylist(playlist.id(), ownerId,
+                                toAdd.stream().map(JavdbPlaylistMembership::getEmbyItemId).toList());
+                        groupAdded = toAdd.size();
+                        added += groupAdded;
+                        for (JavdbPlaylistMembership membership : toAdd) {
+                            markMembership(membership, "SYNCED", membership.getEmbyItemId(), syncRun.getId(), null);
+                            itemResults.add(new JavdbPlaylistSyncItemResponse(
+                                    membership.getCode(), key, name, "ADDED"));
+                        }
+                    } catch (RuntimeException exception) {
+                        groupFailed = toAdd.size();
+                        failed += groupFailed;
+                        for (JavdbPlaylistMembership membership : toAdd) {
+                            markMembership(membership, "FAILED", membership.getEmbyItemId(), syncRun.getId(),
+                                    safeRunMessage(exception));
+                            itemResults.add(new JavdbPlaylistSyncItemResponse(
+                                    membership.getCode(), key, name, "FAILED"));
+                        }
+                    }
+                }
+                groups.add(new JavdbPlaylistSyncGroupResponse(
+                        key, name, playlistMemberships.size(), groupAdded, groupExisting,
+                        groupWaiting, groupFailed, playlist.id()));
+            }
+
+            syncRun.setStatus(failed == 0 ? "SUCCEEDED" : added + existing > 0 ? "PARTIAL_SUCCESS" : "FAILED");
+            syncRun.setDesiredCount(memberships.size());
+            syncRun.setAddedCount(added);
+            syncRun.setExistingCount(existing);
+            syncRun.setWaitingCount(waiting);
+            syncRun.setFailedCount(failed);
+            syncRun.setDetailJson(writeJson(Map.of("groups", groups, "items", itemResults)));
+            syncRun.setFinishedAt(LocalDateTime.now());
+            playlistSyncRunMapper.updateById(syncRun);
+            return toPlaylistSyncResponse(syncRun);
+        } catch (RuntimeException exception) {
+            syncRun.setStatus("FAILED");
+            syncRun.setErrorMessage(truncate(safeRunMessage(exception), 1024));
+            syncRun.setFinishedAt(LocalDateTime.now());
+            playlistSyncRunMapper.updateById(syncRun);
+            throw exception;
+        }
+    }
+
+    private void backfillPlaylistIntents() {
+        if (StringUtils.hasText(systemSettingMapper.selectSettingValue(PLAYLIST_BACKFILL_KEY))) {
+            return;
+        }
+        for (JavdbPlaylistHistoryItem item : playlistHistoryMapper.selectExecutedItems()) {
+            Config config = readConfigSnapshot(item.getConfigSnapshot());
+            List<JavdbRankingMovie> appearances = readAppearances(item.getAppearancesJson());
+            MergedMovie movie = new MergedMovie(item.getCode(), null, null, appearances);
+            recordTopPlaylistIntentForHistory(item, config, movie);
+            JavdbMagnet selected = selectedMagnet(item);
+            if (selected != null) {
+                if (selected.isCracked()) {
+                    upsertPlaylistIntent(item.getCode(), "CRACKED", item.getRunId(), item.getAdultTaskId(), null, null);
+                }
+                if (selected.hasSubtitle()) {
+                    upsertPlaylistIntent(item.getCode(), "SUBTITLE", item.getRunId(), item.getAdultTaskId(), null, null);
+                }
+            }
+        }
+        systemSettingMapper.upsertSetting(PLAYLIST_BACKFILL_KEY, LocalDateTime.now().toString());
+    }
+
+    private void recordTopPlaylistIntentForHistory(
+            JavdbPlaylistHistoryItem item,
+            Config config,
+            MergedMovie movie
+    ) {
+        if (!config.isTop()) {
+            return;
+        }
+        Integer rank = movie.appearances().stream().map(JavdbRankingMovie::rank).min(Integer::compareTo).orElse(null);
+        upsertPlaylistIntent(item.getCode(), "TOP_250_" + config.topYear(), item.getRunId(),
+                item.getAdultTaskId(), rank, config.topYear());
+    }
+
+    private JavdbMagnet selectedMagnet(JavdbPlaylistHistoryItem item) {
+        if (!StringUtils.hasText(item.getSelectedMagnet())) {
+            return null;
+        }
+        List<JavdbMagnetCandidateResponse> candidates = readJsonList(
+                item.getCandidatesJson(), new TypeReference<List<JavdbMagnetCandidateResponse>>() { });
+        return candidates.stream()
+                .filter(candidate -> item.getSelectedMagnet().equals(candidate.magnet()))
+                .findFirst()
+                .map(this::toMagnet)
+                .orElse(null);
+    }
+
+    private String playlistOwnerId() {
+        return embyClient.listUsers().stream()
+                .filter(user -> PLAYLIST_OWNER.equalsIgnoreCase(user.name()))
+                .filter(user -> !user.disabled())
+                .map(EmbyUserAccount::id)
+                .findFirst()
+                .orElseThrow(() -> new EmbyClientException("Emby 播放列表所属用户不存在"));
+    }
+
+    private Map<String, EmbyPlaylist> ensureManagedPlaylists(
+            String ownerId,
+            List<JavdbPlaylistMembership> memberships
+    ) {
+        List<EmbyPlaylist> existing = embyClient.listPlaylists(ownerId);
+        EmbyPlaylist legacyTop = existing.stream().filter(item -> "Top 250".equals(item.name())).findFirst().orElse(null);
+        if (legacyTop != null && existing.stream().noneMatch(item -> "Top 250 2026".equals(item.name()))) {
+            embyClient.renamePlaylist(legacyTop.id(), ownerId, "Top 250 2026");
+            existing = embyClient.listPlaylists(ownerId);
+        }
+
+        Set<String> keys = new java.util.LinkedHashSet<>(MANAGED_PLAYLIST_KEYS);
+        memberships.stream().map(JavdbPlaylistMembership::getPlaylistKey).forEach(keys::add);
+        Map<String, EmbyPlaylist> result = new LinkedHashMap<>();
+        for (String key : keys) {
+            String name = playlistName(key);
+            EmbyPlaylist playlist = existing.stream().filter(item -> name.equals(item.name())).findFirst().orElse(null);
+            if (playlist == null) {
+                playlist = new EmbyPlaylist(embyClient.createPlaylist(name, ownerId), name);
+                existing = new ArrayList<>(existing);
+                existing.add(playlist);
+            }
+            result.put(key, playlist);
+        }
+        return result;
+    }
+
+    private String playlistName(String key) {
+        if (key.startsWith("TOP_250_")) {
+            return "Top 250 " + key.substring("TOP_250_".length());
+        }
+        return switch (key) {
+            case "CRACKED" -> "破解";
+            case "SUBTITLE" -> "字幕";
+            default -> key;
+        };
+    }
+
+    private Map<String, EmbyItem> adultJavItemsByCode() {
+        EmbyLibrary library = embyClient.listLibraries().stream()
+                .filter(candidate -> normalizedLibraryName(candidate.name()).equals(normalizedLibraryName(ADULT_JAV_LIBRARY_NAME)))
+                .findFirst()
+                .orElseThrow(() -> new EmbyClientException("Emby Adult-JAV 媒体库不存在"));
+        Map<String, EmbyItem> result = new HashMap<>();
+        for (EmbyItem item : embyClient.listLibraryVideoItems(library.id())) {
+            Set<String> codes = new HashSet<>();
+            addCodes(codes, item.name());
+            addCodes(codes, item.path());
+            codes.forEach(code -> result.putIfAbsent(code, item));
+        }
+        return result;
+    }
+
+    private void markMembership(
+            JavdbPlaylistMembership membership,
+            String status,
+            String embyItemId,
+            String syncRunId,
+            String errorMessage
+    ) {
+        membership.setStatus(status);
+        membership.setEmbyItemId(embyItemId);
+        membership.setLastSyncRunId(syncRunId);
+        membership.setSyncedAt("SYNCED".equals(status) ? LocalDateTime.now() : null);
+        membership.setErrorMessage(errorMessage);
+        membership.setUpdatedAt(LocalDateTime.now());
+        playlistMembershipMapper.updateById(membership);
+    }
+
+    private JavdbPlaylistSyncRunResponse latestPlaylistSync() {
+        ensureTablesReady();
+        JavdbPlaylistSyncRun run = playlistSyncRunMapper.selectOne(
+                new LambdaQueryWrapper<JavdbPlaylistSyncRun>()
+                        .orderByDesc(JavdbPlaylistSyncRun::getStartedAt)
+                        .last("LIMIT 1"));
+        return run == null ? null : toPlaylistSyncResponse(run);
+    }
+
+    private JavdbPlaylistSyncRunResponse toPlaylistSyncResponse(JavdbPlaylistSyncRun run) {
+        JsonNode detail;
+        try {
+            detail = StringUtils.hasText(run.getDetailJson())
+                    ? objectMapper.readTree(run.getDetailJson()) : objectMapper.createObjectNode();
+        } catch (JsonProcessingException exception) {
+            detail = objectMapper.createObjectNode();
+        }
+        List<JavdbPlaylistSyncGroupResponse> groups = detail.path("groups").isArray()
+                ? objectMapper.convertValue(
+                        detail.path("groups"), new TypeReference<List<JavdbPlaylistSyncGroupResponse>>() { })
+                : List.of();
+        List<JavdbPlaylistSyncItemResponse> items = detail.path("items").isArray()
+                ? objectMapper.convertValue(
+                        detail.path("items"), new TypeReference<List<JavdbPlaylistSyncItemResponse>>() { })
+                : List.of();
+        return new JavdbPlaylistSyncRunResponse(
+                run.getId(), run.getTriggerType(), run.getStatus(), safeCount(run.getDesiredCount()),
+                safeCount(run.getAddedCount()), safeCount(run.getExistingCount()), safeCount(run.getWaitingCount()),
+                safeCount(run.getFailedCount()), PLAYLIST_SYNC_TIME, run.getStartedAt(), run.getFinishedAt(),
+                run.getErrorMessage(), groups, items
+        );
     }
 
     private void updateStage(JavdbAutomationRun run, String stage) {

@@ -10,6 +10,8 @@ import com.medianexus.orchestrator.mapper.AdultOtherCollectionSyncRunMapper;
 import com.medianexus.orchestrator.mapper.AdultOtherAutomationRunCollectionMapper;
 import com.medianexus.orchestrator.mapper.AdultOtherAutomationRunItemMapper;
 import com.medianexus.orchestrator.mapper.AdultOtherAutomationRunMapper;
+import com.medianexus.orchestrator.mapper.JavdbPlaylistMembershipMapper;
+import com.medianexus.orchestrator.mapper.JavdbPlaylistSyncRunMapper;
 import com.medianexus.orchestrator.mapper.EmbyActivePlaybackSessionMapper;
 import com.medianexus.orchestrator.mapper.EmbyWatchSessionMapper;
 import com.medianexus.orchestrator.mapper.MovieMagnetIngestTaskLogMapper;
@@ -71,6 +73,8 @@ public class DatabaseInitializer implements ApplicationRunner {
     private final AdultOtherAutomationRunMapper adultOtherAutomationRunMapper;
     private final AdultOtherAutomationRunItemMapper adultOtherAutomationRunItemMapper;
     private final AdultOtherAutomationRunCollectionMapper adultOtherAutomationRunCollectionMapper;
+    private final JavdbPlaylistMembershipMapper javdbPlaylistMembershipMapper;
+    private final JavdbPlaylistSyncRunMapper javdbPlaylistSyncRunMapper;
 
     public DatabaseInitializer(
             DatabaseSshTunnelLifecycle databaseSshTunnelLifecycle,
@@ -101,7 +105,9 @@ public class DatabaseInitializer implements ApplicationRunner {
             AdultOtherCollectionKnownItemMapper adultOtherCollectionKnownItemMapper,
             AdultOtherAutomationRunMapper adultOtherAutomationRunMapper,
             AdultOtherAutomationRunItemMapper adultOtherAutomationRunItemMapper,
-            AdultOtherAutomationRunCollectionMapper adultOtherAutomationRunCollectionMapper
+            AdultOtherAutomationRunCollectionMapper adultOtherAutomationRunCollectionMapper,
+            JavdbPlaylistMembershipMapper javdbPlaylistMembershipMapper,
+            JavdbPlaylistSyncRunMapper javdbPlaylistSyncRunMapper
     ) {
         this.databaseSshTunnelLifecycle = databaseSshTunnelLifecycle;
         this.userMapper = userMapper;
@@ -132,6 +138,8 @@ public class DatabaseInitializer implements ApplicationRunner {
         this.adultOtherAutomationRunMapper = adultOtherAutomationRunMapper;
         this.adultOtherAutomationRunItemMapper = adultOtherAutomationRunItemMapper;
         this.adultOtherAutomationRunCollectionMapper = adultOtherAutomationRunCollectionMapper;
+        this.javdbPlaylistMembershipMapper = javdbPlaylistMembershipMapper;
+        this.javdbPlaylistSyncRunMapper = javdbPlaylistSyncRunMapper;
     }
 
     @Override
@@ -208,6 +216,8 @@ public class DatabaseInitializer implements ApplicationRunner {
         adultOtherAutomationRunMapper.createTableIfNotExists();
         adultOtherAutomationRunItemMapper.createTableIfNotExists();
         adultOtherAutomationRunCollectionMapper.createTableIfNotExists();
+        javdbPlaylistMembershipMapper.createTableIfNotExists();
+        javdbPlaylistSyncRunMapper.createTableIfNotExists();
     }
 
     private void ensureQuarkTaskSourceTypeColumn() {

@@ -8,6 +8,7 @@ import com.medianexus.orchestrator.dto.javdb.response.JavdbAutomationOverviewRes
 import com.medianexus.orchestrator.dto.javdb.response.JavdbAutomationRunListResponse;
 import com.medianexus.orchestrator.dto.javdb.response.JavdbAutomationRunResponse;
 import com.medianexus.orchestrator.dto.javdb.response.JavdbCredentialStatusResponse;
+import com.medianexus.orchestrator.dto.javdb.response.JavdbPlaylistSyncRunResponse;
 import com.medianexus.orchestrator.service.JavdbAutomationService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -81,6 +82,12 @@ public class AdminJavdbAutomationController {
             @Valid @RequestBody JavdbAutomationConfigUpdateRequest request
     ) {
         return ApiResponse.success(automationService.requestExecution(request));
+    }
+
+    @PostMapping("/playlists/sync")
+    @Operation(summary = "同步 JAVDB 播放列表", description = "将已进入 Adult-JAV 的 Top 250、破解和字幕影片增量加入对应播放列表。")
+    public ApiResponse<JavdbPlaylistSyncRunResponse> syncPlaylists() {
+        return ApiResponse.success(automationService.syncPlaylistsManually());
     }
 
     @GetMapping("/runs")

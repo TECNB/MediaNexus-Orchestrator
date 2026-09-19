@@ -133,6 +133,55 @@ public class EmbyClient {
         ));
     }
 
+    public List<EmbyPlaylist> listPlaylists(String userId) {
+        return items("/Users/" + encodePath(userId) + "/Items", Map.of(
+                "IncludeItemTypes", "Playlist",
+                "Recursive", "true",
+                "Limit", "10000"
+        )).stream()
+                .map(item -> new EmbyPlaylist(item.id(), item.name()))
+                .toList();
+    }
+
+    public List<EmbyItem> listPlaylistVideoItems(String playlistId, String userId) {
+        return items("/Playlists/" + encodePath(playlistId) + "/Items", Map.of(
+                "UserId", userId,
+                "Limit", "10000"
+        ));
+    }
+
+    public String createPlaylist(String name, String userId) {
+        JsonNode root = post("/Playlists", Map.of(
+                "Name", name,
+                "UserId", userId,
+                "MediaType", "Video"
+        ));
+        String id = text(root, "Id", "id");
+        if (!StringUtils.hasText(id)) {
+            throw new EmbyClientException("Emby playlist id missing after create");
+        }
+        return id;
+    }
+
+    public void renamePlaylist(String playlistId, String userId, String name) {
+        JsonNode item = get("/Users/" + encodePath(userId) + "/Items/" + encodePath(playlistId), Map.of());
+        if (!item.isObject()) {
+            throw new EmbyClientException("Emby playlist response is incomplete");
+        }
+        ((com.fasterxml.jackson.databind.node.ObjectNode) item).put("Name", name);
+        postJson("/Items/" + encodePath(playlistId), Map.of(), writeJson(item));
+    }
+
+    public void addItemsToPlaylist(String playlistId, String userId, List<String> itemIds) {
+        if (itemIds.isEmpty()) {
+            return;
+        }
+        post("/Playlists/" + encodePath(playlistId) + "/Items", Map.of(
+                "UserId", userId,
+                "Ids", String.join(",", itemIds)
+        ));
+    }
+
     public List<EmbyDeletionItem> listLibraryMediaItemsForSync(String libraryId) {
         return deletionItems(Map.of(
                 "ParentId", libraryId,
@@ -593,7 +642,11 @@ public class EmbyClient {
     }
 
     private List<EmbyItem> items(Map<String, String> params) {
-        JsonNode root = get("/Items", params);
+        return items("/Items", params);
+    }
+
+    private List<EmbyItem> items(String path, Map<String, String> params) {
+        JsonNode root = get(path, params);
         JsonNode items = root.path("Items");
         if (!items.isArray()) {
             throw new EmbyClientException("Emby items response is incomplete");
