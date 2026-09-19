@@ -63,6 +63,15 @@ public class MediaLibrarySyncService {
     }
 
     public AdminMediaLibrarySyncResponse sync(String library, boolean deep, Collection<String> selectedPaths) {
+        return sync(library, deep, selectedPaths, selectedPaths);
+    }
+
+    public AdminMediaLibrarySyncResponse sync(
+            String library,
+            boolean deep,
+            Collection<String> selectedPaths,
+            Collection<String> deepPaths
+    ) {
         authService.requireAdminUser();
         AdminMediaLibraryScope scope = AdminMediaLibraryScope.fromRequest(library);
         EmbyLibrary embyLibrary = catalogService.resolveLibrary(scope);
@@ -71,8 +80,9 @@ public class MediaLibrarySyncService {
         List<String> skippedMedia = new ArrayList<>();
         int skipped = 0;
         for (EmbyDeletionItem item : embyClient.listLibraryMediaItemsForSync(embyLibrary.id())) {
-            if (deep && !selectedPaths.isEmpty() && StringUtils.hasText(item.path()) && selectedPaths.stream()
-                    .noneMatch(path -> item.path().equals(path) || item.path().startsWith(path + "/"))) {
+            boolean selected = !selectedPaths.isEmpty() && StringUtils.hasText(item.path()) && selectedPaths.stream()
+                    .anyMatch(path -> item.path().equals(path) || item.path().startsWith(path + "/"));
+            if (deep && !selectedPaths.isEmpty() && !selected) {
                 continue;
             }
             if (deep && !selectedPaths.isEmpty() && !StringUtils.hasText(item.path())) {
@@ -86,7 +96,9 @@ public class MediaLibrarySyncService {
                 addDetail(skippedMedia, item.name(), item.path());
                 continue;
             }
-            String remoteTarget = remotePath(source, deep, scope);
+            boolean itemDeep = deep && selected && deepPaths.stream()
+                    .anyMatch(path -> item.path().equals(path) || item.path().startsWith(path + "/"));
+            String remoteTarget = remotePath(source, itemDeep, scope);
             if (remoteTarget == null || !StringUtils.hasText(item.path())) {
                 skipped++;
                 addDetail(skippedMedia, item.name(), item.path());
@@ -99,7 +111,7 @@ public class MediaLibrarySyncService {
                 addDetail(skippedMedia, item.name(), item.path());
                 continue;
             }
-            Path localTarget = deep ? localPath : localDirectory;
+            Path localTarget = itemDeep ? localPath : localDirectory;
             String key = remoteTarget + "\n" + localTarget;
             targets.computeIfAbsent(key, ignored -> new SyncTarget(remoteTarget, localTarget))
                     .paths.add(item.path());
@@ -162,15 +174,17 @@ public class MediaLibrarySyncService {
             if (!supportedSource(source) || !StringUtils.hasText(item.path())) {
                 continue;
             }
-            String haystack = (item.name() + " " + item.path() + " " + source).toLowerCase(Locale.ROOT);
+            Path file = Path.of(item.path()).toAbsolutePath().normalize();
+            Path folder = topLevelFolder(file, source, scope);
+            if (folder == null || folder.getFileName() == null) {
+                continue;
+            }
+            String label = folder.getFileName().toString();
+            String haystack = (label + " " + source).toLowerCase(Locale.ROOT);
             if (!haystack.contains(normalizedQuery)) {
                 continue;
             }
-            Path file = Path.of(item.path()).toAbsolutePath().normalize();
-            addTarget(results, file, item.name(), "file", item.path());
-            addTarget(results, file.getParent(), file.getParent() == null ? item.name() : file.getParent().getFileName().toString(), "folder", item.path());
-            Path seriesDirectory = file.getParent() == null ? null : file.getParent().getParent();
-            addTarget(results, seriesDirectory, seriesDirectory == null ? item.name() : seriesDirectory.getFileName().toString(), "folder", item.path());
+            addTarget(results, folder, label, "folder", item.path());
             if (results.size() >= 30) {
                 break;
             }
@@ -188,7 +202,47 @@ public class MediaLibrarySyncService {
         if (path == null || !StringUtils.hasText(label) || results.containsKey(path.toString())) {
             return;
         }
-        results.put(path.toString(), new AdminMediaLibrarySyncTargetResponse(label, path.toString(), targetType, detail));
+        results.put(path.toString(), new AdminMediaLibrarySyncTargetResponse(label, path.toString(), targetType, detail, false));
+    }
+
+    private Path topLevelFolder(Path file, String source, AdminMediaLibraryScope scope) {
+        String remoteTop = remoteTopFolder(source, scope);
+        Path current = file.getParent();
+        Path match = null;
+        while (current != null && current.getFileName() != null) {
+            if (remoteTop != null && current.getFileName().toString().equals(remoteTop)) {
+                match = current;
+            }
+            current = current.getParent();
+        }
+        if (match != null) {
+            return match;
+        }
+        return file.getParent() == null ? null : file.getParent().getParent();
+    }
+
+    private String remoteTopFolder(String source, AdminMediaLibraryScope scope) {
+        String path = remotePath(source, true, scope);
+        if (path == null) {
+            return null;
+        }
+        String[] markers = switch (scope) {
+            case ANIME -> new String[]{"/Anime/"};
+            case TV -> new String[]{"/TV/"};
+            case VARIETY -> new String[]{"/Variety/", "/综艺/"};
+            case ADULT_OTHER -> new String[]{"/Adult/Other/", "/Other/"};
+            case ADULT_JAV -> new String[]{"/Adult/JAV/", "/JAV/"};
+            case MOVIES -> new String[]{"/Movies/", "/Movie/"};
+        };
+        for (String marker : markers) {
+            int index = path.toLowerCase(Locale.ROOT).indexOf(marker.toLowerCase(Locale.ROOT));
+            if (index >= 0) {
+                String rest = path.substring(index + marker.length());
+                int slash = rest.indexOf('/');
+                return slash > 0 ? rest.substring(0, slash) : rest;
+            }
+        }
+        return null;
     }
 
     private CloudDrive2MediaDeletion.MediaSourceCheckResult existingCloudPaths(Collection<SyncTarget> targets) {
@@ -305,7 +359,12 @@ public class MediaLibrarySyncService {
         }
 
         private String label() {
-            Path name = Path.of(remoteDirectory).getFileName();
+            Path labelPath = localTarget;
+            String fileName = labelPath.getFileName() == null ? "" : labelPath.getFileName().toString();
+            if (fileName.contains(".")) {
+                labelPath = labelPath.getParent() == null ? labelPath : labelPath.getParent();
+            }
+            Path name = labelPath.getFileName();
             return name == null ? remoteDirectory : name.toString();
         }
     }

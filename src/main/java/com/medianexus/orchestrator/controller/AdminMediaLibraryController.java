@@ -65,9 +65,14 @@ public class AdminMediaLibraryController {
     public ApiResponse<AdminMediaLibrarySyncResponse> sync(
             @RequestParam @NotBlank String library,
             @RequestParam(defaultValue = "false") boolean deep,
-            @RequestParam(name = "target", required = false) List<String> targets
+            @RequestParam(name = "target", required = false) List<String> targets,
+            @RequestParam(name = "deep_target", required = false) List<String> deepTargets
     ) {
-        return ApiResponse.success(syncService.sync(library, deep, targets == null ? List.of() : targets));
+        return ApiResponse.success(syncService.sync(
+                library, deep,
+                targets == null ? List.of() : targets,
+                deepTargets == null ? List.of() : deepTargets
+        ));
     }
 
     @GetMapping("/sync-targets")

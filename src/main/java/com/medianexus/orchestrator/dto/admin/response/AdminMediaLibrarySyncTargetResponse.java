@@ -6,6 +6,7 @@ public record AdminMediaLibrarySyncTargetResponse(
         String label,
         String path,
         @JsonProperty("target_type") String targetType,
-        String detail
+        String detail,
+        boolean deep
 ) {
 }
