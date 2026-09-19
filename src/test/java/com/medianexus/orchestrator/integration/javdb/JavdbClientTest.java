@@ -44,9 +44,13 @@ class JavdbClientTest {
     void parsesAndDeduplicatesMagnetsWhileKeepingFilenameLabels() {
         String html = """
                 <section id="magnets-content">
-                  <a href="magnet:?xt=urn:btih:ABCDEF1234567890&amp;dn=%5B中字%5D%20ABC-123%20UC">第一条</a>
+                  <div class="item odd" data-size="5710">
+                    <a href="magnet:?xt=urn:btih:ABCDEF1234567890&amp;dn=%5B中字%5D%20ABC-123%20UC">第一条</a>
+                  </div>
                   <a data-clipboard-text="magnet:?xt=urn:btih:abcdef1234567890&amp;dn=duplicate">重复</a>
-                  <a href="magnet:?xt=urn:btih:9876543210&amp;dn=普通版本">第三条</a>
+                  <div class="item" data-size="1352">
+                    <a href="magnet:?xt=urn:btih:9876543210&amp;dn=普通版本">第三条</a>
+                  </div>
                 </section>
                 """;
 
@@ -57,10 +61,12 @@ class JavdbClientTest {
 
         assertThat(magnets).hasSize(2);
         assertThat(magnets.get(0).infohash()).isEqualTo("abcdef1234567890");
+        assertThat(magnets.get(0).sizeBytes()).isEqualTo(5710L * 1024L * 1024L);
         assertThat(magnets.get(0).hasSubtitle()).isTrue();
         assertThat(magnets.get(0).isCracked()).isTrue();
         assertThat(magnets.get(0).detectionSource()).isEqualTo("filename_rule");
         assertThat(magnets.get(1).infohash()).isEqualTo("9876543210");
+        assertThat(magnets.get(1).sizeBytes()).isEqualTo(1352L * 1024L * 1024L);
     }
 
     @Test

@@ -9,6 +9,7 @@ public record JavdbMagnetCandidateResponse(
         String magnet,
         @JsonProperty("original_name") String originalName,
         String infohash,
+        @JsonProperty("size_bytes") Long sizeBytes,
         @JsonProperty("has_subtitle") boolean hasSubtitle,
         @JsonProperty("is_cracked") boolean cracked,
         List<String> labels,

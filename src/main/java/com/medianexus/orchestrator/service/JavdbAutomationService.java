@@ -622,7 +622,8 @@ public class JavdbAutomationService {
                         .filter(candidate -> Objects.equals(candidate.magnet(), source.getSelectedMagnet()))
                         .findFirst()
                         .map(this::toMagnet)
-                        .orElse(new JavdbMagnet(source.getSelectedMagnet(), null, source.getSelectedInfohash(), false, false, List.of(), null));
+                        .orElse(new JavdbMagnet(source.getSelectedMagnet(), null, source.getSelectedInfohash(), null,
+                                false, false, List.of(), null));
                 pending.add(new PendingSubmission(
                         new MergedMovie(source.getCode(), source.getTitle(), source.getDetailUrl(), new ArrayList<>()),
                         candidates.stream().map(this::toMagnet).toList(), selected, source.getSelectedReason()
@@ -667,7 +668,7 @@ public class JavdbAutomationService {
     }
 
     private JavdbMagnet toMagnet(JavdbMagnetCandidateResponse candidate) {
-        return new JavdbMagnet(candidate.magnet(), candidate.originalName(), candidate.infohash(),
+        return new JavdbMagnet(candidate.magnet(), candidate.originalName(), candidate.infohash(), candidate.sizeBytes(),
                 candidate.hasSubtitle(), candidate.cracked(), candidate.labels(), candidate.detectionSource());
     }
 
@@ -819,9 +820,14 @@ public class JavdbAutomationService {
                 .filter(magnet -> !config.crackedOnly() || magnet.isCracked())
                 .filter(magnet -> !config.subtitleOnly() || magnet.hasSubtitle())
                 .sorted(Comparator.comparingInt(this::magnetPriority).reversed()
+                        .thenComparing(Comparator.comparingLong(this::magnetSize).reversed())
                         .thenComparingInt(magnets::indexOf))
                 .findFirst()
                 .orElse(null);
+    }
+
+    private long magnetSize(JavdbMagnet magnet) {
+        return magnet.sizeBytes() == null ? 0L : magnet.sizeBytes();
     }
 
     private boolean matchesMovieFilters(JavdbMovieDetail detail, Config config) {
@@ -942,7 +948,7 @@ public class JavdbAutomationService {
 
     private JavdbMagnetCandidateResponse toCandidateResponse(JavdbMagnet magnet) {
         return new JavdbMagnetCandidateResponse(
-                magnet.magnet(), magnet.originalName(), magnet.infohash(), magnet.hasSubtitle(),
+                magnet.magnet(), magnet.originalName(), magnet.infohash(), magnet.sizeBytes(), magnet.hasSubtitle(),
                 magnet.isCracked(), magnet.labels(), magnet.detectionSource()
         );
     }

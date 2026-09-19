@@ -57,6 +57,12 @@ public class JavdbClient {
     private static final Pattern CLIPBOARD_PATTERN = Pattern.compile(
             "(?is)\\bdata-clipboard-text\\s*=\\s*[\\\"']([^\\\"']+)[\\\"']"
     );
+    private static final Pattern MAGNET_ITEM_OPEN_PATTERN = Pattern.compile(
+            "(?is)<div\\b([^>]*\\bclass\\s*=\\s*[\\\"'][^\\\"']*\\bitem\\b[^\\\"']*[\\\"'][^>]*)>"
+    );
+    private static final Pattern DATA_SIZE_PATTERN = Pattern.compile(
+            "(?is)\\bdata-size\\s*=\\s*[\\\"'](\\d+)[\\\"']"
+    );
     private static final Pattern SCORE_SUMMARY_PATTERN = Pattern.compile(
             "([0-5](?:\\.\\d+)?)\\s*分\\s*[,，]\\s*由\\s*(\\d+)\\s*人[評评]價"
     );
@@ -308,6 +314,7 @@ public class JavdbClient {
             }
             boolean hasSubtitle = SUBTITLE_PATTERN.matcher(originalName).find();
             boolean isCracked = CRACKED_PATTERN.matcher(originalName).find();
+            Long sizeBytes = magnetSizeBytes(scope, matcher.start());
             List<String> labels = new ArrayList<>();
             if (isCracked) {
                 labels.add("破解");
@@ -319,6 +326,7 @@ public class JavdbClient {
                     magnet,
                     limit(originalName, 1024),
                     infohash,
+                    sizeBytes,
                     hasSubtitle,
                     isCracked,
                     List.copyOf(labels),
@@ -326,6 +334,26 @@ public class JavdbClient {
             ));
         }
         return magnets;
+    }
+
+    private Long magnetSizeBytes(String scope, int anchorStart) {
+        Matcher items = MAGNET_ITEM_OPEN_PATTERN.matcher(scope);
+        String itemAttributes = null;
+        while (items.find() && items.start() < anchorStart) {
+            itemAttributes = items.group(1);
+        }
+        if (!StringUtils.hasText(itemAttributes)) {
+            return null;
+        }
+        Matcher size = DATA_SIZE_PATTERN.matcher(itemAttributes);
+        if (!size.find()) {
+            return null;
+        }
+        try {
+            return Math.multiplyExact(Long.parseLong(size.group(1)), 1024L * 1024L);
+        } catch (ArithmeticException | NumberFormatException exception) {
+            return null;
+        }
     }
 
     private Double parseRating(String body) {
