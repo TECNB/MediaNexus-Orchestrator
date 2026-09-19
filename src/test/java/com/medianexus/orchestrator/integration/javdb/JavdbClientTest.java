@@ -16,6 +16,7 @@ class JavdbClientTest {
                 <div class="movie-list">
                   <div class="item"><a class="box" href="/v/one" title="ABC-123 / title">
                     <span class="video-title"><strong>ABC-123</strong></span>
+                    <div class="score"><span class="value">4.59分, 由327人評價</span></div>
                     <div class="meta">2024-01-02</div><span>含磁</span>
                   </a></div>
                   <div class="item"><a class="box" href="/v/two">
@@ -34,6 +35,8 @@ class JavdbClientTest {
                 .containsExactly("ABC-123", "XYZ-99");
         assertThat(movies.get(0).rank()).isEqualTo(1);
         assertThat(movies.get(0).hasMagnetBadge()).isTrue();
+        assertThat(movies.get(0).rating()).isEqualTo(4.59D);
+        assertThat(movies.get(0).reviewCount()).isEqualTo(327);
         assertThat(movies.get(1).releaseDate()).isEqualTo("2024-02-03");
     }
 

@@ -334,10 +334,8 @@ public class JavdbClient {
 
     private Double parseRating(String body) {
         Matcher element = SCORE_ELEMENT_PATTERN.matcher(body == null ? "" : body);
-        if (!element.find()) {
-            return null;
-        }
-        Matcher value = SCORE_VALUE_PATTERN.matcher(textFromHtml(element.group(1)));
+        String scoreText = element.find() ? textFromHtml(element.group(1)) : textFromHtml(body);
+        Matcher value = SCORE_VALUE_PATTERN.matcher(scoreText);
         if (!value.find()) {
             return null;
         }
