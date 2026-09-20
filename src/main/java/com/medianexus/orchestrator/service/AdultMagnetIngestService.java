@@ -494,7 +494,7 @@ public class AdultMagnetIngestService {
                 if (state != null && List.of(3, 4).contains(state)) {
                     item.markFailed();
                     incrementFailed(taskId);
-                    writeLog(taskId, "ERROR", "downloading", "Adult 下载链接离线任务已取消", itemDetail(item, taskInfo));
+                    writeLog(taskId, "ERROR", "downloading", "Adult 下载链接离线任务已取消", failureItemDetail(item, taskInfo));
                     continue;
                 }
                 if (state != null && state >= 5) {
@@ -512,7 +512,7 @@ public class AdultMagnetIngestService {
                     }
                     item.markFailed();
                     incrementFailed(taskId);
-                    writeLog(taskId, "ERROR", "downloading", "Adult 下载链接离线任务失败", itemDetail(item, taskInfo));
+                    writeLog(taskId, "ERROR", "downloading", "Adult 下载链接离线任务失败", failureItemDetail(item, taskInfo));
                     continue;
                 }
                 if (isTimedOut(item, timeout)) {
@@ -528,13 +528,14 @@ public class AdultMagnetIngestService {
                         submitPreparation(taskId, item, preparationFutures);
                         continue;
                     }
+                    cancelTimedOutItem(taskId, item, taskInfo, timeout);
                     item.markFailed();
                     incrementFailed(taskId);
                     writeLog(
                             taskId,
                             "WARN",
                             "downloading",
-                            "Adult 下载链接下载超时，按失败处理",
+                            "Adult 下载链接下载超时，已取消",
                             itemDetail(item, taskInfo) + ", " + timeoutDetail(item, timeout)
                     );
                     continue;
@@ -1051,6 +1052,70 @@ public class AdultMagnetIngestService {
         }
     }
 
+    private void cancelTimedOutItem(
+            String taskId,
+            AdultMagnetItem item,
+            OpenListOfflineTaskInfo taskInfo,
+            Duration timeout
+    ) {
+        boolean cancellationConfirmed = false;
+        try {
+            openListClient.cancelOfflineTask(item.openListTaskId());
+            cancellationConfirmed = waitForOfflineCancellation(item.openListTaskId());
+            writeLog(
+                    taskId,
+                    cancellationConfirmed ? "WARN" : "ERROR",
+                    "downloading",
+                    cancellationConfirmed
+                            ? "Adult 下载链接超过超时阈值，已取消"
+                            : "Adult 下载链接超过超时阈值，取消未确认",
+                    itemDetail(item, taskInfo) + ", " + timeoutDetail(item, timeout)
+                            + ", magnet=" + item.magnet()
+            );
+        } catch (RuntimeException exception) {
+            writeLog(
+                    taskId,
+                    "ERROR",
+                    "downloading",
+                    "Adult 下载链接超时，但取消请求失败",
+                    itemDetail(item, taskInfo) + ", " + timeoutDetail(item, timeout)
+                            + ", magnet=" + item.magnet() + ", error=" + safeMessage(exception)
+            );
+        }
+        if (cancellationConfirmed) {
+            cleanupCancelledTempDirectory(taskId, item.tempPath());
+        }
+    }
+
+    private boolean waitForOfflineCancellation(String openListTaskId) {
+        for (int attempt = 0; attempt < 5; attempt++) {
+            OpenListOfflineTaskInfo taskInfo = openListClient.offlineTaskInfo(openListTaskId);
+            if (taskInfo.state() != null && taskInfo.state() >= 3) {
+                return true;
+            }
+            if (attempt < 4) {
+                sleep(Duration.ofMillis(500));
+            }
+        }
+        return false;
+    }
+
+    private void cleanupCancelledTempDirectory(String taskId, String tempPath) {
+        try {
+            List<OpenListFileInfo> files = openListClient.findFiles(tempPath, true);
+            Map<String, List<String>> deleteNamesByPath = new LinkedHashMap<>();
+            for (OpenListFileInfo file : files) {
+                deleteNamesByPath.computeIfAbsent(file.path(), ignored -> new ArrayList<>()).add(file.name());
+            }
+            for (Map.Entry<String, List<String>> entry : deleteNamesByPath.entrySet()) {
+                openListClient.remove(entry.getKey(), entry.getValue());
+            }
+            cleanupEmptyDirectories(taskId, parentPath(tempPath), tempPath);
+        } catch (RuntimeException exception) {
+            writeLog(taskId, "WARN", "downloading", "Adult 超时临时目录清理失败", tempPath + ", error=" + safeMessage(exception));
+        }
+    }
+
     private void updateStatus(String taskId, String status, String stage, String errorMessage) {
         LambdaUpdateWrapper<AdultMagnetIngestTask> updateWrapper = new LambdaUpdateWrapper<AdultMagnetIngestTask>()
                 .eq(AdultMagnetIngestTask::getId, taskId)
@@ -1236,6 +1301,10 @@ public class AdultMagnetIngestService {
             details.add("error=" + taskInfo.error().trim());
         }
         return String.join(", ", details);
+    }
+
+    private String failureItemDetail(AdultMagnetItem item, OpenListOfflineTaskInfo taskInfo) {
+        return itemDetail(item, taskInfo) + ", magnet=" + item.magnet();
     }
 
     private String timeoutDetail(AdultMagnetItem item, Duration timeout) {

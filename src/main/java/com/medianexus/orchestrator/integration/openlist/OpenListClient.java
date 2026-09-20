@@ -110,6 +110,13 @@ public class OpenListClient {
     }
 
     /**
+     * Cancel the OpenList task and let the offline tool stop the upstream download.
+     */
+    public void cancelOfflineTask(String taskId) {
+        post("task/offline_download/cancel?tid=" + encode(taskId), Map.of());
+    }
+
+    /**
      * 删除 OpenList 离线下载任务记录；不删除已经保存到文件系统的内容。
      */
     public void deleteOfflineTask(String taskId) {
