@@ -79,6 +79,36 @@ class TelegramCloudInboxMoverTest {
         verify(fileOperations).list("/WebDAV/My Telegram", true);
     }
 
+    @Test
+    void waitsForForcedCloudDriveRefreshToReachMountedTargetBeforeMoving() throws Exception {
+        Path inbox = Files.createDirectories(root.resolve("My Telegram"));
+        Files.writeString(inbox.resolve("remote.mp4"), "video");
+        CloudDrive2FileOperations fileOperations = mock(CloudDrive2FileOperations.class);
+        when(fileOperations.list("/WebDAV/My Telegram", true)).thenReturn(List.of(
+                new CloudDrive2FileEntry("remote.mp4", "/WebDAV/My Telegram/remote.mp4", 5, false)
+        ));
+        when(fileOperations.list("/WebDAV/Media/Adult/Other/电报", true)).thenReturn(List.of());
+        TelegramCloudInboxMover mover = new TelegramCloudInboxMover(fileOperations, properties());
+        Thread mountRefresh = new Thread(() -> {
+            try {
+                Thread.sleep(30);
+                Files.createDirectories(root.resolve("Media/Adult/Other/电报"));
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+            } catch (IOException exception) {
+                throw new IllegalStateException(exception);
+            }
+        });
+        mountRefresh.start();
+
+        TelegramCloudInboxMover.MoveOutcome outcome = mover.awaitExpectedFilesAndMove(0, 1);
+        mountRefresh.join();
+
+        assertEquals(1, outcome.movedEntryCount());
+        assertTrue(Files.exists(root.resolve("Media/Adult/Other/电报/remote.mp4")));
+        verify(fileOperations).list("/WebDAV/Media/Adult/Other/电报", true);
+    }
+
     private CloudDrive2Properties properties() {
         CloudDrive2Properties properties = new CloudDrive2Properties();
         properties.setMediaSourcePathPrefix(root.toString());

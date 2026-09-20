@@ -56,7 +56,8 @@ public class TelegramCloudInboxMover {
         }
 
         List<CloudDrive2FileEntry> entries = list(cloudInboxPath());
-        Path targetDirectory = libraryPath();
+        refreshCloudDirectory(cloudLibraryPath());
+        Path targetDirectory = awaitMountedPaths(entries);
         for (CloudDrive2FileEntry entry : entries) {
             Path source = inboxPath().resolve(entry.name());
             Path target = targetDirectory.resolve(source.getFileName());
@@ -106,10 +107,35 @@ public class TelegramCloudInboxMover {
         return join(properties.getCloudDrivePathPrefix(), INBOX_DIRECTORY);
     }
 
-    private Path libraryPath() {
-        Path path = mediaRoot().resolve(LIBRARY_DIRECTORY);
-        if (!Files.isDirectory(path)) throw failure("Telegram 媒体库目标目录不存在：" + path);
-        return path;
+    private String cloudLibraryPath() {
+        return normalizePath(properties.getCloudDrivePathPrefix() + "/" + LIBRARY_DIRECTORY);
+    }
+
+    private void refreshCloudDirectory(String path) {
+        String prefix = normalizePath(properties.getCloudDrivePathPrefix());
+        String current = prefix;
+        for (String segment : normalizePath(path).substring(prefix.length()).split("/")) {
+            if (segment.isBlank()) continue;
+            fileOperations.list(current, true);
+            current = join(current, segment);
+        }
+        fileOperations.list(current, true);
+    }
+
+    private Path awaitMountedPaths(List<CloudDrive2FileEntry> entries) {
+        Path inbox = inboxPath();
+        Path target = mediaRoot().resolve(LIBRARY_DIRECTORY);
+        Instant deadline = Instant.now().plus(properties.getVisibilityTimeout());
+        do {
+            boolean sourcesVisible = entries.stream()
+                    .allMatch(entry -> Files.exists(inbox.resolve(entry.name())));
+            if (Files.isDirectory(target) && sourcesVisible) return target;
+            sleep();
+        } while (Instant.now().isBefore(deadline));
+        if (!Files.isDirectory(target)) {
+            throw failure("CD2 已刷新，但 Telegram 媒体库目标目录仍未同步到挂载：" + target);
+        }
+        throw failure("CD2 已刷新，但 Telegram 收件箱文件仍未同步到挂载");
     }
 
     private Path mediaRoot() { return Path.of(properties.getMediaSourcePathPrefix()).toAbsolutePath().normalize(); }
