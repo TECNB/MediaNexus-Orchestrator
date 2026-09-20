@@ -55,6 +55,8 @@ public class AdultMagnetIngestTask {
 
     private String errorMessage;
 
+    private String failedMagnetsJson;
+
     private LocalDateTime createdAt;
 
     private LocalDateTime updatedAt;
@@ -243,6 +245,14 @@ public class AdultMagnetIngestTask {
 
     public void setErrorMessage(String errorMessage) {
         this.errorMessage = errorMessage;
+    }
+
+    public String getFailedMagnetsJson() {
+        return failedMagnetsJson;
+    }
+
+    public void setFailedMagnetsJson(String failedMagnetsJson) {
+        this.failedMagnetsJson = failedMagnetsJson;
     }
 
     public LocalDateTime getCreatedAt() {

@@ -12,6 +12,7 @@ import com.medianexus.orchestrator.dto.magnet.response.AdultMagnetIngestTaskList
 import com.medianexus.orchestrator.dto.magnet.response.AdultMagnetIngestTaskLogListResponse;
 import com.medianexus.orchestrator.dto.magnet.response.AdultMagnetIngestTaskLogResponse;
 import com.medianexus.orchestrator.dto.magnet.response.AdultMagnetIngestTaskResponse;
+import com.medianexus.orchestrator.dto.magnet.response.AdultMagnetFailureResponse;
 import com.medianexus.orchestrator.integration.openlist.OpenListClient;
 import com.medianexus.orchestrator.integration.openlist.OpenListClientException;
 import com.medianexus.orchestrator.integration.openlist.OpenListDirectoryPrepareException;
@@ -69,6 +70,7 @@ public class AdultMagnetIngestService {
     private static final Pattern ED2K_FILE_HASH_PATTERN =
             Pattern.compile("^ed2k://\\|file\\|[^|]+\\|\\d+\\|([a-fA-F0-9]{32})\\|", Pattern.CASE_INSENSITIVE);
     private static final Pattern DUPLICATE_NAME_SUFFIX_PATTERN = Pattern.compile("\\(\\d+\\)$");
+    private static final Pattern ADULT_NUMBER_PATTERN = Pattern.compile("(?i)([A-Z0-9]{2,12}-\\d{2,10}(?:-[A-Z0-9]+)?)");
     private static final DateTimeFormatter DATE_FOLDER_FORMATTER = DateTimeFormatter.ofPattern("M.d");
     private static final List<String> UNFINISHED_STATUSES = List.of("PENDING", "SUBMITTED", "DOWNLOADING", "ORGANIZING");
     private static final List<String> TERMINAL_STATUSES = List.of("SUCCEEDED", "PARTIAL_SUCCESS", "FAILED", "INTERRUPTED");
@@ -315,6 +317,25 @@ public class AdultMagnetIngestService {
         }
     }
 
+    private void persistFailedMagnets(String taskId, List<AdultMagnetItem> items) {
+        List<AdultMagnetFailureResponse> failedMagnets = items.stream()
+                .filter(AdultMagnetItem::failed)
+                .map(item -> new AdultMagnetFailureResponse(adultNumber(item.magnet(), item.index()), item.magnet()))
+                .toList();
+        try {
+            taskMapper.update(new LambdaUpdateWrapper<AdultMagnetIngestTask>()
+                    .eq(AdultMagnetIngestTask::getId, taskId)
+                    .set(AdultMagnetIngestTask::getFailedMagnetsJson, objectMapper.writeValueAsString(failedMagnets)));
+        } catch (JsonProcessingException exception) {
+            log.warn("Failed to persist Adult failed magnets taskId={}", taskId, exception);
+        }
+    }
+
+    private String adultNumber(String magnet, int index) {
+        Matcher matcher = ADULT_NUMBER_PATTERN.matcher(magnet == null ? "" : magnet);
+        return matcher.find() ? matcher.group(1).toUpperCase(Locale.ROOT) : "磁力 " + index;
+    }
+
     private void removeUnscheduledTask(String taskId) {
         try {
             taskLogMapper.delete(new LambdaQueryWrapper<AdultMagnetIngestTaskLog>()
@@ -368,6 +389,10 @@ public class AdultMagnetIngestService {
             if (sourceTypeColumnCount == null || sourceTypeColumnCount == 0) {
                 taskMapper.addSourceTypeColumns();
             }
+            Integer failedMagnetsColumnCount = taskMapper.countFailedMagnetsJsonColumn();
+            if (failedMagnetsColumnCount == null || failedMagnetsColumnCount == 0) {
+                taskMapper.addFailedMagnetsJsonColumn();
+            }
             taskLogMapper.createTableIfNotExists();
             tablesReady = true;
         }
@@ -383,11 +408,13 @@ public class AdultMagnetIngestService {
             prepareTargetDirectories(task, items, rootPath);
             submitItems(task, items);
             if (items.stream().noneMatch(AdultMagnetItem::submitted)) {
+                persistFailedMagnets(taskId, items);
                 markFinished(taskId, "FAILED", "failed", "所有 Adult 下载链接提交失败");
                 return;
             }
 
             waitAndOrganizeItems(taskId, items);
+            persistFailedMagnets(taskId, items);
             AdultMagnetIngestTask finishedTask = getExistingTask(taskId);
             int succeededCount = safeInt(finishedTask.getSucceededCount());
             int failedCount = safeInt(finishedTask.getFailedCount());
@@ -402,6 +429,7 @@ public class AdultMagnetIngestService {
             }
         } catch (Exception exception) {
             log.warn("Adult magnet ingest task failed id={}", taskId, exception);
+            persistFailedMagnets(taskId, items);
             markFinished(taskId, "FAILED", "failed", safeMessage(exception));
         }
     }
@@ -494,7 +522,7 @@ public class AdultMagnetIngestService {
                 if (state != null && List.of(3, 4).contains(state)) {
                     item.markFailed();
                     incrementFailed(taskId);
-                    writeLog(taskId, "ERROR", "downloading", "Adult 下载链接离线任务已取消", failureItemDetail(item, taskInfo));
+                    writeLog(taskId, "ERROR", "downloading", "Adult 下载链接离线任务已取消", itemDetail(item, taskInfo));
                     continue;
                 }
                 if (state != null && state >= 5) {
@@ -512,7 +540,7 @@ public class AdultMagnetIngestService {
                     }
                     item.markFailed();
                     incrementFailed(taskId);
-                    writeLog(taskId, "ERROR", "downloading", "Adult 下载链接离线任务失败", failureItemDetail(item, taskInfo));
+                    writeLog(taskId, "ERROR", "downloading", "Adult 下载链接离线任务失败", itemDetail(item, taskInfo));
                     continue;
                 }
                 if (isTimedOut(item, timeout)) {
@@ -1070,7 +1098,6 @@ public class AdultMagnetIngestService {
                             ? "Adult 下载链接超过超时阈值，已取消"
                             : "Adult 下载链接超过超时阈值，取消未确认",
                     itemDetail(item, taskInfo) + ", " + timeoutDetail(item, timeout)
-                            + ", magnet=" + item.magnet()
             );
         } catch (RuntimeException exception) {
             writeLog(
@@ -1079,7 +1106,7 @@ public class AdultMagnetIngestService {
                     "downloading",
                     "Adult 下载链接超时，但取消请求失败",
                     itemDetail(item, taskInfo) + ", " + timeoutDetail(item, timeout)
-                            + ", magnet=" + item.magnet() + ", error=" + safeMessage(exception)
+                            + ", error=" + safeMessage(exception)
             );
         }
         if (cancellationConfirmed) {
@@ -1257,10 +1284,26 @@ public class AdultMagnetIngestService {
                 safeInt(task.getKeptCount()),
                 safeInt(task.getDeletedCount()),
                 task.getErrorMessage(),
+                parseFailedMagnets(task.getFailedMagnetsJson()),
                 task.getCreatedAt(),
                 task.getUpdatedAt(),
                 task.getFinishedAt()
         );
+    }
+
+    private List<AdultMagnetFailureResponse> parseFailedMagnets(String json) {
+        if (!StringUtils.hasText(json)) {
+            return List.of();
+        }
+        try {
+            return objectMapper.readValue(
+                    json,
+                    objectMapper.getTypeFactory().constructCollectionType(List.class, AdultMagnetFailureResponse.class)
+            );
+        } catch (JsonProcessingException exception) {
+            log.warn("Failed to parse Adult failed magnets json", exception);
+            return List.of();
+        }
     }
 
     private AdultMagnetIngestTaskLogResponse toLogResponse(AdultMagnetIngestTaskLog taskLog) {
@@ -1301,10 +1344,6 @@ public class AdultMagnetIngestService {
             details.add("error=" + taskInfo.error().trim());
         }
         return String.join(", ", details);
-    }
-
-    private String failureItemDetail(AdultMagnetItem item, OpenListOfflineTaskInfo taskInfo) {
-        return itemDetail(item, taskInfo) + ", magnet=" + item.magnet();
     }
 
     private String timeoutDetail(AdultMagnetItem item, Duration timeout) {
@@ -1470,6 +1509,10 @@ public class AdultMagnetIngestService {
 
         boolean pending() {
             return submitted && !organizing && !succeeded && !failed;
+        }
+
+        boolean failed() {
+            return failed;
         }
 
         boolean preparedForPromotion() {

@@ -34,6 +34,7 @@ public interface AdultMagnetIngestTaskMapper extends BaseMapper<AdultMagnetInges
                 kept_count INT NOT NULL DEFAULT 0,
                 deleted_count INT NOT NULL DEFAULT 0,
                 error_message VARCHAR(1024) NULL,
+                failed_magnets_json LONGTEXT NULL,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 finished_at DATETIME NULL,
@@ -109,4 +110,19 @@ public interface AdultMagnetIngestTaskMapper extends BaseMapper<AdultMagnetInges
             ADD COLUMN automation_run_id VARCHAR(36) NULL AFTER source_type
             """)
     void addSourceTypeColumns();
+
+    @Select("""
+            SELECT COUNT(*)
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'adult_magnet_ingest_tasks'
+              AND COLUMN_NAME = 'failed_magnets_json'
+            """)
+    Integer countFailedMagnetsJsonColumn();
+
+    @Update("""
+            ALTER TABLE adult_magnet_ingest_tasks
+            ADD COLUMN failed_magnets_json LONGTEXT NULL AFTER error_message
+            """)
+    void addFailedMagnetsJsonColumn();
 }
