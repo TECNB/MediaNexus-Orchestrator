@@ -8,6 +8,7 @@ import com.baomidou.mybatisplus.core.toolkit.support.SFunction;
 import com.medianexus.orchestrator.common.exception.BusinessException;
 import com.medianexus.orchestrator.common.exception.ErrorCode;
 import com.medianexus.orchestrator.dto.magnet.response.AnimeMagnetIngestTaskResponse;
+import com.medianexus.orchestrator.dto.magnet.response.AdultMagnetFailureResponse;
 import com.medianexus.orchestrator.dto.magnet.response.MovieMagnetIngestTaskResponse;
 import com.medianexus.orchestrator.dto.magnet.response.SeriesMagnetIngestTaskResponse;
 import com.medianexus.orchestrator.dto.taskcenter.request.OpenListManualMagnetRetryRequest;
@@ -686,6 +687,7 @@ public class OpenListIngestTaskCenterService {
                 isActive(task.getStatus()),
                 pendingExplanation(task.getStatus()),
                 null,
+                List.of(),
                 attemptChain(movieSnapshot(task, creatorsById), user, creatorsById),
                 task.getCreatedAt(),
                 task.getUpdatedAt(),
@@ -722,6 +724,7 @@ public class OpenListIngestTaskCenterService {
                 isActive(task.getStatus()),
                 pendingExplanation(task.getStatus()),
                 null,
+                List.of(),
                 attemptChain(seriesSnapshot(task, creatorsById), user, creatorsById),
                 task.getCreatedAt(),
                 task.getUpdatedAt(),
@@ -758,6 +761,7 @@ public class OpenListIngestTaskCenterService {
                 isActive(task.getStatus()),
                 pendingExplanation(task.getStatus()),
                 null,
+                List.of(),
                 attemptChain(animeSnapshot(task, creatorsById), user, creatorsById),
                 task.getCreatedAt(),
                 task.getUpdatedAt(),
@@ -794,6 +798,7 @@ public class OpenListIngestTaskCenterService {
                 isActive(task.getStatus()),
                 pendingExplanation(task.getStatus()),
                 adultDownloadLinks(task.getDownloadLinksJson()),
+                failedAdultMagnets(task.getFailedMagnetsJson()),
                 attemptChain(adultSnapshot(task, creatorsById), user, creatorsById),
                 task.getCreatedAt(),
                 task.getUpdatedAt(),
@@ -2249,6 +2254,20 @@ public class OpenListIngestTaskCenterService {
             return objectMapper.readValue(downloadLinksJson, new TypeReference<List<String>>() { });
         } catch (Exception exception) {
             return null;
+        }
+    }
+
+    private List<AdultMagnetFailureResponse> failedAdultMagnets(String failedMagnetsJson) {
+        if (!StringUtils.hasText(failedMagnetsJson)) {
+            return List.of();
+        }
+        try {
+            return objectMapper.readValue(
+                    failedMagnetsJson,
+                    new TypeReference<List<AdultMagnetFailureResponse>>() { }
+            );
+        } catch (Exception ignored) {
+            return List.of();
         }
     }
 

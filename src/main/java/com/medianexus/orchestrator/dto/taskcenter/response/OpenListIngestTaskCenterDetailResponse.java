@@ -1,6 +1,7 @@
 package com.medianexus.orchestrator.dto.taskcenter.response;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.medianexus.orchestrator.dto.magnet.response.AdultMagnetFailureResponse;
 import io.swagger.v3.oas.annotations.media.Schema;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -76,6 +77,9 @@ public record OpenListIngestTaskCenterDetailResponse(
         @Schema(description = "Adult 原批次完整下载链接；历史任务不可回填或非 Adult 任务时为 null", nullable = true)
         @JsonProperty("batch_download_links")
         List<String> batchDownloadLinks,
+        @Schema(description = "Adult 批次中失败的磁力；非 Adult 任务为空列表")
+        @JsonProperty("failed_magnets")
+        List<AdultMagnetFailureResponse> failedMagnets,
         @Schema(description = "不可变任务尝试链")
         @JsonProperty("attempt_chain")
         OpenListIngestTaskCenterAttemptChainResponse attemptChain,
