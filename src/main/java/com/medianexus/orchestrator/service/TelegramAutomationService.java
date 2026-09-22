@@ -28,6 +28,7 @@ import com.medianexus.orchestrator.mapper.TelegramAutomationRunMapper;
 import com.medianexus.orchestrator.model.TelegramAutomationRun;
 import com.medianexus.orchestrator.model.User;
 import java.time.Duration;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -164,20 +165,18 @@ public class TelegramAutomationService {
             ResolvedSourceResponse resolved = existing != null
                     && String.valueOf(existing.sourceId()).equals(input.sourceRef().trim())
                     ? new ResolvedSourceResponse(
-                            existing.sourceId(), existing.sourceTitle(), existing.sourceUsername(), false
+                            existing.sourceId(), existing.sourceTitle(), existing.sourceUsername(), existing.forwardsRestricted()
                     )
                     : resolveSourceWithoutAuthorization(input.sourceRef());
-            if (resolved.forwardsRestricted()) {
-                throw badRequest("频道禁止转发：" + displaySource(resolved));
-            }
             if (!sourceIds.add(resolved.sourceId())) {
                 throw badRequest("频道重复：" + displaySource(resolved));
             }
             channels.add(new ChannelConfig(
                     StringUtils.hasText(input.id()) ? input.id().trim() : UUID.randomUUID().toString(),
-                    resolved.sourceId(), resolved.title(), resolved.username(), input.enabled(),
+                    resolved.sourceId(), resolved.title(), resolved.username(), resolved.forwardsRestricted(), input.enabled(),
                     input.percentile(), input.resourceMode(), input.minVideoDuration(),
-                    input.minViews(), input.minForwards(), input.minAgeHours()
+                    input.minViews(), input.minForwards(), input.minAgeHours(),
+                    normalizeDays(input.runWeekdays(), 1, 7), normalizeDays(input.runMonthDays(), 1, 31)
             ));
         }
         if (request.enabled() && channels.stream().noneMatch(ChannelConfig::enabled)) {
@@ -254,7 +253,8 @@ public class TelegramAutomationService {
     }
 
     private void startScheduledFollowRun(ConfigResponse config) {
-        List<ChannelConfig> channels = enabledChannels(config);
+        List<ChannelConfig> channels = enabledChannels(config).stream().filter(this::matchesSchedule).toList();
+        if (channels.isEmpty()) return;
         TelegramAutomationRun run = createRun("SCHEDULED", null, "FOLLOW", channels.size());
         executor.submit(() -> executeFollow(run, config, channels, Map.of()));
     }
@@ -307,10 +307,8 @@ public class TelegramAutomationService {
             String requestId = run.getId() + ":" + channel.id() + ":FOLLOW";
             ObjectNode body = followBody(config.target(), channel, requestId);
             body.put("dryRun", true);
-            CallOutcome outcome = callWorker(
-                    run, channel, requestId, () -> workerClient.forwardUnread(body)
-            );
-            results.add(channelResult(channel, outcome));
+            results.add(channel.forwardsRestricted() ? skippedRestrictedChannel(channel) : channelResult(channel,
+                    callWorker(run, channel, requestId, () -> workerClient.forwardUnread(body))));
             persist(run, results);
         }
         finish(run, results);
@@ -332,10 +330,8 @@ public class TelegramAutomationService {
                 ObjectNode body = followBody(config.target(), channel, requestId);
                 body.put("dryRun", false);
                 putIfText(body, "reuseRequestId", reusableRequests.get(channel.sourceId()));
-                CallOutcome outcome = callWorker(
-                        run, channel, requestId, () -> workerClient.forwardUnread(body)
-                );
-                results.add(channelResult(channel, outcome));
+                results.add(channel.forwardsRestricted() ? skippedRestrictedChannel(channel) : channelResult(channel,
+                        callWorker(run, channel, requestId, () -> workerClient.forwardUnread(body))));
                 persist(run, results);
             }
             completeMediaDelivery(run, results, baselineFileCount);
@@ -357,8 +353,8 @@ public class TelegramAutomationService {
         String requestId = run.getId() + ":" + channel.id() + ":BACKFILL";
         ObjectNode body = backfillBody(config.target(), channel, request, requestId);
         body.put("dryRun", true);
-        CallOutcome outcome = callWorker(run, channel, requestId, () -> workerClient.backfill(body));
-        results.add(channelResult(channel, outcome));
+        results.add(channel.forwardsRestricted() ? skippedRestrictedChannel(channel) : channelResult(channel,
+                callWorker(run, channel, requestId, () -> workerClient.backfill(body))));
         finish(run, results);
     }
 
@@ -378,8 +374,8 @@ public class TelegramAutomationService {
             ObjectNode body = backfillBody(config.target(), channel, request, requestId);
             body.put("dryRun", false);
             putIfText(body, "reuseRequestId", reusableRequest);
-            CallOutcome outcome = callWorker(run, channel, requestId, () -> workerClient.backfill(body));
-            results.add(channelResult(channel, outcome));
+            results.add(channel.forwardsRestricted() ? skippedRestrictedChannel(channel) : channelResult(channel,
+                    callWorker(run, channel, requestId, () -> workerClient.backfill(body))));
             persist(run, results);
             completeMediaDelivery(run, results, baselineFileCount);
             finish(run, results);
@@ -405,6 +401,7 @@ public class TelegramAutomationService {
         int expectedNewFileCount = results.stream()
                 .mapToInt(ChannelRunResponse::forwardedMessageCount)
                 .sum();
+        if (expectedNewFileCount == 0) return;
         run.setStage("WAITING_PIKPAK_FILES");
         persist(run, results);
         TelegramCloudInboxMover.MoveOutcome outcome = cloudInboxMover()
@@ -498,6 +495,11 @@ public class TelegramAutomationService {
         );
     }
 
+    private ChannelRunResponse skippedRestrictedChannel(ChannelConfig channel) {
+        return new ChannelRunResponse(channel.id(), channel.sourceId(), channel.sourceTitle(), "SUCCEEDED", 0,
+                0, 0, 0, 0, null, null, "频道禁止转发，已按成功跳过");
+    }
+
     private ObjectNode followBody(String target, ChannelConfig channel, String requestId) {
         ObjectNode body = baseBody(target, channel, requestId);
         body.put("percentile", channel.percentile());
@@ -546,6 +548,20 @@ public class TelegramAutomationService {
             throw badRequest("没有已启用的 Telegram 频道");
         }
         return channels;
+    }
+
+    private boolean matchesSchedule(ChannelConfig channel) {
+        LocalDate today = LocalDate.now(java.time.ZoneId.of(TIMEZONE));
+        return (channel.runWeekdays() == null || channel.runWeekdays().isEmpty()
+                || channel.runWeekdays().contains(today.getDayOfWeek().getValue()))
+                && (channel.runMonthDays() == null || channel.runMonthDays().isEmpty()
+                || channel.runMonthDays().contains(today.getDayOfMonth()));
+    }
+
+    private List<Integer> normalizeDays(List<Integer> values, int min, int max) {
+        if (values == null) return List.of();
+        return values.stream().filter(value -> value != null && value >= min && value <= max)
+                .distinct().sorted().toList();
     }
 
     private ChannelConfig channel(ConfigResponse config, String channelId) {

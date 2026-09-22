@@ -41,7 +41,9 @@ public final class TelegramAutomationContract {
             @Min(value = 0, message = "最低转发数不能小于 0") Integer minForwards,
             @JsonProperty("min_age_hours")
             @NotNull(message = "最短观察时间不能为空")
-            @Min(value = 0, message = "最短观察时间不能小于 0") Integer minAgeHours
+            @Min(value = 0, message = "最短观察时间不能小于 0") Integer minAgeHours,
+            @JsonProperty("run_weekdays") List<Integer> runWeekdays,
+            @JsonProperty("run_month_days") List<Integer> runMonthDays
     ) {
     }
 
@@ -83,13 +85,16 @@ public final class TelegramAutomationContract {
             @JsonProperty("source_id") long sourceId,
             @JsonProperty("source_title") String sourceTitle,
             @JsonProperty("source_username") String sourceUsername,
+            @JsonProperty("forwards_restricted") boolean forwardsRestricted,
             boolean enabled,
             double percentile,
             @JsonProperty("resource_mode") String resourceMode,
             @JsonProperty("min_video_duration") int minVideoDuration,
             @JsonProperty("min_views") int minViews,
             @JsonProperty("min_forwards") int minForwards,
-            @JsonProperty("min_age_hours") int minAgeHours
+            @JsonProperty("min_age_hours") int minAgeHours,
+            @JsonProperty("run_weekdays") List<Integer> runWeekdays,
+            @JsonProperty("run_month_days") List<Integer> runMonthDays
     ) {
     }
 
