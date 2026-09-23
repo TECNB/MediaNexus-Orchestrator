@@ -7,6 +7,7 @@ import com.medianexus.orchestrator.common.exception.ErrorCode;
 import com.medianexus.orchestrator.config.OpenListProperties;
 import com.medianexus.orchestrator.dto.magnet.request.MovieMagnetIngestRequest;
 import com.medianexus.orchestrator.dto.magnet.request.SeriesMagnetIngestRequest;
+import com.medianexus.orchestrator.dto.magnet.response.MagnetIngestNodeStatusResponse;
 import com.medianexus.orchestrator.dto.magnet.response.MovieMagnetIngestTaskListResponse;
 import com.medianexus.orchestrator.dto.magnet.response.MovieMagnetIngestTaskLogListResponse;
 import com.medianexus.orchestrator.dto.magnet.response.MovieMagnetIngestTaskLogResponse;
@@ -20,6 +21,7 @@ import com.medianexus.orchestrator.integration.openlist.OpenListClientException;
 import com.medianexus.orchestrator.integration.openlist.OpenListDirectoryPrepareException;
 import com.medianexus.orchestrator.integration.openlist.OpenListFileInfo;
 import com.medianexus.orchestrator.integration.openlist.OpenListOfflineTaskInfo;
+import com.medianexus.orchestrator.integration.openlist.OpenListStorageStatus;
 import com.medianexus.orchestrator.mapper.MovieMagnetIngestTaskLogMapper;
 import com.medianexus.orchestrator.mapper.MovieMagnetIngestTaskMapper;
 import com.medianexus.orchestrator.mapper.SeriesMagnetIngestTaskLogMapper;
@@ -489,6 +491,10 @@ public class MagnetIngestService {
     public MovieMagnetIngestTaskListResponse listMovieTasks() {
         User user = authService.requireCurrentUser();
         LambdaQueryWrapper<MovieMagnetIngestTask> queryWrapper = new LambdaQueryWrapper<MovieMagnetIngestTask>()
+                .and(query -> query
+                        .eq(MovieMagnetIngestTask::getSourceType, "MANUAL_MAGNET")
+                        .or()
+                        .isNull(MovieMagnetIngestTask::getSourceType))
                 .orderByDesc(MovieMagnetIngestTask::getCreatedAt)
                 .last("LIMIT 20");
         if (!isAdmin(user)) {
@@ -503,6 +509,10 @@ public class MagnetIngestService {
     public SeriesMagnetIngestTaskListResponse listSeriesTasks() {
         User user = authService.requireCurrentUser();
         LambdaQueryWrapper<SeriesMagnetIngestTask> queryWrapper = new LambdaQueryWrapper<SeriesMagnetIngestTask>()
+                .and(query -> query
+                        .eq(SeriesMagnetIngestTask::getSourceType, "MANUAL_MAGNET")
+                        .or()
+                        .isNull(SeriesMagnetIngestTask::getSourceType))
                 .orderByDesc(SeriesMagnetIngestTask::getCreatedAt)
                 .last("LIMIT 20");
         if (!isAdmin(user)) {
@@ -512,6 +522,18 @@ public class MagnetIngestService {
                 .map(this::toSeriesResponse)
                 .toList();
         return new SeriesMagnetIngestTaskListResponse(items, items.size());
+    }
+
+    public MagnetIngestNodeStatusResponse getNodeStatus() {
+        authService.requireCurrentUser();
+        OpenListStorageStatus status = openListClient.storageStatus();
+        return new MagnetIngestNodeStatusResponse(
+                status.provider(),
+                status.online(),
+                status.usedBytes(),
+                status.totalBytes(),
+                status.freeBytes()
+        );
     }
 
     public MovieMagnetIngestTaskResponse getMovieTask(String taskId) {

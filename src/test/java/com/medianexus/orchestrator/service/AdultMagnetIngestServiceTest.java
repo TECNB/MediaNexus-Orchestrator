@@ -34,6 +34,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
 class AdultMagnetIngestServiceTest {
@@ -77,6 +78,25 @@ class AdultMagnetIngestServiceTest {
             return 1;
         });
         when(taskMapper.selectById(anyString())).thenAnswer(invocation -> insertedTask.get());
+    }
+
+    @Test
+    void recentTasksQueryFiltersManualSourcesBeforeLimit() {
+        com.baomidou.mybatisplus.core.metadata.TableInfoHelper.initTableInfo(
+                new org.apache.ibatis.builder.MapperBuilderAssistant(
+                        new com.baomidou.mybatisplus.core.MybatisConfiguration(),
+                        ""
+                ),
+                AdultMagnetIngestTask.class
+        );
+        service.listTasks();
+
+        @SuppressWarnings("rawtypes")
+        ArgumentCaptor<com.baomidou.mybatisplus.core.conditions.Wrapper> query =
+                ArgumentCaptor.forClass(com.baomidou.mybatisplus.core.conditions.Wrapper.class);
+        verify(taskMapper).selectList(query.capture());
+        assertThat(query.getValue().getSqlSegment())
+                .contains("source_type", "ORDER BY created_at DESC", "LIMIT 20");
     }
 
     @Test

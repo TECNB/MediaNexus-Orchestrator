@@ -391,6 +391,10 @@ public class AnimeMagnetIngestTaskService {
     public AnimeMagnetIngestTaskListResponse listTasks() {
         User user = authService.requireCurrentUser();
         LambdaQueryWrapper<AnimeMagnetIngestTask> queryWrapper = new LambdaQueryWrapper<AnimeMagnetIngestTask>()
+                .and(query -> query
+                        .eq(AnimeMagnetIngestTask::getSourceType, "MANUAL_MAGNET")
+                        .or()
+                        .isNull(AnimeMagnetIngestTask::getSourceType))
                 .orderByDesc(AnimeMagnetIngestTask::getCreatedAt)
                 .last("LIMIT 20");
         if (!isAdmin(user)) {

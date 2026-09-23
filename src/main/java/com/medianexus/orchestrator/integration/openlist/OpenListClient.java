@@ -92,6 +92,41 @@ public class OpenListClient {
         throw new OpenListClientException("OpenList offline task id missing");
     }
 
+    public OpenListStorageStatus storageStatus() {
+        OpenListStorageStatus status = readStorageStatus();
+        if (status.totalBytes() == null) {
+            status = readStorageStatus();
+        }
+        return status;
+    }
+
+    private OpenListStorageStatus readStorageStatus() {
+        JsonNode root = getRoot("admin/storage/list?page=1&per_page=100");
+        if (!isSuccess(root)) {
+            throw new OpenListClientException("OpenList returned non-success payload: " + message(root));
+        }
+        JsonNode content = root.path("data").path("content");
+        if (!content.isArray()) {
+            throw new OpenListClientException("OpenList storage list missing");
+        }
+
+        for (JsonNode storage : content) {
+            if (!"PikPak".equalsIgnoreCase(storage.path("driver").asText())
+                    || storage.path("disabled").asBoolean(false)) {
+                continue;
+            }
+            JsonNode details = storage.path("mount_details");
+            return new OpenListStorageStatus(
+                    "PikPak",
+                    "work".equalsIgnoreCase(storage.path("status").asText()),
+                    longValue(details, "used_space"),
+                    longValue(details, "total_space"),
+                    longValue(details, "free_space")
+            );
+        }
+        throw new OpenListClientException("OpenList PikPak storage missing");
+    }
+
     /**
      * 查询 OpenList 离线下载任务状态。
      *
@@ -512,6 +547,12 @@ public class OpenListClient {
         return data == null || data.isNull() ? objectMapper.createObjectNode() : data;
     }
 
+    private JsonNode getRoot(String action) {
+        validateConfiguration();
+        HttpRequest request = requestBuilder(action).GET().build();
+        return send(request, action);
+    }
+
     private void refreshPath(String path) {
         try {
             JsonNode root = postRoot("fs/list", Map.of(
@@ -614,6 +655,11 @@ public class OpenListClient {
 
     private String message(JsonNode root) {
         return root == null ? "" : root.path("message").asText("");
+    }
+
+    private Long longValue(JsonNode parent, String field) {
+        JsonNode value = parent.path(field);
+        return value.isIntegralNumber() ? value.asLong() : null;
     }
 
     private boolean waitUntilPathExists(String path) {

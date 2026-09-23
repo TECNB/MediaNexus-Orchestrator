@@ -3,6 +3,7 @@ package com.medianexus.orchestrator.controller;
 import com.medianexus.orchestrator.common.response.ApiResponse;
 import com.medianexus.orchestrator.dto.magnet.request.MovieMagnetIngestRequest;
 import com.medianexus.orchestrator.dto.magnet.request.SeriesMagnetIngestRequest;
+import com.medianexus.orchestrator.dto.magnet.response.MagnetIngestNodeStatusResponse;
 import com.medianexus.orchestrator.dto.magnet.response.MovieMagnetIngestTaskListResponse;
 import com.medianexus.orchestrator.dto.magnet.response.MovieMagnetIngestTaskLogListResponse;
 import com.medianexus.orchestrator.dto.magnet.response.MovieMagnetIngestTaskResponse;
@@ -30,6 +31,12 @@ public class MagnetIngestController {
 
     public MagnetIngestController(MagnetIngestService magnetIngestService) {
         this.magnetIngestService = magnetIngestService;
+    }
+
+    @GetMapping("/node-status")
+    @Operation(summary = "获取手动磁力入库节点状态", description = "返回 OpenList 中启用的 PikPak 存储状态与真实容量。")
+    public ApiResponse<MagnetIngestNodeStatusResponse> getNodeStatus() {
+        return ApiResponse.success(magnetIngestService.getNodeStatus());
     }
 
     @PostMapping("/movies")

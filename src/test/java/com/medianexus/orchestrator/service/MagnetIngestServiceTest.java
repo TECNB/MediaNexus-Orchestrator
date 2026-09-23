@@ -21,6 +21,7 @@ import com.medianexus.orchestrator.mapper.SeriesMagnetIngestTaskLogMapper;
 import com.medianexus.orchestrator.mapper.SeriesMagnetIngestTaskMapper;
 import com.medianexus.orchestrator.model.MovieMagnetIngestTask;
 import com.medianexus.orchestrator.model.SeriesMagnetIngestTask;
+import com.medianexus.orchestrator.model.User;
 import com.medianexus.orchestrator.service.organization.LibraryOrganizationPlan;
 import com.medianexus.orchestrator.service.organization.LibraryOrganizationProgressObserver;
 import com.medianexus.orchestrator.service.organization.LibraryOrganizer;
@@ -32,6 +33,58 @@ import org.mockito.ArgumentCaptor;
 import org.springframework.test.util.ReflectionTestUtils;
 
 class MagnetIngestServiceTest {
+
+    @Test
+    void recentMovieAndSeriesQueriesFilterManualSourcesBeforeLimit() {
+        initTableInfo(MovieMagnetIngestTask.class);
+        initTableInfo(SeriesMagnetIngestTask.class);
+        MovieMagnetIngestTaskMapper movieMapper = mock(MovieMagnetIngestTaskMapper.class);
+        SeriesMagnetIngestTaskMapper seriesMapper = mock(SeriesMagnetIngestTaskMapper.class);
+        AuthService authService = mock(AuthService.class);
+        User admin = new User();
+        admin.setRole("ADMIN");
+        when(authService.requireCurrentUser()).thenReturn(admin);
+        MagnetIngestService service = new MagnetIngestService(
+                movieMapper,
+                mock(MovieMagnetIngestTaskLogMapper.class),
+                seriesMapper,
+                mock(SeriesMagnetIngestTaskLogMapper.class),
+                mock(OpenListClient.class),
+                new OpenListProperties(),
+                new MovieSeriesFileRenameService(),
+                mock(LibraryOrganizer.class),
+                authService,
+                null,
+                null,
+                null
+        );
+
+        service.listMovieTasks();
+        service.listSeriesTasks();
+
+        @SuppressWarnings("rawtypes")
+        ArgumentCaptor<com.baomidou.mybatisplus.core.conditions.Wrapper> movieQuery =
+                ArgumentCaptor.forClass(com.baomidou.mybatisplus.core.conditions.Wrapper.class);
+        @SuppressWarnings("rawtypes")
+        ArgumentCaptor<com.baomidou.mybatisplus.core.conditions.Wrapper> seriesQuery =
+                ArgumentCaptor.forClass(com.baomidou.mybatisplus.core.conditions.Wrapper.class);
+        verify(movieMapper).selectList(movieQuery.capture());
+        verify(seriesMapper).selectList(seriesQuery.capture());
+        assertThat(movieQuery.getValue().getSqlSegment())
+                .contains("source_type", "IS NULL", "ORDER BY created_at DESC", "LIMIT 20");
+        assertThat(seriesQuery.getValue().getSqlSegment())
+                .contains("source_type", "IS NULL", "ORDER BY created_at DESC", "LIMIT 20");
+    }
+
+    private void initTableInfo(Class<?> entityType) {
+        com.baomidou.mybatisplus.core.metadata.TableInfoHelper.initTableInfo(
+                new org.apache.ibatis.builder.MapperBuilderAssistant(
+                        new com.baomidou.mybatisplus.core.MybatisConfiguration(),
+                        ""
+                ),
+                entityType
+        );
+    }
 
     @Test
     void movieOrganizeRejectsTinyFilesDisguisedAsVideos() {

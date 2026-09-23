@@ -349,6 +349,7 @@ public class AdultMagnetIngestService {
         ensureTablesReady();
         authService.requireAdminUser();
         List<AdultMagnetIngestTaskResponse> items = taskMapper.selectList(new LambdaQueryWrapper<AdultMagnetIngestTask>()
+                        .eq(AdultMagnetIngestTask::getSourceType, MANUAL_MAGNET_SOURCE)
                         .orderByDesc(AdultMagnetIngestTask::getCreatedAt)
                         .last("LIMIT 20"))
                 .stream()

@@ -84,6 +84,25 @@ class AnimeMagnetIngestTaskServiceTest {
     }
 
     @Test
+    void recentTasksQueryFiltersManualSourcesBeforeLimit() {
+        com.baomidou.mybatisplus.core.metadata.TableInfoHelper.initTableInfo(
+                new org.apache.ibatis.builder.MapperBuilderAssistant(
+                        new com.baomidou.mybatisplus.core.MybatisConfiguration(),
+                        ""
+                ),
+                AnimeMagnetIngestTask.class
+        );
+        service.listTasks();
+
+        @SuppressWarnings("rawtypes")
+        ArgumentCaptor<com.baomidou.mybatisplus.core.conditions.Wrapper> query =
+                ArgumentCaptor.forClass(com.baomidou.mybatisplus.core.conditions.Wrapper.class);
+        verify(taskMapper).selectList(query.capture());
+        assertThat(query.getValue().getSqlSegment())
+                .contains("source_type", "IS NULL", "ORDER BY created_at DESC", "LIMIT 20");
+    }
+
+    @Test
     void createsAnimeTaskWithChineseFolderEvenWhenThemoviedbNameIsProvided() {
         AnimeMagnetIngestTaskService service = serviceWithAnimePathTemplate();
 

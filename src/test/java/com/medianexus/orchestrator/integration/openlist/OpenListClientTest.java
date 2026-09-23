@@ -26,6 +26,7 @@ class OpenListClientTest {
     private final AtomicInteger getRequests = new AtomicInteger();
     private final AtomicInteger listRequests = new AtomicInteger();
     private final AtomicInteger mkdirRequests = new AtomicInteger();
+    private final AtomicInteger storageRequests = new AtomicInteger();
     private HttpServer server;
 
     @BeforeEach
@@ -49,6 +50,15 @@ class OpenListClientTest {
                     .map(name -> "{\"name\":\"" + name + "\",\"size\":0,\"is_dir\":true}")
                     .collect(java.util.stream.Collectors.joining(","));
             respond(exchange, "{\"code\":200,\"message\":\"success\",\"data\":{\"content\":[" + content + "]}}");
+        });
+        server.createContext("/api/admin/storage/list", exchange -> {
+            int requestNumber = storageRequests.incrementAndGet();
+            String details = requestNumber == 1
+                    ? "null"
+                    : "{\"used_space\":7800000000000,\"total_space\":10000000000000,\"free_space\":2200000000000}";
+            respond(exchange, "{\"code\":200,\"message\":\"success\",\"data\":{\"content\":["
+                    + "{\"driver\":\"PikPak\",\"status\":\"work\",\"disabled\":false,\"mount_details\":"
+                    + details + "}]}}");
         });
         server.start();
     }
@@ -80,6 +90,24 @@ class OpenListClientTest {
                 "adult-task-03",
                 "adult-task-04"
         );
+    }
+
+    @Test
+    void readsPikPakStorageStatus() {
+        OpenListProperties properties = new OpenListProperties();
+        properties.setBaseUrl("http://127.0.0.1:" + server.getAddress().getPort());
+        properties.setAuthorization("test-token");
+        properties.setTimeout(Duration.ofSeconds(2));
+        OpenListClient client = new OpenListClient(properties, objectMapper);
+
+        OpenListStorageStatus status = client.storageStatus();
+
+        assertThat(status.provider()).isEqualTo("PikPak");
+        assertThat(status.online()).isTrue();
+        assertThat(status.usedBytes()).isEqualTo(7_800_000_000_000L);
+        assertThat(status.totalBytes()).isEqualTo(10_000_000_000_000L);
+        assertThat(status.freeBytes()).isEqualTo(2_200_000_000_000L);
+        assertThat(storageRequests).hasValue(2);
     }
 
     private void respond(HttpExchange exchange, String body) throws IOException {
