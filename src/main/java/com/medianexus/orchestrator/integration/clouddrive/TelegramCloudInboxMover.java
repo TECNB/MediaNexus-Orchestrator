@@ -14,11 +14,14 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 @Component
 @ConditionalOnProperty(prefix = "medianexus.clouddrive2", name = "organization-enabled", havingValue = "true")
 public class TelegramCloudInboxMover {
+    private static final Logger log = LoggerFactory.getLogger(TelegramCloudInboxMover.class);
     private static final String INBOX_DIRECTORY = "My Telegram";
     private static final String LIBRARY_DIRECTORY = "Media/Adult/Other/电报";
     private final CloudDrive2FileOperations fileOperations;
@@ -43,8 +46,15 @@ public class TelegramCloudInboxMover {
         int expectedTotal = Math.addExact(baselineFileCount, expectedNewFileCount);
         Instant deadline = Instant.now().plus(properties.getVisibilityTimeout());
         int actualTotal;
+        int previousTotal = -1;
         do {
             actualTotal = countInboxFiles();
+            if (actualTotal != previousTotal) {
+                log.info("Telegram PikPak inbox visibility progress expected={} actual={} elapsedMs={}",
+                        expectedTotal, actualTotal,
+                        java.time.Duration.between(deadline.minus(properties.getVisibilityTimeout()), Instant.now()).toMillis());
+                previousTotal = actualTotal;
+            }
             if (actualTotal == expectedTotal) break;
             if (actualTotal > expectedTotal) {
                 throw failure("Telegram 收件箱文件数超过预期：expected=" + expectedTotal + ", actual=" + actualTotal);
