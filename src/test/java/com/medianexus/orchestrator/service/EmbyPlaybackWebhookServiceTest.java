@@ -223,4 +223,34 @@ class EmbyPlaybackWebhookServiceTest {
         assertThat(session.getSeasonNumber()).isEqualTo(2);
         assertThat(session.getEpisodeNumber()).isEqualTo(9);
     }
+
+    @Test
+    void excludesPausedIntervalsAndDeletesActiveSessionAfterStop() {
+        EmbyActivePlaybackSession activeSession = new EmbyActivePlaybackSession();
+        activeSession.setEmbySessionId("session-1");
+        activeSession.setEmbyUserId("user-1");
+        activeSession.setItemId("item-1");
+        activeSession.setItemType("Movie");
+        activeSession.setItemName("Movie title");
+        activeSession.setStartTime(LocalDateTime.parse("2026-07-06T10:00:00"));
+        activeSession.setPlaybackStartTime(activeSession.getStartTime());
+        activeSession.setAccumulatedWatchSeconds(0);
+        when(activeSessionMapper.selectActiveSessionForUpdate(eq("session-1"), eq("item-1")))
+                .thenReturn(activeSession);
+
+        service.receivePlaybackEvent("secret", """
+                {"Event":"playback.pause","Date":"2026-07-06T10:01:00+08:00","SessionId":"session-1","UserId":"user-1","ItemId":"item-1","ItemType":"Movie"}
+                """);
+        service.receivePlaybackEvent("secret", """
+                {"Event":"playback.unpause","Date":"2026-07-06T10:10:00+08:00","SessionId":"session-1","UserId":"user-1","ItemId":"item-1","ItemType":"Movie"}
+                """);
+        service.receivePlaybackEvent("secret", """
+                {"Event":"playback.stop","Date":"2026-07-06T10:11:00+08:00","SessionId":"session-1","UserId":"user-1","ItemId":"item-1","ItemType":"Movie"}
+                """);
+
+        ArgumentCaptor<EmbyWatchSession> captor = ArgumentCaptor.forClass(EmbyWatchSession.class);
+        verify(watchSessionMapper).insertWatchSessionIfAbsent(captor.capture());
+        assertThat(captor.getValue().getWatchSeconds()).isEqualTo(120);
+        verify(activeSessionMapper).deleteActiveSession("session-1", "item-1");
+    }
 }

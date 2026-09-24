@@ -4,7 +4,7 @@ import io.swagger.v3.oas.annotations.media.Schema;
 
 @Schema(description = "Emby Webhooks 播放事件请求")
 public record EmbyPlaybackWebhookRequest(
-        @Schema(description = "Emby 事件名称，例如 playback.start 或 playback.stop")
+        @Schema(description = "Emby 事件名称，例如 playback.start、playback.pause、playback.unpause 或 playback.stop")
         String event,
         @Schema(description = "事件时间，建议使用 UTC ISO-8601 字符串")
         String date,

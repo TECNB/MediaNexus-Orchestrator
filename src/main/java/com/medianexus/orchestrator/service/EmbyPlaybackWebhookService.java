@@ -44,6 +44,8 @@ public class EmbyPlaybackWebhookService {
     private static final int TEXT_LIMIT_NAME = 255;
     private static final int TEXT_LIMIT_TITLE = 512;
     private static final String EVENT_PLAYBACK_START = "playback.start";
+    private static final String EVENT_PLAYBACK_PAUSE = "playback.pause";
+    private static final String EVENT_PLAYBACK_UNPAUSE = "playback.unpause";
     private static final String EVENT_PLAYBACK_STOP = "playback.stop";
     private static final String ITEM_TYPE_MOVIE = "Movie";
     private static final String ITEM_TYPE_EPISODE = "Episode";
@@ -79,7 +81,10 @@ public class EmbyPlaybackWebhookService {
 
         EmbyPlaybackWebhookRequest request = parsedRequest.request();
         String event = normalizeEvent(request.event());
-        if (!EVENT_PLAYBACK_START.equals(event) && !EVENT_PLAYBACK_STOP.equals(event)) {
+        if (!EVENT_PLAYBACK_START.equals(event)
+                && !EVENT_PLAYBACK_STOP.equals(event)
+                && !EVENT_PLAYBACK_PAUSE.equals(event)
+                && !EVENT_PLAYBACK_UNPAUSE.equals(event)) {
             log.debug("Emby webhook ignored because event is unsupported event={} rootFields={}",
                     event,
                     parsedRequest.rootFields()
@@ -132,6 +137,16 @@ public class EmbyPlaybackWebhookService {
 
         if (EVENT_PLAYBACK_START.equals(event)) {
             recordStart(request, itemType, embySessionId, embyUserId, itemId, positionTicks, eventTime);
+            return;
+        }
+
+        if (EVENT_PLAYBACK_PAUSE.equals(event)) {
+            recordPause(embySessionId, itemId, eventTime);
+            return;
+        }
+
+        if (EVENT_PLAYBACK_UNPAUSE.equals(event)) {
+            recordUnpause(embySessionId, itemId, eventTime);
             return;
         }
 
@@ -245,6 +260,17 @@ public class EmbyPlaybackWebhookService {
             LocalDateTime eventTime
     ) {
         closeSupersededActiveSessions(request, embySessionId, embyUserId, itemId, eventTime);
+        EmbyActivePlaybackSession existingSession =
+                activeSessionMapper.selectActiveSessionForUpdate(embySessionId, itemId);
+        if (existingSession != null) {
+            if (existingSession.getPlaybackStartTime() == null) {
+                existingSession.setPlaybackStartTime(eventTime);
+                activeSessionMapper.updatePlaybackState(existingSession);
+            }
+            log.info("Emby duplicate playback.start kept tracked session sessionId={} itemId={} accumulatedWatchSeconds={}",
+                    embySessionId, itemId, existingSession.getAccumulatedWatchSeconds());
+            return;
+        }
         PlaybackItemMetadata itemMetadata = lookupEpisodeMetadata(request, itemType, embyUserId, itemId);
 
         EmbyActivePlaybackSession session = new EmbyActivePlaybackSession();
@@ -261,6 +287,8 @@ public class EmbyPlaybackWebhookService {
         session.setRuntimeTicks(optionalTicks(itemMetadata.runtimeTicks()));
         session.setStartPositionTicks(startPositionTicks);
         session.setStartTime(eventTime);
+        session.setAccumulatedWatchSeconds(0);
+        session.setPlaybackStartTime(eventTime);
         session.setDeviceName(shortText(request.deviceName(), TEXT_LIMIT_NAME));
         session.setClientName(shortText(request.clientName(), TEXT_LIMIT_NAME));
         activeSessionMapper.upsertActiveSession(session);
@@ -271,6 +299,35 @@ public class EmbyPlaybackWebhookService {
                 eventTime,
                 startPositionTicks != null
         );
+    }
+
+    private void recordPause(String embySessionId, String itemId, LocalDateTime pauseTime) {
+        EmbyActivePlaybackSession session = activeSessionMapper.selectActiveSessionForUpdate(embySessionId, itemId);
+        if (session == null || session.getPlaybackStartTime() == null) {
+            log.info("Emby playback.pause ignored because tracked session is missing or already paused sessionId={} itemId={}",
+                    embySessionId, itemId);
+            return;
+        }
+        session.setAccumulatedWatchSeconds(accumulatePlaybackSeconds(session, pauseTime));
+        session.setPlaybackStartTime(null);
+        activeSessionMapper.updatePlaybackState(session);
+        log.info("Emby playback.pause recorded sessionId={} itemId={} accumulatedWatchSeconds={}",
+                embySessionId, itemId, session.getAccumulatedWatchSeconds());
+    }
+
+    private void recordUnpause(String embySessionId, String itemId, LocalDateTime unpauseTime) {
+        EmbyActivePlaybackSession session = activeSessionMapper.selectActiveSessionForUpdate(embySessionId, itemId);
+        if (session == null) {
+            log.info("Emby playback.unpause ignored because tracked session is missing sessionId={} itemId={}",
+                    embySessionId, itemId);
+            return;
+        }
+        if (session.getPlaybackStartTime() == null) {
+            session.setPlaybackStartTime(unpauseTime);
+            activeSessionMapper.updatePlaybackState(session);
+        }
+        log.info("Emby playback.unpause recorded sessionId={} itemId={} accumulatedWatchSeconds={}",
+                embySessionId, itemId, session.getAccumulatedWatchSeconds());
     }
 
     private void settleStop(
@@ -301,14 +358,9 @@ public class EmbyPlaybackWebhookService {
         );
 
         Long runtimeTicks = firstPositiveTick(optionalTicks(itemMetadata.runtimeTicks()), activeSession.getRuntimeTicks());
-        WatchDurationResult durationResult = calculateWatchSeconds(
-                activeSession.getStartPositionTicks(),
-                stopPositionTicks,
-                activeSession.getStartTime(),
-                stopTime,
-                runtimeTicks
-        );
+        WatchDurationResult durationResult = calculateTrackedWatchSeconds(activeSession, stopPositionTicks, stopTime, runtimeTicks);
         if (durationResult.watchSeconds() == null) {
+            activeSessionMapper.deleteActiveSession(embySessionId, itemId);
             log.info("Emby playback.stop ignored because watch duration is invalid sessionId={} itemId={} reason={} startTime={} stopTime={} hasStartPositionTicks={} hasStopPositionTicks={}",
                     embySessionId,
                     itemId,
@@ -339,10 +391,7 @@ public class EmbyPlaybackWebhookService {
                 request.clientName()
         );
         WatchSessionWriteResult writeResult = upsertWatchSession(watchSession);
-        boolean reachedRuntimeLimit = hasReachedRuntimeLimit(durationResult.watchSeconds(), runtimeTicks);
-        if (reachedRuntimeLimit) {
-            activeSessionMapper.deleteActiveSession(embySessionId, itemId);
-        }
+        activeSessionMapper.deleteActiveSession(embySessionId, itemId);
         log.info("Emby playback.stop settled sessionId={} itemId={} itemType={} userId={} watchSeconds={} durationSource={} stopTime={} writeResult={} trackedClosed={}",
                 embySessionId,
                 itemId,
@@ -352,7 +401,7 @@ public class EmbyPlaybackWebhookService {
                 durationResult.source(),
                 stopTime,
                 writeResult,
-                reachedRuntimeLimit
+                true
         );
     }
 
@@ -379,13 +428,7 @@ public class EmbyPlaybackWebhookService {
             LocalDateTime stopTime
     ) {
         Long runtimeTicks = activeSession.getRuntimeTicks();
-        WatchDurationResult durationResult = calculateWatchSeconds(
-                activeSession.getStartPositionTicks(),
-                null,
-                activeSession.getStartTime(),
-                stopTime,
-                runtimeTicks
-        );
+        WatchDurationResult durationResult = calculateTrackedWatchSeconds(activeSession, null, stopTime, runtimeTicks);
         activeSessionMapper.deleteActiveSession(activeSession.getEmbySessionId(), activeSession.getItemId());
         if (durationResult.watchSeconds() == null) {
             log.info("Emby tracked session closed without settlement sessionId={} itemId={} reason={} startTime={} stopTime={}",
@@ -424,6 +467,55 @@ public class EmbyPlaybackWebhookService {
                 stopTime,
                 writeResult
         );
+    }
+
+    private WatchDurationResult calculateTrackedWatchSeconds(
+            EmbyActivePlaybackSession activeSession,
+            Long stopPositionTicks,
+            LocalDateTime stopTime,
+            Long runtimeTicks
+    ) {
+        if (activeSession.getPlaybackStartTime() == null
+                && (activeSession.getAccumulatedWatchSeconds() == null
+                || activeSession.getAccumulatedWatchSeconds() == 0)
+                && activeSession.getStartPositionTicks() != null
+                && stopPositionTicks != null) {
+            return calculateWatchSeconds(
+                    activeSession.getStartPositionTicks(),
+                    stopPositionTicks,
+                    activeSession.getStartTime(),
+                    stopTime,
+                    runtimeTicks
+            );
+        }
+        long watchSeconds = activeSession.getAccumulatedWatchSeconds() == null
+                ? 0
+                : Math.max(0, activeSession.getAccumulatedWatchSeconds());
+        if (activeSession.getPlaybackStartTime() != null) {
+            watchSeconds += Math.max(0, Duration.between(activeSession.getPlaybackStartTime(), stopTime).getSeconds());
+        }
+        if (watchSeconds < MIN_WATCH_SECONDS) {
+            return WatchDurationResult.invalid("duration_less_than_10_seconds");
+        }
+        long maxSeconds = runtimeTicks != null && runtimeTicks > 0
+                ? runtimeTicks / TICKS_PER_SECOND
+                : FALLBACK_MAX_WATCH_SECONDS;
+        watchSeconds = Math.min(watchSeconds, maxSeconds);
+        if (watchSeconds < MIN_WATCH_SECONDS) {
+            return WatchDurationResult.invalid("clamped_duration_less_than_10_seconds");
+        }
+        return WatchDurationResult.valid((int) Math.min(watchSeconds, Integer.MAX_VALUE), "active_playback_intervals");
+    }
+
+    private int accumulatePlaybackSeconds(EmbyActivePlaybackSession session, LocalDateTime at) {
+        int accumulated = session.getAccumulatedWatchSeconds() == null
+                ? 0
+                : Math.max(0, session.getAccumulatedWatchSeconds());
+        if (session.getPlaybackStartTime() == null) {
+            return accumulated;
+        }
+        long interval = Math.max(0, Duration.between(session.getPlaybackStartTime(), at).getSeconds());
+        return (int) Math.min((long) Integer.MAX_VALUE, accumulated + interval);
     }
 
     private boolean hasConflictingPlaybackContext(
@@ -558,14 +650,6 @@ public class EmbyPlaybackWebhookService {
         watchSession.setId(existingSession.getId());
         watchSessionMapper.updateWatchSessionById(watchSession);
         return WatchSessionWriteResult.UPDATED;
-    }
-
-    private boolean hasReachedRuntimeLimit(Integer watchSeconds, Long runtimeTicks) {
-        if (watchSeconds == null || runtimeTicks == null || runtimeTicks <= 0) {
-            return false;
-        }
-        long runtimeSeconds = runtimeTicks / TICKS_PER_SECOND;
-        return runtimeSeconds > 0 && watchSeconds >= runtimeSeconds;
     }
 
     private void cleanupExpiredTrackedSessions() {

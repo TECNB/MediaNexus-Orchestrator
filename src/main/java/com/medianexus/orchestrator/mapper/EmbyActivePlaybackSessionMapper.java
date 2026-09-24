@@ -28,6 +28,8 @@ public interface EmbyActivePlaybackSessionMapper extends BaseMapper<EmbyActivePl
                 episode_number INT NULL,
                 runtime_ticks BIGINT NULL,
                 start_position_ticks BIGINT NULL,
+                accumulated_watch_seconds INT NOT NULL DEFAULT 0,
+                playback_start_time DATETIME NULL,
                 start_time DATETIME NOT NULL,
                 device_name VARCHAR(255) NULL,
                 client_name VARCHAR(255) NULL,
@@ -50,6 +52,27 @@ public interface EmbyActivePlaybackSessionMapper extends BaseMapper<EmbyActivePl
               AND IS_NULLABLE = 'NO'
             """)
     Integer countRequiredStartPositionTicksColumn();
+
+    @Select("""
+            SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'emby_active_playback_sessions'
+              AND COLUMN_NAME = 'accumulated_watch_seconds'
+            """)
+    Integer countAccumulatedWatchSecondsColumn();
+
+    @Update("""
+            ALTER TABLE emby_active_playback_sessions
+            ADD COLUMN accumulated_watch_seconds INT NOT NULL DEFAULT 0 AFTER start_position_ticks,
+            ADD COLUMN playback_start_time DATETIME NULL AFTER accumulated_watch_seconds
+            """)
+    void addPlaybackStateColumns();
+
+    @Update("""
+            UPDATE emby_active_playback_sessions
+            SET playback_start_time = start_time
+            WHERE playback_start_time IS NULL
+            """)
+    void initializePlaybackStartTimes();
 
     @Select("""
             SELECT COUNT(*)
@@ -87,6 +110,8 @@ public interface EmbyActivePlaybackSessionMapper extends BaseMapper<EmbyActivePl
                 episode_number,
                 runtime_ticks,
                 start_position_ticks,
+                accumulated_watch_seconds,
+                playback_start_time,
                 start_time,
                 device_name,
                 client_name
@@ -104,6 +129,8 @@ public interface EmbyActivePlaybackSessionMapper extends BaseMapper<EmbyActivePl
                 #{session.episodeNumber},
                 #{session.runtimeTicks},
                 #{session.startPositionTicks},
+                #{session.accumulatedWatchSeconds},
+                #{session.playbackStartTime},
                 #{session.startTime},
                 #{session.deviceName},
                 #{session.clientName}
@@ -119,6 +146,8 @@ public interface EmbyActivePlaybackSessionMapper extends BaseMapper<EmbyActivePl
                 episode_number = VALUES(episode_number),
                 runtime_ticks = VALUES(runtime_ticks),
                 start_position_ticks = VALUES(start_position_ticks),
+                accumulated_watch_seconds = VALUES(accumulated_watch_seconds),
+                playback_start_time = VALUES(playback_start_time),
                 start_time = VALUES(start_time),
                 device_name = VALUES(device_name),
                 client_name = VALUES(client_name)
@@ -139,6 +168,8 @@ public interface EmbyActivePlaybackSessionMapper extends BaseMapper<EmbyActivePl
                    episode_number,
                    runtime_ticks,
                    start_position_ticks,
+                   accumulated_watch_seconds,
+                   playback_start_time,
                    start_time,
                    device_name,
                    client_name,
@@ -168,6 +199,8 @@ public interface EmbyActivePlaybackSessionMapper extends BaseMapper<EmbyActivePl
                    episode_number,
                    runtime_ticks,
                    start_position_ticks,
+                   accumulated_watch_seconds,
+                   playback_start_time,
                    start_time,
                    device_name,
                    client_name,
@@ -182,6 +215,15 @@ public interface EmbyActivePlaybackSessionMapper extends BaseMapper<EmbyActivePl
             @Param("embySessionId") String embySessionId,
             @Param("itemId") String itemId
     );
+
+    @Update("""
+            UPDATE emby_active_playback_sessions
+            SET accumulated_watch_seconds = #{session.accumulatedWatchSeconds},
+                playback_start_time = #{session.playbackStartTime}
+            WHERE emby_session_id = #{session.embySessionId}
+              AND item_id = #{session.itemId}
+            """)
+    void updatePlaybackState(@Param("session") EmbyActivePlaybackSession session);
 
     @Update("""
             DELETE FROM emby_active_playback_sessions
@@ -219,6 +261,8 @@ public interface EmbyActivePlaybackSessionMapper extends BaseMapper<EmbyActivePl
                    episode_number,
                    runtime_ticks,
                    start_position_ticks,
+                   accumulated_watch_seconds,
+                   playback_start_time,
                    start_time,
                    device_name,
                    client_name,

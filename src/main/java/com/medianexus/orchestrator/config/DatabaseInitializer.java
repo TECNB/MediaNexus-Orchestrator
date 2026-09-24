@@ -439,6 +439,10 @@ public class DatabaseInitializer implements ApplicationRunner {
     }
 
     private void ensureEmbyActivePlaybackSessionColumns() {
+        if (embyActivePlaybackSessionMapper.countAccumulatedWatchSecondsColumn() == 0) {
+            embyActivePlaybackSessionMapper.addPlaybackStateColumns();
+            embyActivePlaybackSessionMapper.initializePlaybackStartTimes();
+        }
         Integer seasonNumberColumnCount = embyActivePlaybackSessionMapper.countSeasonNumberColumn();
         if (seasonNumberColumnCount == null || seasonNumberColumnCount == 0) {
             embyActivePlaybackSessionMapper.addEpisodePositionColumns();

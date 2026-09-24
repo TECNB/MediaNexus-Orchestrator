@@ -36,6 +36,10 @@ public class EmbyActivePlaybackSession {
 
     private Long startPositionTicks;
 
+    private Integer accumulatedWatchSeconds;
+
+    private LocalDateTime playbackStartTime;
+
     private LocalDateTime startTime;
 
     private String deviceName;
@@ -45,6 +49,22 @@ public class EmbyActivePlaybackSession {
     private LocalDateTime createdAt;
 
     private LocalDateTime updatedAt;
+
+    public Integer getAccumulatedWatchSeconds() {
+        return accumulatedWatchSeconds;
+    }
+
+    public void setAccumulatedWatchSeconds(Integer accumulatedWatchSeconds) {
+        this.accumulatedWatchSeconds = accumulatedWatchSeconds;
+    }
+
+    public LocalDateTime getPlaybackStartTime() {
+        return playbackStartTime;
+    }
+
+    public void setPlaybackStartTime(LocalDateTime playbackStartTime) {
+        this.playbackStartTime = playbackStartTime;
+    }
 
     public Long getId() {
         return id;
