@@ -47,7 +47,9 @@ public class CloudDrive2Properties {
 
     @NotNull
     @DurationMin(seconds = 1)
-    private Duration visibilityTimeout = Duration.ofMinutes(2);
+    // PikPak may expose a top-level file before the files inside an album directory.
+    // Keep enough time for that asynchronous directory materialization to finish.
+    private Duration visibilityTimeout = Duration.ofMinutes(10);
 
     @NotNull
     @DurationMin(millis = 100)
