@@ -5,101 +5,155 @@ import static com.medianexus.orchestrator.service.organization.LibraryOrganizati
 
 import com.medianexus.orchestrator.config.CloudDrive2Properties;
 import io.grpc.Status;
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.time.Instant;
-import java.util.ArrayDeque;
-import java.util.HashSet;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.stream.Collectors;
+import java.util.function.Consumer;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 @Component
 @ConditionalOnProperty(prefix = "medianexus.clouddrive2", name = "organization-enabled", havingValue = "true")
 public class TelegramCloudInboxMover {
-    private static final Logger log = LoggerFactory.getLogger(TelegramCloudInboxMover.class);
-    private static final String INBOX_DIRECTORY = "My Telegram";
-    private static final String LIBRARY_DIRECTORY = "Media/Adult/Other/电报";
     private final CloudDrive2FileOperations fileOperations;
     private final CloudDrive2Properties properties;
 
-    TelegramCloudInboxMover(
-            CloudDrive2FileOperations fileOperations,
-            CloudDrive2Properties properties
-    ) {
+    TelegramCloudInboxMover(CloudDrive2FileOperations fileOperations, CloudDrive2Properties properties) {
         this.fileOperations = fileOperations;
         this.properties = properties;
     }
 
-    public int countInboxFiles() {
-        return countCloudFiles(cloudInboxPath());
-    }
+    public record ExpectedVideo(String key, String originalName, long size, String caption, String savedName) {}
+    public record FileDelivery(String key, String originalName, String savedName, String sourcePath,
+                               String libraryPath, String status, String note) {}
+    public record MoveOutcome(int movedEntryCount, int movedFileCount) {}
 
-    public MoveOutcome awaitExpectedFilesAndMove(int baselineFileCount, int expectedNewFileCount) {
-        if (baselineFileCount < 0 || expectedNewFileCount < 0) {
-            throw new IllegalArgumentException("Telegram inbox file counts must not be negative");
-        }
-        int expectedTotal = Math.addExact(baselineFileCount, expectedNewFileCount);
-        Instant deadline = Instant.now().plus(properties.getVisibilityTimeout());
-        int actualTotal;
-        int previousTotal = -1;
-        do {
-            actualTotal = countInboxFiles();
-            if (actualTotal != previousTotal) {
-                log.info("Telegram PikPak inbox visibility progress expected={} actual={} elapsedMs={}",
-                        expectedTotal, actualTotal,
-                        java.time.Duration.between(deadline.minus(properties.getVisibilityTimeout()), Instant.now()).toMillis());
-                previousTotal = actualTotal;
-            }
-            if (actualTotal == expectedTotal) break;
-            if (actualTotal > expectedTotal) {
-                throw failure("Telegram 收件箱文件数超过预期：expected=" + expectedTotal + ", actual=" + actualTotal);
-            }
-            sleep();
-        } while (Instant.now().isBefore(deadline));
-        if (actualTotal != expectedTotal) {
-            throw failure("等待 PikPak 保存文件超时：expected=" + expectedTotal + ", actual=" + actualTotal);
-        }
-
-        List<CloudDrive2FileEntry> entries = list(cloudInboxPath());
-        refreshCloudDirectory(cloudLibraryPath());
-        Path targetDirectory = awaitMountedPaths(entries);
-        for (CloudDrive2FileEntry entry : entries) {
-            Path source = inboxPath().resolve(entry.name());
-            Path target = targetDirectory.resolve(source.getFileName());
-            if (Files.exists(target)) {
-                throw failure("Telegram 目标目录已存在同名条目：" + target.getFileName());
-            }
+    public MoveOutcome drainInbox(List<ExpectedVideo> videos, Consumer<FileDelivery> recordDelivery) {
+        String inbox = join(properties.getCloudDrivePathPrefix(), "My Telegram");
+        String target = normalizePath(properties.getCloudDrivePathPrefix() + "/Media/Adult/Other/电报");
+        refreshDirectory(inbox);
+        refreshDirectory(target);
+        int movedEntries = 0;
+        int movedFiles = 0;
+        for (CloudDrive2FileEntry entry : list(inbox)) {
+            List<FileDelivery> prepared = new ArrayList<>();
             try {
-                Files.move(source, target);
-            } catch (IOException exception) {
-                throw failure("Telegram 文件移动失败：" + source.getFileName(), exception);
-            }
-        }
-        return new MoveOutcome(entries.size(), actualTotal, expectedNewFileCount);
-    }
-
-    private int countCloudFiles(String rootPath) {
-        int count = 0;
-        ArrayDeque<String> pending = new ArrayDeque<>();
-        Set<String> visited = new HashSet<>();
-        pending.add(normalizePath(rootPath));
-        while (!pending.isEmpty()) {
-            String directory = pending.removeFirst();
-            if (!visited.add(directory)) continue;
-            for (CloudDrive2FileEntry entry : list(directory)) {
+                prepareFiles(entry, videos, prepared);
+                String source = entry.directory() ? entry.fullPath() : prepared.get(0).sourcePath();
+                Set<String> existingPaths = list(target).stream().map(CloudDrive2FileEntry::fullPath).collect(Collectors.toSet());
+                List<String> destinations = fileOperations.moveKeepingBoth(source, target);
+                String libraryRoot = destinations.isEmpty()
+                        ? findMovedPath(source, target, entry.size(), entry.directory(), existingPaths) : destinations.get(0);
+                // Verify the API actually removed the source; a successful Skip is not an accepted move.
+                if (list(inbox).stream().anyMatch(file -> file.fullPath().equals(source))) {
+                    throw new IllegalStateException("移动后文件仍在收件箱");
+                }
+                for (FileDelivery file : prepared) {
+                    String destination = entry.directory()
+                            ? libraryRoot + file.sourcePath().substring(entry.fullPath().length()) : libraryRoot;
+                    recordDelivery.accept(new FileDelivery(file.key(), file.originalName(), destination.substring(destination.lastIndexOf('/') + 1),
+                            file.sourcePath(), destination, "MOVED", file.note()));
+                }
+                movedEntries++;
+                movedFiles += prepared.size();
                 if (entry.directory()) {
-                    pending.addLast(entry.fullPath());
+                    try {
+                        refreshDirectory(libraryRoot);
+                        for (String parent : prepared.stream().map(file -> libraryRoot
+                                + file.sourcePath().substring(entry.fullPath().length(), file.sourcePath().lastIndexOf('/')))
+                                .distinct().toList()) refreshDirectory(parent);
+                    } catch (RuntimeException refreshFailure) {
+                        recordDelivery.accept(new FileDelivery(null, entry.name(), entry.name(), entry.fullPath(),
+                                libraryRoot, "MOVED", "已移动，目标目录刷新暂未完成：" + refreshFailure.getMessage()));
+                    }
+                }
+            } catch (RuntimeException exception) {
+                if (prepared.isEmpty()) {
+                    recordDelivery.accept(new FileDelivery(null, entry.name(), entry.name(), entry.fullPath(),
+                            null, "PENDING", exception.getMessage()));
                 } else {
-                    count++;
+                    for (FileDelivery file : prepared) {
+                        recordDelivery.accept(new FileDelivery(file.key(), file.originalName(), file.savedName(),
+                                file.sourcePath(), null, "PENDING", exception.getMessage()));
+                    }
                 }
             }
         }
-        return count;
+        refreshDirectory(target);
+        return new MoveOutcome(movedEntries, movedFiles);
+    }
+
+    private void prepareFiles(CloudDrive2FileEntry entry, List<ExpectedVideo> videos, List<FileDelivery> prepared) {
+        if (entry.directory()) {
+            for (CloudDrive2FileEntry child : list(entry.fullPath())) prepareFiles(child, videos, prepared);
+            return;
+        }
+        List<ExpectedVideo> matches = videos.stream().filter(video -> video.size() == entry.size()
+                && (entry.name().equals(video.originalName()) || entry.name().equals(video.savedName())
+                || entry.name().equals(readableName(video.caption(), video.originalName()))
+                || stripSaveSuffix(entry.name()).equals(video.originalName()))).toList();
+        ExpectedVideo video = matches.size() == 1 ? matches.get(0) : null;
+        String original = entry.name();
+        String renamed = original;
+        String path = entry.fullPath();
+        String note = video == null ? "历史、手动添加或无法明确关联的文件，保留原名" : null;
+        if (video != null) {
+            // A prior interrupted run may already have renamed this object.
+            String desired = entry.name().equals(video.savedName()) || entry.name().equals(readableName(video.caption(), video.originalName()))
+                    ? entry.name() : readableName(video.caption(), entry.name());
+            if (!desired.equals(entry.name())) {
+                try {
+                    fileOperations.rename(List.of(new CloudDrive2RenameOperation(entry.fullPath(), desired)));
+                    renamed = desired;
+                    path = entry.fullPath().substring(0, entry.fullPath().lastIndexOf('/') + 1) + desired;
+                } catch (RuntimeException exception) {
+                    note = "改名未完成，保留文件继续入库：" + exception.getMessage();
+                    // A response can be lost after a successful rename; re-read before choosing a source path.
+                    List<CloudDrive2FileEntry> siblings = list(entry.fullPath().substring(0, entry.fullPath().lastIndexOf('/')));
+                    if (siblings.stream().anyMatch(file -> file.name().equals(desired) && file.size() == entry.size())) {
+                        renamed = desired;
+                        path = entry.fullPath().substring(0, entry.fullPath().lastIndexOf('/') + 1) + desired;
+                    }
+                }
+            }
+        }
+        prepared.add(new FileDelivery(video == null ? null : video.key(), original, renamed, path, null, "PREPARED", note));
+    }
+
+    private String findMovedPath(String source, String target, long size, boolean directory, Set<String> existingPaths) {
+        String name = source.substring(source.lastIndexOf('/') + 1);
+        List<CloudDrive2FileEntry> candidates = list(target).stream().filter(file -> !existingPaths.contains(file.fullPath())
+                && file.directory() == directory
+                && (directory || file.size() == size)
+                && stripSaveSuffix(file.name()).equals(stripSaveSuffix(name))).toList();
+        if (candidates.size() != 1) throw new IllegalStateException("移动已返回成功，但目标路径尚无法明确确认");
+        return candidates.get(0).fullPath();
+    }
+
+    static String stripSaveSuffix(String name) {
+        return name.replaceFirst("[（(]\\d+[）)](?=\\.[^.]+$|$)", "");
+    }
+
+    static String readableName(String caption, String original) {
+        if (caption == null || caption.isBlank()) return original;
+        String title = caption.lines().map(line -> line.replaceAll("https?://\\S+|t\\.me/\\S+", "")
+                        .replaceAll("[#<>:\"/\\\\|?*\\p{Cntrl}]", " ").replaceAll("\\s+", " ").trim())
+                .filter(line -> !line.isBlank() && !line.matches(".*(交流群|点击链接|加入频道|完整合集|领取资源|保存教程).*"))
+                .findFirst().orElse("");
+        if (title.isBlank() || original.contains(title)) return original;
+        int allowance = 240 - original.getBytes(StandardCharsets.UTF_8).length - 3;
+        StringBuilder bounded = new StringBuilder();
+        int bytes = 0;
+        for (int point : title.codePoints().limit(48).toArray()) {
+            String letter = new String(Character.toChars(point));
+            if (bytes + letter.getBytes(StandardCharsets.UTF_8).length > allowance) break;
+            bounded.append(letter);
+            bytes += letter.getBytes(StandardCharsets.UTF_8).length;
+        }
+        String prefix = bounded.toString().trim();
+        return prefix.isBlank() ? original : prefix + " - " + original;
     }
 
     private List<CloudDrive2FileEntry> list(String path) {
@@ -111,59 +165,14 @@ public class TelegramCloudInboxMover {
         }
     }
 
-    private Path inboxPath() { return mediaRoot().resolve(INBOX_DIRECTORY); }
-
-    private String cloudInboxPath() {
-        return join(properties.getCloudDrivePathPrefix(), INBOX_DIRECTORY);
-    }
-
-    private String cloudLibraryPath() {
-        return normalizePath(properties.getCloudDrivePathPrefix() + "/" + LIBRARY_DIRECTORY);
-    }
-
-    private void refreshCloudDirectory(String path) {
+    private void refreshDirectory(String path) {
         String prefix = normalizePath(properties.getCloudDrivePathPrefix());
         String current = prefix;
+        fileOperations.list(current, true);
         for (String segment : normalizePath(path).substring(prefix.length()).split("/")) {
             if (segment.isBlank()) continue;
-            fileOperations.list(current, true);
             current = join(current, segment);
-        }
-        fileOperations.list(current, true);
-    }
-
-    private Path awaitMountedPaths(List<CloudDrive2FileEntry> entries) {
-        Path inbox = inboxPath();
-        Path target = mediaRoot().resolve(LIBRARY_DIRECTORY);
-        Instant deadline = Instant.now().plus(properties.getVisibilityTimeout());
-        do {
-            boolean sourcesVisible = entries.stream()
-                    .allMatch(entry -> Files.exists(inbox.resolve(entry.name())));
-            if (Files.isDirectory(target) && sourcesVisible) return target;
-            sleep();
-        } while (Instant.now().isBefore(deadline));
-        if (!Files.isDirectory(target)) {
-            throw failure("CD2 已刷新，但 Telegram 媒体库目标目录仍未同步到挂载：" + target);
-        }
-        throw failure("CD2 已刷新，但 Telegram 收件箱文件仍未同步到挂载");
-    }
-
-    private Path mediaRoot() { return Path.of(properties.getMediaSourcePathPrefix()).toAbsolutePath().normalize(); }
-
-    private void sleep() {
-        try {
-            Thread.sleep(properties.getVisibilityPollInterval().toMillis());
-        } catch (InterruptedException exception) {
-            Thread.currentThread().interrupt();
-            throw failure("等待 PikPak 保存文件时任务被中断", exception);
+            list(current);
         }
     }
-
-    private CloudDrive2ClientException failure(String message) { return new CloudDrive2ClientException(message); }
-
-    private CloudDrive2ClientException failure(String message, Exception cause) {
-        return new CloudDrive2ClientException(message, io.grpc.Status.Code.UNKNOWN, cause);
-    }
-
-    public record MoveOutcome(int movedEntryCount, int movedFileCount, int expectedNewFileCount) {}
 }

@@ -109,6 +109,22 @@ class CloudDrive2GrpcClient implements CloudDrive2FileOperations {
     }
 
     @Override
+    public List<String> moveKeepingBoth(String sourcePath, String targetDirectory) {
+        MoveFileRequest request = MoveFileRequest.newBuilder()
+                .addTheFilePaths(sourcePath)
+                .setDestPath(targetDirectory)
+                .setConflictPolicy(MoveFileRequest.ConflictPolicy.Rename)
+                .build();
+        try {
+            FileOperationResult reply = stub().moveFile(request);
+            requireSuccess("move preserving conflicts", reply);
+            return reply.getResultFilePathsList();
+        } catch (StatusRuntimeException exception) {
+            throw grpcFailure("CloudDrive2 move failed: " + sourcePath, exception);
+        }
+    }
+
+    @Override
     public void delete(List<String> paths) {
         if (paths.isEmpty()) {
             return;

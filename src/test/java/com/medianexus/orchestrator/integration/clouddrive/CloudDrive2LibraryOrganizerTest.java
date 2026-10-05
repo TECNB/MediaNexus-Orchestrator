@@ -440,6 +440,11 @@ class CloudDrive2LibraryOrganizerTest {
         }
 
         @Override
+        public List<String> moveKeepingBoth(String sourcePath, String targetDirectory) {
+            throw new UnsupportedOperationException("Telegram operation not used in organizer tests");
+        }
+
+        @Override
         public void delete(List<String> paths) {
             for (String path : paths) {
                 events.add("delete:" + path);

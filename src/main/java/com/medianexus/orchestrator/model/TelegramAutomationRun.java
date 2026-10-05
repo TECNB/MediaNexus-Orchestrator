@@ -1,6 +1,8 @@
 package com.medianexus.orchestrator.model;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import java.time.LocalDateTime;
@@ -23,6 +25,8 @@ public class TelegramAutomationRun {
     private Integer forwardedResourceCount;
     private Integer forwardedMessageCount;
     private String resultJson;
+    @TableField(exist = false)
+    private JsonNode mediaDelivery;
     private String errorMessage;
     private LocalDateTime startedAt;
     private LocalDateTime finishedAt;
@@ -54,6 +58,8 @@ public class TelegramAutomationRun {
     public void setForwardedResourceCount(Integer forwardedResourceCount) { this.forwardedResourceCount = forwardedResourceCount; }
     public Integer getForwardedMessageCount() { return forwardedMessageCount; }
     public void setForwardedMessageCount(Integer forwardedMessageCount) { this.forwardedMessageCount = forwardedMessageCount; }
+    public JsonNode getMediaDelivery() { return mediaDelivery; }
+    public void setMediaDelivery(JsonNode mediaDelivery) { this.mediaDelivery = mediaDelivery; }
     public String getResultJson() { return resultJson; }
     public void setResultJson(String resultJson) { this.resultJson = resultJson; }
     public String getErrorMessage() { return errorMessage; }

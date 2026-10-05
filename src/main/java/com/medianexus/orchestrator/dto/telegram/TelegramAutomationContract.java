@@ -163,7 +163,8 @@ public final class TelegramAutomationContract {
             @JsonProperty("started_at") LocalDateTime startedAt,
             @JsonProperty("finished_at") LocalDateTime finishedAt,
             List<ChannelRunResponse> channels,
-            RunProgressResponse progress
+            RunProgressResponse progress,
+            @JsonProperty("media_delivery") JsonNode mediaDelivery
     ) {
     }
 

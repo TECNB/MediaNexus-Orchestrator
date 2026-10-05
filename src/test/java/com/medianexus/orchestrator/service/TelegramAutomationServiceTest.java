@@ -69,8 +69,8 @@ class TelegramAutomationServiceTest {
                   "selectedResources": []
                 }
                 """));
-        when(inboxMover.awaitExpectedFilesAndMove(0, 1))
-                .thenReturn(new TelegramCloudInboxMover.MoveOutcome(1, 1, 1));
+        when(inboxMover.drainInbox(any(), any()))
+                .thenReturn(new TelegramCloudInboxMover.MoveOutcome(1, 1));
         when(refreshService.refreshAdult()).thenReturn(new AutoSymlinkRefreshService.RefreshOutcome(
                 AutoSymlinkRefreshService.Status.SUBMITTED, "已提交", "task=adult"
         ));
@@ -90,7 +90,7 @@ class TelegramAutomationServiceTest {
     }
 
     @Test
-    void formalFollowMovesExpectedPikPakFilesAndRefreshesAdultAutoSymlink() throws Exception {
+    void formalFollowDrainsVisibleInboxWithoutExpectedCountAndRefreshesAdultAutoSymlink() throws Exception {
         AuthService authService = mock(AuthService.class);
         SystemSettingMapper settingMapper = mock(SystemSettingMapper.class);
         TelegramAutomationRunMapper runMapper = mock(TelegramAutomationRunMapper.class);
@@ -130,9 +130,8 @@ class TelegramAutomationServiceTest {
                   "selectedResources": []
                 }
                 """));
-        when(inboxMover.countInboxFiles()).thenReturn(2);
-        when(inboxMover.awaitExpectedFilesAndMove(2, 3))
-                .thenReturn(new TelegramCloudInboxMover.MoveOutcome(2, 5, 3));
+        when(inboxMover.drainInbox(any(), any()))
+                .thenReturn(new TelegramCloudInboxMover.MoveOutcome(2, 5));
         when(refreshService.refreshAdult()).thenReturn(new AutoSymlinkRefreshService.RefreshOutcome(
                 AutoSymlinkRefreshService.Status.SUBMITTED,
                 "AutoSymlink 刷新任务已提交",
@@ -158,8 +157,7 @@ class TelegramAutomationServiceTest {
         }
 
         assertEquals("SUCCEEDED", persisted.get().getStatus());
-        verify(inboxMover).countInboxFiles();
-        verify(inboxMover).awaitExpectedFilesAndMove(2, 3);
+        verify(inboxMover).drainInbox(any(), any());
         verify(refreshService).refreshAdult();
     }
 
@@ -256,4 +254,73 @@ class TelegramAutomationServiceTest {
         assertEquals(0.85, body.getValue().path("percentile").asDouble());
         assertEquals(true, body.getValue().path("dryRun").asBoolean());
     }
+    @Test
+    void dailyRunDrainsInboxEvenWhenNoChannelsAreScheduled() throws Exception {
+        AuthService auth = mock(AuthService.class);
+        SystemSettingMapper settings = mock(SystemSettingMapper.class);
+        TelegramAutomationRunMapper runs = mock(TelegramAutomationRunMapper.class);
+        TelegramWorkerClient worker = mock(TelegramWorkerClient.class);
+        TelegramCloudInboxMover mover = mock(TelegramCloudInboxMover.class);
+        AutoSymlinkRefreshService refresh = mock(AutoSymlinkRefreshService.class);
+        when(settings.selectSettingValue("telegram_automation_config"))
+                .thenReturn("{\"enabled\":true,\"target\":\"@PikPak_Bot\",\"channels\":[]}");
+        when(mover.drainInbox(any(), any())).thenReturn(new TelegramCloudInboxMover.MoveOutcome(1, 2));
+        when(refresh.refreshAdult()).thenReturn(new AutoSymlinkRefreshService.RefreshOutcome(
+                AutoSymlinkRefreshService.Status.SUBMITTED, "已提交", "adult"));
+        AtomicReference<TelegramAutomationRun> persisted = new AtomicReference<>();
+        when(runs.insert(any(TelegramAutomationRun.class))).thenAnswer(call -> {
+            persisted.set(call.getArgument(0)); return 1;
+        });
+        TelegramAutomationService service = new TelegramAutomationService(auth, settings, runs, worker,
+                Optional.of(mover), refresh, new ObjectMapper());
+        service.runDaily();
+        verify(refresh, timeout(1000)).refreshAdult();
+        for (int i = 0; i < 100 && !"SUCCEEDED".equals(persisted.get().getStatus()); i++) Thread.sleep(10);
+        assertEquals("SUCCEEDED", persisted.get().getStatus());
+        assertEquals(0, persisted.get().getChannelCount());
+        verify(mover).drainInbox(any(), any());
+        org.mockito.Mockito.verify(worker, org.mockito.Mockito.never()).forwardUnread(any());
+    }
+
+    @Test
+    void nextDailyRunRecoversCaptionFromPreviousReportWithoutResending() throws Exception {
+        SystemSettingMapper settings = mock(SystemSettingMapper.class);
+        TelegramAutomationRunMapper runs = mock(TelegramAutomationRunMapper.class);
+        TelegramWorkerClient worker = mock(TelegramWorkerClient.class);
+        TelegramCloudInboxMover mover = mock(TelegramCloudInboxMover.class);
+        AutoSymlinkRefreshService refresh = mock(AutoSymlinkRefreshService.class);
+        ObjectMapper json = new ObjectMapper();
+        when(settings.selectSettingValue("telegram_automation_config"))
+                .thenReturn("{\"enabled\":true,\"target\":\"@PikPak_Bot\",\"channels\":[]}");
+        TelegramAutomationRun previous = new TelegramAutomationRun();
+        previous.setResultJson("""
+                {"channels":[],"media_delivery":{"pending_files":[{"key":"channel:1","original_name":"late.mp4",
+                "size":100,"caption":"系列标题","saved_name":"系列标题 - late.mp4","status":"PENDING_MOVE"}]}}
+                """);
+        when(runs.selectOne(any())).thenReturn(null, previous);
+        AtomicReference<TelegramAutomationRun> persisted = new AtomicReference<>();
+        when(runs.insert(any(TelegramAutomationRun.class))).thenAnswer(call -> {
+            persisted.set(call.getArgument(0)); return 1;
+        });
+        when(mover.drainInbox(any(), any())).thenAnswer(call -> {
+            java.util.List<TelegramCloudInboxMover.ExpectedVideo> expected = call.getArgument(0);
+            assertEquals("系列标题", expected.get(0).caption());
+            assertEquals("系列标题 - late.mp4", expected.get(0).savedName());
+            java.util.function.Consumer<TelegramCloudInboxMover.FileDelivery> record = call.getArgument(1);
+            record.accept(new TelegramCloudInboxMover.FileDelivery("channel:1", "late.mp4", "系列标题 - late.mp4",
+                    "/inbox/late.mp4", "/library/系列标题 - late.mp4", "MOVED", null));
+            return new TelegramCloudInboxMover.MoveOutcome(1, 1);
+        });
+        when(refresh.refreshAdult()).thenReturn(new AutoSymlinkRefreshService.RefreshOutcome(
+                AutoSymlinkRefreshService.Status.SUBMITTED, "已提交", "adult"));
+        var service = new TelegramAutomationService(mock(AuthService.class), settings, runs, worker,
+                Optional.of(mover), refresh, json);
+        service.runDaily();
+        verify(refresh, timeout(1000)).refreshAdult();
+        for (int i = 0; i < 100 && !"SUCCEEDED".equals(persisted.get().getStatus()); i++) Thread.sleep(10);
+        assertEquals("SUCCEEDED", persisted.get().getStatus());
+        assertEquals(0, json.readTree(persisted.get().getResultJson()).path("media_delivery").path("pending_files").size());
+        verify(worker, org.mockito.Mockito.never()).forwardUnread(any());
+    }
+
 }

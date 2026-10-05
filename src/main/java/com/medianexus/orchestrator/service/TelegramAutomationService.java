@@ -7,6 +7,8 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.medianexus.orchestrator.integration.clouddrive.TelegramCloudInboxMover.ExpectedVideo;
 import com.medianexus.orchestrator.common.exception.BusinessException;
 import com.medianexus.orchestrator.common.exception.ErrorCode;
 import com.medianexus.orchestrator.dto.telegram.TelegramAutomationContract.BackfillRequest;
@@ -253,8 +255,7 @@ public class TelegramAutomationService {
     }
 
     private void startScheduledFollowRun(ConfigResponse config) {
-        List<ChannelConfig> channels = enabledChannels(config).stream().filter(this::matchesSchedule).toList();
-        if (channels.isEmpty()) return;
+        List<ChannelConfig> channels = config.channels().stream().filter(ChannelConfig::enabled).filter(this::matchesSchedule).toList();
         TelegramAutomationRun run = createRun("SCHEDULED", null, "FOLLOW", channels.size());
         executor.submit(() -> executeFollow(run, config, channels, Map.of()));
     }
@@ -322,7 +323,7 @@ public class TelegramAutomationService {
     ) {
         List<ChannelRunResponse> results = new ArrayList<>();
         try {
-            int baselineFileCount = captureInboxBaseline(run, results);
+            initializeMediaDelivery(run);
             run.setStage("FORWARDING_CHANNELS");
             persist(run, results);
             for (ChannelConfig channel : channels) {
@@ -334,7 +335,7 @@ public class TelegramAutomationService {
                         callWorker(run, channel, requestId, () -> workerClient.forwardUnread(body))));
                 persist(run, results);
             }
-            completeMediaDelivery(run, results, baselineFileCount);
+            completeMediaDelivery(run, results);
             finish(run, results);
         } catch (RuntimeException exception) {
             failMediaDelivery(run, results, exception);
@@ -367,7 +368,7 @@ public class TelegramAutomationService {
     ) {
         List<ChannelRunResponse> results = new ArrayList<>();
         try {
-            int baselineFileCount = captureInboxBaseline(run, results);
+            initializeMediaDelivery(run);
             run.setStage("BACKFILLING_CHANNEL");
             persist(run, results);
             String requestId = run.getId() + ":" + channel.id() + ":BACKFILL";
@@ -377,46 +378,103 @@ public class TelegramAutomationService {
             results.add(channel.forwardsRestricted() ? skippedRestrictedChannel(channel) : channelResult(channel,
                     callWorker(run, channel, requestId, () -> workerClient.backfill(body))));
             persist(run, results);
-            completeMediaDelivery(run, results, baselineFileCount);
+            completeMediaDelivery(run, results);
             finish(run, results);
         } catch (RuntimeException exception) {
             failMediaDelivery(run, results, exception);
         }
     }
 
-    private int captureInboxBaseline(
-            TelegramAutomationRun run,
-            List<ChannelRunResponse> results
-    ) {
-        run.setStage("COUNTING_PIKPAK_INBOX");
-        persist(run, results);
-        return cloudInboxMover().countInboxFiles();
+    private void initializeMediaDelivery(TelegramAutomationRun run) {
+        ObjectNode report = objectMapper.createObjectNode();
+        ArrayNode pending = report.putArray("pending_files");
+        // The latest persisted inbox report carries unresolved metadata across days and service restarts.
+        TelegramAutomationRun previous = runMapper.selectOne(new LambdaQueryWrapper<TelegramAutomationRun>()
+                .ne(TelegramAutomationRun::getId, run.getId())
+                .like(TelegramAutomationRun::getResultJson, "\"pending_files\"")
+                .orderByDesc(TelegramAutomationRun::getStartedAt).last("LIMIT 1"));
+        if (previous != null) {
+            JsonNode previousReport = readMediaDelivery(previous.getResultJson());
+            if (previousReport != null) {
+                previousReport.path("pending_files").forEach(file -> pending.add(file.deepCopy()));
+                report.put("needs_refresh", previousReport.path("needs_refresh").asBoolean(false));
+            }
+        }
+        report.putArray("files");
+        report.putArray("received_keys");
+        run.setMediaDelivery(report);
     }
 
-    private void completeMediaDelivery(
-            TelegramAutomationRun run,
-            List<ChannelRunResponse> results,
-            int baselineFileCount
-    ) {
-        int expectedNewFileCount = results.stream()
-                .mapToInt(ChannelRunResponse::forwardedMessageCount)
-                .sum();
-        if (expectedNewFileCount == 0) return;
-        run.setStage("WAITING_PIKPAK_FILES");
+    private void retainForwardedMetadata(TelegramAutomationRun run, List<ChannelRunResponse> results) {
+        ObjectNode report = (ObjectNode) run.getMediaDelivery();
+        ArrayNode pending = (ArrayNode) report.path("pending_files");
+        ArrayNode received = (ArrayNode) report.path("received_keys");
+        for (ChannelRunResponse channel : results) {
+            if (channel.workerResponse() == null) continue;
+            for (JsonNode resource : channel.workerResponse().path("selectedResources")) {
+                for (JsonNode file : resource.path("mediaFiles")) {
+                    String key = channel.sourceId() + ":" + file.path("messageId").asLong();
+                    boolean known = false;
+                    for (JsonNode stored : received) if (key.equals(stored.asText())) known = true;
+                    if (known) continue;
+                    received.add(key);
+                    for (JsonNode stored : pending) if (key.equals(stored.path("key").asText())) known = true;
+                    if (known) continue;
+                    ObjectNode stored = pending.addObject();
+                    stored.put("key", key);
+                    stored.put("original_name", file.path("filename").asText());
+                    stored.put("size", file.path("size").asLong());
+                    stored.put("caption", file.path("caption").asText());
+                    stored.put("sent_run_id", run.getId());
+                    stored.put("status", "WAITING_SAVE");
+                    stored.put("note", "本次尚未找到对应已保存文件，后续每日检查继续处理");
+                }
+            }
+        }
+    }
+
+    private void completeMediaDelivery(TelegramAutomationRun run, List<ChannelRunResponse> results) {
+        ObjectNode report = (ObjectNode) run.getMediaDelivery();
+        ArrayNode pending = (ArrayNode) report.path("pending_files");
+        ArrayNode files = (ArrayNode) report.path("files");
+        report.put("forwarded_message_count", results.stream().mapToInt(ChannelRunResponse::forwardedMessageCount).sum());
+        run.setMediaDelivery(report);
+        run.setStage("MOVING_PIKPAK_FILES");
         persist(run, results);
-        TelegramCloudInboxMover.MoveOutcome outcome = cloudInboxMover()
-                .awaitExpectedFilesAndMove(baselineFileCount, expectedNewFileCount);
-        log.info(
-                "Telegram PikPak inbox moved runId={} entries={} files={} expectedNewFiles={}",
-                run.getId(), outcome.movedEntryCount(), outcome.movedFileCount(), outcome.expectedNewFileCount()
-        );
+        List<ExpectedVideo> videos = new ArrayList<>();
+        for (JsonNode file : pending) videos.add(new ExpectedVideo(file.path("key").asText(),
+                file.path("original_name").asText(), file.path("size").asLong(), file.path("caption").asText(),
+                file.path("saved_name").asText(null)));
+        TelegramCloudInboxMover.MoveOutcome outcome = cloudInboxMover().drainInbox(videos, delivery -> {
+            files.add(objectMapper.valueToTree(delivery));
+            if ("MOVED".equals(delivery.status())) report.put("needs_refresh", true);
+            for (int index = pending.size() - 1; index >= 0; index--) {
+                ObjectNode file = (ObjectNode) pending.get(index);
+                if (!file.path("key").asText().equals(delivery.key())) continue;
+                if ("MOVED".equals(delivery.status())) pending.remove(index);
+                else {
+                    file.put("saved_name", delivery.savedName());
+                    file.put("status", "PENDING_MOVE");
+                    file.put("note", delivery.note());
+                }
+            }
+            // Persist each accepted item so a later failure does not lose recovery metadata.
+            persist(run, results);
+        });
+        report.put("moved_entry_count", outcome.movedEntryCount());
+        report.put("moved_file_count", outcome.movedFileCount());
+        if (outcome.movedEntryCount() > 0) report.put("needs_refresh", true);
+        persist(run, results);
+        if (!report.path("needs_refresh").asBoolean(false)) return;
         run.setStage("REFRESHING_ADULT_AUTOSYMLINK");
         persist(run, results);
         AutoSymlinkRefreshService.RefreshOutcome refresh = autoSymlinkRefreshService.refreshAdult();
+        report.put("as_status", refresh.status().name());
+        report.put("as_message", refresh.message());
         if (refresh.status() != AutoSymlinkRefreshService.Status.SUBMITTED) {
             throw new IllegalStateException(refresh.message());
         }
-        log.info("Telegram Adult AutoSymlink refresh submitted runId={} detail={}", run.getId(), refresh.detail());
+        report.put("needs_refresh", false);
     }
 
     private TelegramCloudInboxMover cloudInboxMover() {
@@ -429,7 +487,7 @@ public class TelegramAutomationService {
             RuntimeException exception
     ) {
         boolean forwardingStarted = !results.isEmpty();
-        run.setStatus(forwardingStarted ? "PARTIAL_SUCCESS" : "FAILED");
+        run.setStatus("FAILED");
         run.setStage("MEDIA_DELIVERY_FAILED");
         run.setFinishedAt(LocalDateTime.now());
         run.setErrorMessage((forwardingStarted ? "Telegram 转发完成，但媒体入库失败：" : "媒体入库准备失败：")
@@ -587,6 +645,7 @@ public class TelegramAutomationService {
     }
 
     private void persist(TelegramAutomationRun run, List<ChannelRunResponse> results) {
+        if (run.getMediaDelivery() != null) retainForwardedMetadata(run, results);
         run.setSucceededChannelCount((int) results.stream()
                 .filter(result -> "SUCCEEDED".equals(result.status())).count());
         run.setFailedChannelCount((int) results.stream()
@@ -595,7 +654,13 @@ public class TelegramAutomationService {
         run.setDuplicateResourceCount(results.stream().mapToInt(ChannelRunResponse::duplicateResourceCount).sum());
         run.setForwardedResourceCount(results.stream().mapToInt(ChannelRunResponse::forwardedResourceCount).sum());
         run.setForwardedMessageCount(results.stream().mapToInt(ChannelRunResponse::forwardedMessageCount).sum());
-        run.setResultJson(writeJson(results));
+        if (run.getMediaDelivery() == null) run.setResultJson(writeJson(results));
+        else {
+            ObjectNode envelope = objectMapper.createObjectNode();
+            envelope.set("channels", objectMapper.valueToTree(results));
+            envelope.set("media_delivery", run.getMediaDelivery());
+            run.setResultJson(writeJson(envelope));
+        }
         runMapper.updateById(run);
     }
 
@@ -710,7 +775,7 @@ public class TelegramAutomationService {
                 count(run.getSelectedResourceCount()), count(run.getDuplicateResourceCount()),
                 count(run.getForwardedResourceCount()), count(run.getForwardedMessageCount()),
                 run.getErrorMessage(), run.getStartedAt(), run.getFinishedAt(), channels,
-                progressFor(run)
+                progressFor(run), readMediaDelivery(run.getResultJson())
         );
     }
 
@@ -719,10 +784,22 @@ public class TelegramAutomationService {
             return List.of();
         }
         try {
-            return objectMapper.readValue(value, new TypeReference<List<ChannelRunResponse>>() { });
+            JsonNode root = objectMapper.readTree(value);
+            return objectMapper.convertValue(root.isArray() ? root : root.path("channels"),
+                    new TypeReference<List<ChannelRunResponse>>() { });
         } catch (JsonProcessingException exception) {
             log.warn("Invalid Telegram automation run result runJsonLength={}", value.length());
             return List.of();
+        }
+    }
+
+    private JsonNode readMediaDelivery(String value) {
+        if (!StringUtils.hasText(value)) return null;
+        try {
+            JsonNode root = objectMapper.readTree(value);
+            return root.isObject() ? root.get("media_delivery") : null;
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("Telegram 入库记录无法读取", exception);
         }
     }
 

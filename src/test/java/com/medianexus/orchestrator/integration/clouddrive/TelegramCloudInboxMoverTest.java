@@ -1,148 +1,110 @@
 package com.medianexus.orchestrator.integration.clouddrive;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
 
 import com.medianexus.orchestrator.config.CloudDrive2Properties;
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 
 class TelegramCloudInboxMoverTest {
-    @TempDir Path root;
+    private static final String INBOX = "/WebDAV/My Telegram";
+    private static final String TARGET = "/WebDAV/Media/Adult/Other/电报";
 
     @Test
-    void countsNestedFilesAndMovesTopLevelEntriesWhenExpectedCountIsPresent() throws IOException {
-        Path inbox = Files.createDirectories(root.resolve("My Telegram"));
-        Path target = Files.createDirectories(root.resolve("Media/Adult/Other/电报"));
-        Path album = Files.createDirectories(inbox.resolve("album"));
-        Files.writeString(album.resolve("one.mp4"), "one");
-        Files.writeString(album.resolve("two.jpg"), "two");
-        Files.writeString(inbox.resolve("single.mp4"), "single");
-        CloudDrive2FileOperations fileOperations = mock(CloudDrive2FileOperations.class);
-        when(fileOperations.list("/WebDAV/My Telegram", true)).thenReturn(List.of(
-                new CloudDrive2FileEntry("album", "/WebDAV/My Telegram/album", 0, true),
-                new CloudDrive2FileEntry("single.mp4", "/WebDAV/My Telegram/single.mp4", 6, false)
-        ));
-        when(fileOperations.list("/WebDAV/My Telegram/album", true)).thenReturn(List.of(
-                new CloudDrive2FileEntry("one.mp4", "/WebDAV/My Telegram/album/one.mp4", 3, false),
-                new CloudDrive2FileEntry("two.jpg", "/WebDAV/My Telegram/album/two.jpg", 3, false)
-        ));
-        TelegramCloudInboxMover mover = new TelegramCloudInboxMover(fileOperations, properties());
-
-        assertEquals(3, mover.countInboxFiles());
-        TelegramCloudInboxMover.MoveOutcome outcome = mover.awaitExpectedFilesAndMove(0, 3);
-
-        assertEquals(2, outcome.movedEntryCount());
-        assertEquals(3, outcome.movedFileCount());
-        assertTrue(Files.exists(target.resolve("album/one.mp4")));
-        assertTrue(Files.exists(target.resolve("single.mp4")));
-        assertFalse(Files.exists(inbox.resolve("album")));
+    void movesAvailableAndManualFilesWithoutAMountOrExpectedCount() {
+        CloudDrive2FileOperations api = mock(CloudDrive2FileOperations.class);
+        CloudDrive2FileEntry file = new CloudDrive2FileEntry("manual.mp4", INBOX + "/manual.mp4", 123, false);
+        when(api.list(INBOX, true)).thenReturn(List.of(file), List.of(file), List.of());
+        when(api.moveKeepingBoth(file.fullPath(), TARGET)).thenReturn(List.of(TARGET + "/manual.mp4"));
+        List<TelegramCloudInboxMover.FileDelivery> recorded = new ArrayList<>();
+        var outcome = new TelegramCloudInboxMover(api, new CloudDrive2Properties()).drainInbox(List.of(), recorded::add);
+        assertEquals(1, outcome.movedFileCount());
+        assertEquals("MOVED", recorded.get(0).status());
+        assertNull(recorded.get(0).key());
+        verify(api).moveKeepingBoth(file.fullPath(), TARGET);
     }
 
     @Test
-    void rejectsInboxContentBeyondTheExpectedCount() throws IOException {
-        Path inbox = Files.createDirectories(root.resolve("My Telegram"));
-        Files.createDirectories(root.resolve("Media/Adult/Other/电报"));
-        Files.writeString(inbox.resolve("one.mp4"), "one");
-        Files.writeString(inbox.resolve("two.mp4"), "two");
-        CloudDrive2FileOperations fileOperations = mock(CloudDrive2FileOperations.class);
-        when(fileOperations.list("/WebDAV/My Telegram", true)).thenReturn(List.of(
-                new CloudDrive2FileEntry("one.mp4", "/WebDAV/My Telegram/one.mp4", 3, false),
-                new CloudDrive2FileEntry("two.mp4", "/WebDAV/My Telegram/two.mp4", 3, false)
-        ));
-        TelegramCloudInboxMover mover = new TelegramCloudInboxMover(fileOperations, properties());
-
-        assertThrows(CloudDrive2ClientException.class, () -> mover.awaitExpectedFilesAndMove(0, 1));
+    void oneMoveFailureDoesNotBlockOtherEntries() {
+        CloudDrive2FileOperations api = mock(CloudDrive2FileOperations.class);
+        var bad = new CloudDrive2FileEntry("bad.mp4", INBOX + "/bad.mp4", 1, false);
+        var good = new CloudDrive2FileEntry("good.mp4", INBOX + "/good.mp4", 2, false);
+        when(api.list(INBOX, true)).thenReturn(List.of(bad, good), List.of(bad, good), List.of(bad));
+        when(api.moveKeepingBoth(bad.fullPath(), TARGET)).thenThrow(new IllegalStateException("temporary API error"));
+        when(api.moveKeepingBoth(good.fullPath(), TARGET)).thenReturn(List.of(TARGET + "/good.mp4"));
+        List<TelegramCloudInboxMover.FileDelivery> recorded = new ArrayList<>();
+        var outcome = new TelegramCloudInboxMover(api, new CloudDrive2Properties()).drainInbox(List.of(), recorded::add);
+        assertEquals(1, outcome.movedFileCount());
+        assertEquals(List.of("PENDING", "MOVED"), recorded.stream().map(TelegramCloudInboxMover.FileDelivery::status).toList());
     }
 
     @Test
-    void countsForcedCloudDriveListingWhenMountedDirectoryIsStale() throws IOException {
-        Files.createDirectories(root.resolve("My Telegram"));
-        Files.createDirectories(root.resolve("Media/Adult/Other/电报"));
-        CloudDrive2FileOperations fileOperations = mock(CloudDrive2FileOperations.class);
-        when(fileOperations.list("/WebDAV/My Telegram", true)).thenReturn(List.of(
-                new CloudDrive2FileEntry("remote.mp4", "/WebDAV/My Telegram/remote.mp4", 3, false)
-        ));
-        TelegramCloudInboxMover mover = new TelegramCloudInboxMover(fileOperations, properties());
-
-        assertEquals(1, mover.countInboxFiles());
-        verify(fileOperations).list("/WebDAV/My Telegram", true);
+    void aLateVideoUsesSavedCaptionAndAnInterruptedRenameIsNotPrefixedAgain() {
+        CloudDrive2FileOperations api = mock(CloudDrive2FileOperations.class);
+        String name = "系列作品 - clip(1).mp4";
+        var file = new CloudDrive2FileEntry(name, INBOX + "/" + name, 100, false);
+        when(api.list(INBOX, true)).thenReturn(List.of(file), List.of(file), List.of());
+        when(api.moveKeepingBoth(file.fullPath(), TARGET)).thenReturn(List.of(TARGET + "/" + name));
+        var expected = new TelegramCloudInboxMover.ExpectedVideo("channel:1", "clip.mp4", 100, "系列作品", name);
+        List<TelegramCloudInboxMover.FileDelivery> recorded = new ArrayList<>();
+        new TelegramCloudInboxMover(api, new CloudDrive2Properties()).drainInbox(List.of(expected), recorded::add);
+        assertEquals("channel:1", recorded.get(0).key());
+        verify(api, never()).rename(any());
     }
 
     @Test
-    void waitsForForcedCloudDriveRefreshToReachMountedTargetBeforeMoving() throws Exception {
-        Path inbox = Files.createDirectories(root.resolve("My Telegram"));
-        Files.writeString(inbox.resolve("remote.mp4"), "video");
-        CloudDrive2FileOperations fileOperations = mock(CloudDrive2FileOperations.class);
-        when(fileOperations.list("/WebDAV/My Telegram", true)).thenReturn(List.of(
-                new CloudDrive2FileEntry("remote.mp4", "/WebDAV/My Telegram/remote.mp4", 5, false)
-        ));
-        when(fileOperations.list("/WebDAV/Media/Adult/Other/电报", true)).thenReturn(List.of());
-        TelegramCloudInboxMover mover = new TelegramCloudInboxMover(fileOperations, properties());
-        Thread mountRefresh = new Thread(() -> {
-            try {
-                Thread.sleep(30);
-                Files.createDirectories(root.resolve("Media/Adult/Other/电报"));
-            } catch (InterruptedException exception) {
-                Thread.currentThread().interrupt();
-            } catch (IOException exception) {
-                throw new IllegalStateException(exception);
-            }
-        });
-        mountRefresh.start();
-
-        TelegramCloudInboxMover.MoveOutcome outcome = mover.awaitExpectedFilesAndMove(0, 1);
-        mountRefresh.join();
-
-        assertEquals(1, outcome.movedEntryCount());
-        assertTrue(Files.exists(root.resolve("Media/Adult/Other/电报/remote.mp4")));
-        verify(fileOperations).list("/WebDAV/Media/Adult/Other/电报", true);
+    void captionIsAddedBeforeMovingAndConflictPathReturnedByApiIsPreserved() {
+        CloudDrive2FileOperations api = mock(CloudDrive2FileOperations.class);
+        var file = new CloudDrive2FileEntry("clip.mp4", INBOX + "/clip.mp4", 100, false);
+        when(api.list(INBOX, true)).thenReturn(List.of(file), List.of(file), List.of());
+        when(api.moveKeepingBoth(INBOX + "/系列作品 - clip.mp4", TARGET))
+                .thenReturn(List.of(TARGET + "/系列作品 - clip(1).mp4"));
+        var expected = new TelegramCloudInboxMover.ExpectedVideo("channel:1", "clip.mp4", 100, "系列作品", null);
+        List<TelegramCloudInboxMover.FileDelivery> recorded = new ArrayList<>();
+        new TelegramCloudInboxMover(api, new CloudDrive2Properties()).drainInbox(List.of(expected), recorded::add);
+        verify(api).rename(List.of(new CloudDrive2RenameOperation(file.fullPath(), "系列作品 - clip.mp4")));
+        assertTrue(recorded.get(0).libraryPath().endsWith("clip(1).mp4"));
     }
 
     @Test
-    void waitsForAlbumFilesThatAppearAfterTheTopLevelFile() throws Exception {
-        Path inbox = Files.createDirectories(root.resolve("My Telegram"));
-        Path target = Files.createDirectories(root.resolve("Media/Adult/Other/电报"));
-        Files.writeString(inbox.resolve("single.mp4"), "single");
-        Path album = Files.createDirectories(inbox.resolve("album"));
-        Files.writeString(album.resolve("video.mp4"), "video");
-        Files.writeString(album.resolve("cover.jpg"), "cover");
-        CloudDrive2FileOperations fileOperations = mock(CloudDrive2FileOperations.class);
-        when(fileOperations.list("/WebDAV/My Telegram", true)).thenReturn(List.of(
-                new CloudDrive2FileEntry("single.mp4", "/WebDAV/My Telegram/single.mp4", 6, false),
-                new CloudDrive2FileEntry("album", "/WebDAV/My Telegram/album", 0, true)
-        ));
-        when(fileOperations.list("/WebDAV/My Telegram/album", true)).thenReturn(
-                List.of(),
-                List.of(
-                        new CloudDrive2FileEntry("video.mp4", "/WebDAV/My Telegram/album/video.mp4", 5, false),
-                        new CloudDrive2FileEntry("cover.jpg", "/WebDAV/My Telegram/album/cover.jpg", 5, false)
-                )
-        );
-        TelegramCloudInboxMover mover = new TelegramCloudInboxMover(fileOperations, properties());
-
-        TelegramCloudInboxMover.MoveOutcome outcome = mover.awaitExpectedFilesAndMove(0, 3);
-
-        assertEquals(3, outcome.movedFileCount());
-        assertTrue(Files.exists(target.resolve("single.mp4")));
-        assertTrue(Files.exists(target.resolve("album/video.mp4")));
+    void ambiguousMetadataKeepsOriginalName() {
+        CloudDrive2FileOperations api = mock(CloudDrive2FileOperations.class);
+        var file = new CloudDrive2FileEntry("clip.mp4", INBOX + "/clip.mp4", 100, false);
+        when(api.list(INBOX, true)).thenReturn(List.of(file), List.of(file), List.of());
+        when(api.moveKeepingBoth(file.fullPath(), TARGET)).thenReturn(List.of(TARGET + "/clip.mp4"));
+        var one = new TelegramCloudInboxMover.ExpectedVideo("a:1", "clip.mp4", 100, "标题一", null);
+        var two = new TelegramCloudInboxMover.ExpectedVideo("b:1", "clip.mp4", 100, "标题二", null);
+        new TelegramCloudInboxMover(api, new CloudDrive2Properties()).drainInbox(List.of(one, two), ignored -> {});
+        verify(api, never()).rename(any());
     }
 
-    private CloudDrive2Properties properties() {
-        CloudDrive2Properties properties = new CloudDrive2Properties();
-        properties.setMediaSourcePathPrefix(root.toString());
-        properties.setVisibilityTimeout(Duration.ofSeconds(1));
-        properties.setVisibilityPollInterval(Duration.ofMillis(1));
-        return properties;
+    @Test
+    void emptyApiMoveReplyConfirmsNewConflictNameWithoutRejectingExistingFile() {
+        CloudDrive2FileOperations api = mock(CloudDrive2FileOperations.class);
+        var source = new CloudDrive2FileEntry("same.mp4", INBOX + "/same.mp4", 100, false);
+        var old = new CloudDrive2FileEntry("same.mp4", TARGET + "/same.mp4", 100, false);
+        var added = new CloudDrive2FileEntry("same(1).mp4", TARGET + "/same(1).mp4", 100, false);
+        when(api.list(INBOX, true)).thenReturn(List.of(source), List.of(source), List.of());
+        when(api.list(TARGET, true)).thenReturn(List.of(old), List.of(old), List.of(old, added));
+        when(api.moveKeepingBoth(source.fullPath(), TARGET)).thenReturn(List.of());
+        List<TelegramCloudInboxMover.FileDelivery> recorded = new ArrayList<>();
+        var outcome = new TelegramCloudInboxMover(api, new CloudDrive2Properties()).drainInbox(List.of(), recorded::add);
+        assertEquals(1, outcome.movedFileCount());
+        assertEquals(added.fullPath(), recorded.get(0).libraryPath());
+        assertEquals("same(1).mp4", recorded.get(0).savedName());
+    }
+
+    @Test
+    void readableTitleKeepsCompleteOriginalNameAndFitsUtf8Limit() {
+        assertEquals("夏晴子 10月新作 - 69rt48er.mp4", TelegramCloudInboxMover.readableName("夏晴子 10月新作\n点击链接", "69rt48er.mp4"));
+        assertEquals("系列作品 - clip(1).mp4", TelegramCloudInboxMover.readableName("系列作品", "clip(1).mp4"));
+        String original = "长".repeat(70) + ".mp4";
+        String name = TelegramCloudInboxMover.readableName("标题".repeat(30), original);
+        assertTrue(name.endsWith(original));
+        assertTrue(name.getBytes(java.nio.charset.StandardCharsets.UTF_8).length <= 240);
+        assertEquals("clip.mp4", TelegramCloudInboxMover.readableName("", "clip.mp4"));
     }
 }

@@ -10,5 +10,7 @@ interface CloudDrive2FileOperations {
 
     void move(List<String> sourcePaths, String targetDirectory);
 
+    List<String> moveKeepingBoth(String sourcePath, String targetDirectory);
+
     void delete(List<String> paths);
 }
