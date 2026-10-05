@@ -55,6 +55,12 @@ public class AdminTelegramAutomationController {
         return ApiResponse.success(automationService.resolveSource(request.sourceRef()));
     }
 
+    @PostMapping("/runs/inbox")
+    @Operation(summary = "仅整理收件箱，不重新转发 Telegram 内容")
+    public ApiResponse<RunResponse> inbox() {
+        return ApiResponse.success(automationService.requestInboxCheck());
+    }
+
     @PostMapping("/runs/follow/dry-run")
     @Operation(summary = "试运行所有已启用频道的追更")
     public ApiResponse<RunResponse> followDryRun() {

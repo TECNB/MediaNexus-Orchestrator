@@ -98,6 +98,38 @@ class TelegramCloudInboxMoverTest {
     }
 
     @Test
+    void alreadyMovedVideoIsReconciledWithoutAnotherMove() {
+        CloudDrive2FileOperations api = mock(CloudDrive2FileOperations.class);
+        var accepted = new CloudDrive2FileEntry("系列 - clip.mp4", TARGET + "/系列 - clip.mp4", 100, false);
+        when(api.list(TARGET, true)).thenReturn(List.of(accepted));
+        var expected = new TelegramCloudInboxMover.ExpectedVideo("a:1", "clip.mp4", 100, "系列", "系列 - clip.mp4");
+        List<TelegramCloudInboxMover.FileDelivery> recorded = new ArrayList<>();
+        new TelegramCloudInboxMover(api, new CloudDrive2Properties()).drainInbox(List.of(expected), recorded::add);
+        assertEquals("MOVED", recorded.get(0).status());
+        assertEquals(accepted.fullPath(), recorded.get(0).libraryPath());
+        verify(api, never()).moveKeepingBoth(anyString(), anyString());
+    }
+
+    @Test
+    void acknowledgedMoveWaitsForAncestorRefreshInsteadOfResending() {
+        CloudDrive2FileOperations api = mock(CloudDrive2FileOperations.class);
+        var source = new CloudDrive2FileEntry("late.mp4", INBOX + "/late.mp4", 100, false);
+        var accepted = new CloudDrive2FileEntry("late.mp4", TARGET + "/late.mp4", 100, false);
+        when(api.list(INBOX, true)).thenReturn(List.of(source), List.of(source), List.of());
+        when(api.list(TARGET, true)).thenReturn(List.of(), List.of(), List.of(), List.of(), List.of(accepted));
+        when(api.moveKeepingBoth(source.fullPath(), TARGET)).thenReturn(List.of());
+        CloudDrive2Properties config = new CloudDrive2Properties();
+        config.setVisibilityTimeout(java.time.Duration.ofSeconds(1));
+        config.setVisibilityPollInterval(java.time.Duration.ofMillis(1));
+        List<TelegramCloudInboxMover.FileDelivery> recorded = new ArrayList<>();
+        var outcome = new TelegramCloudInboxMover(api, config).drainInbox(List.of(), recorded::add);
+        assertEquals(1, outcome.movedFileCount());
+        assertEquals("MOVED", recorded.get(0).status());
+        verify(api, times(1)).moveKeepingBoth(source.fullPath(), TARGET);
+        verify(api, atLeast(2)).list("/WebDAV/Media/Adult/Other", true);
+    }
+
+    @Test
     void readableTitleKeepsCompleteOriginalNameAndFitsUtf8Limit() {
         assertEquals("夏晴子 10月新作 - 69rt48er.mp4", TelegramCloudInboxMover.readableName("夏晴子 10月新作\n点击链接", "69rt48er.mp4"));
         assertEquals("系列作品 - clip(1).mp4", TelegramCloudInboxMover.readableName("系列作品", "clip(1).mp4"));

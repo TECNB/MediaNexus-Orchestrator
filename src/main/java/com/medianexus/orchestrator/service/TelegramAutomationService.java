@@ -254,6 +254,14 @@ public class TelegramAutomationService {
         return toResponse(run, true);
     }
 
+    public RunResponse requestInboxCheck() {
+        User admin = authService.requireAdminUser();
+        ConfigResponse config = loadConfig();
+        TelegramAutomationRun run = createRun("MANUAL", admin.getId(), "INBOX", 0);
+        executor.submit(() -> executeFollow(run, config, List.of(), Map.of()));
+        return toResponse(run, true);
+    }
+
     private void startScheduledFollowRun(ConfigResponse config) {
         List<ChannelConfig> channels = config.channels().stream().filter(ChannelConfig::enabled).filter(this::matchesSchedule).toList();
         TelegramAutomationRun run = createRun("SCHEDULED", null, "FOLLOW", channels.size());

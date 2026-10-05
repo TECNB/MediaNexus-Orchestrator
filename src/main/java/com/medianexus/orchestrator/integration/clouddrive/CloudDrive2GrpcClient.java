@@ -150,7 +150,8 @@ class CloudDrive2GrpcClient implements CloudDrive2FileOperations {
     }
 
     private CloudDrive2ClientException grpcFailure(String message, StatusRuntimeException exception) {
-        return new CloudDrive2ClientException(message, exception.getStatus().getCode(), exception);
+        return new CloudDrive2ClientException(message + ": " + exception.getStatus().getDescription(),
+                exception.getStatus().getCode(), exception);
     }
 
     private static void validateConfiguration(CloudDrive2Properties properties) {

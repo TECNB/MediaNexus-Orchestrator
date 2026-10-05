@@ -6,6 +6,7 @@ import static com.medianexus.orchestrator.service.organization.LibraryOrganizati
 import com.medianexus.orchestrator.config.CloudDrive2Properties;
 import io.grpc.Status;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -35,6 +36,7 @@ public class TelegramCloudInboxMover {
         String target = normalizePath(properties.getCloudDrivePathPrefix() + "/Media/Adult/Other/电报");
         refreshDirectory(inbox);
         refreshDirectory(target);
+        reconcileAcceptedVideos(videos, target, recordDelivery);
         int movedEntries = 0;
         int movedFiles = 0;
         for (CloudDrive2FileEntry entry : list(inbox)) {
@@ -42,10 +44,10 @@ public class TelegramCloudInboxMover {
             try {
                 prepareFiles(entry, videos, prepared);
                 String source = entry.directory() ? entry.fullPath() : prepared.get(0).sourcePath();
-                Set<String> existingPaths = list(target).stream().map(CloudDrive2FileEntry::fullPath).collect(Collectors.toSet());
+                Set<String> existingPaths = listWithAncestorRecovery(target).stream().map(CloudDrive2FileEntry::fullPath).collect(Collectors.toSet());
                 List<String> destinations = fileOperations.moveKeepingBoth(source, target);
                 String libraryRoot = destinations.isEmpty()
-                        ? findMovedPath(source, target, entry.size(), entry.directory(), existingPaths) : destinations.get(0);
+                        ? awaitMovedPath(source, target, entry.size(), entry.directory(), existingPaths) : destinations.get(0);
                 // Verify the API actually removed the source; a successful Skip is not an accepted move.
                 if (list(inbox).stream().anyMatch(file -> file.fullPath().equals(source))) {
                     throw new IllegalStateException("移动后文件仍在收件箱");
@@ -122,14 +124,60 @@ public class TelegramCloudInboxMover {
         prepared.add(new FileDelivery(video == null ? null : video.key(), original, renamed, path, null, "PREPARED", note));
     }
 
+    private void reconcileAcceptedVideos(List<ExpectedVideo> videos, String target, Consumer<FileDelivery> record) {
+        if (videos.isEmpty()) return;
+        List<CloudDrive2FileEntry> accepted = listWithAncestorRecovery(target);
+        for (ExpectedVideo video : videos) {
+            List<CloudDrive2FileEntry> matches = accepted.stream().filter(file -> !file.directory()
+                    && file.size() == video.size()
+                    && (file.name().equals(video.savedName())
+                    || file.name().equals(readableName(video.caption(), video.originalName())))).toList();
+            if (matches.size() == 1) {
+                CloudDrive2FileEntry file = matches.get(0);
+                record.accept(new FileDelivery(video.key(), video.originalName(), file.name(), null,
+                        file.fullPath(), "MOVED", "复查确认此前已入库，补齐记录及 AS 刷新"));
+            }
+        }
+    }
+
+    private String awaitMovedPath(String source, String target, long size, boolean directory, Set<String> existingPaths) {
+        Instant deadline = Instant.now().plus(properties.getVisibilityTimeout());
+        do {
+            // CD2 acknowledges cloud moves before parent WebDAV listings catch up.
+            // Retry observation only; never repeat an acknowledged move.
+            try {
+                refreshDirectory(target);
+                String matched = findMovedPath(source, target, size, directory, existingPaths);
+                if (matched != null) return matched;
+            } catch (CloudDrive2ClientException transientListingFailure) {
+                // A transient WebDAV list failure must not turn an acknowledged move into a repeat move.
+            }
+            try {
+                Thread.sleep(properties.getVisibilityPollInterval().toMillis());
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("移动结果确认被中断", exception);
+            }
+        } while (Instant.now().isBefore(deadline));
+        throw new IllegalStateException("移动已返回成功，但刷新后目标路径仍无法明确确认；保留记录等待复查");
+    }
+
+    private List<CloudDrive2FileEntry> listWithAncestorRecovery(String path) {
+        try {
+            return list(path);
+        } catch (CloudDrive2ClientException exception) {
+            refreshDirectory(path);
+            return list(path);
+        }
+    }
+
     private String findMovedPath(String source, String target, long size, boolean directory, Set<String> existingPaths) {
         String name = source.substring(source.lastIndexOf('/') + 1);
         List<CloudDrive2FileEntry> candidates = list(target).stream().filter(file -> !existingPaths.contains(file.fullPath())
                 && file.directory() == directory
                 && (directory || file.size() == size)
                 && stripSaveSuffix(file.name()).equals(stripSaveSuffix(name))).toList();
-        if (candidates.size() != 1) throw new IllegalStateException("移动已返回成功，但目标路径尚无法明确确认");
-        return candidates.get(0).fullPath();
+        return candidates.size() == 1 ? candidates.get(0).fullPath() : null;
     }
 
     static String stripSaveSuffix(String name) {
