@@ -28,10 +28,12 @@ public class EmbyItemMetadataClient implements EmbyItemMetadataLookup {
     private final EmbyProperties properties;
     private final ObjectMapper objectMapper;
     private final HttpClient httpClient;
+    private final EmbyClient embyClient;
     private final ConcurrentMap<String, CacheEntry> cache = new ConcurrentHashMap<>();
 
-    public EmbyItemMetadataClient(EmbyProperties properties, ObjectMapper objectMapper) {
+    public EmbyItemMetadataClient(EmbyProperties properties, ObjectMapper objectMapper, EmbyClient embyClient) {
         this.properties = properties;
+        this.embyClient = embyClient;
         this.objectMapper = objectMapper;
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(timeout())
@@ -85,6 +87,24 @@ public class EmbyItemMetadataClient implements EmbyItemMetadataLookup {
     }
 
     private EmbyItemMetadata parseItemMetadata(JsonNode root) {
+        EmbyLibrary library = null;
+        String path = textAt(root, "Path");
+        if (StringUtils.hasText(path)) {
+            String normalizedPath = path.replace('\\', '/');
+            try {
+                library = embyClient.listLibraries().stream()
+                        .filter(candidate -> candidate.locations().stream().anyMatch(location -> {
+                            String prefix = location.replace('\\', '/').replaceAll("/+$", "");
+                            return normalizedPath.startsWith(prefix + "/");
+                        }))
+                        // Adult wins when Emby exposes overlapping virtual-folder locations.
+                        .sorted(java.util.Comparator.comparing(candidate ->
+                                candidate.name().toLowerCase(java.util.Locale.ROOT).startsWith("adult") ? 0 : 1))
+                        .findFirst().orElse(null);
+            } catch (EmbyClientException exception) {
+                log.warn("Emby library classification unavailable itemId={}", textAt(root, "Id"));
+            }
+        }
         return new EmbyItemMetadata(
                 textAt(root, "Id"),
                 textAt(root, "Type"),
@@ -93,8 +113,24 @@ public class EmbyItemMetadataClient implements EmbyItemMetadataLookup {
                 textAt(root, "SeriesName", "ShowName"),
                 optionalSeasonNumber(textAt(root, "ParentIndexNumber", "SeasonNumber")),
                 optionalEpisodeNumber(textAt(root, "IndexNumber", "EpisodeNumber")),
-                textAt(root, "RunTimeTicks", "RuntimeTicks")
+                textAt(root, "RunTimeTicks", "RuntimeTicks"),
+                watchCategory(library, textAt(root, "Type")),
+                library == null ? null : library.id(),
+                library == null ? null : library.name()
         );
+    }
+
+    private String watchCategory(EmbyLibrary library, String itemType) {
+        if (library == null) return "unknown";
+        if (library.name().equalsIgnoreCase("Adult - Other") || library.name().equalsIgnoreCase("Adult-JAV")) {
+            return "adult";
+        }
+        boolean ordinaryLibrary = java.util.Set.of("Movies", "TV", "Anime", "综艺").stream()
+                .anyMatch(name -> name.equalsIgnoreCase(library.name()));
+        if (!ordinaryLibrary) return "unknown";
+        if ("Movie".equalsIgnoreCase(itemType)) return "movie";
+        if ("Episode".equalsIgnoreCase(itemType)) return "series";
+        return "unknown";
     }
 
     private URI buildItemUri(String userId, String itemId) {

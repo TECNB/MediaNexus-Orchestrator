@@ -4,6 +4,16 @@ import java.time.LocalDateTime;
 
 public class EmbyWatchSummaryRow {
 
+    private Long calendarSessionCount;
+    private Long legacySessionCount;
+    private Long totalWorkCount;
+    public Long getCalendarSessionCount() { return calendarSessionCount; }
+    public void setCalendarSessionCount(Long value) { calendarSessionCount = value; }
+    public Long getLegacySessionCount() { return legacySessionCount; }
+    public void setLegacySessionCount(Long value) { legacySessionCount = value; }
+    public Long getTotalWorkCount() { return totalWorkCount; }
+    public void setTotalWorkCount(Long value) { totalWorkCount = value; }
+
     private Long activeUserCount;
 
     private Long totalWatchSeconds;

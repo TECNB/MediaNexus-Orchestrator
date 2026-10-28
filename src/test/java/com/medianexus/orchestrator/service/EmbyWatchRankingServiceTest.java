@@ -47,6 +47,7 @@ class EmbyWatchRankingServiceTest {
         session.setItemType("Episode");
         session.setItemId("item-1");
         session.setSeriesName("Series title");
+        session.setWatchCategory("series");
         session.setItemName("Episode title");
         session.setSeasonNumber(2);
         session.setEpisodeNumber(7);
@@ -58,6 +59,21 @@ class EmbyWatchRankingServiceTest {
         assertThat(response.webhookStatus().recentEvents())
                 .singleElement()
                 .satisfies(event -> assertThat(event.itemName()).isEqualTo("Series title S02E07"));
+    }
+
+    @Test
+    void hidesUnclassifiedHistoricalTitlesInDefaultMonitor() {
+        EmbyActivePlaybackSession session = new EmbyActivePlaybackSession();
+        session.setItemType("Movie");
+        session.setItemId("private-item");
+        session.setItemName("Sensitive historical title");
+        session.setStartTime(LocalDateTime.parse("2026-07-06T10:00:00"));
+        when(activeSessionMapper.selectRecentActiveSessions(anyInt())).thenReturn(List.of(session));
+
+        var response = service.getRankings("day", "2026-07-06", null, 20);
+
+        assertThat(response.webhookStatus().recentEvents()).singleElement()
+                .satisfies(event -> assertThat(event.itemName()).isEqualTo("分类待确认"));
     }
 
     private static class TestAuthService extends AuthService {

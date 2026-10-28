@@ -97,8 +97,19 @@ public class EmbyWatchRankingService {
                 users,
                 movies,
                 series,
+                toMediaRankingItems(watchSessionMapper.selectAdultRankings(
+                        rankingPeriod.startDate(), rankingPeriod.endDate(), normalizedLimit)),
                 buildWebhookStatus()
         );
+    }
+
+    public List<com.medianexus.orchestrator.dto.emby.response.EmbyPrivateWatchTitle> getPrivateTitles(List<String> itemIds) {
+        authService.requireAdminUser();
+        if (itemIds == null || itemIds.isEmpty() || itemIds.size() > 100
+                || itemIds.stream().anyMatch(id -> !StringUtils.hasText(id) || id.length() > 128)) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "请选择1至100个有效作品读取私密片名");
+        }
+        return watchSessionMapper.selectPrivateTitles(itemIds.stream().distinct().toList());
     }
 
     private WatchRankingPeriod normalizePeriod(String period, String date, String month) {
@@ -160,13 +171,14 @@ public class EmbyWatchRankingService {
 
     private EmbyWatchRankingSummaryResponse toSummaryResponse(EmbyWatchSummaryRow row) {
         if (row == null) {
-            return new EmbyWatchRankingSummaryResponse(0, 0, 0, null);
+            return new EmbyWatchRankingSummaryResponse(0, 0, 0, null, 0, 0, 0);
         }
         return new EmbyWatchRankingSummaryResponse(
                 safeLong(row.getActiveUserCount()),
                 safeLong(row.getTotalWatchSeconds()),
                 safeLong(row.getTotalPlayCount()),
-                row.getLastWatchedAt()
+                row.getLastWatchedAt(), safeLong(row.getCalendarSessionCount()),
+                safeLong(row.getLegacySessionCount()), safeLong(row.getTotalWorkCount())
         );
     }
 
@@ -181,7 +193,7 @@ public class EmbyWatchRankingService {
                             safeLong(row.getWatchSeconds()),
                             safeLong(row.getPlayCount()),
                             row.getLastWatchedAt(),
-                            row.getLastItemName()
+                            publicTitle(row.getLastCategory(), row.getLastItemName()), row.getLastItemId(), row.getLastMediaId(), row.getLastCategory()
                     );
                 })
                 .toList();
@@ -226,7 +238,8 @@ public class EmbyWatchRankingService {
                 "playback.start",
                 session.getStartTime(),
                 displayText(session.getEmbyUserName(), session.getEmbyUserId()),
-                displayItemName(
+                displayPublicItemName(
+                        session.getWatchCategory(),
                         session.getItemType(),
                         session.getSeriesName(),
                         session.getItemName(),
@@ -234,7 +247,11 @@ public class EmbyWatchRankingService {
                         session.getSeasonNumber(),
                         session.getEpisodeNumber()
                 ),
-                null
+                null,
+                session.getItemId(),
+                "series".equals(session.getWatchCategory()) && StringUtils.hasText(session.getSeriesId())
+                        ? session.getSeriesId() : session.getItemId(),
+                session.getWatchCategory() == null ? "unknown" : session.getWatchCategory()
         );
     }
 
@@ -243,7 +260,8 @@ public class EmbyWatchRankingService {
                 "playback.stop",
                 session.getStopTime(),
                 displayText(session.getEmbyUserName(), session.getEmbyUserId()),
-                displayItemName(
+                displayPublicItemName(
+                        session.getWatchCategory(),
                         session.getItemType(),
                         session.getSeriesName(),
                         session.getItemName(),
@@ -251,8 +269,25 @@ public class EmbyWatchRankingService {
                         session.getSeasonNumber(),
                         session.getEpisodeNumber()
                 ),
-                session.getWatchSeconds()
+                session.getWatchSeconds(),
+                session.getItemId(),
+                "series".equals(session.getWatchCategory()) && StringUtils.hasText(session.getSeriesId())
+                        ? session.getSeriesId() : session.getItemId(),
+                session.getWatchCategory() == null ? "unknown" : session.getWatchCategory()
         );
+    }
+
+    private String publicTitle(String category, String title) {
+        if ("adult".equals(category)) return "私密观看";
+        if (!"movie".equals(category) && !"series".equals(category)) return "分类待确认";
+        return title;
+    }
+
+    private String displayPublicItemName(String category, String itemType, String seriesName,
+            String itemName, String fallback, Integer seasonNumber, Integer episodeNumber) {
+        if ("adult".equals(category)) return "私密观看";
+        if (!"movie".equals(category) && !"series".equals(category)) return "分类待确认";
+        return displayItemName(itemType, seriesName, itemName, fallback, seasonNumber, episodeNumber);
     }
 
     private String displayItemName(

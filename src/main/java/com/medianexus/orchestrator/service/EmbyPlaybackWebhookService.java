@@ -263,15 +263,11 @@ public class EmbyPlaybackWebhookService {
         EmbyActivePlaybackSession existingSession =
                 activeSessionMapper.selectActiveSessionForUpdate(embySessionId, itemId);
         if (existingSession != null) {
-            if (existingSession.getPlaybackStartTime() == null) {
-                existingSession.setPlaybackStartTime(eventTime);
-                activeSessionMapper.updatePlaybackState(existingSession);
-            }
             log.info("Emby duplicate playback.start kept tracked session sessionId={} itemId={} accumulatedWatchSeconds={}",
                     embySessionId, itemId, existingSession.getAccumulatedWatchSeconds());
             return;
         }
-        PlaybackItemMetadata itemMetadata = lookupEpisodeMetadata(request, itemType, embyUserId, itemId);
+        PlaybackItemMetadata itemMetadata = lookupPlaybackItemMetadata(request, itemType, embyUserId, itemId);
 
         EmbyActivePlaybackSession session = new EmbyActivePlaybackSession();
         session.setEmbySessionId(embySessionId);
@@ -279,6 +275,9 @@ public class EmbyPlaybackWebhookService {
         session.setEmbyUserName(shortText(request.userName(), TEXT_LIMIT_NAME));
         session.setItemId(itemId);
         session.setItemType(itemType);
+        session.setWatchCategory(itemMetadata.watchCategory());
+        session.setLibraryId(itemMetadata.libraryId());
+        session.setLibraryName(itemMetadata.libraryName());
         session.setItemName(shortText(itemMetadata.itemName(), TEXT_LIMIT_TITLE));
         session.setSeriesId(shortText(itemMetadata.seriesId(), TEXT_LIMIT_SHORT));
         session.setSeriesName(shortText(itemMetadata.seriesName(), TEXT_LIMIT_TITLE));
@@ -288,6 +287,7 @@ public class EmbyPlaybackWebhookService {
         session.setStartPositionTicks(startPositionTicks);
         session.setStartTime(eventTime);
         session.setAccumulatedWatchSeconds(0);
+        session.setPlaybackIntervalsJson("[]");
         session.setPlaybackStartTime(eventTime);
         session.setDeviceName(shortText(request.deviceName(), TEXT_LIMIT_NAME));
         session.setClientName(shortText(request.clientName(), TEXT_LIMIT_NAME));
@@ -308,6 +308,8 @@ public class EmbyPlaybackWebhookService {
                     embySessionId, itemId);
             return;
         }
+        if (pauseTime.isBefore(session.getPlaybackStartTime())) return;
+        appendClosedPlaybackInterval(session, pauseTime);
         session.setAccumulatedWatchSeconds(accumulatePlaybackSeconds(session, pauseTime));
         session.setPlaybackStartTime(null);
         activeSessionMapper.updatePlaybackState(session);
@@ -323,6 +325,7 @@ public class EmbyPlaybackWebhookService {
             return;
         }
         if (session.getPlaybackStartTime() == null) {
+            if (unpauseTime.isBefore(latestPlaybackEventTime(session))) return;
             session.setPlaybackStartTime(unpauseTime);
             activeSessionMapper.updatePlaybackState(session);
         }
@@ -349,6 +352,7 @@ public class EmbyPlaybackWebhookService {
             );
             return;
         }
+        if (stopTime.isBefore(latestPlaybackEventTime(activeSession))) return;
         PlaybackItemMetadata itemMetadata = lookupMissingEpisodeMetadata(
                 request,
                 itemType,
@@ -390,7 +394,7 @@ public class EmbyPlaybackWebhookService {
                 request.deviceName(),
                 request.clientName()
         );
-        WatchSessionWriteResult writeResult = upsertWatchSession(watchSession);
+        WatchSessionWriteResult writeResult = settleWatchSession(activeSession, watchSession);
         activeSessionMapper.deleteActiveSession(embySessionId, itemId);
         log.info("Emby playback.stop settled sessionId={} itemId={} itemType={} userId={} watchSeconds={} durationSource={} stopTime={} writeResult={} trackedClosed={}",
                 embySessionId,
@@ -427,6 +431,7 @@ public class EmbyPlaybackWebhookService {
             EmbyActivePlaybackSession activeSession,
             LocalDateTime stopTime
     ) {
+        if (stopTime.isBefore(latestPlaybackEventTime(activeSession))) return;
         Long runtimeTicks = activeSession.getRuntimeTicks();
         WatchDurationResult durationResult = calculateTrackedWatchSeconds(activeSession, null, stopTime, runtimeTicks);
         activeSessionMapper.deleteActiveSession(activeSession.getEmbySessionId(), activeSession.getItemId());
@@ -458,7 +463,8 @@ public class EmbyPlaybackWebhookService {
                 activeSession.getDeviceName(),
                 activeSession.getClientName()
         );
-        WatchSessionWriteResult writeResult = upsertWatchSession(watchSession);
+        watchSession.setStopTimeSource("superseded");
+        WatchSessionWriteResult writeResult = settleWatchSession(activeSession, watchSession);
         log.info("Emby tracked session closed by new playback.start sessionId={} itemId={} watchSeconds={} durationSource={} stopTime={} writeResult={}",
                 activeSession.getEmbySessionId(),
                 activeSession.getItemId(),
@@ -475,7 +481,8 @@ public class EmbyPlaybackWebhookService {
             LocalDateTime stopTime,
             Long runtimeTicks
     ) {
-        if (activeSession.getPlaybackStartTime() == null
+        if (activeSession.getPlaybackIntervalsJson() == null
+                && activeSession.getPlaybackStartTime() == null
                 && (activeSession.getAccumulatedWatchSeconds() == null
                 || activeSession.getAccumulatedWatchSeconds() == 0)
                 && activeSession.getStartPositionTicks() != null
@@ -534,16 +541,13 @@ public class EmbyPlaybackWebhookService {
                 && !cleanedFirst.equals(cleanedSecond);
     }
 
-    private PlaybackItemMetadata lookupEpisodeMetadata(
+    private PlaybackItemMetadata lookupPlaybackItemMetadata(
             EmbyPlaybackWebhookRequest request,
             String itemType,
             String embyUserId,
             String itemId
     ) {
         PlaybackItemMetadata fallback = metadataFromRequest(request);
-        if (!ITEM_TYPE_EPISODE.equals(itemType)) {
-            return fallback;
-        }
         return itemMetadataLookup.findItemMetadata(embyUserId, itemId)
                 .map(metadata -> mergeItemMetadata(metadata, fallback))
                 .orElse(fallback);
@@ -576,7 +580,8 @@ public class EmbyPlaybackWebhookService {
                 request.seriesName(),
                 request.seasonNumber(),
                 request.episodeNumber(),
-                request.runtimeTicks()
+                request.runtimeTicks(),
+                "unknown", null, null
         );
     }
 
@@ -590,7 +595,8 @@ public class EmbyPlaybackWebhookService {
                 firstText(metadata.seriesName(), fallback.seriesName(), TEXT_LIMIT_TITLE),
                 firstInteger(metadata.seasonNumber(), fallback.seasonNumber()),
                 firstInteger(metadata.episodeNumber(), fallback.episodeNumber()),
-                firstText(metadata.runtimeTicks(), fallback.runtimeTicks(), TEXT_LIMIT_SHORT)
+                firstText(metadata.runtimeTicks(), fallback.runtimeTicks(), TEXT_LIMIT_SHORT),
+                metadata.watchCategory(), metadata.libraryId(), metadata.libraryName()
         );
     }
 
@@ -617,6 +623,9 @@ public class EmbyPlaybackWebhookService {
         watchSession.setEmbyUserName(firstText(embyUserName, activeSession.getEmbyUserName(), TEXT_LIMIT_NAME));
         watchSession.setItemId(activeSession.getItemId());
         watchSession.setItemType(firstText(itemType, activeSession.getItemType(), TEXT_LIMIT_SHORT));
+        watchSession.setWatchCategory(activeSession.getWatchCategory());
+        watchSession.setLibraryId(activeSession.getLibraryId());
+        watchSession.setLibraryName(activeSession.getLibraryName());
         watchSession.setItemName(firstText(itemName, activeSession.getItemName(), TEXT_LIMIT_TITLE));
         watchSession.setSeriesId(firstText(seriesId, activeSession.getSeriesId(), TEXT_LIMIT_SHORT));
         watchSession.setSeriesName(firstText(seriesName, activeSession.getSeriesName(), TEXT_LIMIT_TITLE));
@@ -625,13 +634,73 @@ public class EmbyPlaybackWebhookService {
         watchSession.setRuntimeTicks(runtimeTicks);
         watchSession.setStartTime(activeSession.getStartTime());
         watchSession.setStopTime(stopTime);
+        watchSession.setStopTimeSource("event");
         watchSession.setStartPositionTicks(activeSession.getStartPositionTicks());
         watchSession.setStopPositionTicks(stopPositionTicks);
         watchSession.setWatchSeconds(watchSeconds);
+        watchSession.setAccountingBasis(activeSession.getPlaybackIntervalsJson() == null ? "legacy" : "calendar");
         watchSession.setWatchDate(stopTime.toLocalDate());
         watchSession.setDeviceName(firstText(deviceName, activeSession.getDeviceName(), TEXT_LIMIT_NAME));
         watchSession.setClientName(firstText(clientName, activeSession.getClientName(), TEXT_LIMIT_NAME));
         return watchSession;
+    }
+
+    private void appendClosedPlaybackInterval(EmbyActivePlaybackSession session, LocalDateTime end) {
+        if (session.getPlaybackIntervalsJson() == null || !end.isAfter(session.getPlaybackStartTime())) return;
+        com.fasterxml.jackson.databind.node.ArrayNode intervals = playbackIntervals(session);
+        intervals.addObject().put("start", session.getPlaybackStartTime().toString()).put("end", end.toString());
+        session.setPlaybackIntervalsJson(intervals.toString());
+    }
+
+    private com.fasterxml.jackson.databind.node.ArrayNode playbackIntervals(EmbyActivePlaybackSession session) {
+        try {
+            JsonNode intervals = objectMapper.readTree(session.getPlaybackIntervalsJson());
+            if (!intervals.isArray()) throw new IllegalStateException("播放分段记录格式无效");
+            return (com.fasterxml.jackson.databind.node.ArrayNode) intervals;
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("播放分段记录无法读取", exception);
+        }
+    }
+
+    private LocalDateTime latestPlaybackEventTime(EmbyActivePlaybackSession session) {
+        if (session.getPlaybackStartTime() != null) return session.getPlaybackStartTime();
+        if (session.getPlaybackIntervalsJson() != null) {
+            var intervals = playbackIntervals(session);
+            if (!intervals.isEmpty()) return LocalDateTime.parse(intervals.get(intervals.size() - 1).path("end").asText());
+        }
+        return session.getStartTime();
+    }
+
+    /** 分段只来自新会话实际记录；历史会话不按起止跨度推算自然日。 */
+    private WatchSessionWriteResult settleWatchSession(EmbyActivePlaybackSession active, EmbyWatchSession settled) {
+        WatchSessionWriteResult written = upsertWatchSession(settled);
+        if (written == WatchSessionWriteResult.UNCHANGED || !"calendar".equals(settled.getAccountingBasis())) return written;
+        var intervals = playbackIntervals(active);
+        if (active.getPlaybackStartTime() != null && settled.getStopTime().isAfter(active.getPlaybackStartTime())) {
+            intervals.addObject().put("start", active.getPlaybackStartTime().toString()).put("end", settled.getStopTime().toString());
+        }
+        java.util.Map<java.time.LocalDate, Integer> days = new java.util.TreeMap<>();
+        long remaining = settled.getWatchSeconds();
+        for (JsonNode interval : intervals) {
+            LocalDateTime cursor = LocalDateTime.parse(interval.path("start").asText());
+            LocalDateTime intervalStart = cursor;
+            long distributed = 0;
+            LocalDateTime end = LocalDateTime.parse(interval.path("end").asText());
+            while (cursor.isBefore(end) && remaining > 0) {
+                LocalDateTime midnight = cursor.toLocalDate().plusDays(1).atStartOfDay();
+                LocalDateTime segmentEnd = end.isBefore(midnight) ? end : midnight;
+                long elapsed = Duration.between(intervalStart, segmentEnd).getSeconds();
+                int seconds = (int) Math.min(remaining, elapsed - distributed);
+                distributed = elapsed;
+                if (seconds > 0) days.merge(cursor.toLocalDate(), seconds, Integer::sum);
+                remaining -= seconds;
+                cursor = segmentEnd;
+            }
+        }
+        if (remaining != 0) throw new IllegalStateException("自然日观看时长与会话结算不一致");
+        watchSessionMapper.deleteDailyContributions(settled);
+        days.forEach((date, seconds) -> watchSessionMapper.insertDailyContribution(settled, date, seconds));
+        return written;
     }
 
     private WatchSessionWriteResult upsertWatchSession(EmbyWatchSession watchSession) {
@@ -780,6 +849,7 @@ public class EmbyPlaybackWebhookService {
         if (ITEM_TYPE_MOVIE.equalsIgnoreCase(cleaned)) {
             return ITEM_TYPE_MOVIE;
         }
+        if ("Video".equalsIgnoreCase(cleaned)) return "Video";
         if (ITEM_TYPE_EPISODE.equalsIgnoreCase(cleaned)) {
             return ITEM_TYPE_EPISODE;
         }
@@ -866,7 +936,10 @@ public class EmbyPlaybackWebhookService {
             String seriesName,
             Integer seasonNumber,
             Integer episodeNumber,
-            String runtimeTicks
+            String runtimeTicks,
+            String watchCategory,
+            String libraryId,
+            String libraryName
     ) {
     }
 

@@ -36,4 +36,13 @@ public class AdminEmbyWatchRankingController {
     ) {
         return ApiResponse.success(rankingService.getRankings(period, date, month, limit));
     }
+    @GetMapping("/private-titles")
+    @Operation(summary = "主动读取已确认 Adult 作品的片名")
+    public ApiResponse<java.util.List<com.medianexus.orchestrator.dto.emby.response.EmbyPrivateWatchTitle>> getPrivateTitles(
+            @Parameter(description = "当前浏览的实际视频 ID，最多100个；未知分类不返回")
+            @RequestParam(name = "item_ids") java.util.List<String> itemIds
+    ) {
+        return ApiResponse.success(rankingService.getPrivateTitles(itemIds));
+    }
+
 }

@@ -19,6 +19,24 @@ public class EmbyActivePlaybackSession {
 
     private String itemId;
 
+    private String playbackIntervalsJson;
+
+    public String getPlaybackIntervalsJson() { return playbackIntervalsJson; }
+    public void setPlaybackIntervalsJson(String playbackIntervalsJson) { this.playbackIntervalsJson = playbackIntervalsJson; }
+
+    private String watchCategory;
+
+    private String libraryId;
+
+    private String libraryName;
+
+    public String getWatchCategory() { return watchCategory; }
+    public void setWatchCategory(String watchCategory) { this.watchCategory = watchCategory; }
+    public String getLibraryId() { return libraryId; }
+    public void setLibraryId(String libraryId) { this.libraryId = libraryId; }
+    public String getLibraryName() { return libraryName; }
+    public void setLibraryName(String libraryName) { this.libraryName = libraryName; }
+
     private String itemType;
 
     private String itemName;
@@ -49,6 +67,12 @@ public class EmbyActivePlaybackSession {
     private LocalDateTime createdAt;
 
     private LocalDateTime updatedAt;
+
+    /** 最近一次核验仍在播放的时间；核验失败时冻结估算，不能推动 Webhook 更新时间。 */
+    private LocalDateTime lastVerifiedAt;
+
+    public LocalDateTime getLastVerifiedAt() { return lastVerifiedAt; }
+    public void setLastVerifiedAt(LocalDateTime lastVerifiedAt) { this.lastVerifiedAt = lastVerifiedAt; }
 
     public Integer getAccumulatedWatchSeconds() {
         return accumulatedWatchSeconds;

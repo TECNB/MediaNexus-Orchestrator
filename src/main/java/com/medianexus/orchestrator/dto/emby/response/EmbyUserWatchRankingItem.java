@@ -25,6 +25,10 @@ public record EmbyUserWatchRankingItem(
         LocalDateTime lastWatchedAt,
         @Schema(description = "最近观看内容标题；上游字段缺失时为 null", nullable = true)
         @JsonProperty("last_item_name")
-        String lastItemName
+        String lastItemName,
+        @JsonProperty("last_item_id") String lastItemId,
+        @JsonProperty("last_media_id") String lastMediaId,
+        @Schema(description = "最近作品分类；未知分类隐藏标题")
+        @JsonProperty("last_category") String lastCategory
 ) {
 }

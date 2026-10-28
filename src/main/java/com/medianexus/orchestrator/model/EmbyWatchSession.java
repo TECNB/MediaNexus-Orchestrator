@@ -20,6 +20,29 @@ public class EmbyWatchSession {
 
     private String itemId;
 
+    private String stopTimeSource;
+
+    public String getStopTimeSource() { return stopTimeSource; }
+    public void setStopTimeSource(String stopTimeSource) { this.stopTimeSource = stopTimeSource; }
+
+    private String accountingBasis;
+
+    public String getAccountingBasis() { return accountingBasis; }
+    public void setAccountingBasis(String accountingBasis) { this.accountingBasis = accountingBasis; }
+
+    private String watchCategory;
+
+    private String libraryId;
+
+    private String libraryName;
+
+    public String getWatchCategory() { return watchCategory; }
+    public void setWatchCategory(String watchCategory) { this.watchCategory = watchCategory; }
+    public String getLibraryId() { return libraryId; }
+    public void setLibraryId(String libraryId) { this.libraryId = libraryId; }
+    public String getLibraryName() { return libraryName; }
+    public void setLibraryName(String libraryName) { this.libraryName = libraryName; }
+
     private String itemType;
 
     private String itemName;

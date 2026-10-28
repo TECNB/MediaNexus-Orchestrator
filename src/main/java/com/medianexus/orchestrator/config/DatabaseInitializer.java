@@ -208,6 +208,7 @@ public class DatabaseInitializer implements ApplicationRunner {
         embyActivePlaybackSessionMapper.createTableIfNotExists();
         ensureEmbyActivePlaybackSessionColumns();
         embyWatchSessionMapper.createTableIfNotExists();
+        embyWatchSessionMapper.createDailyContributionsTableIfNotExists();
         ensureEmbyWatchSessionColumns();
         adultOtherCollectionSyncRunMapper.createTableIfNotExists();
         ensureAdultOtherCollectionSyncRunColumns();
@@ -439,6 +440,15 @@ public class DatabaseInitializer implements ApplicationRunner {
     }
 
     private void ensureEmbyActivePlaybackSessionColumns() {
+        if (embyActivePlaybackSessionMapper.countLastVerifiedAtColumn() == 0) {
+            embyActivePlaybackSessionMapper.addLastVerifiedAtColumn();
+        }
+        if (embyActivePlaybackSessionMapper.countPlaybackIntervalsColumn() == 0) {
+            embyActivePlaybackSessionMapper.addPlaybackIntervalsColumn();
+        }
+        if (embyActivePlaybackSessionMapper.countWatchCategoryColumn() == 0) {
+            embyActivePlaybackSessionMapper.addWatchClassificationColumns();
+        }
         if (embyActivePlaybackSessionMapper.countAccumulatedWatchSecondsColumn() == 0) {
             embyActivePlaybackSessionMapper.addPlaybackStateColumns();
             embyActivePlaybackSessionMapper.initializePlaybackStartTimes();
@@ -456,6 +466,15 @@ public class DatabaseInitializer implements ApplicationRunner {
     }
 
     private void ensureEmbyWatchSessionColumns() {
+        if (embyWatchSessionMapper.countStopTimeSourceColumn() == 0) {
+            embyWatchSessionMapper.addStopTimeSourceColumn();
+        }
+        if (embyWatchSessionMapper.countAccountingBasisColumn() == 0) {
+            embyWatchSessionMapper.addAccountingBasisColumn();
+        }
+        if (embyWatchSessionMapper.countWatchCategoryColumn() == 0) {
+            embyWatchSessionMapper.addWatchClassificationColumns();
+        }
         Integer seasonNumberColumnCount = embyWatchSessionMapper.countSeasonNumberColumn();
         if (seasonNumberColumnCount == null || seasonNumberColumnCount == 0) {
             embyWatchSessionMapper.addEpisodePositionColumns();

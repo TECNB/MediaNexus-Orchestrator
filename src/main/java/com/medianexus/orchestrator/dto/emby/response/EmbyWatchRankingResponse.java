@@ -27,6 +27,8 @@ public record EmbyWatchRankingResponse(
         List<EmbyMediaWatchRankingItem> movies,
         @Schema(description = "电视剧/番剧观看排行")
         List<EmbyMediaWatchRankingItem> series,
+        @Schema(description = "Adult 观看排行；默认隐藏片名且无海报")
+        List<EmbyMediaWatchRankingItem> adults,
         @Schema(description = "Webhook 接入状态")
         @JsonProperty("webhook_status")
         EmbyWebhookStatusResponse webhookStatus

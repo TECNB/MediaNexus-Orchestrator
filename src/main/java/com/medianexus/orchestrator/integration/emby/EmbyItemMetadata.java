@@ -8,6 +8,14 @@ public record EmbyItemMetadata(
         String seriesName,
         Integer seasonNumber,
         Integer episodeNumber,
-        String runtimeTicks
+        String runtimeTicks,
+        String watchCategory,
+        String libraryId,
+        String libraryName
 ) {
+    public EmbyItemMetadata(String itemId, String itemType, String itemName, String seriesId,
+            String seriesName, Integer seasonNumber, Integer episodeNumber, String runtimeTicks) {
+        this(itemId, itemType, itemName, seriesId, seriesName, seasonNumber, episodeNumber,
+                runtimeTicks, "unknown", null, null);
+    }
 }

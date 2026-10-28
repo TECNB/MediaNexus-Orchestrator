@@ -19,6 +19,9 @@ public record EmbyWebhookRecentEventResponse(
         String itemName,
         @Schema(description = "已结算观看秒数；start 事件为 null", nullable = true)
         @JsonProperty("watch_seconds")
-        Integer watchSeconds
+        Integer watchSeconds,
+        @JsonProperty("item_id") String itemId,
+        @JsonProperty("media_id") String mediaId,
+        @Schema(description = "作品分类；未知分类不提供片名或海报") String category
 ) {
 }

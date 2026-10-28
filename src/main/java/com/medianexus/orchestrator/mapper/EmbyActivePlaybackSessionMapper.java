@@ -21,6 +21,9 @@ public interface EmbyActivePlaybackSessionMapper extends BaseMapper<EmbyActivePl
                 emby_user_name VARCHAR(255) NULL,
                 item_id VARCHAR(128) NOT NULL,
                 item_type VARCHAR(64) NOT NULL,
+                watch_category VARCHAR(16) NULL,
+                library_id VARCHAR(128) NULL,
+                library_name VARCHAR(255) NULL,
                 item_name VARCHAR(512) NULL,
                 series_id VARCHAR(128) NULL,
                 series_name VARCHAR(512) NULL,
@@ -28,6 +31,8 @@ public interface EmbyActivePlaybackSessionMapper extends BaseMapper<EmbyActivePl
                 episode_number INT NULL,
                 runtime_ticks BIGINT NULL,
                 start_position_ticks BIGINT NULL,
+                playback_intervals_json LONGTEXT NULL,
+                last_verified_at DATETIME NULL,
                 accumulated_watch_seconds INT NOT NULL DEFAULT 0,
                 playback_start_time DATETIME NULL,
                 start_time DATETIME NOT NULL,
@@ -42,6 +47,45 @@ public interface EmbyActivePlaybackSessionMapper extends BaseMapper<EmbyActivePl
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
             """)
     void createTableIfNotExists();
+
+    @Select("""
+            SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'emby_active_playback_sessions'
+              AND COLUMN_NAME = 'last_verified_at'
+            """)
+    Integer countLastVerifiedAtColumn();
+
+    @Update("""
+            ALTER TABLE emby_active_playback_sessions ADD COLUMN last_verified_at DATETIME NULL
+            """)
+    void addLastVerifiedAtColumn();
+
+    @Select("""
+            SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'emby_active_playback_sessions'
+              AND COLUMN_NAME = 'playback_intervals_json'
+            """)
+    Integer countPlaybackIntervalsColumn();
+
+    @Update("""
+            ALTER TABLE emby_active_playback_sessions ADD COLUMN playback_intervals_json LONGTEXT NULL
+            """)
+    void addPlaybackIntervalsColumn();
+
+    @Select("""
+            SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'emby_active_playback_sessions'
+              AND COLUMN_NAME = 'watch_category'
+            """)
+    Integer countWatchCategoryColumn();
+
+    @Update("""
+            ALTER TABLE emby_active_playback_sessions
+            ADD COLUMN watch_category VARCHAR(16) NULL,
+            ADD COLUMN library_id VARCHAR(128) NULL,
+            ADD COLUMN library_name VARCHAR(255) NULL
+            """)
+    void addWatchClassificationColumns();
 
     @Select("""
             SELECT COUNT(*)
@@ -103,6 +147,9 @@ public interface EmbyActivePlaybackSessionMapper extends BaseMapper<EmbyActivePl
                 emby_user_name,
                 item_id,
                 item_type,
+                watch_category,
+                library_id,
+                library_name,
                 item_name,
                 series_id,
                 series_name,
@@ -110,6 +157,7 @@ public interface EmbyActivePlaybackSessionMapper extends BaseMapper<EmbyActivePl
                 episode_number,
                 runtime_ticks,
                 start_position_ticks,
+                playback_intervals_json,
                 accumulated_watch_seconds,
                 playback_start_time,
                 start_time,
@@ -122,6 +170,9 @@ public interface EmbyActivePlaybackSessionMapper extends BaseMapper<EmbyActivePl
                 #{session.embyUserName},
                 #{session.itemId},
                 #{session.itemType},
+                #{session.watchCategory},
+                #{session.libraryId},
+                #{session.libraryName},
                 #{session.itemName},
                 #{session.seriesId},
                 #{session.seriesName},
@@ -129,6 +180,7 @@ public interface EmbyActivePlaybackSessionMapper extends BaseMapper<EmbyActivePl
                 #{session.episodeNumber},
                 #{session.runtimeTicks},
                 #{session.startPositionTicks},
+                #{session.playbackIntervalsJson},
                 #{session.accumulatedWatchSeconds},
                 #{session.playbackStartTime},
                 #{session.startTime},
@@ -139,6 +191,9 @@ public interface EmbyActivePlaybackSessionMapper extends BaseMapper<EmbyActivePl
                 emby_user_id = VALUES(emby_user_id),
                 emby_user_name = VALUES(emby_user_name),
                 item_type = VALUES(item_type),
+                watch_category = VALUES(watch_category),
+                library_id = VALUES(library_id),
+                library_name = VALUES(library_name),
                 item_name = VALUES(item_name),
                 series_id = VALUES(series_id),
                 series_name = VALUES(series_name),
@@ -146,6 +201,7 @@ public interface EmbyActivePlaybackSessionMapper extends BaseMapper<EmbyActivePl
                 episode_number = VALUES(episode_number),
                 runtime_ticks = VALUES(runtime_ticks),
                 start_position_ticks = VALUES(start_position_ticks),
+                playback_intervals_json = VALUES(playback_intervals_json),
                 accumulated_watch_seconds = VALUES(accumulated_watch_seconds),
                 playback_start_time = VALUES(playback_start_time),
                 start_time = VALUES(start_time),
@@ -161,6 +217,9 @@ public interface EmbyActivePlaybackSessionMapper extends BaseMapper<EmbyActivePl
                    emby_user_name,
                    item_id,
                    item_type,
+                   watch_category,
+                   library_id,
+                   library_name,
                    item_name,
                    series_id,
                    series_name,
@@ -168,6 +227,8 @@ public interface EmbyActivePlaybackSessionMapper extends BaseMapper<EmbyActivePl
                    episode_number,
                    runtime_ticks,
                    start_position_ticks,
+                   playback_intervals_json,
+                   last_verified_at,
                    accumulated_watch_seconds,
                    playback_start_time,
                    start_time,
@@ -192,6 +253,9 @@ public interface EmbyActivePlaybackSessionMapper extends BaseMapper<EmbyActivePl
                    emby_user_name,
                    item_id,
                    item_type,
+                   watch_category,
+                   library_id,
+                   library_name,
                    item_name,
                    series_id,
                    series_name,
@@ -199,6 +263,8 @@ public interface EmbyActivePlaybackSessionMapper extends BaseMapper<EmbyActivePl
                    episode_number,
                    runtime_ticks,
                    start_position_ticks,
+                   playback_intervals_json,
+                   last_verified_at,
                    accumulated_watch_seconds,
                    playback_start_time,
                    start_time,
@@ -218,7 +284,8 @@ public interface EmbyActivePlaybackSessionMapper extends BaseMapper<EmbyActivePl
 
     @Update("""
             UPDATE emby_active_playback_sessions
-            SET accumulated_watch_seconds = #{session.accumulatedWatchSeconds},
+            SET playback_intervals_json = #{session.playbackIntervalsJson},
+                accumulated_watch_seconds = #{session.accumulatedWatchSeconds},
                 playback_start_time = #{session.playbackStartTime}
             WHERE emby_session_id = #{session.embySessionId}
               AND item_id = #{session.itemId}
@@ -254,6 +321,9 @@ public interface EmbyActivePlaybackSessionMapper extends BaseMapper<EmbyActivePl
                    emby_user_name,
                    item_id,
                    item_type,
+                   watch_category,
+                   library_id,
+                   library_name,
                    item_name,
                    series_id,
                    series_name,
@@ -261,6 +331,8 @@ public interface EmbyActivePlaybackSessionMapper extends BaseMapper<EmbyActivePl
                    episode_number,
                    runtime_ticks,
                    start_position_ticks,
+                   playback_intervals_json,
+                   last_verified_at,
                    accumulated_watch_seconds,
                    playback_start_time,
                    start_time,

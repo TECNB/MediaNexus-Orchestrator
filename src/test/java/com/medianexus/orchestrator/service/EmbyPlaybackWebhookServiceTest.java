@@ -44,6 +44,105 @@ class EmbyPlaybackWebhookServiceTest {
     }
 
     @Test
+    void splitsCrossMidnightPlaybackAfterPauseWithoutCountingPauseOrDuplicateEvents() {
+        java.util.concurrent.atomic.AtomicReference<EmbyActivePlaybackSession> active = new java.util.concurrent.atomic.AtomicReference<>();
+        org.mockito.Mockito.doAnswer(invocation -> { active.set(invocation.getArgument(0)); return null; })
+                .when(activeSessionMapper).upsertActiveSession(any());
+        when(activeSessionMapper.selectActiveSessionForUpdate(any(), any())).thenAnswer(invocation -> active.get());
+        org.mockito.Mockito.doAnswer(invocation -> { active.set(null); return null; })
+                .when(activeSessionMapper).deleteActiveSession(any(), any());
+
+        service.receivePlaybackEvent("secret", event("playback.start", "2026-10-31T23:40:00+08:00"));
+        service.receivePlaybackEvent("secret", event("playback.pause", "2026-10-31T23:50:00+08:00"));
+        service.receivePlaybackEvent("secret", event("playback.start", "2026-10-31T23:40:00+08:00"));
+        service.receivePlaybackEvent("secret", event("playback.pause", "2026-10-31T23:55:00+08:00"));
+        service.receivePlaybackEvent("secret", event("playback.unpause", "2026-11-01T00:10:00+08:00"));
+        service.receivePlaybackEvent("secret", event("playback.unpause", "2026-11-01T00:10:00+08:00"));
+        service.receivePlaybackEvent("secret", event("playback.pause", "2026-10-31T23:50:00+08:00"));
+        service.receivePlaybackEvent("secret", event("playback.stop", "2026-11-01T00:20:00+08:00"));
+        service.receivePlaybackEvent("secret", event("playback.stop", "2026-11-01T00:20:00+08:00"));
+
+        ArgumentCaptor<EmbyWatchSession> settled = ArgumentCaptor.forClass(EmbyWatchSession.class);
+        verify(watchSessionMapper).insertWatchSessionIfAbsent(settled.capture());
+        assertThat(settled.getValue().getWatchSeconds()).isEqualTo(1200);
+        assertThat(settled.getValue().getAccountingBasis()).isEqualTo("calendar");
+        assertThat(settled.getValue().getStopTimeSource()).isEqualTo("event");
+        verify(watchSessionMapper).insertDailyContribution(any(), eq(java.time.LocalDate.parse("2026-10-31")), eq(600));
+        verify(watchSessionMapper).insertDailyContribution(any(), eq(java.time.LocalDate.parse("2026-11-01")), eq(600));
+    }
+
+    @Test
+    void splitsContinuousCrossMidnightPlaybackAndCountsShortDailyFragmentsOfAnEffectiveSession() {
+        trackActiveSession();
+        service.receivePlaybackEvent("secret", event("playback.start", "2026-10-31T23:59:58+08:00"));
+        service.receivePlaybackEvent("secret", event("playback.stop", "2026-11-01T00:00:08+08:00"));
+        verify(watchSessionMapper).insertDailyContribution(any(), eq(java.time.LocalDate.parse("2026-10-31")), eq(2));
+        verify(watchSessionMapper).insertDailyContribution(any(), eq(java.time.LocalDate.parse("2026-11-01")), eq(8));
+    }
+
+    @Test
+    void attributesFortyMinutePlaybackToTwentyMinutesPerDay() {
+        trackActiveSession();
+        service.receivePlaybackEvent("secret", event("playback.start", "2026-10-31T23:40:00+08:00"));
+        service.receivePlaybackEvent("secret", event("playback.stop", "2026-11-01T00:20:00+08:00"));
+        verify(watchSessionMapper).insertDailyContribution(any(), eq(java.time.LocalDate.parse("2026-10-31")), eq(1200));
+        verify(watchSessionMapper).insertDailyContribution(any(), eq(java.time.LocalDate.parse("2026-11-01")), eq(1200));
+    }
+
+    @Test
+    void ignoresAWholeSessionShorterThanTenSeconds() {
+        trackActiveSession();
+        service.receivePlaybackEvent("secret", event("playback.start", "2026-10-31T23:59:58+08:00"));
+        service.receivePlaybackEvent("secret", event("playback.stop", "2026-11-01T00:00:07+08:00"));
+        verify(watchSessionMapper, org.mockito.Mockito.never()).insertWatchSessionIfAbsent(any());
+        verify(watchSessionMapper, org.mockito.Mockito.never()).insertDailyContribution(any(), any(), org.mockito.ArgumentMatchers.anyInt());
+    }
+
+    @Test
+    void keepsLegacyActiveSessionOnStopDayWithoutInventingItsMissingIntervals() {
+        var tracked = trackActiveSession();
+        service.receivePlaybackEvent("secret", event("playback.start", "2026-10-31T23:40:00+08:00"));
+        tracked.get().setPlaybackIntervalsJson(null);
+        service.receivePlaybackEvent("secret", event("playback.stop", "2026-11-01T00:20:00+08:00"));
+        ArgumentCaptor<EmbyWatchSession> settled = ArgumentCaptor.forClass(EmbyWatchSession.class);
+        verify(watchSessionMapper).insertWatchSessionIfAbsent(settled.capture());
+        assertThat(settled.getValue().getAccountingBasis()).isEqualTo("legacy");
+        assertThat(settled.getValue().getWatchSeconds()).isEqualTo(2400);
+        assertThat(settled.getValue().getWatchDate()).isEqualTo(java.time.LocalDate.parse("2026-11-01"));
+        verify(watchSessionMapper, org.mockito.Mockito.never()).insertDailyContribution(any(), any(), org.mockito.ArgumentMatchers.anyInt());
+    }
+
+    @Test
+    void settlesSupersededPlaybackThroughTheSameDailyContributionPath() {
+        var tracked = trackActiveSession();
+        service.receivePlaybackEvent("secret", event("playback.start", "2026-10-31T23:40:00+08:00"));
+        var first = tracked.get();
+        when(activeSessionMapper.selectActiveSessionsForContextForUpdate(any(), any())).thenReturn(List.of(first));
+        service.receivePlaybackEvent("secret", event("playback.start", "2026-11-01T00:20:00+08:00").replace("item-1", "item-2"));
+        ArgumentCaptor<EmbyWatchSession> settled = ArgumentCaptor.forClass(EmbyWatchSession.class);
+        verify(watchSessionMapper).insertWatchSessionIfAbsent(settled.capture());
+        assertThat(settled.getValue().getStopTimeSource()).isEqualTo("superseded");
+        verify(watchSessionMapper).insertDailyContribution(any(), eq(java.time.LocalDate.parse("2026-10-31")), eq(1200));
+        verify(watchSessionMapper).insertDailyContribution(any(), eq(java.time.LocalDate.parse("2026-11-01")), eq(1200));
+    }
+
+    private java.util.concurrent.atomic.AtomicReference<EmbyActivePlaybackSession> trackActiveSession() {
+        var active = new java.util.concurrent.atomic.AtomicReference<EmbyActivePlaybackSession>();
+        org.mockito.Mockito.doAnswer(invocation -> { active.set(invocation.getArgument(0)); return null; })
+                .when(activeSessionMapper).upsertActiveSession(any());
+        when(activeSessionMapper.selectActiveSessionForUpdate(any(), any())).thenAnswer(invocation -> active.get());
+        org.mockito.Mockito.doAnswer(invocation -> { active.set(null); return null; })
+                .when(activeSessionMapper).deleteActiveSession(any(), any());
+        return active;
+    }
+
+    private String event(String name, String date) {
+        return "{\"Event\":\"" + name + "\",\"Date\":\"" + date
+                + "\",\"Session\":{\"Id\":\"session-1\",\"UserId\":\"user-1\"},"
+                + "\"Item\":{\"Id\":\"item-1\",\"Type\":\"Movie\",\"Name\":\"Movie title\"}}";
+    }
+
+    @Test
     void recordsEpisodePositionFromNativeWebhookItemFields() {
         service.receivePlaybackEvent("secret", """
                 {
@@ -119,7 +218,7 @@ class EmbyPlaybackWebhookServiceTest {
     }
 
     @Test
-    void doesNotLookupMovieMetadata() {
+    void looksUpMovieClassificationAndKeepsUnavailableClassificationUnknown() {
         service.receivePlaybackEvent("secret", """
                 {
                   "Event": "playback.start",
@@ -136,7 +235,10 @@ class EmbyPlaybackWebhookServiceTest {
                 }
                 """);
 
-        verify(itemMetadataLookup, org.mockito.Mockito.never()).findItemMetadata(any(), any());
+        verify(itemMetadataLookup).findItemMetadata("user-1", "movie-1");
+        ArgumentCaptor<EmbyActivePlaybackSession> session = ArgumentCaptor.forClass(EmbyActivePlaybackSession.class);
+        verify(activeSessionMapper).upsertActiveSession(session.capture());
+        assertThat(session.getValue().getWatchCategory()).isEqualTo("unknown");
     }
 
     @Test

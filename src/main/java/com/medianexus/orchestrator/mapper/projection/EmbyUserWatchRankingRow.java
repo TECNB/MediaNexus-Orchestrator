@@ -15,6 +15,16 @@ public class EmbyUserWatchRankingRow {
     private LocalDateTime lastWatchedAt;
 
     private String lastItemName;
+    private String lastItemId;
+    private String lastMediaId;
+    private String lastCategory;
+    public String getLastItemId() { return lastItemId; }
+    public void setLastItemId(String value) { lastItemId = value; }
+    public String getLastMediaId() { return lastMediaId; }
+    public void setLastMediaId(String value) { lastMediaId = value; }
+    public String getLastCategory() { return lastCategory; }
+    public void setLastCategory(String value) { lastCategory = value; }
+
 
     public String getEmbyUserId() {
         return embyUserId;
