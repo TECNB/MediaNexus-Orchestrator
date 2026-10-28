@@ -93,9 +93,9 @@ public interface EmbyWatchDetailsMapper {
                    MAX(CASE WHEN recent_order = 1 THEN episode_number END) AS episode_number
             FROM ordered_works
             GROUP BY category, media_id
-            ORDER BY CASE WHEN #{sort} = 'viewers' THEN viewer_count
-                          WHEN #{sort} = 'plays' THEN play_count ELSE watch_seconds END DESC,
-                     watch_seconds DESC, play_count DESC, category ASC, media_id ASC
+            ORDER BY CASE WHEN #{sort} = 'viewers' THEN COUNT(DISTINCT emby_user_id)
+                          WHEN #{sort} = 'plays' THEN COUNT(*) ELSE SUM(range_watch_seconds) END DESC,
+                     SUM(range_watch_seconds) DESC, COUNT(*) DESC, category ASC, media_id ASC
             LIMIT #{pageSize} OFFSET #{offset}
             """)
     List<EmbyWatchDetails.Work> selectWorks(@Param("startDate") LocalDate startDate, @Param("endDate") LocalDate endDate,
