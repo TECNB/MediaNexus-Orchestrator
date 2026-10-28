@@ -125,7 +125,7 @@ public class EmbyItemMetadataClient implements EmbyItemMetadataLookup {
         if (library.name().equalsIgnoreCase("Adult - Other") || library.name().equalsIgnoreCase("Adult-JAV")) {
             return "adult";
         }
-        boolean ordinaryLibrary = java.util.Set.of("Movies", "TV", "Anime", "综艺").stream()
+        boolean ordinaryLibrary = java.util.Set.of("Movies", "TV", "Anime", "综艺", "国产剧").stream()
                 .anyMatch(name -> name.equalsIgnoreCase(library.name()));
         if (!ordinaryLibrary) return "unknown";
         if ("Movie".equalsIgnoreCase(itemType)) return "movie";

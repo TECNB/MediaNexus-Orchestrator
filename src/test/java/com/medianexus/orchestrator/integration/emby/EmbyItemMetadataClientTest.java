@@ -18,7 +18,8 @@ class EmbyItemMetadataClientTest {
             byte[] body = """
                     [{"ItemId":"movies","Name":"Movies","Locations":["/media"]},
                      {"ItemId":"private","Name":"Adult - Other","Locations":["/media/private"]},
-                     {"ItemId":"anime","Name":"Anime","Locations":["/anime"]}]
+                     {"ItemId":"anime","Name":"Anime","Locations":["/anime"]},
+                     {"ItemId":"domestic","Name":"国产剧","Locations":["/domestic"]}]
                     """.getBytes(StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(200, body.length);
             exchange.getResponseBody().write(body);
@@ -30,9 +31,10 @@ class EmbyItemMetadataClientTest {
                 case "private" -> "/media/private/video.mkv";
                 case "animated-movie" -> "/anime/movie.mkv";
                 case "episode" -> "/anime/show/episode.mkv";
+                case "domestic" -> "/domestic/show/episode.mkv";
                 default -> "/unmapped/movie.mkv";
             };
-            String type = "private".equals(id) ? "Video" : "episode".equals(id) ? "Episode" : "Movie";
+            String type = "private".equals(id) ? "Video" : java.util.Set.of("episode", "domestic").contains(id) ? "Episode" : "Movie";
             byte[] body = ("{\"Id\":\"" + id + "\",\"Type\":\"" + type
                     + "\",\"Path\":\"" + path + "\",\"Name\":\"Title\"}").getBytes(StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(200, body.length);
@@ -53,6 +55,9 @@ class EmbyItemMetadataClientTest {
             assertThat(adult.libraryId()).isEqualTo("private");
             assertThat(client.findItemMetadata("user", "animated-movie").orElseThrow().watchCategory()).isEqualTo("movie");
             assertThat(client.findItemMetadata("user", "episode").orElseThrow().watchCategory()).isEqualTo("series");
+            var domestic = client.findItemMetadata("user", "domestic").orElseThrow();
+            assertThat(domestic.watchCategory()).isEqualTo("series");
+            assertThat(domestic.libraryName()).isEqualTo("国产剧");
             assertThat(client.findItemMetadata("user", "unknown").orElseThrow().watchCategory()).isEqualTo("unknown");
         } finally {
             server.stop(0);
