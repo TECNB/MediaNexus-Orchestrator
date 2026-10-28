@@ -15,6 +15,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collection;
@@ -24,6 +25,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
@@ -34,6 +36,7 @@ public class EmbyClient {
     private final EmbyProperties properties;
     private final ObjectMapper objectMapper;
     private final HttpClient httpClient;
+    private final Map<String, PlaybackMetadataCache> playbackMetadata = new ConcurrentHashMap<>();
 
     public EmbyClient(EmbyProperties properties, ObjectMapper objectMapper) {
         this.properties = properties;
@@ -42,6 +45,102 @@ public class EmbyClient {
                 .connectTimeout(timeout())
                 .build();
     }
+
+    /** 仅查询当前视频会话和已有元数据；不触发 PlaybackInfo、扫描或媒体探测。 */
+    public List<EmbyPlaybackSession> listPlaybackSessions() {
+        JsonNode sessions = get("/Sessions", Map.of());
+        if (!sessions.isArray()) {
+            throw new EmbyClientException("Emby sessions response is incomplete");
+        }
+        Instant now = Instant.now();
+        playbackMetadata.entrySet().removeIf(entry -> !entry.getValue().expiresAt().isAfter(now));
+        List<EmbyPlaybackSession> result = new ArrayList<>();
+        for (JsonNode session : sessions) {
+            JsonNode playing = session.path("NowPlayingItem");
+            String type = playing.path("Type").asText("");
+            if (!Set.of("Movie", "Episode", "Video").contains(type)) {
+                continue;
+            }
+            String itemId = playing.path("Id").asText("");
+            String sessionId = session.path("Id").asText("");
+            if (itemId.isBlank() || sessionId.isBlank()) {
+                throw new EmbyClientException("Emby playback session identity missing");
+            }
+            PlaybackMetadataCache cached = playbackMetadata.computeIfAbsent(itemId, id -> {
+                JsonNode metadata;
+                try {
+                    JsonNode items = get("/Items", Map.of("Ids", id, "Fields", "MediaSources", "Limit", "1")).path("Items");
+                    metadata = items.isArray() && !items.isEmpty() && id.equals(items.get(0).path("Id").asText())
+                            ? items.get(0) : objectMapper.createObjectNode();
+                } catch (EmbyClientException exception) {
+                    // 元数据不可用不抹掉真实会话；短暂缓存缺项，避免每五秒重试。
+                    return new PlaybackMetadataCache(objectMapper.createObjectNode(), now.plusSeconds(30));
+                }
+                return new PlaybackMetadataCache(metadata, now.plusSeconds(300));
+            });
+            JsonNode item = playing.deepCopy();
+            if (cached.item().isObject()) {
+                cached.item().fields().forEachRemaining(field -> {
+                    if (!item.hasNonNull(field.getKey()) || (item.path(field.getKey()).isContainerNode() && item.path(field.getKey()).isEmpty())) {
+                        ((com.fasterxml.jackson.databind.node.ObjectNode) item).set(field.getKey(), field.getValue());
+                    }
+                });
+            }
+            JsonNode state = session.path("PlayState");
+            String sourceId = state.path("MediaSourceId").asText("");
+            JsonNode activeSource = state.path("MediaSource");
+            Double duration = sourceId.isBlank() || !activeSource.hasNonNull("Id") || sourceId.equals(activeSource.path("Id").asText())
+                    ? playbackSeconds(activeSource.path("RunTimeTicks")) : null;
+            if (duration == null && !sourceId.isBlank()) {
+                for (JsonNode source : item.path("MediaSources")) {
+                    if (sourceId.equals(source.path("Id").asText())) {
+                        duration = playbackSeconds(source.path("RunTimeTicks"));
+                        break;
+                    }
+                }
+            }
+            // 已指定版本时不能用其他版本或条目级时长冒充当前版本。
+            if (duration == null && item.path("MediaSources").size() <= 1 && (sourceId.isBlank() || sourceId.equals(itemId))) {
+                duration = playbackSeconds(item.path("RunTimeTicks"));
+            }
+            List<EmbyPlaybackSession.Poster> posters = new ArrayList<>();
+            if ("Episode".equals(type)) {
+                addPlaybackPoster(posters, item, "SeriesId", item.path("SeriesPrimaryImageTag"));
+                addPlaybackPoster(posters, item, "SeasonId", item.path("SeasonPrimaryImageTag"));
+            }
+            addPlaybackPoster(posters, item, "Id", item.path("ImageTags").path("Primary"));
+            result.add(new EmbyPlaybackSession(
+                    sessionId, session.path("UserId").asText(null), session.path("UserName").asText(null),
+                    session.path("Client").asText(null), session.path("DeviceName").asText(null),
+                    state.path("IsPaused").isBoolean() ? state.path("IsPaused").asBoolean() : null,
+                    itemId, type, item.path("Name").asText(null), item.path("SeriesName").asText(null),
+                    playbackNumber(item.path("ParentIndexNumber")), playbackNumber(item.path("IndexNumber")),
+                    playbackNumber(item.path("IndexNumberEnd")), playbackSeconds(state.path("PositionTicks")),
+                    duration, posters
+            ));
+        }
+        return result;
+    }
+
+    private void addPlaybackPoster(List<EmbyPlaybackSession.Poster> posters, JsonNode item, String idField, JsonNode tag) {
+        String id = item.path(idField).asText("");
+        if (!id.isBlank()) {
+            posters.add(new EmbyPlaybackSession.Poster(id, tag.asText(null)));
+        }
+    }
+
+    private Double playbackSeconds(JsonNode ticks) {
+        if (!ticks.canConvertToLong() || ticks.longValue() < 0) {
+            return null;
+        }
+        return ticks.longValue() / 10_000_000.0;
+    }
+
+    private Integer playbackNumber(JsonNode number) {
+        return number.canConvertToInt() && number.intValue() >= 0 ? number.intValue() : null;
+    }
+
+    private record PlaybackMetadataCache(JsonNode item, Instant expiresAt) {}
 
     public List<EmbyLibrary> listLibraries() {
         JsonNode root = get("/Library/VirtualFolders", Map.of());
