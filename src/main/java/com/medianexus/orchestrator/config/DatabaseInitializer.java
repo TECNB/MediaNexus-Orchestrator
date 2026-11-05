@@ -67,6 +67,7 @@ public class DatabaseInitializer implements ApplicationRunner {
     private final SubtitleUploadLogMapper subtitleUploadLogMapper;
     private final EmbyActivePlaybackSessionMapper embyActivePlaybackSessionMapper;
     private final EmbyWatchSessionMapper embyWatchSessionMapper;
+    private final EmbyWatchCollectionSchema embyWatchCollectionSchema;
     private final AdultOtherCollectionSyncRunMapper adultOtherCollectionSyncRunMapper;
     private final AdultOtherCollectionSyncGroupMapper adultOtherCollectionSyncGroupMapper;
     private final AdultOtherCollectionKnownItemMapper adultOtherCollectionKnownItemMapper;
@@ -100,6 +101,7 @@ public class DatabaseInitializer implements ApplicationRunner {
             SubtitleUploadLogMapper subtitleUploadLogMapper,
             EmbyActivePlaybackSessionMapper embyActivePlaybackSessionMapper,
             EmbyWatchSessionMapper embyWatchSessionMapper,
+            EmbyWatchCollectionSchema embyWatchCollectionSchema,
             AdultOtherCollectionSyncRunMapper adultOtherCollectionSyncRunMapper,
             AdultOtherCollectionSyncGroupMapper adultOtherCollectionSyncGroupMapper,
             AdultOtherCollectionKnownItemMapper adultOtherCollectionKnownItemMapper,
@@ -132,6 +134,7 @@ public class DatabaseInitializer implements ApplicationRunner {
         this.subtitleUploadLogMapper = subtitleUploadLogMapper;
         this.embyActivePlaybackSessionMapper = embyActivePlaybackSessionMapper;
         this.embyWatchSessionMapper = embyWatchSessionMapper;
+        this.embyWatchCollectionSchema = embyWatchCollectionSchema;
         this.adultOtherCollectionSyncRunMapper = adultOtherCollectionSyncRunMapper;
         this.adultOtherCollectionSyncGroupMapper = adultOtherCollectionSyncGroupMapper;
         this.adultOtherCollectionKnownItemMapper = adultOtherCollectionKnownItemMapper;
@@ -210,6 +213,7 @@ public class DatabaseInitializer implements ApplicationRunner {
         embyWatchSessionMapper.createTableIfNotExists();
         embyWatchSessionMapper.createDailyContributionsTableIfNotExists();
         ensureEmbyWatchSessionColumns();
+        embyWatchCollectionSchema.initialize();
         adultOtherCollectionSyncRunMapper.createTableIfNotExists();
         ensureAdultOtherCollectionSyncRunColumns();
         adultOtherCollectionSyncGroupMapper.createTableIfNotExists();

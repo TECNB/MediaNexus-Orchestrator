@@ -19,19 +19,25 @@ public interface EmbyWatchSessionMapper extends BaseMapper<EmbyWatchSession> {
 
     /** 一行对应一次有效已结算会话；自然日贡献先按会话求和，再进行人数及播放次数统计。 */
     String RANGE_SESSIONS = """
-            WITH range_sessions AS (
+            WITH daily_range AS (
+                SELECT playback_instance_id, emby_session_id, item_id, start_time,
+                       SUM(watch_seconds) AS range_watch_seconds, COUNT(*) AS contribution_days
+                FROM emby_watch_daily_contributions
+                WHERE watch_date >= #{startDate} AND #{endDate} > watch_date
+                GROUP BY playback_instance_id, emby_session_id, item_id, start_time
+            ), range_sessions AS (
                 SELECT sessions.*,
                        CASE WHEN sessions.accounting_basis = 'calendar'
                             THEN daily.range_watch_seconds ELSE sessions.watch_seconds END AS range_watch_seconds
                 FROM emby_watch_sessions sessions
-                LEFT JOIN (
-                    SELECT emby_session_id, item_id, start_time, SUM(watch_seconds) AS range_watch_seconds
-                    FROM emby_watch_daily_contributions
-                    WHERE watch_date >= #{startDate} AND #{endDate} > watch_date
-                    GROUP BY emby_session_id, item_id, start_time
-                ) daily ON daily.emby_session_id = sessions.emby_session_id
-                       AND daily.item_id = sessions.item_id AND daily.start_time = sessions.start_time
-                WHERE (sessions.accounting_basis = 'calendar' AND daily.range_watch_seconds > 0)
+                LEFT JOIN daily_range daily ON
+                     (sessions.playback_instance_id IS NOT NULL AND daily.playback_instance_id = sessions.playback_instance_id)
+                     OR (sessions.playback_instance_id IS NULL AND daily.playback_instance_id IS NULL
+                         AND daily.emby_session_id = sessions.emby_session_id AND daily.item_id = sessions.item_id
+                         AND daily.start_time = sessions.start_time)
+                WHERE (sessions.accounting_basis = 'calendar'
+                       AND ((sessions.playback_instance_id IS NOT NULL AND daily.contribution_days > 0)
+                            OR (sessions.playback_instance_id IS NULL AND daily.range_watch_seconds > 0)))
                    OR (COALESCE(sessions.accounting_basis, 'legacy') = 'legacy'
                        AND sessions.watch_date >= #{startDate} AND #{endDate} > sessions.watch_date)
             )
@@ -249,6 +255,7 @@ public interface EmbyWatchSessionMapper extends BaseMapper<EmbyWatchSession> {
 
     @Select("""
             SELECT id,
+                   playback_instance_id,
                    emby_session_id,
                    emby_user_id,
                    emby_user_name,
@@ -475,6 +482,7 @@ public interface EmbyWatchSessionMapper extends BaseMapper<EmbyWatchSession> {
 
     @Select("""
             SELECT id,
+                   playback_instance_id,
                    emby_session_id,
                    emby_user_id,
                    emby_user_name,

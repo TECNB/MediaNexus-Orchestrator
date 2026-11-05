@@ -4,7 +4,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import io.swagger.v3.oas.annotations.media.Schema;
 import java.time.LocalDateTime;
 
-@Schema(description = "Emby Webhook 最近事件")
+@Schema(description = "最近播放动向；来源区分采样观察和旧 Webhook")
 public record EmbyWebhookRecentEventResponse(
         @Schema(description = "事件名称，例如 playback.start 或 playback.stop")
         String event,
@@ -22,6 +22,9 @@ public record EmbyWebhookRecentEventResponse(
         Integer watchSeconds,
         @JsonProperty("item_id") String itemId,
         @JsonProperty("media_id") String mediaId,
-        @Schema(description = "作品分类；未知分类不提供片名或海报") String category
+        @Schema(description = "作品分类；未知分类不提供片名或海报") String category,
+        @Schema(description = "采集来源：sampling 采样，webhook 旧事件") String source,
+        @Schema(description = "结束来源：inferred 采样推定、migration 旧活动交接，或旧 event/superseded/unknown；开始为 null", nullable = true)
+        @JsonProperty("stop_time_source") String stopTimeSource
 ) {
 }

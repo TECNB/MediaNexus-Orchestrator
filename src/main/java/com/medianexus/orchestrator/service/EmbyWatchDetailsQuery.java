@@ -1,17 +1,10 @@
 package com.medianexus.orchestrator.service;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.medianexus.orchestrator.common.exception.BusinessException;
 import com.medianexus.orchestrator.common.exception.ErrorCode;
 import com.medianexus.orchestrator.dto.emby.response.EmbyWatchDetails;
-import com.medianexus.orchestrator.integration.emby.EmbyClient;
-import com.medianexus.orchestrator.integration.emby.EmbyClientException;
-import com.medianexus.orchestrator.integration.emby.EmbyPlaybackSession;
 import com.medianexus.orchestrator.mapper.EmbyWatchDetailsMapper;
 import com.medianexus.orchestrator.model.EmbyActivePlaybackSession;
-import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.YearMonth;
@@ -26,7 +19,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
-/** 按同一结算范围读取完整观看动向；实时核验仅影响单独的估算记录。 */
+/** 按同一结算范围读取完整观看动向；只读取已保存的采集截止点，不核验或外推。 */
 @Service
 @Transactional(readOnly = true)
 public class EmbyWatchDetailsQuery {
@@ -36,15 +29,13 @@ public class EmbyWatchDetailsQuery {
             .thenComparing(EmbyWatchDetails.Session::id, Comparator.reverseOrder());
     private final AuthService authService;
     private final EmbyWatchDetailsMapper mapper;
-    private final EmbyClient embyClient;
-    private final ObjectMapper objectMapper;
+    private final EmbyPlaybackSnapshotCollector collector;
 
     public EmbyWatchDetailsQuery(AuthService authService, EmbyWatchDetailsMapper mapper,
-            EmbyClient embyClient, ObjectMapper objectMapper) {
+            EmbyPlaybackSnapshotCollector collector) {
         this.authService = authService;
         this.mapper = mapper;
-        this.embyClient = embyClient;
-        this.objectMapper = objectMapper;
+        this.collector = collector;
     }
 
     public EmbyWatchDetails.Page<EmbyWatchDetails.User> users(String period, String date, String month, int page, int pageSize) {
@@ -84,7 +75,6 @@ public class EmbyWatchDetailsQuery {
                 page, pageSize, mapper.countViewers(range.start(), range.end(), mediaId, category));
     }
 
-    @Transactional
     public EmbyWatchDetails.Page<EmbyWatchDetails.Session> sessions(String userId, String mediaId, String category, String period, String date, String month, int page, int pageSize) {
         authService.requireAdminUser();
         if (category != null) requireCategory(category);
@@ -102,7 +92,6 @@ public class EmbyWatchDetailsQuery {
         return new EmbyWatchDetails.Page<>(items, page, pageSize, settledCount + tracked.size());
     }
 
-    @Transactional
     public EmbyWatchDetails.Page<EmbyWatchDetails.Session> activity(String period, String date, String month, int page, int pageSize) {
         authService.requireAdminUser();
         WatchRange range = range(period, date, month);
@@ -115,31 +104,33 @@ public class EmbyWatchDetailsQuery {
     private List<EmbyWatchDetails.Session> trackedSessions(WatchRange range, String userId) {
         List<EmbyActivePlaybackSession> tracked = mapper.selectTrackedSessions(range.end().atStartOfDay(), userId);
         if (tracked.isEmpty()) return List.of();
-        List<EmbyPlaybackSession> live;
-        try {
-            live = embyClient.listPlaybackSessions();
-        } catch (EmbyClientException exception) {
-            live = List.of();
-        }
-        LocalDateTime now = LocalDateTime.now(WATCH_ZONE).withNano(0);
+        var snapshot = collector.currentSnapshot();
         List<EmbyWatchDetails.Session> sessions = new ArrayList<>();
         for (EmbyActivePlaybackSession active : tracked) {
-            EmbyPlaybackSession current = live.stream().filter(session ->
-                    active.getEmbySessionId().equals(session.id())
-                    && active.getItemId().equals(session.itemId())
-                    && active.getEmbyUserId().equals(session.userId())).findFirst().orElse(null);
-            LocalDateTime lastObserved = active.getUpdatedAt() != null ? active.getUpdatedAt() : active.getStartTime();
-            if (active.getLastVerifiedAt() != null && active.getLastVerifiedAt().isAfter(lastObserved)) {
-                lastObserved = active.getLastVerifiedAt();
+            List<EmbyWatchTimeline.Span> spans;
+            try {
+                spans = active.getPlaybackInstanceId() == null ? EmbyWatchTimeline.closed(active) : EmbyWatchTimeline.evidenced(active);
+            } catch (IllegalStateException | DateTimeParseException exception) {
+                throw new BusinessException(ErrorCode.BAD_REQUEST, "观看分段暂不可用，请稍后重试");
             }
-            boolean verifiedPlaying = current != null && Boolean.FALSE.equals(current.paused());
-            LocalDateTime observed = verifiedPlaying && now.isAfter(lastObserved) ? now : lastObserved;
-            if (verifiedPlaying) mapper.recordVerifiedPlayback(active.getId(), observed);
-            long[] seconds = trackedSeconds(active, range, observed);
-            if (seconds[1] <= 0 && !(active.getStartTime().toLocalDate().compareTo(range.start()) >= 0
+            LocalDateTime observed = active.getLastObservedAt() != null ? active.getLastObservedAt() : EmbyWatchTimeline.legacyCutoff(active, spans);
+            var days = EmbyWatchTimeline.days(spans);
+            // 旧累计是已保存事实；即使分段不一致而冻结交接，也不能在读取时重算覆盖。
+            long total = active.getPlaybackInstanceId() == null
+                    ? (active.getAccumulatedWatchSeconds() == null ? 0 : active.getAccumulatedWatchSeconds())
+                    : EmbyWatchTimeline.seconds(spans);
+            long contribution = active.getPlaybackIntervalsJson() == null
+                    ? (!observed.toLocalDate().isBefore(range.start()) && observed.toLocalDate().isBefore(range.end()) ? total : 0)
+                    : days.entrySet().stream().filter(day -> !day.getKey().isBefore(range.start()) && day.getKey().isBefore(range.end()))
+                            .mapToLong(java.util.Map.Entry::getValue).sum();
+            boolean contributed = days.keySet().stream().anyMatch(day -> !day.isBefore(range.start()) && day.isBefore(range.end()));
+            if (!contributed && !(active.getStartTime().toLocalDate().compareTo(range.start()) >= 0
                     && active.getStartTime().toLocalDate().isBefore(range.end()))) continue;
             String category = active.getWatchCategory() == null ? "unknown" : active.getWatchCategory();
-            String state = current == null || current.paused() == null ? "unverified" : current.paused() ? "paused" : "playing";
+            boolean confirmed = "fresh".equals(snapshot.collectionStatus()) && active.getLastObservedAt() != null
+                    && snapshot.collectedAt() != null
+                    && active.getLastObservedAt().equals(LocalDateTime.ofInstant(snapshot.collectedAt(), WATCH_ZONE));
+            String state = !confirmed || "unknown".equals(active.getObservedState()) ? "unverified" : active.getObservedState();
             String mediaId = "series".equals(category) && StringUtils.hasText(active.getSeriesId()) ? active.getSeriesId() : active.getItemId();
             String title = switch (category) {
                 case "adult" -> "私密观看";
@@ -148,46 +139,11 @@ public class EmbyWatchDetailsQuery {
                 default -> "分类待确认";
             };
             sessions.add(new EmbyWatchDetails.Session("active:" + active.getId(), mediaId, active.getItemId(), title, category,
-                    active.getSeasonNumber(), active.getEpisodeNumber(), active.getStartTime(), null, seconds[0], seconds[1],
+                    active.getSeasonNumber(), active.getEpisodeNumber(), active.getStartTime(), null, total, contribution,
                     active.getPlaybackIntervalsJson() == null ? "legacy" : "calendar", null, active.getDeviceName(), active.getClientName(),
-                    active.getEmbyUserId(), display(active.getEmbyUserName(), active.getEmbyUserId()), state, observed));
+                    active.getEmbyUserId(), display(active.getEmbyUserName(), active.getEmbyUserId()), state, observed, active.getPlaybackInstanceId() == null ? "webhook" : "sampling"));
         }
         return sessions;
-    }
-
-    private long[] trackedSeconds(EmbyActivePlaybackSession active, WatchRange range, LocalDateTime observed) {
-        long cap = active.getRuntimeTicks() != null && active.getRuntimeTicks() > 0 ? active.getRuntimeTicks() / 10_000_000 : 43_200;
-        if (active.getPlaybackIntervalsJson() == null) {
-            long total = Math.min(cap, (active.getAccumulatedWatchSeconds() == null ? 0 : active.getAccumulatedWatchSeconds())
-                    + secondsBetween(active.getPlaybackStartTime(), observed));
-            long contribution = !observed.toLocalDate().isBefore(range.start()) && observed.toLocalDate().isBefore(range.end()) ? total : 0;
-            return new long[]{total, contribution};
-        }
-        List<PlaybackInterval> intervals = new ArrayList<>();
-        try {
-            for (JsonNode node : objectMapper.readTree(active.getPlaybackIntervalsJson())) {
-                intervals.add(new PlaybackInterval(LocalDateTime.parse(node.path("start").asText()), LocalDateTime.parse(node.path("end").asText())));
-            }
-        } catch (JsonProcessingException | DateTimeParseException exception) {
-            throw new BusinessException(ErrorCode.BAD_REQUEST, "观看分段暂不可用，请稍后重试");
-        }
-        if (active.getPlaybackStartTime() != null) intervals.add(new PlaybackInterval(active.getPlaybackStartTime(), observed));
-        long total = 0;
-        long contribution = 0;
-        for (PlaybackInterval interval : intervals) {
-            long seconds = Math.min(cap - total, secondsBetween(interval.start(), interval.end()));
-            if (seconds <= 0) continue;
-            LocalDateTime effectiveEnd = interval.start().plusSeconds(seconds);
-            LocalDateTime start = interval.start().isAfter(range.start().atStartOfDay()) ? interval.start() : range.start().atStartOfDay();
-            LocalDateTime end = effectiveEnd.isBefore(range.end().atStartOfDay()) ? effectiveEnd : range.end().atStartOfDay();
-            contribution += secondsBetween(start, end);
-            total += seconds;
-        }
-        return new long[]{total, contribution};
-    }
-
-    private long secondsBetween(LocalDateTime start, LocalDateTime end) {
-        return start == null || !end.isAfter(start) ? 0 : Duration.between(start, end).getSeconds();
     }
 
     private String display(String text, String fallback) { return StringUtils.hasText(text) ? text : fallback; }
@@ -223,5 +179,4 @@ public class EmbyWatchDetailsQuery {
     }
 
     private record WatchRange(LocalDate start, LocalDate end) {}
-    private record PlaybackInterval(LocalDateTime start, LocalDateTime end) {}
 }

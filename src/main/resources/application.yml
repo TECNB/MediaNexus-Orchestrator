@@ -55,6 +55,7 @@ medianexus:
       uuid: ${MEDIANEXUS_AUTOSYMLINK_ADULT_TASK_UUID:}
       request-body-json: ${MEDIANEXUS_AUTOSYMLINK_ADULT_REQUEST_BODY_JSON:}
   emby:
+    playback-collection-delay: ${MEDIANEXUS_EMBY_PLAYBACK_COLLECTION_DELAY:PT1S}
     base-url: ${MEDIANEXUS_EMBY_BASE_URL:}
     api-key: ${MEDIANEXUS_EMBY_API_KEY:}
     registration-password-secret: ${MEDIANEXUS_EMBY_REGISTRATION_PASSWORD_SECRET:}

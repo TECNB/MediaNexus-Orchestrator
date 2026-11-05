@@ -11,6 +11,20 @@ public class EmbyActivePlaybackSession {
     @TableId(type = IdType.AUTO)
     private Long id;
 
+    private String playbackInstanceId;
+    public String getPlaybackInstanceId() { return playbackInstanceId; }
+    public void setPlaybackInstanceId(String playbackInstanceId) { this.playbackInstanceId = playbackInstanceId; }
+
+    private LocalDateTime lastObservedAt;
+    private String observedState;
+    private Integer observationCount;
+    public LocalDateTime getLastObservedAt() { return lastObservedAt; }
+    public void setLastObservedAt(LocalDateTime lastObservedAt) { this.lastObservedAt = lastObservedAt; }
+    public String getObservedState() { return observedState; }
+    public void setObservedState(String observedState) { this.observedState = observedState; }
+    public Integer getObservationCount() { return observationCount; }
+    public void setObservationCount(Integer observationCount) { this.observationCount = observationCount; }
+
     private String embySessionId;
 
     private String embyUserId;

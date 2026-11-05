@@ -212,6 +212,8 @@ public interface EmbyActivePlaybackSessionMapper extends BaseMapper<EmbyActivePl
 
     @Select("""
             SELECT id,
+                   playback_instance_id,
+                   last_observed_at, observed_state, observation_count,
                    emby_session_id,
                    emby_user_id,
                    emby_user_name,
@@ -248,6 +250,8 @@ public interface EmbyActivePlaybackSessionMapper extends BaseMapper<EmbyActivePl
 
     @Select("""
             SELECT id,
+                   playback_instance_id,
+                   last_observed_at, observed_state, observation_count,
                    emby_session_id,
                    emby_user_id,
                    emby_user_name,
@@ -316,6 +320,8 @@ public interface EmbyActivePlaybackSessionMapper extends BaseMapper<EmbyActivePl
 
     @Select("""
             SELECT id,
+                   playback_instance_id,
+                   last_observed_at, observed_state, observation_count,
                    emby_session_id,
                    emby_user_id,
                    emby_user_name,

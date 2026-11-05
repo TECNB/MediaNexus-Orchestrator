@@ -12,6 +12,10 @@ public class EmbyWatchSession {
     @TableId(type = IdType.AUTO)
     private Long id;
 
+    private String playbackInstanceId;
+    public String getPlaybackInstanceId() { return playbackInstanceId; }
+    public void setPlaybackInstanceId(String playbackInstanceId) { this.playbackInstanceId = playbackInstanceId; }
+
     private String embySessionId;
 
     private String embyUserId;

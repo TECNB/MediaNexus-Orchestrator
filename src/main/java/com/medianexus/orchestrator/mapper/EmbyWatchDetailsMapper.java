@@ -8,7 +8,6 @@ import java.util.List;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
-import org.apache.ibatis.annotations.Update;
 
 @Mapper
 public interface EmbyWatchDetailsMapper {
@@ -116,7 +115,8 @@ public interface EmbyWatchDetailsMapper {
                    COALESCE(stop_time_source, 'unknown') AS stop_time_source,
                    device_name, client_name, emby_user_id,
                    COALESCE(NULLIF(emby_user_name, ''), emby_user_id) AS user_name,
-                   'settled' AS state, NULL AS observed_at
+                   'settled' AS state, NULL AS observed_at,
+                   CASE WHEN playback_instance_id IS NULL THEN 'webhook' ELSE 'sampling' END AS source
             FROM detail_sessions
             WHERE emby_user_id = #{userId} AND (#{mediaId} IS NULL OR media_id = #{mediaId}) AND (#{category} IS NULL OR category = #{category})
             ORDER BY start_time DESC, id DESC
@@ -145,15 +145,6 @@ public interface EmbyWatchDetailsMapper {
             """)
     List<EmbyWatchDetails.Viewer> selectViewers(@Param("startDate") LocalDate startDate, @Param("endDate") LocalDate endDate,
             @Param("mediaId") String mediaId, @Param("category") String category, @Param("offset") int offset, @Param("pageSize") int pageSize);
-
-    /** 核验快照不伪装成新的播放事件；并发核验只能向前推进。 */
-    @Update("""
-            UPDATE emby_active_playback_sessions
-            SET last_verified_at = GREATEST(COALESCE(last_verified_at, #{observedAt}), #{observedAt}),
-                updated_at = updated_at
-            WHERE id = #{id}
-            """)
-    void recordVerifiedPlayback(@Param("id") long id, @Param("observedAt") LocalDateTime observedAt);
 
     @Select("""
             SELECT * FROM emby_active_playback_sessions

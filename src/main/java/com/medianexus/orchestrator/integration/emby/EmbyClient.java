@@ -49,23 +49,34 @@ public class EmbyClient {
     /** 仅查询当前视频会话和已有元数据；不触发 PlaybackInfo、扫描或媒体探测。 */
     public List<EmbyPlaybackSession> listPlaybackSessions() {
         JsonNode sessions = get("/Sessions", Map.of());
-        if (!sessions.isArray()) {
+        if (sessions == null || !sessions.isArray()) {
             throw new EmbyClientException("Emby sessions response is incomplete");
         }
         Instant now = Instant.now();
         playbackMetadata.entrySet().removeIf(entry -> !entry.getValue().expiresAt().isAfter(now));
         List<EmbyPlaybackSession> result = new ArrayList<>();
         for (JsonNode session : sessions) {
+            if (!session.isObject() || !session.path("Id").isTextual() || session.path("Id").asText().isBlank()) {
+                throw new EmbyClientException("Emby session identity missing or invalid");
+            }
             JsonNode playing = session.path("NowPlayingItem");
-            String type = playing.path("Type").asText("");
+            if (playing.isMissingNode() || playing.isNull()) {
+                continue;
+            }
+            // 缺类型或非对象不能当作非视频跳过，否则会把损坏响应误报为播放消失。
+            if (!playing.isObject() || !playing.path("Type").isTextual() || playing.path("Type").asText().isBlank()) {
+                throw new EmbyClientException("Emby now playing item is incomplete");
+            }
+            String type = playing.path("Type").asText();
             if (!Set.of("Movie", "Episode", "Video").contains(type)) {
                 continue;
             }
-            String itemId = playing.path("Id").asText("");
-            String sessionId = session.path("Id").asText("");
-            if (itemId.isBlank() || sessionId.isBlank()) {
+            if (!playing.path("Id").isTextual() || playing.path("Id").asText().isBlank()
+                    || !session.path("UserId").isTextual() || session.path("UserId").asText().isBlank()) {
                 throw new EmbyClientException("Emby playback session identity missing");
             }
+            String itemId = playing.path("Id").asText();
+            String sessionId = session.path("Id").asText();
             PlaybackMetadataCache cached = playbackMetadata.computeIfAbsent(itemId, id -> {
                 JsonNode metadata;
                 try {
@@ -73,7 +84,7 @@ public class EmbyClient {
                     metadata = items.isArray() && !items.isEmpty() && id.equals(items.get(0).path("Id").asText())
                             ? items.get(0) : objectMapper.createObjectNode();
                 } catch (EmbyClientException exception) {
-                    // 元数据不可用不抹掉真实会话；短暂缓存缺项，避免每五秒重试。
+                    // 元数据不可用不抹掉真实会话；短暂缓存缺项，避免每轮重试。
                     return new PlaybackMetadataCache(objectMapper.createObjectNode(), now.plusSeconds(30));
                 }
                 return new PlaybackMetadataCache(metadata, now.plusSeconds(300));
@@ -110,13 +121,13 @@ public class EmbyClient {
             }
             addPlaybackPoster(posters, item, "Id", item.path("ImageTags").path("Primary"));
             result.add(new EmbyPlaybackSession(
-                    sessionId, session.path("UserId").asText(null), session.path("UserName").asText(null),
+                    sessionId, session.path("UserId").asText(), session.path("UserName").asText(null),
                     session.path("Client").asText(null), session.path("DeviceName").asText(null),
                     state.path("IsPaused").isBoolean() ? state.path("IsPaused").asBoolean() : null,
                     itemId, type, item.path("Name").asText(null), item.path("SeriesName").asText(null),
                     playbackNumber(item.path("ParentIndexNumber")), playbackNumber(item.path("IndexNumber")),
                     playbackNumber(item.path("IndexNumberEnd")), playbackSeconds(state.path("PositionTicks")),
-                    duration, posters
+                    duration, List.copyOf(posters)
             ));
         }
         return result;

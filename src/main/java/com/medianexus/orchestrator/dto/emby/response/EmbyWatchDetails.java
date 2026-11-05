@@ -72,7 +72,7 @@ public final class EmbyWatchDetails {
             @JsonProperty("range_watch_seconds") long rangeWatchSeconds,
             @Schema(description = "calendar 为自然日，legacy 为结束日历史口径")
             @JsonProperty("accounting_basis") String accountingBasis,
-            @Schema(description = "停止时间来源：event 事件、superseded 后续播放推定、unknown 历史未知；未结束时为 null", nullable = true)
+            @Schema(description = "停止时间来源：event 事件、superseded 后续播放推定、inferred 采样推定、migration 旧活动交接、unknown 历史未知；未结束时为 null", nullable = true)
             @JsonProperty("stop_time_source") String stopTimeSource,
             @Schema(description = "设备；未知时为 null", nullable = true)
             @JsonProperty("device_name") String deviceName,
@@ -83,7 +83,8 @@ public final class EmbyWatchDetails {
             @Schema(description = "settled 为已结算；playing、paused、unverified 为播放、暂停或待确认估算")
             String state,
             @Schema(description = "估算核验或冻结时间；已结算时为 null", nullable = true)
-            @JsonProperty("observed_at") LocalDateTime observedAt
+            @JsonProperty("observed_at") LocalDateTime observedAt,
+            @Schema(description = "采集来源：sampling 采样，webhook 旧事件记录") String source
     ) {}
 
     @Schema(description = "某作品在所选范围内的观看用户及其已结算贡献")

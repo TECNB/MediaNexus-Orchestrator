@@ -27,6 +27,7 @@ import java.util.Locale;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 @Service
@@ -56,6 +57,8 @@ public class EmbyWatchRankingService {
         this.watchSessionMapper = watchSessionMapper;
     }
 
+    /** 汇总与动向共用一个数据库快照，避免并发结算重复呈现同一次观察到播放。 */
+    @Transactional(readOnly = true)
     public EmbyWatchRankingResponse getRankings(String period, String date, String month, Integer limit) {
         authService.requireAdminUser();
         WatchRankingPeriod rankingPeriod = normalizePeriod(period, date, month);
@@ -220,7 +223,9 @@ public class EmbyWatchRankingService {
                         activeSessionMapper.selectRecentActiveSessions(RECENT_EVENT_LIMIT).stream()
                                 .map(this::toStartEvent),
                         watchSessionMapper.selectRecentWatchSessions(RECENT_EVENT_LIMIT).stream()
-                                .map(this::toStopEvent)
+                                .flatMap(session -> session.getPlaybackInstanceId() == null
+                                        ? Stream.of(toStopEvent(session))
+                                        : Stream.of(toObservedStart(session), toStopEvent(session)))
                 )
                 .sorted(Comparator.comparing(EmbyWebhookRecentEventResponse::eventTime).reversed())
                 .limit(RECENT_EVENT_LIMIT)
@@ -251,7 +256,9 @@ public class EmbyWatchRankingService {
                 session.getItemId(),
                 "series".equals(session.getWatchCategory()) && StringUtils.hasText(session.getSeriesId())
                         ? session.getSeriesId() : session.getItemId(),
-                session.getWatchCategory() == null ? "unknown" : session.getWatchCategory()
+                session.getWatchCategory() == null ? "unknown" : session.getWatchCategory(),
+                session.getPlaybackInstanceId() == null ? "webhook" : "sampling",
+                null
         );
     }
 
@@ -273,8 +280,16 @@ public class EmbyWatchRankingService {
                 session.getItemId(),
                 "series".equals(session.getWatchCategory()) && StringUtils.hasText(session.getSeriesId())
                         ? session.getSeriesId() : session.getItemId(),
-                session.getWatchCategory() == null ? "unknown" : session.getWatchCategory()
+                session.getWatchCategory() == null ? "unknown" : session.getWatchCategory(),
+                session.getPlaybackInstanceId() == null ? "webhook" : "sampling",
+                session.getStopTimeSource() == null ? "unknown" : session.getStopTimeSource()
         );
+    }
+
+    private EmbyWebhookRecentEventResponse toObservedStart(EmbyWatchSession session) {
+        EmbyWebhookRecentEventResponse end = toStopEvent(session);
+        return new EmbyWebhookRecentEventResponse("playback.start", session.getStartTime(), end.userName(),
+                end.itemName(), null, end.itemId(), end.mediaId(), end.category(), "sampling", null);
     }
 
     private String publicTitle(String category, String title) {

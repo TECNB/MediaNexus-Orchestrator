@@ -31,7 +31,7 @@ public class EmbyWebhookController {
     }
 
     @PostMapping(value = "/playback", consumes = MediaType.APPLICATION_JSON_VALUE)
-    @Operation(summary = "接收 Emby 播放事件", description = "接收 playback.start、playback.pause、playback.unpause 和 playback.stop，并按实际播放区间结算观看会话。")
+    @Operation(summary = "接收 Emby 播放事件", description = "兼容旧播放事件；沿用 secret 鉴权并成功应答，不计时、结算或清理观看记录。")
     public ApiResponse<Void> receivePlaybackEvent(
             @Parameter(description = "MediaNexus 为 Emby Webhook 配置的 query secret")
             @RequestParam(name = "secret", required = false) String secret,
