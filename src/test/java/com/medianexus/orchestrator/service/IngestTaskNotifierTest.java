@@ -53,7 +53,7 @@ class IngestTaskNotifierTest {
     void queuesAfterCompletionWithoutRunningNetworkInTheCaller() throws Exception {
         MovieMagnetIngestTask task = movie();
         task.setCreatedByUserId(99L);
-        when(tmdb.getMovieImages(157336)).thenReturn(mapper.readTree("""
+        when(tmdb.getMovieImages(157336, tmdbProperties)).thenReturn(mapper.readTree("""
                 {"backdrops":[{"file_path":"/backdrop.jpg","iso_639_1":null}],
                  "posters":[{"file_path":"/poster.jpg"}]}
                 """));
@@ -76,7 +76,7 @@ class IngestTaskNotifierTest {
         task.setSeasonNumber(2);
         task.setTaskProductType(productType);
         task.setTmdbId(209867);
-        when(tmdb.getTvImages(209867)).thenReturn(mapper.readTree("{\"posters\":[{\"file_path\":\"/poster.jpg\"}]}"));
+        when(tmdb.getTvImages(209867, tmdbProperties)).thenReturn(mapper.readTree("{\"posters\":[{\"file_path\":\"/poster.jpg\"}]}"));
 
         notifier.seriesCompleted(task);
         executor.runPending();
@@ -93,7 +93,7 @@ class IngestTaskNotifierTest {
         task.setTitle("葬送的芙莉莲");
         task.setTmdbId(209867);
         task.setSeasonNumber(1);
-        when(tmdb.getTvImages(209867)).thenReturn(mapper.readTree("{\"backdrops\":[{\"file_path\":\"/cover.jpg\"}]}"));
+        when(tmdb.getTvImages(209867, tmdbProperties)).thenReturn(mapper.readTree("{\"backdrops\":[{\"file_path\":\"/cover.jpg\"}]}"));
 
         notifier.animeCompleted(task);
         executor.runPending();
@@ -104,7 +104,7 @@ class IngestTaskNotifierTest {
 
     @Test
     void skipsMissingImagesInsteadOfUsingLogoOrText() throws Exception {
-        when(tmdb.getMovieImages(157336)).thenReturn(mapper.readTree("""
+        when(tmdb.getMovieImages(157336, tmdbProperties)).thenReturn(mapper.readTree("""
                 {"backdrops":[],"posters":[],"logos":[{"file_path":"/logo.png"}]}
                 """));
 
@@ -129,7 +129,7 @@ class IngestTaskNotifierTest {
 
     @Test
     void tokenOrSendFailureCannotEscapeIntoTheTaskResult() throws Exception {
-        when(tmdb.getMovieImages(157336)).thenReturn(mapper.readTree("{\"backdrops\":[{\"file_path\":\"/cover.jpg\"}]}"));
+        when(tmdb.getMovieImages(157336, tmdbProperties)).thenReturn(mapper.readTree("{\"backdrops\":[{\"file_path\":\"/cover.jpg\"}]}"));
         doThrow(new IllegalStateException("企业微信 API 业务错误码 60020"))
                 .when(wecom).sendNews(anyString(), anyString(), anyString(), anyString());
         MovieMagnetIngestTask task = movie();
@@ -152,7 +152,7 @@ class IngestTaskNotifierTest {
     void longUnicodeTitleRetainsCompletionResultAndFitsUtf8Budget() throws Exception {
         MovieMagnetIngestTask task = movie();
         task.setTitle("🎬中文".repeat(50));
-        when(tmdb.getMovieImages(157336)).thenReturn(mapper.readTree("{\"posters\":[{\"file_path\":\"/cover.jpg\"}]}"));
+        when(tmdb.getMovieImages(157336, tmdbProperties)).thenReturn(mapper.readTree("{\"posters\":[{\"file_path\":\"/cover.jpg\"}]}"));
 
         notifier.movieCompleted(task);
         executor.runPending();
@@ -168,7 +168,7 @@ class IngestTaskNotifierTest {
     @ValueSource(strings = {"", "file:///tmp/site", "https://user:pass@media.example", "https://media.example/?token=secret"})
     void invalidFrontendConfigurationNeverProducesAnUnsafeLink(String baseUrl) throws Exception {
         properties.setFrontendBaseUrl(baseUrl);
-        when(tmdb.getMovieImages(157336)).thenReturn(mapper.readTree("{\"posters\":[{\"file_path\":\"/cover.jpg\"}]}"));
+        when(tmdb.getMovieImages(157336, tmdbProperties)).thenReturn(mapper.readTree("{\"posters\":[{\"file_path\":\"/cover.jpg\"}]}"));
 
         notifier.movieCompleted(movie());
         assertThatCode(executor::runPending).doesNotThrowAnyException();
@@ -179,8 +179,8 @@ class IngestTaskNotifierTest {
     @ParameterizedTest
     @ValueSource(strings = {"movie", "series", "shared-anime", "anime"})
     void initiationUsesItsOwnMessageAndActualTaskDetailRoute(String kind) throws Exception {
-        when(tmdb.getMovieImages(157336)).thenReturn(mapper.readTree("{\"posters\":[{\"file_path\":\"/cover.jpg\"}]}"));
-        when(tmdb.getTvImages(209867)).thenReturn(mapper.readTree("{\"posters\":[{\"file_path\":\"/cover.jpg\"}]}"));
+        when(tmdb.getMovieImages(157336, tmdbProperties)).thenReturn(mapper.readTree("{\"posters\":[{\"file_path\":\"/cover.jpg\"}]}"));
+        when(tmdb.getTvImages(209867, tmdbProperties)).thenReturn(mapper.readTree("{\"posters\":[{\"file_path\":\"/cover.jpg\"}]}"));
         String route;
         switch (kind) {
             case "movie" -> {

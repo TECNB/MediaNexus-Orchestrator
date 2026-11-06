@@ -1,10 +1,10 @@
 package com.medianexus.orchestrator.integration.clouddrive;
 
 import static com.medianexus.orchestrator.service.organization.LibraryOrganizationPlan.fileName;
-import static com.medianexus.orchestrator.service.organization.LibraryOrganizationPlan.normalizePath;
 import static com.medianexus.orchestrator.service.organization.LibraryOrganizationPlan.parentPath;
 
 import com.medianexus.orchestrator.config.CloudDrive2Properties;
+import com.medianexus.orchestrator.service.settings.targets.IngestTargetRegistry;
 import io.grpc.Status;
 import java.time.Instant;
 import java.util.Collection;
@@ -13,32 +13,29 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 @Component
-@ConditionalOnProperty(
-        prefix = "medianexus.clouddrive2",
-        name = "organization-enabled",
-        havingValue = "true"
-)
 public class CloudDrive2MediaDeletion {
 
+    private final IngestTargetRegistry targetRegistry;
     private final CloudDrive2FileOperations fileOperations;
     private final CloudDrive2Properties properties;
 
     CloudDrive2MediaDeletion(
             CloudDrive2FileOperations fileOperations,
-            CloudDrive2Properties properties
+            CloudDrive2Properties properties,
+            IngestTargetRegistry targetRegistry
     ) {
+        this.targetRegistry = targetRegistry;
         this.fileOperations = fileOperations;
         this.properties = properties;
     }
 
     public void deleteMediaSourcePaths(List<String> mediaSourcePaths) {
+        List<String> cloudPaths = mediaSourcePaths.stream().map(this::toCloudDrivePath).toList();
         Set<String> existingPaths = new LinkedHashSet<>();
-        for (String mediaSourcePath : mediaSourcePaths) {
-            String cloudPath = toCloudDrivePath(mediaSourcePath);
+        for (String cloudPath : cloudPaths) {
             if (exists(cloudPath)) {
                 existingPaths.add(cloudPath);
             }
@@ -49,9 +46,7 @@ public class CloudDrive2MediaDeletion {
 
         Instant deadline = Instant.now().plus(properties.getVisibilityTimeout());
         do {
-            boolean anyExists = mediaSourcePaths.stream()
-                    .map(this::toCloudDrivePath)
-                    .anyMatch(this::exists);
+            boolean anyExists = cloudPaths.stream().anyMatch(this::exists);
             if (!anyExists) {
                 return;
             }
@@ -118,13 +113,8 @@ public class CloudDrive2MediaDeletion {
     }
 
     private String toCloudDrivePath(String mediaSourcePath) {
-        String normalizedPath = normalizePath(mediaSourcePath);
-        String mediaSourcePrefix = normalizePath(properties.getMediaSourcePathPrefix());
-        String cloudDrivePrefix = normalizePath(properties.getCloudDrivePathPrefix());
-        if (!normalizedPath.startsWith(mediaSourcePrefix + "/")) {
-            throw new CloudDrive2ClientException("媒体源路径不在 CD2 映射范围内: " + normalizedPath);
-        }
-        return normalizePath(cloudDrivePrefix + normalizedPath.substring(mediaSourcePrefix.length()));
+        return targetRegistry.toCloudDriveMediaPath(mediaSourcePath,
+                properties.getMediaSourcePathPrefix(), properties.getCloudDrivePathPrefix());
     }
 
     private void sleep() {

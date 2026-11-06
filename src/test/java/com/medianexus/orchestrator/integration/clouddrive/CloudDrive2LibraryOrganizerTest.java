@@ -11,6 +11,7 @@ import com.medianexus.orchestrator.service.organization.LibraryOrganizationPlan;
 import com.medianexus.orchestrator.service.organization.LibraryOrganizationPlan.DeleteOperation;
 import com.medianexus.orchestrator.service.organization.LibraryOrganizationPlan.MoveOperation;
 import com.medianexus.orchestrator.service.organization.LibraryOrganizationPlan.RenameOperation;
+import com.medianexus.orchestrator.support.IngestTargetFixtures;
 import io.grpc.Status;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -25,13 +26,73 @@ import org.springframework.beans.factory.support.StaticListableBeanFactory;
 class CloudDrive2LibraryOrganizerTest {
 
     @Test
+    void restoresAncestorsWithinTheActualSecondTargetCloudRoot() {
+        IngestTargetFixtures targets = new IngestTargetFixtures();
+        targets.useDefault("old");
+        FakeFileOperations files = new FakeFileOperations();
+        files.addFile("/NewCloud/Movies/Movie", "Movie.mkv", 1024L);
+        files.failNotFound("/NewCloud/Movies/Movie", 1);
+        CloudDrive2LibraryOrganizer organizer = new CloudDrive2LibraryOrganizer(files, properties(), targets.registry);
+
+        organizer.organize(new LibraryOrganizationPlan("/new/Movies/Movie", List.of(), List.of(), List.of(),
+                Set.of("Movie.mkv"), Set.of()), (message, detail) -> { });
+
+        assertThat(files.listedPaths).containsExactly("/NewCloud/Movies/Movie", "/NewCloud", "/NewCloud/Movies",
+                "/NewCloud/Movies/Movie");
+    }
+
+    @Test
+    void rejectsCrossTargetPlansBeforeAnyCloudOperation() {
+        IngestTargetFixtures targets = new IngestTargetFixtures();
+        targets.useDefault("new");
+        FakeFileOperations files = new FakeFileOperations();
+        CloudDrive2LibraryOrganizer organizer = new CloudDrive2LibraryOrganizer(files, properties(), targets.registry);
+        LibraryOrganizationPlan plan = new LibraryOrganizationPlan("/new/Movies/Movie",
+                List.of(new RenameOperation("/old/Movies/Movie/old.mkv", "Movie.mkv")),
+                List.of(new MoveOperation("/old/Movies/Movie/Movie.mkv", "/new/Movies/Movie")),
+                List.of(), Set.of("Movie.mkv"), Set.of());
+
+        assertThatThrownBy(() -> organizer.organize(plan, (message, detail) -> { }))
+                .isInstanceOf(com.medianexus.orchestrator.common.exception.BusinessException.class);
+        assertThat(files.events).isEmpty();
+        assertThat(files.renameCalls).isEmpty();
+        assertThat(files.moveCalls).isEmpty();
+    }
+
+    @Test
+    void deletesRegisteredSourcesUsingEachMappingAndRejectsPrefixCollisionsBeforeMutation() {
+        IngestTargetFixtures targets = new IngestTargetFixtures();
+        targets.useDefault("new");
+        FakeFileOperations files = new FakeFileOperations();
+        files.addFile("/OldCloud/Movies/Movie", "old.mkv", 1024L);
+        files.addFile("/NewCloud/Movies/Movie", "new.mkv", 1024L);
+        CloudDrive2Properties config = properties();
+        config.setMediaSourcePathPrefix("/mount/new2");
+        CloudDrive2MediaDeletion deletion = new CloudDrive2MediaDeletion(files, config, targets.registry);
+        List<String> sources = List.of("/mount/old/Movies/Movie/old.mkv", "/mount/new/Movies/Movie/new.mkv");
+
+        assertThat(deletion.checkMediaSourcePaths(sources).existing()).containsExactlyInAnyOrderElementsOf(sources);
+        files.events.clear();
+        assertThatThrownBy(() -> deletion.deleteMediaSourcePaths(List.of(sources.get(0), "/mount/new2/Movies/Movie/file.mkv")))
+                .isInstanceOf(com.medianexus.orchestrator.common.exception.BusinessException.class);
+        assertThat(files.events).isEmpty();
+
+        deletion.deleteMediaSourcePaths(sources);
+
+        assertThat(files.events.stream().filter(event -> event.startsWith("delete:"))).containsExactly(
+                "delete:/OldCloud/Movies/Movie/old.mkv", "delete:/NewCloud/Movies/Movie/new.mkv");
+        assertThat(deletion.checkMediaSourcePaths(sources).existing()).isEmpty();
+    }
+
+    @Test
     void checksKnownParentDirectlyWithoutRefreshingItsAncestorChain() {
         FakeFileOperations fileOperations = new FakeFileOperations();
         String target = "/WebDAV/Media/Adult/JAV/7.15";
         fileOperations.addFile(target, "DVAJ-749", 1024L);
         CloudDrive2LibraryOrganizer organizer = new CloudDrive2LibraryOrganizer(
                 fileOperations,
-                properties()
+                properties(),
+                IngestTargetFixtures.legacy()
         );
         LibraryOrganizationPlan plan = new LibraryOrganizationPlan(
                 "/pikpak/Media/Adult/JAV/7.15",
@@ -55,7 +116,7 @@ class CloudDrive2LibraryOrganizerTest {
         fileOperations.addFile(parent, "two.mp4", 1L);
         CloudDrive2Properties properties = properties();
         properties.setMediaSourcePathPrefix("/srv/media/CloudNAS/PikPak");
-        CloudDrive2MediaDeletion deletion = new CloudDrive2MediaDeletion(fileOperations, properties);
+        CloudDrive2MediaDeletion deletion = new CloudDrive2MediaDeletion(fileOperations, properties, IngestTargetFixtures.legacy());
 
         assertThat(deletion.checkMediaSourcePaths(List.of(
                 "/srv/media/CloudNAS/PikPak/Media/Adult/JAV/9.18/START-604-U/one.mp4",
@@ -72,7 +133,8 @@ class CloudDrive2LibraryOrganizerTest {
         fileOperations.failNotFound(target, 1);
         CloudDrive2LibraryOrganizer organizer = new CloudDrive2LibraryOrganizer(
                 fileOperations,
-                properties()
+                properties(),
+                IngestTargetFixtures.legacy()
         );
         LibraryOrganizationPlan plan = new LibraryOrganizationPlan(
                 "/pikpak/Media/Adult/JAV/7.15",
@@ -107,7 +169,8 @@ class CloudDrive2LibraryOrganizerTest {
 
         CloudDrive2LibraryOrganizer organizer = new CloudDrive2LibraryOrganizer(
                 fileOperations,
-                properties()
+                properties(),
+                IngestTargetFixtures.legacy()
         );
         LibraryOrganizationPlan plan = new LibraryOrganizationPlan(
                 "/pikpak/Media/Anime/Show/Season 01",
@@ -165,7 +228,8 @@ class CloudDrive2LibraryOrganizerTest {
         fileOperations.addDirectory(secondSourceDirectory, "PRED-877-U");
         CloudDrive2LibraryOrganizer organizer = new CloudDrive2LibraryOrganizer(
                 fileOperations,
-                properties()
+                properties(),
+                IngestTargetFixtures.legacy()
         );
         LibraryOrganizationPlan plan = new LibraryOrganizationPlan(
                 "/pikpak/Media/Adult/JAV/7.15",
@@ -207,7 +271,8 @@ class CloudDrive2LibraryOrganizerTest {
         properties.setVisibilityTimeout(Duration.ofMillis(10));
         CloudDrive2LibraryOrganizer organizer = new CloudDrive2LibraryOrganizer(
                 fileOperations,
-                properties
+                properties,
+                IngestTargetFixtures.legacy()
         );
         LibraryOrganizationPlan plan = new LibraryOrganizationPlan(
                 "/pikpak/Media/Adult/JAV/7.15",
@@ -235,7 +300,8 @@ class CloudDrive2LibraryOrganizerTest {
         fileOperations.hideNameFromCachedListings(target, "DVAJ-749");
         CloudDrive2LibraryOrganizer organizer = new CloudDrive2LibraryOrganizer(
                 fileOperations,
-                properties()
+                properties(),
+                IngestTargetFixtures.legacy()
         );
         LibraryOrganizationPlan plan = new LibraryOrganizationPlan(
                 "/pikpak/Media/Adult/JAV/7.15",
@@ -257,7 +323,8 @@ class CloudDrive2LibraryOrganizerTest {
         FakeFileOperations fileOperations = new FakeFileOperations();
         CloudDrive2LibraryOrganizer organizer = new CloudDrive2LibraryOrganizer(
                 fileOperations,
-                properties()
+                properties(),
+                IngestTargetFixtures.legacy()
         );
         LibraryOrganizationPlan plan = new LibraryOrganizationPlan(
                 "/other/Season 01",
@@ -269,8 +336,7 @@ class CloudDrive2LibraryOrganizerTest {
         );
 
         assertThatThrownBy(() -> organizer.organize(plan, (message, detail) -> { }))
-                .isInstanceOf(CloudDrive2ClientException.class)
-                .hasMessageContaining("不在已配置的映射前缀下");
+                .isInstanceOf(com.medianexus.orchestrator.common.exception.BusinessException.class);
         assertThat(fileOperations.listCalls).isZero();
     }
 
@@ -284,7 +350,8 @@ class CloudDrive2LibraryOrganizerTest {
         fileOperations.addFile(release, "sample.txt", 16L);
         CloudDrive2LibraryOrganizer organizer = new CloudDrive2LibraryOrganizer(
                 fileOperations,
-                properties()
+                properties(),
+                IngestTargetFixtures.legacy()
         );
         LibraryOrganizationPlan plan = new LibraryOrganizationPlan(
                 "/pikpak/Media/Movie/Example (2026)",
@@ -314,7 +381,8 @@ class CloudDrive2LibraryOrganizerTest {
         properties.setAdultOrganizationEnabled(false);
         CloudDrive2LibraryOrganizer cloudDrive2Organizer = new CloudDrive2LibraryOrganizer(
                 new FakeFileOperations(),
-                properties
+                properties,
+                IngestTargetFixtures.legacy()
         );
         OpenListLibraryOrganizer openListOrganizer = new OpenListLibraryOrganizer(null);
         StaticListableBeanFactory beanFactory = new StaticListableBeanFactory();

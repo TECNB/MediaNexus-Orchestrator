@@ -160,12 +160,12 @@ class TmdbSeriesCatalogSearchTest {
         }
 
         @Override
-        public JsonNode searchTv(String query, String language) {
+        public JsonNode searchTv(String query, String language, TmdbProperties snapshot) {
             return searchResponse.path("results");
         }
 
         @Override
-        public JsonNode getTvDetails(int seriesId, String language) {
+        public JsonNode getTvDetails(int seriesId, String language, TmdbProperties snapshot) {
             return detailResponses.get(seriesId + ":" + language);
         }
 

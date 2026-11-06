@@ -26,6 +26,7 @@ import com.medianexus.orchestrator.model.AdultMagnetIngestTaskLog;
 import com.medianexus.orchestrator.model.User;
 import com.medianexus.orchestrator.service.organization.LibraryOrganizer;
 import com.medianexus.orchestrator.service.organization.LibraryOrganizationPlan;
+import com.medianexus.orchestrator.service.settings.targets.IngestTargetRegistry;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -80,6 +81,7 @@ public class AdultMagnetIngestService {
     private static final String MANUAL_MAGNET_SOURCE = "MANUAL_MAGNET";
     private static final String JAVDB_AUTOMATION_SOURCE = "JAVDB_AUTOMATION";
 
+    private final IngestTargetRegistry targetRegistry;
     private final AdultMagnetIngestTaskMapper taskMapper;
     private final AdultMagnetIngestTaskLogMapper taskLogMapper;
     private final OpenListClient openListClient;
@@ -105,8 +107,10 @@ public class AdultMagnetIngestService {
             @Qualifier("adultLibraryOrganizer") LibraryOrganizer adultLibraryOrganizer,
             AuthService authService,
             AutoSymlinkRefreshService autoSymlinkRefreshService,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            IngestTargetRegistry targetRegistry
     ) {
+        this.targetRegistry = targetRegistry;
         this.taskMapper = taskMapper;
         this.taskLogMapper = taskLogMapper;
         this.openListClient = openListClient;
@@ -131,8 +135,10 @@ public class AdultMagnetIngestService {
             AutoSymlinkRefreshService autoSymlinkRefreshService,
             ObjectMapper objectMapper,
             ExecutorService executorService,
-            ExecutorService organizeExecutorService
+            ExecutorService organizeExecutorService,
+            IngestTargetRegistry targetRegistry
     ) {
+        this.targetRegistry = targetRegistry;
         this.taskMapper = taskMapper;
         this.taskLogMapper = taskLogMapper;
         this.openListClient = openListClient;
@@ -154,7 +160,8 @@ public class AdultMagnetIngestService {
             MovieSeriesFileRenameService renameService,
             AuthService authService,
             AutoSymlinkRefreshService autoSymlinkRefreshService,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            IngestTargetRegistry targetRegistry
     ) {
         this(
                 taskMapper,
@@ -165,7 +172,8 @@ public class AdultMagnetIngestService {
                 new OpenListLibraryOrganizer(openListClient),
                 authService,
                 autoSymlinkRefreshService,
-                objectMapper
+                objectMapper,
+                targetRegistry
         );
     }
 
@@ -179,7 +187,8 @@ public class AdultMagnetIngestService {
             AutoSymlinkRefreshService autoSymlinkRefreshService,
             ObjectMapper objectMapper,
             ExecutorService executorService,
-            ExecutorService organizeExecutorService
+            ExecutorService organizeExecutorService,
+            IngestTargetRegistry targetRegistry
     ) {
         this(
                 taskMapper,
@@ -192,7 +201,8 @@ public class AdultMagnetIngestService {
                 autoSymlinkRefreshService,
                 objectMapper,
                 executorService,
-                organizeExecutorService
+                organizeExecutorService,
+                targetRegistry
         );
     }
 
@@ -263,7 +273,9 @@ public class AdultMagnetIngestService {
             String automationRunId
     ) {
         String taskId = UUID.randomUUID().toString();
-        AdultTaskPlan plan = buildTaskPlan(request, taskId);
+        AdultTaskPlan plan = retryReference == null
+                ? buildTaskPlan(request, taskId)
+                : buildRetryPlan(request, taskId, retryReference);
         if (plan.items().isEmpty()) {
             throw badRequest("没有可提交的 Adult 下载链接");
         }
@@ -885,9 +897,25 @@ public class AdultMagnetIngestService {
             throw badRequest("请求不能为空");
         }
         String category = normalizeCategory(request.category());
-        String rootPath = configuredRootPath(openListProperties.getAdultRootPath(), "OpenList Adult 基础路径尚未配置");
+        String rootPath = configuredRootPath(targetRegistry.creationRoot("ADULT", openListProperties.getAdultRootPath()), "OpenList Adult 基础路径尚未配置");
         String dateFolder = LocalDate.now().format(DATE_FOLDER_FORMATTER);
         String targetPath = openListClient.joinPath(openListClient.joinPath(rootPath, categoryFolder(category)), dateFolder);
+        return buildTaskItems(request, taskId, category, rootPath, dateFolder, targetPath);
+    }
+
+    private AdultTaskPlan buildRetryPlan(
+            AdultMagnetIngestTaskCreateRequest request, String taskId, TaskRetryReference retryReference
+    ) {
+        AdultMagnetIngestTask original = getExistingTask(retryReference.taskId());
+        String rootPath = targetRegistry.rootForExistingPath("ADULT", original.getTargetPath(), cleanConfigValue(openListProperties.getAdultRootPath()));
+        return buildTaskItems(request, taskId, original.getCategory(), rootPath,
+                original.getDateFolder(), original.getTargetPath());
+    }
+
+    private AdultTaskPlan buildTaskItems(
+            AdultMagnetIngestTaskCreateRequest request, String taskId, String category,
+            String rootPath, String dateFolder, String targetPath
+    ) {
         List<String> rawMagnets = request.magnets() == null
                 ? List.of()
                 : request.magnets().stream()
@@ -1229,7 +1257,7 @@ public class AdultMagnetIngestService {
     private void refreshAutoSymlink(String taskId, String stage) {
         try {
             writeLog(taskId, "INFO", stage, "正在触发 AutoSymlink 刷新", null);
-            AutoSymlinkRefreshService.RefreshOutcome outcome = autoSymlinkRefreshService.refreshAdult();
+            AutoSymlinkRefreshService.RefreshOutcome outcome = autoSymlinkRefreshService.refreshForPath("ADULT", getExistingTask(taskId).getTargetPath());
             writeAutoSymlinkOutcome(taskId, stage, outcome);
         } catch (Exception exception) {
             log.warn("Adult AutoSymlink refresh logging failed taskId={}", taskId, exception);

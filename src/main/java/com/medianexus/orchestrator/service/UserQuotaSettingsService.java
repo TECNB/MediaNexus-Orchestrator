@@ -21,6 +21,11 @@ public class UserQuotaSettingsService {
     private final UserQuotaProperties quotaProperties;
     private final AuthService authService;
     private final UserAdminAuditService auditService;
+    private SettingsService managedSettings;
+
+    /** 设置中心接管后，既有额度 API 的写入也使用同一组 CAS 事务；手动构造的旧调用方保持兼容。 */
+    @org.springframework.beans.factory.annotation.Autowired
+    public void configureManagedSettings(SettingsService managedSettings) { this.managedSettings = managedSettings; }
 
     public UserQuotaSettingsService(
             SystemSettingMapper systemSettingMapper,
@@ -44,7 +49,11 @@ public class UserQuotaSettingsService {
         User admin = authService.requireAdminUser();
         int normalizedQuota = validateManagedQuota(quotaValue);
         int previousQuota = getDefaultDailyContentCreateLimit();
-        systemSettingMapper.upsertSetting(DAILY_CONTENT_CREATE_LIMIT_KEY, String.valueOf(normalizedQuota));
+        if (managedSettings == null) {
+            systemSettingMapper.upsertSetting(DAILY_CONTENT_CREATE_LIMIT_KEY, String.valueOf(normalizedQuota));
+        } else {
+            managedSettings.saveQuotaFromLegacyApi(normalizedQuota);
+        }
         auditService.record(
                 admin.getId(),
                 null,

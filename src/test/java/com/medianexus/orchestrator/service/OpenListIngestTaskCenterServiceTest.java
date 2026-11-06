@@ -43,6 +43,7 @@ import com.medianexus.orchestrator.model.MovieMagnetIngestTaskLog;
 import com.medianexus.orchestrator.model.SeriesMagnetIngestTask;
 import com.medianexus.orchestrator.model.SeriesMagnetIngestTaskLog;
 import com.medianexus.orchestrator.model.User;
+import com.medianexus.orchestrator.support.IngestTargetFixtures;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.stream.IntStream;
@@ -1787,7 +1788,7 @@ class OpenListIngestTaskCenterServiceTest {
         private final MovieSeriesRetryRecorder recorder;
 
         RecordingMagnetIngestService(MovieSeriesRetryRecorder recorder) {
-            super(null, null, null, null, null, null, null, null, null, null, null, null, mock(IngestTaskNotifier.class));
+            super(null, null, null, null, null, null, null, null, null, null, null, null, IngestTargetFixtures.legacy(), mock(IngestTaskNotifier.class));
             this.recorder = recorder;
         }
 
@@ -1822,7 +1823,7 @@ class OpenListIngestTaskCenterServiceTest {
         private final AnimeRetryRecorder recorder;
 
         RecordingAnimeMagnetIngestTaskService(AnimeRetryRecorder recorder) {
-            super(null, null, null, null, null, null, null, null, null, null, mock(IngestTaskNotifier.class));
+            super(null, null, null, null, null, null, null, null, null, null, IngestTargetFixtures.legacy(), mock(IngestTaskNotifier.class));
             this.recorder = recorder;
         }
 
@@ -1843,7 +1844,7 @@ class OpenListIngestTaskCenterServiceTest {
         private final AdultRetryRecorder recorder;
 
         RecordingAdultMagnetIngestService(AdultRetryRecorder recorder) {
-            super(null, null, null, null, null, null, null, new ObjectMapper());
+            super(null, null, null, null, null, null, null, new ObjectMapper(), IngestTargetFixtures.legacy());
             this.recorder = recorder;
         }
 

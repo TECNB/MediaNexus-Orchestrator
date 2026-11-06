@@ -2,6 +2,7 @@ package com.medianexus.orchestrator.controller;
 
 import com.medianexus.orchestrator.common.response.ApiResponse;
 import com.medianexus.orchestrator.dto.subtitle.response.SubtitleUploadListResponse;
+import com.medianexus.orchestrator.dto.subtitle.response.SubtitleLocationsResponse;
 import com.medianexus.orchestrator.dto.subtitle.response.SubtitleUploadLogListResponse;
 import com.medianexus.orchestrator.dto.subtitle.response.SubtitleUploadResponse;
 import com.medianexus.orchestrator.service.SubtitleUploadService;
@@ -28,6 +29,22 @@ public class SubtitleUploadController {
         this.subtitleUploadService = subtitleUploadService;
     }
 
+    @GetMapping("/locations")
+    @Operation(summary = "查找字幕可上传目标", description = "需要登录；仅返回实际存在媒体目录的目标 ID 和显示名，不返回服务器路径。")
+    public ApiResponse<SubtitleLocationsResponse> locations(
+            @Parameter(description = "媒体类型：movie 或 series")
+            @RequestParam(value = "media_type", defaultValue = "movie") String mediaType,
+            @Parameter(description = "电影或剧集标题") @RequestParam("title") String title,
+            @Parameter(description = "原始标题；存在时优先匹配目录")
+            @RequestParam(value = "original_title", required = false) String originalTitle,
+            @Parameter(description = "电影年份；电影必填")
+            @RequestParam(value = "year", required = false) Integer year,
+            @Parameter(description = "剧集季数；剧集必填")
+            @RequestParam(value = "season_number", required = false) Integer seasonNumber
+    ) {
+        return ApiResponse.success(subtitleUploadService.locations(mediaType, title, originalTitle, year, seasonNumber));
+    }
+
     @PostMapping(value = "/uploads", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @Operation(
             summary = "上传电影或剧集字幕",
@@ -47,7 +64,9 @@ public class SubtitleUploadController {
             @Parameter(description = "剧集季数；剧集上传必填")
             @RequestParam(value = "season_number", required = false) Integer seasonNumber,
             @Parameter(description = "是否覆盖目标目录中同名字幕")
-            @RequestParam(value = "overwrite", defaultValue = "false") boolean overwrite
+            @RequestParam(value = "overwrite", defaultValue = "false") boolean overwrite,
+            @Parameter(description = "下载目标稳定 ID；单命中可不传，多命中未选择返回 409，所选目标必须实际存在媒体目录")
+            @RequestParam(value = "target_id", required = false) String targetId
     ) {
         return ApiResponse.success(subtitleUploadService.uploadSubtitle(
                 file,
@@ -56,7 +75,8 @@ public class SubtitleUploadController {
                 originalTitle,
                 year,
                 seasonNumber,
-                overwrite
+                overwrite,
+                targetId
         ));
     }
 

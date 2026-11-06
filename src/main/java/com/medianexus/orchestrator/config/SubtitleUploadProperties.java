@@ -13,6 +13,17 @@ import org.springframework.validation.annotation.Validated;
 @ConfigurationProperties(prefix = "medianexus.subtitle-upload")
 public class SubtitleUploadProperties {
 
+    private volatile java.util.function.Supplier<SubtitleUploadProperties> settingsResolver;
+
+    /** 每次业务操作捕获一份配置；快照对象本身不再解析数据库覆盖。 */
+    public SubtitleUploadProperties snapshot() {
+        return settingsResolver == null ? this : settingsResolver.get();
+    }
+
+    public void setSettingsResolver(java.util.function.Supplier<SubtitleUploadProperties> resolver) {
+        this.settingsResolver = resolver;
+    }
+
     @NotEmpty
     private List<String> allowedExtensions = new ArrayList<>(List.of(".ass", ".srt", ".sup"));
 
@@ -35,7 +46,7 @@ public class SubtitleUploadProperties {
     private int maxCompressionRatio = 100;
 
     public List<String> getAllowedExtensions() {
-        return allowedExtensions;
+        return settingsResolver == null ? allowedExtensions : snapshot().getAllowedExtensions();
     }
 
     public void setAllowedExtensions(List<String> allowedExtensions) {
@@ -43,7 +54,7 @@ public class SubtitleUploadProperties {
     }
 
     public DataSize getMaxUploadSize() {
-        return maxUploadSize;
+        return settingsResolver == null ? maxUploadSize : snapshot().getMaxUploadSize();
     }
 
     public void setMaxUploadSize(DataSize maxUploadSize) {
@@ -51,7 +62,7 @@ public class SubtitleUploadProperties {
     }
 
     public int getMaxEntryCount() {
-        return maxEntryCount;
+        return settingsResolver == null ? maxEntryCount : snapshot().getMaxEntryCount();
     }
 
     public void setMaxEntryCount(int maxEntryCount) {
@@ -59,7 +70,7 @@ public class SubtitleUploadProperties {
     }
 
     public DataSize getMaxTextSubtitleSize() {
-        return maxTextSubtitleSize;
+        return settingsResolver == null ? maxTextSubtitleSize : snapshot().getMaxTextSubtitleSize();
     }
 
     public void setMaxTextSubtitleSize(DataSize maxTextSubtitleSize) {
@@ -67,7 +78,7 @@ public class SubtitleUploadProperties {
     }
 
     public DataSize getMaxSupSize() {
-        return maxSupSize;
+        return settingsResolver == null ? maxSupSize : snapshot().getMaxSupSize();
     }
 
     public void setMaxSupSize(DataSize maxSupSize) {
@@ -75,7 +86,7 @@ public class SubtitleUploadProperties {
     }
 
     public DataSize getMaxTotalExtractedSize() {
-        return maxTotalExtractedSize;
+        return settingsResolver == null ? maxTotalExtractedSize : snapshot().getMaxTotalExtractedSize();
     }
 
     public void setMaxTotalExtractedSize(DataSize maxTotalExtractedSize) {
@@ -83,7 +94,7 @@ public class SubtitleUploadProperties {
     }
 
     public int getMaxCompressionRatio() {
-        return maxCompressionRatio;
+        return settingsResolver == null ? maxCompressionRatio : snapshot().getMaxCompressionRatio();
     }
 
     public void setMaxCompressionRatio(int maxCompressionRatio) {

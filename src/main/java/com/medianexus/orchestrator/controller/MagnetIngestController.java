@@ -20,6 +20,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -34,9 +35,16 @@ public class MagnetIngestController {
     }
 
     @GetMapping("/node-status")
-    @Operation(summary = "获取手动磁力入库节点状态", description = "返回 OpenList 中启用的 PikPak 存储状态与真实容量。")
+    @Operation(summary = "获取分类入库目标节点状态", description = "需要登录；返回所选类别默认目标的状态、真实容量和目标标识，未接管时沿用现有单盘。")
+    public ApiResponse<MagnetIngestNodeStatusResponse> getNodeStatus(
+            @Parameter(description = "媒体类别：MOVIE、TV、ANIME、ADULT；未传时为 MOVIE")
+            @RequestParam(value = "category", defaultValue = "MOVIE") String category
+    ) {
+        return ApiResponse.success(magnetIngestService.getNodeStatus(category));
+    }
+
     public ApiResponse<MagnetIngestNodeStatusResponse> getNodeStatus() {
-        return ApiResponse.success(magnetIngestService.getNodeStatus());
+        return getNodeStatus("MOVIE");
     }
 
     @PostMapping("/movies")

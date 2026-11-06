@@ -95,6 +95,7 @@ public class AutoSymlinkClient {
     }
 
     private void validateConfiguration() {
+        if (properties.isDisabled()) throw new AutoSymlinkClientException("AutoSymlink 已明确停用");
         if (!StringUtils.hasText(cleanConfigValue(properties.getBaseUrl()))
                 || !StringUtils.hasText(cleanConfigValue(properties.getCookie()))) {
             throw new AutoSymlinkClientException("AutoSymlink configuration is incomplete");

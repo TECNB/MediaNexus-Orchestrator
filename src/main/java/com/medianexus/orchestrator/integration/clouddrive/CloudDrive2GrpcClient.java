@@ -20,16 +20,10 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
 @Component
-@ConditionalOnProperty(
-        prefix = "medianexus.clouddrive2",
-        name = "organization-enabled",
-        havingValue = "true"
-)
 class CloudDrive2GrpcClient implements CloudDrive2FileOperations {
 
     private static final Metadata.Key<String> AUTHORIZATION =
@@ -40,8 +34,13 @@ class CloudDrive2GrpcClient implements CloudDrive2FileOperations {
     private final CloudDriveFileSrvGrpc.CloudDriveFileSrvBlockingStub blockingStub;
 
     CloudDrive2GrpcClient(CloudDrive2Properties properties) {
-        validateConfiguration(properties);
         this.properties = properties;
+        if (!properties.isOrganizationEnabled()) {
+            this.channel = null;
+            this.blockingStub = null;
+            return;
+        }
+        validateConfiguration(properties);
         this.channel = ManagedChannelBuilder.forAddress(properties.getHost().trim(), properties.getPort())
                 .usePlaintext()
                 .build();
@@ -137,6 +136,9 @@ class CloudDrive2GrpcClient implements CloudDrive2FileOperations {
     }
 
     private CloudDriveFileSrvGrpc.CloudDriveFileSrvBlockingStub stub() {
+        if (!properties.isOrganizationEnabled()) {
+            throw new CloudDrive2ClientException("CloudDrive2 媒体整理已停用");
+        }
         Duration timeout = properties.getOperationTimeout();
         return blockingStub.withDeadlineAfter(timeout.toMillis(), TimeUnit.MILLISECONDS);
     }
@@ -172,6 +174,7 @@ class CloudDrive2GrpcClient implements CloudDrive2FileOperations {
 
     @PreDestroy
     void close() {
+        if (channel == null) return;
         channel.shutdown();
         try {
             if (!channel.awaitTermination(5, TimeUnit.SECONDS)) {

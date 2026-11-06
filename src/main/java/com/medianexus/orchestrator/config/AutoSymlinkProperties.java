@@ -11,6 +11,13 @@ import org.springframework.validation.annotation.Validated;
 @Validated
 @ConfigurationProperties(prefix = "medianexus.autosymlink")
 public class AutoSymlinkProperties {
+    /** 仅覆盖未来账号计划的通用扫描参数；路径、身份和认证不允许进入此 JSON。 */
+    private String newAccountScanParametersJson;
+    public String getNewAccountScanParametersJson() { return newAccountScanParametersJson; }
+    public void setNewAccountScanParametersJson(String value) { this.newAccountScanParametersJson = value; }
+    private boolean disabled;
+    public boolean isDisabled() { return disabled; }
+    public void setDisabled(boolean disabled) { this.disabled = disabled; }
 
     private String baseUrl;
 

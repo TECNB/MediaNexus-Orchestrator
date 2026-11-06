@@ -192,7 +192,7 @@ class QuarkMultiSourceIngestServiceTest {
                 "season", "新世界", video("S01E01.mkv"), video("S01E03.mkv"), video("S01E04.mkv")
         )));
         TmdbClient tmdbClient = mock(TmdbClient.class);
-        when(tmdbClient.getTvSeasonDetails(100, 1, "zh-CN")).thenReturn(new ObjectMapper().readTree("""
+        when(tmdbClient.getTvSeasonDetails(org.mockito.ArgumentMatchers.eq(100), org.mockito.ArgumentMatchers.eq(1), org.mockito.ArgumentMatchers.eq("zh-CN"), org.mockito.ArgumentMatchers.any(TmdbProperties.class))).thenReturn(new ObjectMapper().readTree("""
                 {"episodes":[
                   {"episode_number":1,"air_date":"2020-01-01"},
                   {"episode_number":2,"air_date":"2020-01-02"},
@@ -232,7 +232,7 @@ class QuarkMultiSourceIngestServiceTest {
                 video("150425_超清.mp4"), video("150509_超清.mp4"), video("150725_超清.mp4")
         )));
         TmdbClient tmdbClient = mock(TmdbClient.class);
-        when(tmdbClient.getTvSeasonDetails(100, 1, "zh-CN")).thenReturn(new ObjectMapper().readTree("""
+        when(tmdbClient.getTvSeasonDetails(org.mockito.ArgumentMatchers.eq(100), org.mockito.ArgumentMatchers.eq(1), org.mockito.ArgumentMatchers.eq("zh-CN"), org.mockito.ArgumentMatchers.any(TmdbProperties.class))).thenReturn(new ObjectMapper().readTree("""
                 {"episodes":[
                   {"episode_number":1,"air_date":"2015-04-25","name":"第1期"},
                   {"episode_number":2,"air_date":"2015-05-09","name":"第2期"},
@@ -287,7 +287,7 @@ class QuarkMultiSourceIngestServiceTest {
                 "season", "第二季", video("07.24.mp4")
         )));
         TmdbClient tmdbClient = mock(TmdbClient.class);
-        when(tmdbClient.getTvSeasonDetails(100, 2, "zh-CN")).thenReturn(new ObjectMapper().readTree("""
+        when(tmdbClient.getTvSeasonDetails(org.mockito.ArgumentMatchers.eq(100), org.mockito.ArgumentMatchers.eq(2), org.mockito.ArgumentMatchers.eq("zh-CN"), org.mockito.ArgumentMatchers.any(TmdbProperties.class))).thenReturn(new ObjectMapper().readTree("""
                 {"episodes":[
                   {"episode_number":7,"air_date":"2022-07-24"},
                   {"episode_number":8,"air_date":"2022-07-24"}
@@ -323,7 +323,7 @@ class QuarkMultiSourceIngestServiceTest {
                 "season", "第二季", video("第十期.mkv"), video("第十二期.mkv")
         )));
         TmdbClient tmdbClient = mock(TmdbClient.class);
-        when(tmdbClient.getTvSeasonDetails(100, 2, "zh-CN")).thenReturn(new ObjectMapper().readTree("""
+        when(tmdbClient.getTvSeasonDetails(org.mockito.ArgumentMatchers.eq(100), org.mockito.ArgumentMatchers.eq(2), org.mockito.ArgumentMatchers.eq("zh-CN"), org.mockito.ArgumentMatchers.any(TmdbProperties.class))).thenReturn(new ObjectMapper().readTree("""
                 {"episodes":[
                   {"episode_number":10,"air_date":"2016-03-20","name":"第10期"},
                   {"episode_number":12,"air_date":"2016-04-03","name":"第12期"}

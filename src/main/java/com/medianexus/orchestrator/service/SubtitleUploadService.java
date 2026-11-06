@@ -9,6 +9,7 @@ import com.medianexus.orchestrator.common.exception.BusinessException;
 import com.medianexus.orchestrator.common.exception.ErrorCode;
 import com.medianexus.orchestrator.config.OpenListProperties;
 import com.medianexus.orchestrator.dto.subtitle.response.SubtitleUploadListResponse;
+import com.medianexus.orchestrator.dto.subtitle.response.SubtitleLocationsResponse;
 import com.medianexus.orchestrator.dto.subtitle.response.SubtitleUploadLogListResponse;
 import com.medianexus.orchestrator.dto.subtitle.response.SubtitleUploadLogResponse;
 import com.medianexus.orchestrator.dto.subtitle.response.SubtitleUploadResponse;
@@ -26,6 +27,7 @@ import com.medianexus.orchestrator.service.SubtitleArchiveExtractor.ExtractedSub
 import com.medianexus.orchestrator.service.SubtitleArchiveExtractor.StagedSubtitleUpload;
 import com.medianexus.orchestrator.service.SubtitleFilenamePlanner.PlannedSubtitleFile;
 import com.medianexus.orchestrator.service.SubtitleFilenamePlanner.SubtitleFilenamePlan;
+import com.medianexus.orchestrator.service.settings.targets.IngestTargetRegistry;
 import java.time.LocalDateTime;
 import java.time.Year;
 import java.util.ArrayList;
@@ -65,6 +67,7 @@ public class SubtitleUploadService {
     private static final TypeReference<List<ManifestFile>> MANIFEST_TYPE = new TypeReference<>() {
     };
 
+    private final IngestTargetRegistry targetRegistry;
     private final SubtitleUploadMapper subtitleUploadMapper;
     private final SubtitleUploadLogMapper subtitleUploadLogMapper;
     private final OpenListClient openListClient;
@@ -88,7 +91,8 @@ public class SubtitleUploadService {
             SubtitleArchiveExtractor archiveExtractor,
             SubtitleFilenamePlanner filenamePlanner,
             ObjectMapper objectMapper,
-            AutoSymlinkRefreshService autoSymlinkRefreshService
+            AutoSymlinkRefreshService autoSymlinkRefreshService,
+            IngestTargetRegistry targetRegistry
     ) {
         this(
                 subtitleUploadMapper,
@@ -101,7 +105,8 @@ public class SubtitleUploadService {
                 filenamePlanner,
                 objectMapper,
                 autoSymlinkRefreshService,
-                Executors.newSingleThreadExecutor(new SubtitleUploadThreadFactory())
+                Executors.newSingleThreadExecutor(new SubtitleUploadThreadFactory()),
+                targetRegistry
         );
     }
 
@@ -116,8 +121,10 @@ public class SubtitleUploadService {
             SubtitleFilenamePlanner filenamePlanner,
             ObjectMapper objectMapper,
             AutoSymlinkRefreshService autoSymlinkRefreshService,
-            ExecutorService executorService
+            ExecutorService executorService,
+            IngestTargetRegistry targetRegistry
     ) {
+        this.targetRegistry = targetRegistry;
         this.subtitleUploadMapper = subtitleUploadMapper;
         this.subtitleUploadLogMapper = subtitleUploadLogMapper;
         this.openListClient = openListClient;
@@ -150,8 +157,29 @@ public class SubtitleUploadService {
             Integer seasonNumber,
             boolean overwrite
     ) {
+        return uploadSubtitle(file, mediaType, title, originalTitle, year, seasonNumber, overwrite, null);
+    }
+
+    public SubtitleUploadResponse uploadSubtitle(
+            MultipartFile file, String mediaType, String title, String originalTitle,
+            Integer year, Integer seasonNumber, boolean overwrite, String targetId
+    ) {
         User user = authService.requireCurrentUser();
-        MediaSubtitlePlan mediaPlan = buildMediaPlan(mediaType, title, originalTitle, year, seasonNumber);
+        List<SubtitleLocation> locations = findMediaLocations(mediaType, title, originalTitle, year, seasonNumber);
+        SubtitleLocation selected;
+        if (StringUtils.hasText(targetId)) {
+            selected = locations.stream().filter(location -> location.targetId().equals(targetId)).findFirst()
+                    .orElseThrow(() -> notFound("所选目标中未找到媒体目录"));
+        } else {
+            if (locations.isEmpty()) {
+                throw notFound("未找到媒体目录");
+            }
+            if (locations.size() > 1) {
+                throw new BusinessException(ErrorCode.CONFLICT, "媒体存在于多个下载目标，请选择目标", HttpStatus.CONFLICT);
+            }
+            selected = locations.get(0);
+        }
+        MediaSubtitlePlan mediaPlan = selected.mediaPlan();
         StagedSubtitleUpload stagedUpload = archiveExtractor.stage(file);
         String uploadId = UUID.randomUUID().toString();
         SubtitleUpload upload = null;
@@ -228,7 +256,7 @@ public class SubtitleUploadService {
             }
 
             markStage(uploadId, "PROCESSING", "refreshing_as");
-            refreshAutoSymlink(uploadId, mediaPlan.mediaType());
+            refreshAutoSymlink(uploadId, mediaPlan);
             writeLog(uploadId, "INFO", "waiting_for_as", "字幕已写入目标目录，等待 AS 后续迁移", mediaPlan.targetPath());
             markSucceeded(uploadId, manifest.size());
         } catch (BusinessException exception) {
@@ -254,16 +282,15 @@ public class SubtitleUploadService {
         }
     }
 
-    private void refreshAutoSymlink(String uploadId, String mediaType) {
+    private void refreshAutoSymlink(String uploadId, MediaSubtitlePlan mediaPlan) {
         try {
             writeLog(uploadId, "INFO", "refreshing_as", "正在触发 AutoSymlink 刷新", null);
-            AutoSymlinkRefreshService.RefreshOutcome outcome = "SERIES".equals(mediaType)
-                    ? autoSymlinkRefreshService.refreshSeries()
-                    : autoSymlinkRefreshService.refreshMovie();
+            AutoSymlinkRefreshService.RefreshOutcome outcome = autoSymlinkRefreshService.refreshForPath(
+                    "SERIES".equals(mediaPlan.mediaType()) ? "TV" : "MOVIE", mediaPlan.targetPath());
             String level = outcome.status() == AutoSymlinkRefreshService.Status.SUBMITTED ? "INFO" : "WARN";
             writeLog(uploadId, level, "refreshing_as", outcome.message(), outcome.detail());
         } catch (Exception exception) {
-            log.warn("Subtitle AutoSymlink refresh failed uploadId={} mediaType={}", uploadId, mediaType, exception);
+            log.warn("Subtitle AutoSymlink refresh failed uploadId={} mediaType={}", uploadId, mediaPlan.mediaType(), exception);
             try {
                 writeLog(uploadId, "WARN", "refreshing_as", "AutoSymlink 刷新任务提交失败，已跳过", null);
             } catch (Exception logException) {
@@ -303,27 +330,58 @@ public class SubtitleUploadService {
         return new SubtitleUploadLogListResponse(items, items.size());
     }
 
+    public SubtitleLocationsResponse locations(
+            String mediaType, String title, String originalTitle, Integer year, Integer seasonNumber
+    ) {
+        authService.requireCurrentUser();
+        return new SubtitleLocationsResponse(findMediaLocations(mediaType, title, originalTitle, year, seasonNumber)
+                .stream().map(location -> new SubtitleLocationsResponse.Item(location.targetId(), location.targetName()))
+                .toList());
+    }
+
+    private List<SubtitleLocation> findMediaLocations(
+            String mediaType, String title, String originalTitle, Integer year, Integer seasonNumber
+    ) {
+        String normalizedType = normalizeMediaType(mediaType);
+        String category = "SERIES".equals(normalizedType) ? "TV" : "MOVIE";
+        String legacyRoot = "SERIES".equals(normalizedType)
+                ? openListProperties.getTvRootPath() : openListProperties.getMovieRootPath();
+        // 没有候选目标时也保留媒体元数据的既有验证。
+        buildMediaPlan(normalizedType, title, originalTitle, year, seasonNumber, "/");
+        List<SubtitleLocation> locations = new ArrayList<>();
+        for (String root : targetRegistry.rootsForExistingMedia(category, cleanConfigValue(legacyRoot))) {
+            MediaSubtitlePlan plan = buildMediaPlan(normalizedType, title, originalTitle, year, seasonNumber, root);
+            var binding = targetRegistry.bindingForPath(category, root);
+            if (openListClient.pathExists(plan.targetPath())) {
+                String targetId = binding.map(IngestTargetRegistry.CategoryBinding::targetId).orElse("legacy");
+                String targetName = binding.map(IngestTargetRegistry.CategoryBinding::targetName).orElse("现有媒体库");
+                locations.add(new SubtitleLocation(targetId, targetName, plan));
+            }
+        }
+        return List.copyOf(locations);
+    }
+
     private MediaSubtitlePlan buildMediaPlan(
             String mediaType,
             String title,
             String originalTitle,
             Integer year,
-            Integer seasonNumber
+            Integer seasonNumber,
+            String rootPath
     ) {
         String normalizedMediaType = normalizeMediaType(mediaType);
         if ("SERIES".equals(normalizedMediaType)) {
-            return buildSeriesPlan(title, originalTitle, year, seasonNumber);
+            return buildSeriesPlan(title, originalTitle, year, seasonNumber, rootPath);
         }
-        return buildMoviePlan(title, originalTitle, year);
+        return buildMoviePlan(title, originalTitle, year, rootPath);
     }
 
-    private MediaSubtitlePlan buildMoviePlan(String title, String originalTitle, Integer year) {
+    private MediaSubtitlePlan buildMoviePlan(String title, String originalTitle, Integer year, String rootPath) {
         int releaseYear = validateMovieYear(year);
         String normalizedTitle = trimToNull(title);
         String normalizedOriginalTitle = trimToNull(originalTitle);
         String folderTitle = preferredTitle(normalizedTitle, normalizedOriginalTitle);
         String displayTitle = StringUtils.hasText(normalizedTitle) ? normalizedTitle : folderTitle;
-        String rootPath = configuredRootPath(openListProperties.getMovieRootPath(), "OpenList 电影基础路径尚未配置");
         String folderName = renameService.movieFolderName(folderTitle, releaseYear);
         String targetPath = openListClient.joinPath(rootPath, folderName);
         return new MediaSubtitlePlan(
@@ -342,14 +400,14 @@ public class SubtitleUploadService {
             String title,
             String originalTitle,
             Integer year,
-            Integer seasonNumber
+            Integer seasonNumber,
+            String rootPath
     ) {
         int selectedSeasonNumber = validateSeasonNumber(seasonNumber);
         String normalizedTitle = trimToNull(title);
         String normalizedOriginalTitle = trimToNull(originalTitle);
         String folderTitle = preferredTitle(normalizedTitle, normalizedOriginalTitle);
         String displayTitle = StringUtils.hasText(normalizedTitle) ? normalizedTitle : folderTitle;
-        String rootPath = configuredRootPath(openListProperties.getTvRootPath(), "OpenList 剧集基础路径尚未配置");
         String seriesFolderName = renameService.seriesFolderName(folderTitle);
         String seasonFolderName = renameService.seasonFolderName(selectedSeasonNumber);
         String targetPath = openListClient.joinPath(
@@ -871,6 +929,9 @@ public class SubtitleUploadService {
 
     private BusinessException internalError(String message) {
         return new BusinessException(ErrorCode.INTERNAL_ERROR, message, HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+
+    private record SubtitleLocation(String targetId, String targetName, MediaSubtitlePlan mediaPlan) {
     }
 
     private record MediaSubtitlePlan(

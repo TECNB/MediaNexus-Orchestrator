@@ -7,6 +7,7 @@ import com.medianexus.orchestrator.service.organization.LibraryOrganizationPlan;
 import com.medianexus.orchestrator.service.organization.LibraryOrganizationPlan.DeleteOperation;
 import com.medianexus.orchestrator.service.organization.LibraryOrganizationPlan.MoveOperation;
 import com.medianexus.orchestrator.service.organization.LibraryOrganizationPlan.RenameOperation;
+import com.medianexus.orchestrator.support.IngestTargetFixtures;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
@@ -43,7 +44,7 @@ class CloudDrive2LibraryOrganizerLiveTest {
         String ingestReleaseDirectory = ingestFixtureRoot + "/Release";
 
         CloudDrive2GrpcClient client = new CloudDrive2GrpcClient(properties);
-        CloudDrive2LibraryOrganizer organizer = new CloudDrive2LibraryOrganizer(client, properties);
+        CloudDrive2LibraryOrganizer organizer = new CloudDrive2LibraryOrganizer(client, properties, IngestTargetFixtures.legacy());
         Throwable primaryFailure = null;
         try {
             LibraryOrganizationPlan plan = new LibraryOrganizationPlan(

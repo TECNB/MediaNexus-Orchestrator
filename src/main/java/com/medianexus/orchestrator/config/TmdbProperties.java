@@ -11,6 +11,17 @@ import org.springframework.validation.annotation.Validated;
 @ConfigurationProperties(prefix = "medianexus.tmdb")
 public class TmdbProperties {
 
+    private volatile java.util.function.Supplier<TmdbProperties> settingsResolver;
+
+    /** 每次业务操作捕获一份配置；快照对象本身不再解析数据库覆盖。 */
+    public TmdbProperties snapshot() {
+        return settingsResolver == null ? this : settingsResolver.get();
+    }
+
+    public void setSettingsResolver(java.util.function.Supplier<TmdbProperties> resolver) {
+        this.settingsResolver = resolver;
+    }
+
     @NotBlank
     private String baseUrl;
     private String apiToken;

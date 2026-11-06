@@ -11,6 +11,7 @@ import com.medianexus.orchestrator.service.organization.LibraryOrganizationPlan;
 import com.medianexus.orchestrator.service.organization.LibraryOrganizationPlan.MoveOperation;
 import com.medianexus.orchestrator.service.organization.LibraryOrganizationPlan.RenameOperation;
 import com.medianexus.orchestrator.service.organization.LibraryOrganizationProgressObserver;
+import com.medianexus.orchestrator.service.settings.targets.IngestTargetRegistry;
 import io.grpc.Status;
 import java.time.Duration;
 import java.time.Instant;
@@ -22,30 +23,28 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.BooleanSupplier;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 @Component
-@ConditionalOnProperty(
-        prefix = "medianexus.clouddrive2",
-        name = "organization-enabled",
-        havingValue = "true"
-)
 public class CloudDrive2LibraryOrganizer implements LibraryOrganizer {
 
+    private final IngestTargetRegistry targetRegistry;
     private final CloudDrive2FileOperations fileOperations;
     private final CloudDrive2Properties properties;
 
     CloudDrive2LibraryOrganizer(
             CloudDrive2FileOperations fileOperations,
-            CloudDrive2Properties properties
+            CloudDrive2Properties properties,
+            IngestTargetRegistry targetRegistry
     ) {
+        this.targetRegistry = targetRegistry;
         this.fileOperations = fileOperations;
         this.properties = properties;
     }
 
     @Override
     public void organize(LibraryOrganizationPlan plan, LibraryOrganizationProgressObserver progressObserver) {
+        validatePlanMapping(plan);
         progressObserver.record("正在等待 CD2 看见完整源文件", plan.targetDirectory());
         awaitPathsPresent(initialSourcePaths(plan), "CD2 源文件可见性超时");
         progressObserver.record("CD2 已看见完整源文件", plan.targetDirectory());
@@ -106,6 +105,29 @@ public class CloudDrive2LibraryOrganizer implements LibraryOrganizer {
         progressObserver.record("正在确认 CD2 整理结果完整可见", plan.targetDirectory());
         awaitTargetManifest(plan);
         progressObserver.record("CD2 整理结果已完整可见", plan.targetDirectory());
+    }
+
+    /** 映射命名空间禁止重叠，因此共同祖先可映射才证明整个计划属于同一目标。 */
+    private void validatePlanMapping(LibraryOrganizationPlan plan) {
+        Set<String> paths = new LinkedHashSet<>(initialSourcePaths(plan));
+        paths.add(plan.targetDirectory());
+        plan.renames().forEach(operation -> paths.add(operation.targetPath()));
+        plan.moves().forEach(operation -> {
+            paths.add(operation.sourcePath());
+            paths.add(operation.targetDirectory());
+        });
+        String commonRoot = normalizePath(plan.targetDirectory());
+        for (String path : paths) {
+            toCloudDrivePath(path);
+            String normalized = normalizePath(path);
+            while (!normalized.equals(commonRoot) && !normalized.startsWith(commonRoot + "/")) {
+                if ("/".equals(commonRoot)) {
+                    break;
+                }
+                commonRoot = parentPath(commonRoot);
+            }
+        }
+        toCloudDrivePath(commonRoot);
     }
 
     private Set<String> initialSourcePaths(LibraryOrganizationPlan plan) {
@@ -288,7 +310,8 @@ public class CloudDrive2LibraryOrganizer implements LibraryOrganizer {
 
     private void refreshAncestorDirectories(String ingestDirectory) {
         String cloudDriveDirectory = toCloudDrivePath(ingestDirectory);
-        String cloudDrivePrefix = normalizePath(properties.getCloudDrivePathPrefix());
+        String cloudDrivePrefix = targetRegistry.cloudDriveRootForIngestPath(
+                ingestDirectory, properties.getIngestPathPrefix(), properties.getCloudDrivePathPrefix());
         String relativeDirectory = cloudDriveDirectory.substring(cloudDrivePrefix.length());
         String current = cloudDrivePrefix;
         for (String segment : relativeDirectory.split("/")) {
@@ -363,17 +386,8 @@ public class CloudDrive2LibraryOrganizer implements LibraryOrganizer {
     }
 
     private String toCloudDrivePath(String ingestPath) {
-        String normalizedPath = normalizePath(ingestPath);
-        String ingestPrefix = normalizePath(properties.getIngestPathPrefix());
-        String cloudDrivePrefix = normalizePath(properties.getCloudDrivePathPrefix());
-        if (normalizedPath.equals(ingestPrefix)) {
-            return cloudDrivePrefix;
-        }
-        String requiredPrefix = ingestPrefix + "/";
-        if (!normalizedPath.startsWith(requiredPrefix)) {
-            throw new CloudDrive2ClientException("入库路径不在已配置的映射前缀下: " + normalizedPath);
-        }
-        return normalizePath(cloudDrivePrefix + normalizedPath.substring(ingestPrefix.length()));
+        return targetRegistry.toCloudDrivePath(ingestPath,
+                properties.getIngestPathPrefix(), properties.getCloudDrivePathPrefix());
     }
 
     private record MoveRequestGroup(String sourceDirectory, String targetDirectory) {

@@ -10,6 +10,7 @@ import com.medianexus.orchestrator.integration.emby.EmbyDeletionItem;
 import com.medianexus.orchestrator.integration.emby.EmbyLibrary;
 import com.medianexus.orchestrator.integration.emby.EmbyClient;
 import com.medianexus.orchestrator.integration.quark.QuarkDirectClient;
+import com.medianexus.orchestrator.service.settings.targets.IngestTargetRegistry;
 import java.net.URI;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -28,6 +29,7 @@ import org.springframework.util.StringUtils;
 @Service
 public class MediaLibrarySyncService {
 
+    private final IngestTargetRegistry targetRegistry;
     private final AuthService authService;
     private final AdminMediaLibraryCatalogService catalogService;
     private final EmbyClient embyClient;
@@ -43,8 +45,10 @@ public class MediaLibrarySyncService {
             QuarkDirectClient quarkClient,
             ObjectProvider<CloudDrive2MediaDeletion> cloudDriveDeletion,
             LocalStrmDeletion localStrmDeletion,
-            CloudDrive2Properties cloudDriveProperties
+            CloudDrive2Properties cloudDriveProperties,
+            IngestTargetRegistry targetRegistry
     ) {
+        this.targetRegistry = targetRegistry;
         this.authService = authService;
         this.catalogService = catalogService;
         this.embyClient = embyClient;
@@ -282,11 +286,11 @@ public class MediaLibrarySyncService {
     }
 
     private boolean isCloudPath(String path) {
-        return path.startsWith(normalize(cloudDriveProperties.getMediaSourcePathPrefix()));
+        return targetRegistry.ownsMediaSourcePath(path, cloudDriveProperties.getMediaSourcePathPrefix());
     }
 
     private boolean exists(String remoteDirectory) {
-        if (remoteDirectory.startsWith(normalize(cloudDriveProperties.getMediaSourcePathPrefix()))) {
+        if (isCloudPath(remoteDirectory)) {
             CloudDrive2MediaDeletion deletion = cloudDriveDeletion.getIfAvailable();
             if (deletion == null) {
                 throw new BusinessException(ErrorCode.SERVICE_UNAVAILABLE, "CloudDrive2 未启用", HttpStatus.SERVICE_UNAVAILABLE);
@@ -303,7 +307,7 @@ public class MediaLibrarySyncService {
         if (source.contains("/smartstrm_fid/")) {
             return true;
         }
-        return source.startsWith(normalize(cloudDriveProperties.getMediaSourcePathPrefix()));
+        return targetRegistry.ownsMediaSourcePath(source, cloudDriveProperties.getMediaSourcePathPrefix());
     }
 
     private String normalize(String path) {

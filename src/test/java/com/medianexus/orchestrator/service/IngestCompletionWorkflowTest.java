@@ -1,5 +1,7 @@
 package com.medianexus.orchestrator.service;
 
+import com.medianexus.orchestrator.support.IngestTargetFixtures;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -133,7 +135,7 @@ class IngestCompletionWorkflowTest {
         files("/media/Show", "[Group] Show - 01.mkv");
         AnimeMagnetIngestTaskService worker = new AnimeMagnetIngestTaskService(
                 anime, mock(AnimeMagnetIngestTaskLogMapper.class), openList, properties,
-                new AnimeEpisodeRenameService(properties), organizer, null, null, refresh, null, notifier);
+                new AnimeEpisodeRenameService(properties), organizer, null, null, refresh, null, IngestTargetFixtures.legacy(), notifier);
 
         ReflectionTestUtils.invokeMethod(worker, "runTask", task.getId());
 
@@ -173,6 +175,6 @@ class IngestCompletionWorkflowTest {
     private MagnetIngestService magnetWorker() {
         return new MagnetIngestService(movies, mock(MovieMagnetIngestTaskLogMapper.class),
                 series, mock(SeriesMagnetIngestTaskLogMapper.class), openList, properties,
-                new MovieSeriesFileRenameService(), organizer, null, null, refresh, null, notifier);
+                new MovieSeriesFileRenameService(), organizer, null, null, refresh, null, IngestTargetFixtures.legacy(), notifier);
     }
 }

@@ -22,6 +22,7 @@ import com.medianexus.orchestrator.model.User;
 import com.medianexus.orchestrator.model.UserActionType;
 import com.medianexus.orchestrator.service.organization.LibraryOrganizer;
 import com.medianexus.orchestrator.service.organization.LibraryOrganizationPlan;
+import com.medianexus.orchestrator.service.settings.targets.IngestTargetRegistry;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -90,6 +91,7 @@ public class AnimeMagnetIngestTaskService {
     private static final Duration SAVING_FILES_VISIBLE_GRACE = Duration.ofMinutes(5);
     private static final String ADMIN_ROLE = "ADMIN";
 
+    private final IngestTargetRegistry targetRegistry;
     private final AnimeMagnetIngestTaskMapper taskMapper;
     private final AnimeMagnetIngestTaskLogMapper taskLogMapper;
     private final OpenListClient openListClient;
@@ -115,8 +117,10 @@ public class AnimeMagnetIngestTaskService {
             UserActionQuotaService userActionQuotaService,
             AutoSymlinkRefreshService autoSymlinkRefreshService,
             MediaLibraryPresenceService mediaLibraryPresenceService,
+            IngestTargetRegistry targetRegistry,
             IngestTaskNotifier taskNotifier
     ) {
+        this.targetRegistry = targetRegistry;
         this.taskMapper = taskMapper;
         this.taskLogMapper = taskLogMapper;
         this.openListClient = openListClient;
@@ -143,8 +147,10 @@ public class AnimeMagnetIngestTaskService {
             AutoSymlinkRefreshService autoSymlinkRefreshService,
             MediaLibraryPresenceService mediaLibraryPresenceService,
             ExecutorService executorService,
+            IngestTargetRegistry targetRegistry,
             IngestTaskNotifier taskNotifier
     ) {
+        this.targetRegistry = targetRegistry;
         this.taskMapper = taskMapper;
         this.taskLogMapper = taskLogMapper;
         this.openListClient = openListClient;
@@ -284,6 +290,7 @@ public class AnimeMagnetIngestTaskService {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "相同 magnet 正在处理中，请稍后再试");
         }
 
+        targetRegistry.bindingForPath("ANIME", originalTask.getSavePath());
         return insertTask(
                 user,
                 new AnimeTaskSeed(
@@ -466,7 +473,12 @@ public class AnimeMagnetIngestTaskService {
 
     private void prepareDownloadRoot(AnimeMagnetIngestTask task) {
         writeLog(task.getId(), "INFO", "created", "正在准备 OpenList 保存目录", task.getSavePath());
-        openListClient.ensureDirectoryHierarchy(task.getSavePath());
+        var binding = targetRegistry.bindingForPath("ANIME", task.getSavePath());
+        if (binding.isPresent()) {
+            openListClient.ensureDirectoryReady(task.getSavePath(), binding.get().rootPath());
+        } else {
+            openListClient.ensureDirectoryHierarchy(task.getSavePath());
+        }
         writeLog(task.getId(), "INFO", "created", "OpenList 保存目录准备完成", task.getSavePath());
     }
 
@@ -507,7 +519,7 @@ public class AnimeMagnetIngestTaskService {
     private void refreshAutoSymlink(String taskId) {
         try {
             writeLog(taskId, "INFO", "succeeded", "正在触发 AutoSymlink 刷新", null);
-            AutoSymlinkRefreshService.RefreshOutcome outcome = autoSymlinkRefreshService.refreshAnime();
+            AutoSymlinkRefreshService.RefreshOutcome outcome = autoSymlinkRefreshService.refreshForPath("ANIME", getExistingTask(taskId).getSavePath());
             writeAutoSymlinkOutcome(taskId, "succeeded", outcome);
         } catch (Exception exception) {
             log.warn("Anime AutoSymlink refresh logging failed taskId={}", taskId, exception);
@@ -1018,7 +1030,7 @@ public class AnimeMagnetIngestTaskService {
     }
 
     private String renderAnimePath(String title, Integer season) {
-        String template = openListProperties.getAnimePathTemplate();
+        String template = targetRegistry.creationAnimeTemplate(openListProperties.getAnimePathTemplate());
         String folderTitle = sanitizePathSegment(title);
         String path = replaceTemplateValue(template, "themoviedbName", folderTitle);
         path = replaceTemplateValue(path, "title", folderTitle);

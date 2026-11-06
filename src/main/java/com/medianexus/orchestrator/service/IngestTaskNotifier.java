@@ -55,7 +55,7 @@ public class IngestTaskNotifier {
     public void movieStarted(MovieMagnetIngestTask task) {
         submit(task.getId(), task.getTmdbId(), () -> {
             String title = task.getTitle() + (task.getYear() == null ? "" : "（" + task.getYear() + "）");
-            send(new IngestNotice("movie", task.getId(), title, "电影"), "任务已发起", "入库任务已创建并排入后台队列，进度请查看任务详情。", tmdbClient.getMovieImages(task.getTmdbId()));
+            send(new IngestNotice("movie", task.getId(), title, "电影"), "任务已发起", "入库任务已创建并排入后台队列，进度请查看任务详情。", snapshot -> tmdbClient.getMovieImages(task.getTmdbId(), snapshot));
         });
     }
 
@@ -63,21 +63,21 @@ public class IngestTaskNotifier {
         submit(task.getId(), task.getTmdbId(), () -> send(
                 new IngestNotice("series", task.getId(), seasonTitle(task.getTitle(), task.getSeasonNumber()),
                         "ANIME".equals(task.getTaskProductType()) ? "动漫" : "剧集"),
-                "任务已发起", "入库任务已创建并排入后台队列，进度请查看任务详情。", tmdbClient.getTvImages(task.getTmdbId())
+                "任务已发起", "入库任务已创建并排入后台队列，进度请查看任务详情。", snapshot -> tmdbClient.getTvImages(task.getTmdbId(), snapshot)
         ));
     }
 
     public void animeStarted(AnimeMagnetIngestTask task) {
         submit(task.getId(), task.getTmdbId(), () -> send(
                 new IngestNotice("anime", task.getId(), seasonTitle(task.getTitle(), task.getSeasonNumber()), "动漫"),
-                "任务已发起", "入库任务已创建并排入后台队列，进度请查看任务详情。", tmdbClient.getTvImages(task.getTmdbId())
+                "任务已发起", "入库任务已创建并排入后台队列，进度请查看任务详情。", snapshot -> tmdbClient.getTvImages(task.getTmdbId(), snapshot)
         ));
     }
 
     public void movieCompleted(MovieMagnetIngestTask task) {
         submit(task.getId(), task.getTmdbId(), () -> {
             String title = task.getTitle() + (task.getYear() == null ? "" : "（" + task.getYear() + "）");
-            send(new IngestNotice("movie", task.getId(), title, "电影"), "任务处理完成", "入库任务已处理完成。\n播放可用性请以媒体库为准。", tmdbClient.getMovieImages(task.getTmdbId()));
+            send(new IngestNotice("movie", task.getId(), title, "电影"), "任务处理完成", "入库任务已处理完成。\n播放可用性请以媒体库为准。", snapshot -> tmdbClient.getMovieImages(task.getTmdbId(), snapshot));
         });
     }
 
@@ -85,14 +85,14 @@ public class IngestTaskNotifier {
         submit(task.getId(), task.getTmdbId(), () -> send(
                 new IngestNotice("series", task.getId(), seasonTitle(task.getTitle(), task.getSeasonNumber()),
                         "ANIME".equals(task.getTaskProductType()) ? "动漫" : "剧集"),
-                "任务处理完成", "入库任务已处理完成。\n播放可用性请以媒体库为准。", tmdbClient.getTvImages(task.getTmdbId())
+                "任务处理完成", "入库任务已处理完成。\n播放可用性请以媒体库为准。", snapshot -> tmdbClient.getTvImages(task.getTmdbId(), snapshot)
         ));
     }
 
     public void animeCompleted(AnimeMagnetIngestTask task) {
         submit(task.getId(), task.getTmdbId(), () -> send(
                 new IngestNotice("anime", task.getId(), seasonTitle(task.getTitle(), task.getSeasonNumber()), "动漫"),
-                "任务处理完成", "入库任务已处理完成。\n播放可用性请以媒体库为准。", tmdbClient.getTvImages(task.getTmdbId())
+                "任务处理完成", "入库任务已处理完成。\n播放可用性请以媒体库为准。", snapshot -> tmdbClient.getTvImages(task.getTmdbId(), snapshot)
         ));
     }
 
@@ -117,8 +117,9 @@ public class IngestTaskNotifier {
         }
     }
 
-    private void send(IngestNotice notice, String heading, String summary, JsonNode images) {
-        String imageUrl = imageUrl(images);
+    private void send(IngestNotice notice, String heading, String summary, java.util.function.Function<TmdbProperties, JsonNode> loadImages) {
+        TmdbProperties snapshot = tmdbProperties.snapshot();
+        String imageUrl = imageUrl(loadImages.apply(snapshot), snapshot);
         if (imageUrl == null) {
             log.warn("企业微信任务通知未发送 taskId={} 原因=该条目没有可用横图或海报", notice.taskId());
             return;
@@ -130,12 +131,12 @@ public class IngestTaskNotifier {
         log.info("企业微信 API 已受理任务通知 taskId={} 类型={}，普通微信实际收件仍需核实", notice.taskId(), heading);
     }
 
-    private String imageUrl(JsonNode images) {
+    private String imageUrl(JsonNode images, TmdbProperties snapshot) {
         for (String kind : new String[]{"backdrops", "posters"}) {
             for (JsonNode image : images.path(kind)) {
                 String path = image.path("file_path").asText();
                 if (StringUtils.hasText(path) && path.startsWith("/") && !path.startsWith("//")) {
-                    return tmdbProperties.getImageBaseUrl().replaceAll("/+$", "") + path;
+                    return snapshot.getImageBaseUrl().replaceAll("/+$", "") + path;
                 }
             }
         }

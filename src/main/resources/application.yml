@@ -4,6 +4,10 @@ server:
 spring:
   config:
     import: optional:file:.env[.properties]
+  servlet:
+    multipart:
+      max-file-size: ${MEDIANEXUS_MULTIPART_MAX_FILE_SIZE:50MB}
+      max-request-size: ${MEDIANEXUS_MULTIPART_MAX_REQUEST_SIZE:51MB}
   application:
     name: medianexus-orchestrator
   datasource:
@@ -53,6 +57,8 @@ medianexus:
     api-key: ${MEDIANEXUS_ANI_RSS_API_KEY:}
     timeout: ${MEDIANEXUS_ANI_RSS_TIMEOUT:10s}
   autosymlink:
+    disabled: ${MEDIANEXUS_AUTOSYMLINK_DISABLED:false}
+    new-account-scan-parameters-json: ${MEDIANEXUS_AUTOSYMLINK_NEW_ACCOUNT_SCAN_PARAMETERS_JSON:}
     base-url: ${MEDIANEXUS_AUTOSYMLINK_BASE_URL:}
     cookie: ${MEDIANEXUS_AUTOSYMLINK_COOKIE:}
     timeout: ${MEDIANEXUS_AUTOSYMLINK_TIMEOUT:15s}
@@ -91,6 +97,8 @@ medianexus:
   openlist:
     base-url: ${MEDIANEXUS_OPENLIST_BASE_URL:}
     authorization: ${MEDIANEXUS_OPENLIST_AUTHORIZATION:}
+    dav-username: ${MEDIANEXUS_OPENLIST_DAV_USERNAME:}
+    dav-password: ${MEDIANEXUS_OPENLIST_DAV_PASSWORD:}
     offline-tool: ${MEDIANEXUS_OPENLIST_OFFLINE_TOOL:PikPak}
     ed2k-offline-tool: ${MEDIANEXUS_OPENLIST_ED2K_OFFLINE_TOOL:Thunder}
     delete-policy: ${MEDIANEXUS_OPENLIST_DELETE_POLICY:delete_on_upload_succeed}
@@ -130,12 +138,14 @@ medianexus:
     max-total-extracted-size: ${MEDIANEXUS_SUBTITLE_UPLOAD_MAX_TOTAL_EXTRACTED_SIZE:150MB}
     max-compression-ratio: ${MEDIANEXUS_SUBTITLE_UPLOAD_MAX_COMPRESSION_RATIO:100}
   prowlarr:
+    disabled: ${MEDIANEXUS_PROWLARR_DISABLED:false}
     base-url: ${MEDIANEXUS_PROWLARR_BASE_URL:}
     api-key: ${MEDIANEXUS_PROWLARR_API_KEY:}
     timeout: ${MEDIANEXUS_PROWLARR_TIMEOUT:120s}
     search-cache-ttl: ${MEDIANEXUS_PROWLARR_SEARCH_CACHE_TTL:30m}
     search-cache-max-weight-bytes: ${MEDIANEXUS_PROWLARR_SEARCH_CACHE_MAX_WEIGHT_BYTES:33554432}
   pansou:
+    disabled: ${MEDIANEXUS_PANSOU_DISABLED:false}
     base-url: ${MEDIANEXUS_PANSOU_BASE_URL:}
     username: ${MEDIANEXUS_PANSOU_USERNAME:}
     password: ${MEDIANEXUS_PANSOU_PASSWORD:}

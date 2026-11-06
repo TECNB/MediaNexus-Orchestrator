@@ -21,6 +21,7 @@ import com.medianexus.orchestrator.model.AdultMagnetIngestTask;
 import com.medianexus.orchestrator.model.User;
 import com.medianexus.orchestrator.service.organization.LibraryOrganizer;
 import com.medianexus.orchestrator.service.organization.LibraryOrganizationPlan;
+import com.medianexus.orchestrator.support.IngestTargetFixtures;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.time.Duration;
@@ -57,7 +58,8 @@ class AdultMagnetIngestServiceTest {
             null,
             objectMapper,
             taskExecutor,
-            new ControlledExecutor()
+            new ControlledExecutor(),
+            IngestTargetFixtures.legacy()
     );
 
     private static OpenListProperties openListProperties() {
@@ -101,6 +103,12 @@ class AdultMagnetIngestServiceTest {
 
     @Test
     void createsAdultRetryAsNewLinkedAttemptAndPersistsNormalizedBatch() {
+        AdultMagnetIngestTask original = new AdultMagnetIngestTask();
+        original.setId("adult-1");
+        original.setCategory("JAV");
+        original.setDateFolder("7.15");
+        original.setTargetPath("/adult/JAV/7.15");
+        when(taskMapper.selectById("adult-1")).thenReturn(original);
         service.createRetryTask(
                 "JAV",
                 List.of(
@@ -120,10 +128,17 @@ class AdultMagnetIngestServiceTest {
                 "[\"magnet:?xt=urn:btih:firsthash\",\"ed2k://|file|video.mkv|123|0123456789abcdef0123456789abcdef|/\"]"
         );
         assertThat(task.getMagnetCount()).isEqualTo(2);
+        assertThat(task.getTargetPath()).isEqualTo("/adult/JAV/7.15");
+        assertThat(task.getDateFolder()).isEqualTo("7.15");
     }
 
     @Test
     void removesNewAttemptWhenTaskSchedulingIsRejected() {
+        AdultMagnetIngestTask original = new AdultMagnetIngestTask();
+        original.setCategory("OTHER");
+        original.setTargetPath("/adult/Other/7.15");
+        original.setDateFolder("7.15");
+        when(taskMapper.selectById("adult-1")).thenReturn(original);
         taskExecutor.reject = true;
 
         assertThatThrownBy(() -> service.createRetryTask(
@@ -156,7 +171,8 @@ class AdultMagnetIngestServiceTest {
                 null,
                 objectMapper,
                 new ControlledExecutor(),
-                new ControlledExecutor()
+                new ControlledExecutor(),
+                IngestTargetFixtures.legacy()
         );
         AdultMagnetIngestTask task = new AdultMagnetIngestTask();
         task.setId("task-1");
@@ -206,7 +222,8 @@ class AdultMagnetIngestServiceTest {
                 null,
                 objectMapper,
                 new ControlledExecutor(),
-                new ControlledExecutor()
+                new ControlledExecutor(),
+                IngestTargetFixtures.legacy()
         );
         Class<?> itemType = Class.forName(AdultMagnetIngestService.class.getName() + "$AdultMagnetItem");
         Constructor<?> itemConstructor = itemType.getDeclaredConstructor(
@@ -276,7 +293,8 @@ class AdultMagnetIngestServiceTest {
                 null,
                 objectMapper,
                 new ControlledExecutor(),
-                new ControlledExecutor()
+                new ControlledExecutor(),
+                IngestTargetFixtures.legacy()
         );
         Class<?> itemType = Class.forName(AdultMagnetIngestService.class.getName() + "$AdultMagnetItem");
         Class<?> preparedType = Class.forName(AdultMagnetIngestService.class.getName() + "$AdultPreparedItem");
@@ -344,7 +362,8 @@ class AdultMagnetIngestServiceTest {
                 null,
                 objectMapper,
                 new ControlledExecutor(),
-                new ControlledExecutor()
+                new ControlledExecutor(),
+                IngestTargetFixtures.legacy()
         );
         Class<?> itemType = Class.forName(AdultMagnetIngestService.class.getName() + "$AdultMagnetItem");
         Class<?> preparedType = Class.forName(AdultMagnetIngestService.class.getName() + "$AdultPreparedItem");

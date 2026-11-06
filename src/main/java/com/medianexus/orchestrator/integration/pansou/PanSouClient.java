@@ -257,6 +257,7 @@ public class PanSouClient implements AutoCloseable {
     }
 
     private void ensureConfigured() {
+        if (properties.isDisabled()) throw new PanSouClientException(CONFIGURATION, "PanSou 已明确停用");
         if (!StringUtils.hasText(properties.getBaseUrl())
                 || !StringUtils.hasText(properties.getUsername())
                 || !StringUtils.hasText(properties.getPassword())) {

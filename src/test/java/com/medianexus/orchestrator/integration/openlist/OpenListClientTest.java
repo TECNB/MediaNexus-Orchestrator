@@ -1,6 +1,7 @@
 package com.medianexus.orchestrator.integration.openlist;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -108,6 +109,34 @@ class OpenListClientTest {
         assertThat(status.totalBytes()).isEqualTo(10_000_000_000_000L);
         assertThat(status.freeBytes()).isEqualTo(2_200_000_000_000L);
         assertThat(storageRequests).hasValue(2);
+    }
+
+    @Test
+    void readsStatusForTheExactStoragePathWithoutFallingBack() {
+        server.removeContext("/api/admin/storage/list");
+        server.createContext("/api/admin/storage/list", exchange -> respond(exchange, """
+                {"code":200,"data":{"content":[
+                  {"id":1,"driver":"PikPak","mount_path":"/pikpak","status":"work","disabled":false,
+                   "mount_details":{"used_space":10,"total_space":100,"free_space":90}},
+                  {"id":2,"driver":"PikPak","mount_path":"/pikpak2","status":"work","disabled":false,
+                   "mount_details":{"used_space":77,"total_space":200,"free_space":123}},
+                  {"id":3,"driver":"PikPak","mount_path":"/stopped","status":"work","disabled":true,
+                   "mount_details":{"used_space":3,"total_space":300,"free_space":297}}
+                ]}}
+                """));
+        OpenListProperties properties = new OpenListProperties();
+        properties.setBaseUrl("http://127.0.0.1:" + server.getAddress().getPort());
+        properties.setAuthorization("test-token");
+        properties.setTimeout(Duration.ofSeconds(2));
+        OpenListClient client = new OpenListClient(properties, objectMapper);
+
+        OpenListStorageStatus status = client.storageStatusForPath("/pikpak2/Media/Movie");
+
+        assertThat(status.usedBytes()).isEqualTo(77);
+        assertThat(status.totalBytes()).isEqualTo(200);
+        assertThat(client.storageStatusForPath("/stopped/Media").online()).isFalse();
+        assertThatThrownBy(() -> client.storageStatusForPath("/pikpak22/Media"))
+                .isInstanceOf(OpenListClientException.class);
     }
 
     private void respond(HttpExchange exchange, String body) throws IOException {

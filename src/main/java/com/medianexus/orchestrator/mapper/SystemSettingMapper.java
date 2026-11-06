@@ -59,4 +59,13 @@ public interface SystemSettingMapper extends BaseMapper<SystemSetting> {
             @Param("settingKey") String settingKey,
             @Param("settingValue") String settingValue
     );
+    /** 调用方在事务中锁定组行后进行精确 CAS；二进制比较保护加密文本大小写。 */
+    @Update("""
+            UPDATE system_settings SET setting_value = #{replacement}
+            WHERE setting_key = #{settingKey} AND BINARY setting_value = BINARY #{expected}
+            """)
+    int compareAndSetSetting(@Param("settingKey") String settingKey,
+                            @Param("expected") String expected,
+                            @Param("replacement") String replacement);
+
 }

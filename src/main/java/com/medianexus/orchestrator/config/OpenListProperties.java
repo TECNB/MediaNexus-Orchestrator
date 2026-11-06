@@ -25,6 +25,16 @@ public class OpenListProperties {
      */
     private String authorization;
 
+    /** WebDAV 认证独立于管理 Token，仅用于管理员明确提交的账号接入。 */
+    private String davUsername;
+
+    private String davPassword;
+
+    public String getDavUsername() { return davUsername; }
+    public void setDavUsername(String davUsername) { this.davUsername = davUsername; }
+    public String getDavPassword() { return davPassword; }
+    public void setDavPassword(String davPassword) { this.davPassword = davPassword; }
+
     /**
      * OpenList 离线下载工具名称，默认使用 PikPak。
      */

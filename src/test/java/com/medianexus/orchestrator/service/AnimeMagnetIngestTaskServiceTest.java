@@ -22,6 +22,7 @@ import com.medianexus.orchestrator.mapper.AnimeMagnetIngestTaskMapper;
 import com.medianexus.orchestrator.model.AnimeMagnetIngestTask;
 import com.medianexus.orchestrator.model.User;
 import com.medianexus.orchestrator.model.UserActionType;
+import com.medianexus.orchestrator.support.IngestTargetFixtures;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -59,6 +60,7 @@ class AnimeMagnetIngestTaskServiceTest {
             null,
             mediaLibraryPresenceService,
             taskExecutor,
+            IngestTargetFixtures.legacy(),
             notifier
     );
 
@@ -172,6 +174,7 @@ class AnimeMagnetIngestTaskServiceTest {
                 null,
                 mediaLibraryPresenceService,
                 taskExecutor,
+                IngestTargetFixtures.legacy(),
                 notifier
         );
 
@@ -213,6 +216,7 @@ class AnimeMagnetIngestTaskServiceTest {
                 null,
                 mediaLibraryPresenceService,
                 taskExecutor,
+                IngestTargetFixtures.legacy(),
                 notifier
         );
 
@@ -257,6 +261,7 @@ class AnimeMagnetIngestTaskServiceTest {
                 null,
                 mediaLibraryPresenceService,
                 taskExecutor,
+                IngestTargetFixtures.legacy(),
                 notifier
         );
 
@@ -346,6 +351,7 @@ class AnimeMagnetIngestTaskServiceTest {
                 null,
                 mediaLibraryPresenceService,
                 taskExecutor,
+                IngestTargetFixtures.legacy(),
                 notifier
         );
     }

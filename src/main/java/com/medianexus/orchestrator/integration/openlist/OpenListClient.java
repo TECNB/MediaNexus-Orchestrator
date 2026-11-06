@@ -100,6 +100,48 @@ public class OpenListClient {
         return status;
     }
 
+    /** 容量按实际目标路径选择存储；禁用、未知或更具体的其它驱动不会回退另一账号。 */
+    public OpenListStorageStatus storageStatusForPath(String path) {
+        if (!StringUtils.hasText(path) || !path.startsWith("/")) {
+            throw new OpenListClientException("入库目标路径无效");
+        }
+        String target = normalizePath(path);
+        JsonNode selected = null;
+        int longestPrefix = -1;
+        int visited = 0;
+        Set<String> seenPages = new java.util.HashSet<>();
+        for (int page = 1; ; page++) {
+            JsonNode root = getRoot("admin/storage/list?page=" + page + "&per_page=100");
+            if (!isSuccess(root) || !root.path("data").path("content").isArray()) {
+                throw new OpenListClientException("OpenList 存储列表不可读取");
+            }
+            JsonNode content = root.path("data").path("content");
+            if (content.size() == 100 && !seenPages.add(content.toString())) {
+                throw new OpenListClientException("OpenList 存储分页未推进，无法确认目标");
+            }
+            for (JsonNode storage : content) {
+                String rawMount = storage.path("mount_path").asText();
+                if (!StringUtils.hasText(rawMount) || !rawMount.startsWith("/")) continue;
+                String mount = normalizePath(rawMount);
+                if ((target.equals(mount) || target.startsWith(mount.equals("/") ? "/" : mount + "/"))
+                        && mount.length() > longestPrefix) {
+                    selected = storage;
+                    longestPrefix = mount.length();
+                }
+            }
+            visited += content.size();
+            long total = root.path("data").path("total").asLong(-1);
+            if (content.size() < 100 || (total >= 0 && visited >= total)) break;
+        }
+        if (selected == null || !"PikPak".equalsIgnoreCase(selected.path("driver").asText())) {
+            throw new OpenListClientException("指定入库目标没有可确认的 PikPak 存储");
+        }
+        JsonNode details = selected.path("mount_details");
+        return new OpenListStorageStatus("PikPak", !selected.path("disabled").asBoolean(false)
+                && "work".equalsIgnoreCase(selected.path("status").asText()),
+                longValue(details, "used_space"), longValue(details, "total_space"), longValue(details, "free_space"));
+    }
+
     private OpenListStorageStatus readStorageStatus() {
         JsonNode root = getRoot("admin/storage/list?page=1&per_page=100");
         if (!isSuccess(root)) {

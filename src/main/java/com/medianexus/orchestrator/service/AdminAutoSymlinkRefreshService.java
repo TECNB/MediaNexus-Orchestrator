@@ -28,7 +28,9 @@ public class AdminAutoSymlinkRefreshService {
         authService.requireAdminUser();
         String target = normalizeTarget(request);
         LocalDateTime startedAt = LocalDateTime.now();
-        AutoSymlinkRefreshService.RefreshOutcome outcome = switch (target) {
+        AutoSymlinkRefreshService.RefreshOutcome outcome = StringUtils.hasText(request.targetId())
+                ? autoSymlinkRefreshService.refreshForTarget(target, request.targetId())
+                : switch (target) {
             case "MOVIE" -> autoSymlinkRefreshService.refreshMovie();
             case "TV" -> autoSymlinkRefreshService.refreshSeries();
             case "ANIME" -> autoSymlinkRefreshService.refreshAnime();

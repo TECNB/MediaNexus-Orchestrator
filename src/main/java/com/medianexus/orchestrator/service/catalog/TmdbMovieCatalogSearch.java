@@ -23,10 +23,11 @@ public class TmdbMovieCatalogSearch {
     }
 
     public List<MovieCatalogItem> searchMovies(String term) {
+        TmdbProperties snapshot = properties.snapshot();
         try {
             List<MovieCatalogItem> items = new ArrayList<>();
-            for (JsonNode searchItem : tmdbClient.searchMovies(term, defaultLanguage())) {
-                MovieCatalogItem item = toMovieCatalogItem(searchItem);
+            for (JsonNode searchItem : tmdbClient.searchMovies(term, cleanConfigValue(snapshot.getDefaultLanguage()), snapshot)) {
+                MovieCatalogItem item = toMovieCatalogItem(searchItem, snapshot);
                 if (item != null) {
                     items.add(item);
                 }
@@ -37,7 +38,7 @@ public class TmdbMovieCatalogSearch {
         }
     }
 
-    private MovieCatalogItem toMovieCatalogItem(JsonNode searchItem) {
+    private MovieCatalogItem toMovieCatalogItem(JsonNode searchItem, TmdbProperties snapshot) {
         Integer tmdbId = integerOrNull(searchItem.get("id"));
         if (tmdbId == null || tmdbId <= 0) {
             return null;
@@ -52,7 +53,7 @@ public class TmdbMovieCatalogSearch {
                 originalTitle,
                 parseYear(releaseDate),
                 firstNonBlank(textOrNull(searchItem.get("overview")), null, ""),
-                posterUrl(textOrNull(searchItem.get("poster_path"))),
+                posterUrl(textOrNull(searchItem.get("poster_path")), snapshot),
                 tmdbId,
                 null,
                 List.of(),
@@ -60,7 +61,7 @@ public class TmdbMovieCatalogSearch {
         );
     }
 
-    private String posterUrl(String posterPath) {
+    private String posterUrl(String posterPath, TmdbProperties snapshot) {
         if (!StringUtils.hasText(posterPath)) {
             return null;
         }
@@ -68,7 +69,7 @@ public class TmdbMovieCatalogSearch {
         if (trimmedPath.startsWith("http://") || trimmedPath.startsWith("https://")) {
             return trimmedPath;
         }
-        String baseUrl = cleanConfigValue(properties.getImageBaseUrl()).replaceAll("/+$", "");
+        String baseUrl = cleanConfigValue(snapshot.getImageBaseUrl()).replaceAll("/+$", "");
         if (!StringUtils.hasText(baseUrl)) {
             return null;
         }
@@ -120,10 +121,6 @@ public class TmdbMovieCatalogSearch {
             return null;
         }
         return node.asInt();
-    }
-
-    private String defaultLanguage() {
-        return cleanConfigValue(properties.getDefaultLanguage());
     }
 
     private String cleanConfigValue(String value) {

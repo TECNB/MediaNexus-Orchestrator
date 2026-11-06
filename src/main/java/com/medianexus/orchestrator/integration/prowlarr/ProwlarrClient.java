@@ -238,6 +238,7 @@ public class ProwlarrClient {
     }
 
     private String baseUrl() {
+        if (properties.isDisabled()) throw new ProwlarrClientException(ProwlarrClientException.Reason.CONFIGURATION, "Prowlarr 已明确停用");
         String baseUrl = cleanConfigValue(properties.getBaseUrl()).replaceAll("/+$", "");
         if (!StringUtils.hasText(baseUrl) || !StringUtils.hasText(cleanConfigValue(properties.getApiKey()))) {
             throw new ProwlarrClientException(Reason.CONFIGURATION, "Prowlarr configuration is incomplete");

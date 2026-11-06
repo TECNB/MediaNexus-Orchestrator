@@ -7,6 +7,7 @@ import com.medianexus.orchestrator.dto.magnet.request.MovieMagnetIngestRequest;
 import com.medianexus.orchestrator.dto.magnet.request.SeriesMagnetIngestRequest;
 import com.medianexus.orchestrator.integration.openlist.OpenListClient;
 import com.medianexus.orchestrator.integration.openlist.OpenListLibraryOrganizer;
+import com.medianexus.orchestrator.support.IngestTargetFixtures;
 import java.lang.reflect.Method;
 import java.time.Duration;
 import org.junit.jupiter.api.Test;
@@ -105,6 +106,7 @@ class MagnetIngestServiceAnimePathTest {
                 null,
                 null,
                 null,
+                IngestTargetFixtures.legacy(),
                 org.mockito.Mockito.mock(IngestTaskNotifier.class)
         );
     }

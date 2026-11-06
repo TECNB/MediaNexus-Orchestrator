@@ -1,6 +1,7 @@
 package com.medianexus.orchestrator.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -12,6 +13,7 @@ import static org.mockito.Mockito.when;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.medianexus.orchestrator.controller.SubtitleUploadController;
 import com.medianexus.orchestrator.config.OpenListProperties;
 import com.medianexus.orchestrator.dto.subtitle.response.SubtitleUploadResponse;
 import com.medianexus.orchestrator.integration.openlist.OpenListClient;
@@ -27,6 +29,7 @@ import com.medianexus.orchestrator.service.SubtitleArchiveExtractor.ExtractedSub
 import com.medianexus.orchestrator.service.SubtitleArchiveExtractor.StagedSubtitleUpload;
 import com.medianexus.orchestrator.service.SubtitleFilenamePlanner.PlannedSubtitleFile;
 import com.medianexus.orchestrator.service.SubtitleFilenamePlanner.SubtitleFilenamePlan;
+import com.medianexus.orchestrator.support.IngestTargetFixtures;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -39,6 +42,8 @@ import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockMultipartFile;
 
 class SubtitleUploadServiceTest {
+
+    private final IngestTargetFixtures targets = new IngestTargetFixtures();
 
     private final SubtitleUploadMapper uploadMapper = mock(SubtitleUploadMapper.class);
     private final SubtitleUploadLogMapper uploadLogMapper = mock(SubtitleUploadLogMapper.class);
@@ -69,7 +74,8 @@ class SubtitleUploadServiceTest {
             filenamePlanner,
             new ObjectMapper(),
             autoSymlinkRefreshService,
-            executor
+            executor,
+            targets.registry
     );
 
     @BeforeEach
@@ -83,6 +89,7 @@ class SubtitleUploadServiceTest {
         user.setRole("USER");
         authService.currentUser = user;
         openListProperties.setMovieRootPath("/movies");
+        when(openListClient.pathExists("/movies/Movie (2024)")).thenReturn(true);
         when(openListClient.normalizePath("/movies")).thenReturn("/movies");
         when(openListClient.joinPath(anyString(), anyString())).thenAnswer(invocation ->
                 invocation.getArgument(0) + "/" + invocation.getArgument(1));
@@ -104,8 +111,76 @@ class SubtitleUploadServiceTest {
         assertThat(executor.pendingCount()).isEqualTo(1);
         assertThat(logs).extracting(SubtitleUploadLog::getMessage)
                 .containsExactly("已创建电影字幕上传批次");
-        verify(openListClient, never()).pathExists(anyString());
+        verify(openListClient).pathExists("/movies/Movie (2024)");
         verify(autoSymlinkRefreshService, never()).refreshMovie();
+    }
+
+    @Test
+    void requiresExplicitTargetWhenMediaExistsOnMultipleTargets() {
+        targets.useDefault("new");
+        when(openListClient.pathExists("/old/Movies/Movie (2024)")).thenReturn(true);
+        when(openListClient.pathExists("/new/Movies/Movie (2024)")).thenReturn(true);
+
+        assertThatThrownBy(this::uploadMovieSubtitle)
+                .isInstanceOfSatisfying(com.medianexus.orchestrator.common.exception.BusinessException.class,
+                        exception -> assertThat(exception.getHttpStatus()).isEqualTo(org.springframework.http.HttpStatus.CONFLICT));
+        verify(archiveExtractor, never()).stage(any());
+    }
+
+    @Test
+    void locationsExposeOnlyExistingTargetIdsAndNamesAndRequireLogin() throws Exception {
+        targets.useDefault("old");
+        when(openListClient.pathExists("/new/Movies/Movie (2024)")).thenReturn(true);
+        SubtitleUploadController controller = new SubtitleUploadController(service);
+
+        var response = controller.locations("movie", "Movie", null, 2024, null);
+
+        assertThat(new ObjectMapper().readTree(new ObjectMapper().writeValueAsString(response)))
+                .isEqualTo(new ObjectMapper().readTree("""
+                        {"code":200,"message":"success","data":{"items":[{"target_id":"new","target_name":"新账号"}]}}
+                        """));
+        authService.currentUser = null;
+        assertThatThrownBy(() -> controller.locations("movie", "Movie", null, 2024, null))
+                .isInstanceOf(com.medianexus.orchestrator.common.exception.BusinessException.class);
+    }
+
+    @Test
+    void explicitSelectionRequiresAnExistingDirectoryAndCanChooseTheOriginalTarget() {
+        targets.useDefault("new");
+        when(openListClient.pathExists("/old/Movies/Movie (2024)")).thenReturn(true);
+        MockMultipartFile file = new MockMultipartFile("file", "Movie.ass", "text/plain", "subtitle".getBytes());
+        assertThatThrownBy(() -> service.uploadSubtitle(file, "movie", "Movie", null, 2024, null, false, "new"))
+                .isInstanceOfSatisfying(com.medianexus.orchestrator.common.exception.BusinessException.class,
+                        exception -> assertThat(exception.getHttpStatus()).isEqualTo(org.springframework.http.HttpStatus.NOT_FOUND));
+        assertThatThrownBy(() -> service.uploadSubtitle(file, "movie", "Movie", null, 2024, null, false, "/old/Movies"))
+                .isInstanceOf(com.medianexus.orchestrator.common.exception.BusinessException.class);
+        verify(archiveExtractor, never()).stage(any());
+        when(openListClient.pathExists("/new/Movies/Movie (2024)")).thenReturn(true);
+
+        var response = service.uploadSubtitle(file, "movie", "Movie", null, 2024, null, false, "old");
+
+        assertThat(response.targetPath()).isEqualTo("/old/Movies/Movie (2024)");
+        assertThat(executor.pendingCount()).isEqualTo(1);
+    }
+
+    @Test
+    void noMediaMatchIsRejectedBeforeStagingUpload() {
+        when(openListClient.pathExists("/movies/Movie (2024)")).thenReturn(false);
+        assertThatThrownBy(this::uploadMovieSubtitle)
+                .isInstanceOfSatisfying(com.medianexus.orchestrator.common.exception.BusinessException.class,
+                        exception -> assertThat(exception.getHttpStatus()).isEqualTo(org.springframework.http.HttpStatus.NOT_FOUND));
+        verify(archiveExtractor, never()).stage(any());
+    }
+
+    @Test
+    void uniqueMediaOnStoppedOriginalTargetIsStillSelectedAutomatically() {
+        targets.useDefault("new");
+        targets.stopOriginal();
+        when(openListClient.pathExists("/old/Movies/Movie (2024)")).thenReturn(true);
+
+        var response = uploadMovieSubtitle();
+
+        assertThat(response.targetPath()).isEqualTo("/old/Movies/Movie (2024)");
     }
 
     @Test
@@ -137,7 +212,7 @@ class SubtitleUploadServiceTest {
                 "",
                 List.of(new PlannedSubtitleFile(entry, "Movie.ass"))
         ));
-        when(autoSymlinkRefreshService.refreshMovie()).thenReturn(RefreshOutcome.submitted("task=movie, attempt=1"));
+        when(autoSymlinkRefreshService.refreshForPath("MOVIE", "/movies/Movie (2024)")).thenReturn(RefreshOutcome.submitted("task=movie, attempt=1"));
 
         uploadMovieSubtitle();
         executor.runNext();
@@ -147,7 +222,7 @@ class SubtitleUploadServiceTest {
                 eq("/movies/Movie (2024)/Movie.ass"),
                 eq(false)
         );
-        verify(autoSymlinkRefreshService).refreshMovie();
+        verify(autoSymlinkRefreshService).refreshForPath("MOVIE", "/movies/Movie (2024)");
         assertThat(logs).extracting(SubtitleUploadLog::getMessage)
                 .containsSubsequence(
                         "字幕文件上传完成",
@@ -200,7 +275,7 @@ class SubtitleUploadServiceTest {
                 "",
                 List.of(new PlannedSubtitleFile(entry, "Show S01E01.ass"))
         ));
-        when(autoSymlinkRefreshService.refreshSeries()).thenReturn(
+        when(autoSymlinkRefreshService.refreshForPath("TV", "/tv/Show/Season 1")).thenReturn(
                 RefreshOutcome.submitted("task=tv, attempt=1")
         );
 
@@ -215,7 +290,7 @@ class SubtitleUploadServiceTest {
         );
         executor.runNext();
 
-        verify(autoSymlinkRefreshService).refreshSeries();
+        verify(autoSymlinkRefreshService).refreshForPath("TV", "/tv/Show/Season 1");
         verify(autoSymlinkRefreshService, never()).refreshMovie();
     }
 
@@ -241,6 +316,11 @@ class SubtitleUploadServiceTest {
 
         @Override
         public User requireCurrentUser() {
+            if (currentUser == null) {
+                throw new com.medianexus.orchestrator.common.exception.BusinessException(
+                        com.medianexus.orchestrator.common.exception.ErrorCode.UNAUTHORIZED, "请先登录",
+                        org.springframework.http.HttpStatus.UNAUTHORIZED);
+            }
             return currentUser;
         }
     }

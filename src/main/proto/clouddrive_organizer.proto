@@ -1,5 +1,7 @@
 syntax = "proto3";
 
+import "google/protobuf/empty.proto";
+
 package clouddrive;
 
 option java_multiple_files = true;
@@ -8,11 +10,62 @@ option java_outer_classname = "CloudDriveOrganizerProto";
 
 // CloudDrive2 官方 proto 的整理链路最小子集。消息字段号和 RPC 名称必须保持兼容。
 service CloudDriveFileSrv {
+  rpc CanAddMoreCloudApis(google.protobuf.Empty) returns (FileOperationResult) {}
+  rpc CanAddMoreMountPoints(google.protobuf.Empty) returns (FileOperationResult) {}
+  rpc GetAllCloudApis(google.protobuf.Empty) returns (CloudAPIList) {}
+  rpc GetMountPoints(google.protobuf.Empty) returns (GetMountPointsResult) {}
+  rpc APILoginWebDav(LoginWebDavRequest) returns (APILoginResult) {}
+  rpc AddMountPoint(MountOption) returns (MountPointResult) {}
+  rpc Mount(MountPointRequest) returns (MountPointResult) {}
   rpc GetSubFiles(ListSubFileRequest) returns (stream SubFilesReply) {}
+  rpc RenameFile(RenameFileRequest) returns (FileOperationResult) {}
   rpc RenameFiles(RenameFilesRequest) returns (FileOperationResult) {}
   rpc MoveFile(MoveFileRequest) returns (FileOperationResult) {}
   rpc DeleteFiles(MultiFileRequest) returns (FileOperationResult) {}
 }
+
+message CloudAPI {
+  string name = 1;
+  string userName = 2;
+  string nickName = 3;
+  bool isLocked = 4;
+  optional string path = 10;
+}
+message CloudAPIList { repeated CloudAPI apis = 1; }
+message LoginWebDavRequest {
+  string serverUrl = 1;
+  string userName = 2;
+  string password = 3;
+  bool doNotSyncToCloud = 4;
+}
+message APILoginResult { bool success = 1; string errorMessage = 2; }
+message MountOption {
+  string mountPoint = 1;
+  string sourceDir = 2;
+  bool localMount = 3;
+  bool readOnly = 4;
+  bool autoMount = 5;
+  uint32 uid = 6;
+  uint32 gid = 7;
+  string permissions = 8;
+  string name = 9;
+}
+message MountPoint {
+  string mountPoint = 1;
+  string sourceDir = 2;
+  bool localMount = 3;
+  bool readOnly = 4;
+  bool autoMount = 5;
+  uint32 uid = 6;
+  uint32 gid = 7;
+  string permissions = 8;
+  bool isMounted = 9;
+  string failReason = 10;
+  string name = 11;
+}
+message GetMountPointsResult { repeated MountPoint mountPoints = 1; }
+message MountPointRequest { string MountPoint = 1; }
+message MountPointResult { bool success = 1; string failReason = 2; }
 
 message ListSubFileRequest {
   string path = 1;

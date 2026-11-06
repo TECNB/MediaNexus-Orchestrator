@@ -45,6 +45,10 @@ public class SubtitleArchiveExtractor {
     }
 
     public StagedSubtitleUpload stage(MultipartFile file) {
+        return new SubtitleArchiveExtractor(properties.snapshot()).stageCaptured(file);
+    }
+
+    private StagedSubtitleUpload stageCaptured(MultipartFile file) {
         if (file == null || file.isEmpty()) {
             throw badRequest("请上传字幕文件");
         }
@@ -63,7 +67,8 @@ public class SubtitleArchiveExtractor {
                     sourcePath,
                     sourceFileName,
                     sourceCopy.size(),
-                    sourceCopy.sha256()
+                    sourceCopy.sha256(),
+                    properties
             );
         } catch (BusinessException exception) {
             deleteQuietly(workDir);
@@ -79,6 +84,11 @@ public class SubtitleArchiveExtractor {
     }
 
     public ExtractedSubtitlePackage extract(StagedSubtitleUpload stagedUpload) {
+        SubtitleUploadProperties limits = stagedUpload.limits() == null ? properties.snapshot() : stagedUpload.limits();
+        return new SubtitleArchiveExtractor(limits).extractCaptured(stagedUpload);
+    }
+
+    private ExtractedSubtitlePackage extractCaptured(StagedSubtitleUpload stagedUpload) {
         Path workDir = stagedUpload.workDir();
         String sourceFileName = stagedUpload.sourceFileName();
         try {
@@ -359,8 +369,12 @@ public class SubtitleArchiveExtractor {
             Path sourcePath,
             String sourceFileName,
             long sourceSize,
-            String sourceSha256
+            String sourceSha256,
+            SubtitleUploadProperties limits
     ) {
+        public StagedSubtitleUpload(Path workDir, Path sourcePath, String sourceFileName, long sourceSize, String sourceSha256) {
+            this(workDir, sourcePath, sourceFileName, sourceSize, sourceSha256, null);
+        }
     }
 
     public record ExtractedSubtitlePackage(

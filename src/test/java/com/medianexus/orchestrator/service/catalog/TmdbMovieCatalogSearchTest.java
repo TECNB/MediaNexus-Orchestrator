@@ -83,7 +83,7 @@ class TmdbMovieCatalogSearchTest {
         }
 
         @Override
-        public JsonNode searchMovies(String query, String language) {
+        public JsonNode searchMovies(String query, String language, TmdbProperties snapshot) {
             return searchResponse;
         }
     }

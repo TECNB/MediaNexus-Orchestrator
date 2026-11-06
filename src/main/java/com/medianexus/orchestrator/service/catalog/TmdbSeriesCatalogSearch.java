@@ -28,10 +28,11 @@ public class TmdbSeriesCatalogSearch implements MediaCatalogSearch {
 
     @Override
     public List<SeriesCatalogItem> searchSeries(String term) {
+        TmdbProperties snapshot = properties.snapshot();
         try {
             List<SeriesCatalogItem> items = new ArrayList<>();
-            for (JsonNode searchItem : tmdbClient.searchTv(term, defaultLanguage())) {
-                SeriesCatalogItem item = toSeriesCatalogItem(searchItem);
+            for (JsonNode searchItem : tmdbClient.searchTv(term, defaultLanguage(snapshot), snapshot)) {
+                SeriesCatalogItem item = toSeriesCatalogItem(searchItem, snapshot);
                 if (item != null) {
                     items.add(item);
                 }
@@ -51,8 +52,9 @@ public class TmdbSeriesCatalogSearch implements MediaCatalogSearch {
             );
         }
 
+        TmdbProperties snapshot = properties.snapshot();
         try {
-            JsonNode detail = tmdbClient.getTvDetails(tmdbId, defaultLanguage());
+            JsonNode detail = tmdbClient.getTvDetails(tmdbId, defaultLanguage(snapshot), snapshot);
             return new SeriesCatalogSeasons(
                     tmdbId,
                     firstNonBlank(
@@ -67,15 +69,15 @@ public class TmdbSeriesCatalogSearch implements MediaCatalogSearch {
         }
     }
 
-    private SeriesCatalogItem toSeriesCatalogItem(JsonNode searchItem) {
+    private SeriesCatalogItem toSeriesCatalogItem(JsonNode searchItem, TmdbProperties snapshot) {
         Integer tmdbId = integerOrNull(searchItem.get("id"));
         if (tmdbId == null || tmdbId <= 0) {
             return null;
         }
 
-        JsonNode defaultDetail = tmdbClient.getTvDetails(tmdbId, defaultLanguage());
-        JsonNode fallbackDetail = needsFallbackOverview(searchItem, defaultDetail)
-                ? tmdbClient.getTvDetails(tmdbId, fallbackLanguage())
+        JsonNode defaultDetail = tmdbClient.getTvDetails(tmdbId, defaultLanguage(snapshot), snapshot);
+        JsonNode fallbackDetail = needsFallbackOverview(searchItem, defaultDetail, snapshot)
+                ? tmdbClient.getTvDetails(tmdbId, fallbackLanguage(snapshot), snapshot)
                 : null;
         String localizedTitle = firstText(
                 defaultDetail.get("name"),
@@ -102,7 +104,7 @@ public class TmdbSeriesCatalogSearch implements MediaCatalogSearch {
                 originalTitle,
                 year,
                 overview,
-                posterUrl(firstText(defaultDetail.get("poster_path"), searchItem.get("poster_path"))),
+                posterUrl(firstText(defaultDetail.get("poster_path"), searchItem.get("poster_path")), snapshot),
                 null,
                 null,
                 tmdbId,
@@ -112,12 +114,12 @@ public class TmdbSeriesCatalogSearch implements MediaCatalogSearch {
         );
     }
 
-    private boolean needsFallbackOverview(JsonNode searchItem, JsonNode defaultDetail) {
-        return !defaultLanguage().equalsIgnoreCase(fallbackLanguage())
+    private boolean needsFallbackOverview(JsonNode searchItem, JsonNode defaultDetail, TmdbProperties snapshot) {
+        return !defaultLanguage(snapshot).equalsIgnoreCase(fallbackLanguage(snapshot))
                 && !StringUtils.hasText(firstText(defaultDetail.get("overview"), searchItem.get("overview")));
     }
 
-    private String posterUrl(String posterPath) {
+    private String posterUrl(String posterPath, TmdbProperties snapshot) {
         if (!StringUtils.hasText(posterPath)) {
             return null;
         }
@@ -125,7 +127,7 @@ public class TmdbSeriesCatalogSearch implements MediaCatalogSearch {
         if (trimmedPath.startsWith("http://") || trimmedPath.startsWith("https://")) {
             return trimmedPath;
         }
-        String baseUrl = cleanConfigValue(properties.getImageBaseUrl()).replaceAll("/+$", "");
+        String baseUrl = cleanConfigValue(snapshot.getImageBaseUrl()).replaceAll("/+$", "");
         if (!StringUtils.hasText(baseUrl)) {
             return null;
         }
@@ -204,12 +206,12 @@ public class TmdbSeriesCatalogSearch implements MediaCatalogSearch {
         return node.asInt();
     }
 
-    private String defaultLanguage() {
-        return cleanConfigValue(properties.getDefaultLanguage());
+    private String defaultLanguage(TmdbProperties snapshot) {
+        return cleanConfigValue(snapshot.getDefaultLanguage());
     }
 
-    private String fallbackLanguage() {
-        return cleanConfigValue(properties.getFallbackLanguage());
+    private String fallbackLanguage(TmdbProperties snapshot) {
+        return cleanConfigValue(snapshot.getFallbackLanguage());
     }
 
     private String cleanConfigValue(String value) {

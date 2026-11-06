@@ -25,6 +25,7 @@ import com.medianexus.orchestrator.model.User;
 import com.medianexus.orchestrator.service.organization.LibraryOrganizationPlan;
 import com.medianexus.orchestrator.service.organization.LibraryOrganizationProgressObserver;
 import com.medianexus.orchestrator.service.organization.LibraryOrganizer;
+import com.medianexus.orchestrator.support.IngestTargetFixtures;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -57,6 +58,7 @@ class MagnetIngestServiceTest {
                 null,
                 null,
                 null,
+                IngestTargetFixtures.legacy(),
                 mock(IngestTaskNotifier.class)
         );
 
@@ -328,6 +330,7 @@ class MagnetIngestServiceTest {
                 null,
                 null,
                 null,
+                IngestTargetFixtures.legacy(),
                 mock(IngestTaskNotifier.class)
         );
     }

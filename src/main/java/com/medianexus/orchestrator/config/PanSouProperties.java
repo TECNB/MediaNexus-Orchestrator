@@ -11,6 +11,9 @@ import org.springframework.validation.annotation.Validated;
 @Validated
 @ConfigurationProperties(prefix = "medianexus.pansou")
 public class PanSouProperties {
+    private boolean disabled;
+    public boolean isDisabled() { return disabled; }
+    public void setDisabled(boolean disabled) { this.disabled = disabled; }
 
     private String baseUrl;
     private String username;

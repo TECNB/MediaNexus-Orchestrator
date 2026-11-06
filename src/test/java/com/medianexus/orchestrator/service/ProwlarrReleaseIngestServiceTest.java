@@ -25,6 +25,7 @@ import com.medianexus.orchestrator.integration.prowlarr.ProwlarrRelease;
 import com.medianexus.orchestrator.model.AnimeMagnetIngestTask;
 import com.medianexus.orchestrator.model.User;
 import com.medianexus.orchestrator.model.SeriesMagnetIngestTask;
+import com.medianexus.orchestrator.support.IngestTargetFixtures;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -949,7 +950,7 @@ class ProwlarrReleaseIngestServiceTest {
         private TaskRetryReference retryReference;
 
         FakeAnimeMagnetIngestTaskService() {
-            super(null, null, null, null, null, null, null, null, null, null, mock(IngestTaskNotifier.class));
+            super(null, null, null, null, null, null, null, null, null, null, IngestTargetFixtures.legacy(), mock(IngestTaskNotifier.class));
         }
 
         @Override
@@ -997,7 +998,7 @@ class ProwlarrReleaseIngestServiceTest {
         private TaskRetryReference retryReference;
 
         FakeMagnetIngestService() {
-            super(null, null, null, null, null, null, null, null, null, null, null, null, mock(IngestTaskNotifier.class));
+            super(null, null, null, null, null, null, null, null, null, null, null, null, IngestTargetFixtures.legacy(), mock(IngestTaskNotifier.class));
         }
 
         @Override

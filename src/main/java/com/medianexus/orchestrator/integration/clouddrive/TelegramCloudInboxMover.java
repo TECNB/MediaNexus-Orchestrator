@@ -12,11 +12,9 @@ import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.function.Consumer;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 @Component
-@ConditionalOnProperty(prefix = "medianexus.clouddrive2", name = "organization-enabled", havingValue = "true")
 public class TelegramCloudInboxMover {
     private final CloudDrive2FileOperations fileOperations;
     private final CloudDrive2Properties properties;

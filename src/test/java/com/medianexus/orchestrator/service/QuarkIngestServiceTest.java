@@ -58,7 +58,7 @@ class QuarkIngestServiceTest {
                 shareUrl,
                 List.of(file("06.12.mp4"), file("06.19第一期.mp4"))
         ));
-        when(tmdbClient.getTvSeasonDetails(126398, 2, "zh-CN")).thenReturn(
+        when(tmdbClient.getTvSeasonDetails(126398, 2, "zh-CN", tmdbProperties)).thenReturn(
                 new ObjectMapper().readTree("""
                         {"episodes":[
                           {"episode_number":1,"air_date":"2022-06-19"},
@@ -79,7 +79,7 @@ class QuarkIngestServiceTest {
         assertThat(preview.plannedTaskCount()).isEqualTo(2);
         assertThat(preview.tasks()).allSatisfy(task -> assertThat(task.renameEnabled()).isTrue());
         assertThat(preview.message()).contains("2 个 QAS 任务");
-        verify(tmdbClient).getTvSeasonDetails(eq(126398), eq(2), eq("zh-CN"));
+        verify(tmdbClient).getTvSeasonDetails(eq(126398), eq(2), eq("zh-CN"), eq(tmdbProperties));
         verify(qasClient, never()).createTask(any(QasTaskCreateCommand.class));
     }
 

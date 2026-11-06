@@ -365,11 +365,12 @@ public class QuarkIngestService {
 
     private Map<LocalDate, List<Integer>> loadAirDateEpisodes(int tmdbId, int seasonNumber) {
         JsonNode details;
+        TmdbProperties snapshot = tmdbProperties.snapshot();
         try {
             details = tmdbClient.getTvSeasonDetails(
                     tmdbId,
                     seasonNumber,
-                    cleanLanguage(tmdbProperties.getDefaultLanguage())
+                    cleanLanguage(snapshot.getDefaultLanguage()), snapshot
             );
         } catch (TmdbClientException exception) {
             throw new BusinessException(

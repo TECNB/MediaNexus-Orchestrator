@@ -784,10 +784,11 @@ public class QuarkMultiSourceIngestService {
         if (tmdbId == null || tmdbId <= 0) {
             return TmdbEpisodeCoverage.unavailable("未绑定 TMDB，暂无法取得季度集数");
         }
+        TmdbProperties snapshot = tmdbProperties.snapshot();
         try {
             JsonNode details = tmdbClient.getTvSeasonDetails(tmdbId, season,
-                    StringUtils.hasText(tmdbProperties.getDefaultLanguage())
-                            ? tmdbProperties.getDefaultLanguage().trim() : "zh-CN");
+                    StringUtils.hasText(snapshot.getDefaultLanguage())
+                            ? snapshot.getDefaultLanguage().trim() : "zh-CN", snapshot);
             JsonNode episodes = details.path("episodes");
             if (!episodes.isArray()) {
                 return TmdbEpisodeCoverage.unavailable("TMDB 季度详情缺少 episodes");
@@ -1738,9 +1739,10 @@ public class QuarkMultiSourceIngestService {
 
     private Map<LocalDate, List<Integer>> loadAirDateEpisodes(int tmdbId, int season) {
         JsonNode details;
+        TmdbProperties snapshot = tmdbProperties.snapshot();
         try {
             details = tmdbClient.getTvSeasonDetails(tmdbId, season,
-                    StringUtils.hasText(tmdbProperties.getDefaultLanguage()) ? tmdbProperties.getDefaultLanguage().trim() : "zh-CN");
+                    StringUtils.hasText(snapshot.getDefaultLanguage()) ? snapshot.getDefaultLanguage().trim() : "zh-CN", snapshot);
         } catch (TmdbClientException exception) {
             throw new BusinessException(ErrorCode.BAD_GATEWAY, "TMDB 季度详情获取失败：" + safeMessage(exception.getMessage()), HttpStatus.BAD_GATEWAY);
         }

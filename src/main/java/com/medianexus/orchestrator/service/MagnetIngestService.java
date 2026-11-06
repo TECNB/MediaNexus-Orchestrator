@@ -34,6 +34,7 @@ import com.medianexus.orchestrator.model.User;
 import com.medianexus.orchestrator.model.UserActionType;
 import com.medianexus.orchestrator.service.organization.LibraryOrganizer;
 import com.medianexus.orchestrator.service.organization.LibraryOrganizationPlan;
+import com.medianexus.orchestrator.service.settings.targets.IngestTargetRegistry;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -111,6 +112,7 @@ public class MagnetIngestService {
             "扫描"
     );
 
+    private final IngestTargetRegistry targetRegistry;
     private final MovieMagnetIngestTaskMapper movieTaskMapper;
     private final MovieMagnetIngestTaskLogMapper movieTaskLogMapper;
     private final SeriesMagnetIngestTaskMapper seriesTaskMapper;
@@ -144,8 +146,36 @@ public class MagnetIngestService {
             UserActionQuotaService userActionQuotaService,
             AutoSymlinkRefreshService autoSymlinkRefreshService,
             MediaLibraryPresenceService mediaLibraryPresenceService,
+            IngestTargetRegistry targetRegistry,
             IngestTaskNotifier taskNotifier
     ) {
+        this(movieTaskMapper, movieTaskLogMapper, seriesTaskMapper, seriesTaskLogMapper,
+                openListClient, openListProperties, renameService, animeLibraryOrganizer, movieLibraryOrganizer,
+                seriesLibraryOrganizer, authService, userActionQuotaService, autoSymlinkRefreshService,
+                mediaLibraryPresenceService, targetRegistry,
+                Executors.newSingleThreadExecutor(new WorkerThreadFactory()), taskNotifier);
+    }
+
+    MagnetIngestService(
+            MovieMagnetIngestTaskMapper movieTaskMapper,
+            MovieMagnetIngestTaskLogMapper movieTaskLogMapper,
+            SeriesMagnetIngestTaskMapper seriesTaskMapper,
+            SeriesMagnetIngestTaskLogMapper seriesTaskLogMapper,
+            OpenListClient openListClient,
+            OpenListProperties openListProperties,
+            MovieSeriesFileRenameService renameService,
+            LibraryOrganizer animeLibraryOrganizer,
+            LibraryOrganizer movieLibraryOrganizer,
+            LibraryOrganizer seriesLibraryOrganizer,
+            AuthService authService,
+            UserActionQuotaService userActionQuotaService,
+            AutoSymlinkRefreshService autoSymlinkRefreshService,
+            MediaLibraryPresenceService mediaLibraryPresenceService,
+            IngestTargetRegistry targetRegistry,
+            ExecutorService executorService,
+            IngestTaskNotifier taskNotifier
+    ) {
+        this.targetRegistry = targetRegistry;
         this.movieTaskMapper = movieTaskMapper;
         this.movieTaskLogMapper = movieTaskLogMapper;
         this.seriesTaskMapper = seriesTaskMapper;
@@ -161,7 +191,7 @@ public class MagnetIngestService {
         this.autoSymlinkRefreshService = autoSymlinkRefreshService;
         this.mediaLibraryPresenceService = mediaLibraryPresenceService;
         this.taskNotifier = taskNotifier;
-        this.executorService = Executors.newSingleThreadExecutor(new WorkerThreadFactory());
+        this.executorService = executorService;
     }
 
     MagnetIngestService(
@@ -177,6 +207,7 @@ public class MagnetIngestService {
             UserActionQuotaService userActionQuotaService,
             AutoSymlinkRefreshService autoSymlinkRefreshService,
             MediaLibraryPresenceService mediaLibraryPresenceService,
+            IngestTargetRegistry targetRegistry,
             IngestTaskNotifier taskNotifier
     ) {
         this(
@@ -194,6 +225,7 @@ public class MagnetIngestService {
                 userActionQuotaService,
                 autoSymlinkRefreshService,
                 mediaLibraryPresenceService,
+                targetRegistry,
                 taskNotifier
         );
     }
@@ -309,7 +341,7 @@ public class MagnetIngestService {
                 trimToNull(originalTask.getOriginalTitle()),
                 originalTask.getYear(),
                 originalTask.getTmdbId(),
-                null,
+                targetRegistry.rootForExistingPath("MOVIE", originalTask.getSavePath(), cleanConfigValue(openListProperties.getMovieRootPath())),
                 originalTask.getSavePath()
         );
         return insertMovieTask(user, plan, releaseMetadata, retryReference);
@@ -421,6 +453,12 @@ public class MagnetIngestService {
                 .last("LIMIT 1"));
         if (activeTask != null) {
             throw badRequest("相同 magnet 正在处理中，请稍后再试");
+        }
+
+        if (ANIME_PRODUCT_TYPE.equals(originalTask.getTaskProductType())) {
+            targetRegistry.bindingForPath("ANIME", originalTask.getSavePath());
+        } else {
+            targetRegistry.rootForExistingPath("TV", originalTask.getSavePath(), cleanConfigValue(openListProperties.getTvRootPath()));
         }
 
         SeriesTaskPlan plan = new SeriesTaskPlan(
@@ -559,14 +597,32 @@ public class MagnetIngestService {
     }
 
     public MagnetIngestNodeStatusResponse getNodeStatus() {
+        return getNodeStatus("MOVIE");
+    }
+
+    public MagnetIngestNodeStatusResponse getNodeStatus(String category) {
         authService.requireCurrentUser();
-        OpenListStorageStatus status = openListClient.storageStatus();
+        String selectedCategory = StringUtils.hasText(category) ? category.trim().toUpperCase(Locale.ROOT) : "MOVIE";
+        String legacyRoot = switch (selectedCategory) {
+            case "MOVIE" -> openListProperties.getMovieRootPath();
+            case "TV" -> openListProperties.getTvRootPath();
+            case "ANIME" -> openListProperties.getAnimePathTemplate();
+            case "ADULT" -> openListProperties.getAdultRootPath();
+            default -> throw badRequest("不支持的媒体类别: " + selectedCategory);
+        };
+        String root = targetRegistry.creationRoot(selectedCategory, cleanConfigValue(legacyRoot));
+        var binding = targetRegistry.bindingForPath(selectedCategory, root);
+        OpenListStorageStatus status = binding.isPresent()
+                ? openListClient.storageStatusForPath(root) : openListClient.storageStatus();
         return new MagnetIngestNodeStatusResponse(
                 status.provider(),
                 status.online(),
                 status.usedBytes(),
                 status.totalBytes(),
-                status.freeBytes()
+                status.freeBytes(),
+                binding.map(IngestTargetRegistry.CategoryBinding::targetId).orElse("legacy"),
+                binding.map(IngestTargetRegistry.CategoryBinding::targetName).orElse("现有媒体库"),
+                selectedCategory
         );
     }
 
@@ -694,10 +750,7 @@ public class MagnetIngestService {
     private void prepareMovieDownloadRoot(MovieMagnetIngestTask task) {
         writeMovieLog(task.getId(), "INFO", "created", "正在准备 OpenList 保存目录", task.getSavePath());
         try {
-            openListClient.ensureDirectoryReady(task.getSavePath(), configuredRootPath(
-                    openListProperties.getMovieRootPath(),
-                    "OpenList 电影基础路径尚未配置"
-            ));
+            openListClient.ensureDirectoryReady(task.getSavePath(), targetRegistry.rootForExistingPath("MOVIE", task.getSavePath(), cleanConfigValue(openListProperties.getMovieRootPath())));
         } catch (OpenListDirectoryPrepareException exception) {
             throw mapDirectoryPrepareException(exception, "OpenList 电影基础路径不存在");
         }
@@ -707,10 +760,7 @@ public class MagnetIngestService {
     private void prepareTelevisionSeriesDownloadRoot(SeriesMagnetIngestTask task) {
         writeSeriesLog(task.getId(), "INFO", "created", "正在准备 OpenList 保存目录", task.getSavePath());
         try {
-            openListClient.ensureDirectoryReady(task.getSavePath(), configuredRootPath(
-                    openListProperties.getTvRootPath(),
-                    "OpenList 剧集基础路径尚未配置"
-            ));
+            openListClient.ensureDirectoryReady(task.getSavePath(), targetRegistry.rootForExistingPath("TV", task.getSavePath(), cleanConfigValue(openListProperties.getTvRootPath())));
         } catch (OpenListDirectoryPrepareException exception) {
             throw mapDirectoryPrepareException(exception, "OpenList 剧集基础路径不存在");
         }
@@ -719,7 +769,12 @@ public class MagnetIngestService {
 
     private void prepareAnimeSeasonDownloadRoot(SeriesMagnetIngestTask task) {
         writeSeriesLog(task.getId(), "INFO", "created", "正在准备 OpenList 动漫保存目录", task.getSavePath());
-        openListClient.ensureDirectoryHierarchy(task.getSavePath());
+        var binding = targetRegistry.bindingForPath("ANIME", task.getSavePath());
+        if (binding.isPresent()) {
+            openListClient.ensureDirectoryReady(task.getSavePath(), binding.get().rootPath());
+        } else {
+            openListClient.ensureDirectoryHierarchy(task.getSavePath());
+        }
         writeSeriesLog(task.getId(), "INFO", "created", "OpenList 动漫保存目录准备完成", task.getSavePath());
     }
 
@@ -797,7 +852,7 @@ public class MagnetIngestService {
         refreshAutoSymlink(
                 taskId,
                 "Movie",
-                autoSymlinkRefreshService::refreshMovie,
+                () -> autoSymlinkRefreshService.refreshForPath("MOVIE", getExistingMovieTask(taskId).getSavePath()),
                 (level, message, detail) -> writeMovieLog(taskId, level, "succeeded", message, detail)
         );
     }
@@ -806,7 +861,7 @@ public class MagnetIngestService {
         refreshAutoSymlink(
                 taskId,
                 "Series",
-                autoSymlinkRefreshService::refreshSeries,
+                () -> autoSymlinkRefreshService.refreshForPath("TV", getExistingSeriesTask(taskId).getSavePath()),
                 (level, message, detail) -> writeSeriesLog(taskId, level, "succeeded", message, detail)
         );
     }
@@ -815,7 +870,7 @@ public class MagnetIngestService {
         refreshAutoSymlink(
                 taskId,
                 "Anime",
-                autoSymlinkRefreshService::refreshAnime,
+                () -> autoSymlinkRefreshService.refreshForPath("ANIME", getExistingSeriesTask(taskId).getSavePath()),
                 (level, message, detail) -> writeSeriesLog(taskId, level, "succeeded", message, detail)
         );
     }
@@ -1474,7 +1529,7 @@ public class MagnetIngestService {
         int year = validateMovieYear(request.year());
         String title = displayTitle(request.title(), request.originalTitle(), "电影标题不能为空");
         String fileTitle = fileTitle(request.title(), request.originalTitle(), "电影标题不能为空");
-        String rootPath = configuredRootPath(openListProperties.getMovieRootPath(), "OpenList 电影基础路径尚未配置");
+        String rootPath = configuredRootPath(targetRegistry.creationRoot("MOVIE", openListProperties.getMovieRootPath()), "OpenList 电影基础路径尚未配置");
         String folderName = renameService.movieFolderName(fileTitle, year);
         String savePath = openListClient.joinPath(rootPath, folderName);
         return new MovieTaskPlan(
@@ -1498,7 +1553,7 @@ public class MagnetIngestService {
         int seasonNumber = validateSeasonNumber(request.seasonNumber());
         String title = displayTitle(request.title(), request.originalTitle(), "剧集标题不能为空");
         String fileTitle = fileTitle(request.title(), request.originalTitle(), "剧集标题不能为空");
-        String rootPath = configuredRootPath(openListProperties.getTvRootPath(), "OpenList 剧集基础路径尚未配置");
+        String rootPath = configuredRootPath(targetRegistry.creationRoot("TV", openListProperties.getTvRootPath()), "OpenList 剧集基础路径尚未配置");
         String seriesName = renameService.seriesFolderName(fileTitle);
         String seasonFolder = renameService.seasonFolderName(seasonNumber);
         String savePath = openListClient.joinPath(openListClient.joinPath(rootPath, seriesName), seasonFolder);
@@ -1541,7 +1596,7 @@ public class MagnetIngestService {
     }
 
     String renderAnimeSeasonPath(String title, int seasonNumber) {
-        String template = cleanConfigValue(openListProperties.getAnimePathTemplate());
+        String template = cleanConfigValue(targetRegistry.creationAnimeTemplate(openListProperties.getAnimePathTemplate()));
         if (!StringUtils.hasText(template)) {
             throw serviceUnavailable("OpenList 动漫保存路径尚未配置");
         }

@@ -4,11 +4,15 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.medianexus.orchestrator.config.AutoSymlinkProperties;
+import com.medianexus.orchestrator.common.exception.BusinessException;
+import com.medianexus.orchestrator.common.exception.ErrorCode;
 import com.medianexus.orchestrator.integration.autosymlink.AutoSymlinkClient;
 import com.medianexus.orchestrator.integration.autosymlink.AutoSymlinkClientException;
+import com.medianexus.orchestrator.service.settings.targets.IngestTargetRegistry;
 import java.time.Duration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -21,6 +25,7 @@ public class AutoSymlinkRefreshService {
 
     private static final Logger log = LoggerFactory.getLogger(AutoSymlinkRefreshService.class);
 
+    private final IngestTargetRegistry targetRegistry;
     private final AutoSymlinkProperties properties;
     private final AutoSymlinkClient autoSymlinkClient;
     private final ObjectMapper objectMapper;
@@ -28,8 +33,10 @@ public class AutoSymlinkRefreshService {
     public AutoSymlinkRefreshService(
             AutoSymlinkProperties properties,
             AutoSymlinkClient autoSymlinkClient,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            IngestTargetRegistry targetRegistry
     ) {
+        this.targetRegistry = targetRegistry;
         this.properties = properties;
         this.autoSymlinkClient = autoSymlinkClient;
         this.objectMapper = objectMapper;
@@ -53,6 +60,36 @@ public class AutoSymlinkRefreshService {
     /** Submits the configured Adult refresh without changing the completed ingest task. */
     public RefreshOutcome refreshAdult() {
         return refresh("adult", properties.getAdult());
+    }
+
+    /** 既有媒体按稳定保存路径选绑定；只有未接管时才沿用全局任务。 */
+    public RefreshOutcome refreshForPath(String category, String savePath) {
+        var binding = targetRegistry.bindingForPath(category, savePath);
+        if (binding.isPresent()) {
+            var task = new AutoSymlinkProperties.SyncTask();
+            task.setUuid(binding.get().asUuid());
+            task.setRequestBodyJson(binding.get().asRequestBodyJson());
+            return refresh(category.toLowerCase(java.util.Locale.ROOT), task);
+        }
+        return switch (category) {
+            case "MOVIE" -> refreshMovie();
+            case "TV" -> refreshSeries();
+            case "ANIME" -> refreshAnime();
+            case "ADULT" -> refreshAdult();
+            default -> throw new IllegalArgumentException("不支持的媒体类别: " + category);
+        };
+    }
+
+    /** 手动指定稳定目标 ID；不通过当前默认或任意服务器路径选择目标。 */
+    public RefreshOutcome refreshForTarget(String category, String targetId) {
+        for (String root : targetRegistry.rootsForExistingMedia(category, null)) {
+            var binding = targetRegistry.bindingForPath(category, root);
+            if (binding.isPresent() && binding.get().targetId().equals(targetId)) {
+                return refreshForPath(category, root);
+            }
+        }
+        throw new BusinessException(ErrorCode.CONFLICT,
+                "下载目标未关联此类别的 AutoSymlink 任务", HttpStatus.CONFLICT);
     }
 
     private RefreshOutcome refresh(String taskKey, AutoSymlinkProperties.SyncTask task) {
