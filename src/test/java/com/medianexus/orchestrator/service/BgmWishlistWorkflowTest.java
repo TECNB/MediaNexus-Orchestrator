@@ -18,6 +18,7 @@ import com.medianexus.orchestrator.dto.resources.response.ProwlarrReleaseItemRes
 import com.medianexus.orchestrator.dto.magnet.response.MovieMagnetIngestTaskResponse;
 import com.medianexus.orchestrator.dto.magnet.response.SeriesMagnetIngestTaskResponse;
 import com.medianexus.orchestrator.integration.bangumi.BangumiClient;
+import com.medianexus.orchestrator.integration.bangumi.BgmTmdbMappings;
 import com.medianexus.orchestrator.integration.tmdb.TmdbClient;
 import com.medianexus.orchestrator.mapper.*;
 import com.medianexus.orchestrator.model.User;
@@ -42,6 +43,82 @@ import org.springframework.transaction.support.SimpleTransactionStatus;
 
 /** The agreed BGM application seam, with deterministic HTTP, database and task adapters; no downloads. */
 class BgmWishlistWorkflowTest {
+    @Test
+    void refreshAutomaticallyMatchesTypedTargetsAndPreservesManualIdentity() throws Exception {
+        Fixture f = new Fixture();
+        f.collection = List.of(1L, 2L, 3L, 4L, 5L);
+        Source source = f.source(false, "NEW_ONLY", 3);
+        f.wishlist.refresh(source.id());
+        f.identify(source, 3, 103);
+        f.movie(101, "{\"type\":4,\"release_date\":\"2020-01-01T00:00:00Z\"}");
+        when(f.tmdb.getTvDetails(201, "zh-CN")).thenReturn(f.json.readTree("""
+                {"id":201,"name":"真实系列","first_air_date":"2020-01-01",
+                 "seasons":[{"season_number":1,"episode_count":1}]}
+                """));
+        when(f.tmdb.getTvSeasonDetails(201, 1, "zh-CN")).thenReturn(f.json.readTree("""
+                {"id":301,"season_number":1,"episodes":[{"episode_number":1,"air_date":"2020-01-01"}]}
+                """));
+        when(f.tmdb.getMovieDetails(999, "zh-CN")).thenThrow(new com.medianexus.orchestrator.integration.tmdb.TmdbClientException(
+                com.medianexus.orchestrator.integration.tmdb.TmdbClientException.Reason.UPSTREAM, "target missing"));
+        when(f.mappings.find(anySet())).thenReturn(Map.of(
+                1L, new IdentityInput("MOVIE", 101, null),
+                2L, new IdentityInput("SERIES", 201, 1),
+                3L, new IdentityInput("MOVIE", 999, null),
+                5L, new IdentityInput("MOVIE", 999, null)));
+        Wishlist refreshed = f.wishlist.refresh(source.id());
+        Map<Long, Item> byId = new HashMap<>();
+        refreshed.items().forEach(item -> byId.put(item.subjectId(), item));
+        assertNotNull(byId.get(1L).identity(), "刷新必须自动确认可核实的目录，而非让所有作品等待人工选择");
+        assertEquals("MOVIE", byId.get(1L).identity().mediaType());
+        assertEquals(101, byId.get(1L).identity().tmdbId());
+        assertEquals(1, byId.get(2L).identity().seasonNumber());
+        assertEquals(103, byId.get(3L).identity().tmdbId());
+        assertNull(byId.get(4L).identity());
+        assertNull(byId.get(5L).identity());
+        assertEquals(3, f.sources.get(source.id()).identities().size());
+        assertTrue(f.submitted.isEmpty());
+    }
+
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void publishedMappingsUseExplicitTypesAndSeasonsAndVerifyReleaseIntegrity() throws Exception {
+        ObjectMapper json = new ObjectMapper();
+        byte[] raw = """
+                {"schemaVersion":1,"subjects":[
+                 {"bangumiId":513352,"targets":[{"type":"movie","id":1360829}]},
+                 {"bangumiId":530290,"targets":[{"type":"tv","id":258579,"season":1,"episode":14,"episodeEnd":24}]},
+                 {"bangumiId":331887,"targets":[{"type":"tv","id":100565,"season":1},{"type":"tv","id":100565,"season":0}]},
+                 {"bangumiId":10,"targets":[{"type":"tv","id":100}]},
+                 {"bangumiId":11,"targets":[{"type":"tv","id":100,"season":1},{"type":"tv","id":100,"season":2}]},
+                 {"bangumiId":12,"targets":[{"type":"movie","id":100},{"type":"tv","id":100,"season":1}]},
+                 {"bangumiId":13,"targets":[{"type":"tv","id":100,"season":0}]}]}
+                """.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        String digest = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(raw));
+        String manifest = "{\"schemaVersion\":1,\"sourceCommit\":\"" + "a".repeat(40)
+                + "\",\"files\":{\"subjects.json\":{\"sha256\":\"" + digest + "\"}}}";
+        HttpClient http = mock(HttpClient.class);
+        HttpResponse first = mock(HttpResponse.class), second = mock(HttpResponse.class);
+        when(first.statusCode()).thenReturn(200); when(second.statusCode()).thenReturn(200);
+        when(first.body()).thenReturn(manifest.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        when(second.body()).thenReturn(raw);
+        doReturn(first, second).when(http).send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class));
+        BangumiProperties config = new BangumiProperties();
+        config.setTimeout(Duration.ofSeconds(1)); config.setUserAgent("BgmWishlistWorkflowTest");
+        config.setMappingReleaseBaseUrl("https://mapping.invalid/releases"); config.setMappingCacheTtl(Duration.ofHours(6));
+        BgmTmdbMappings mappings = new BgmTmdbMappings(config, json, http);
+        var matches = mappings.find(Set.of(513352L, 530290L, 331887L, 10L, 11L, 12L, 13L));
+        assertEquals(3, matches.size());
+        assertEquals(new IdentityInput("MOVIE", 1360829, null), matches.get(513352L));
+        assertEquals(new IdentityInput("SERIES", 258579, 1), matches.get(530290L));
+        assertEquals(new IdentityInput("SERIES", 100565, 1), matches.get(331887L));
+        assertEquals(matches.get(530290L), mappings.find(Set.of(530290L)).get(530290L));
+        verify(http, times(2)).send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class));
+        when(first.body()).thenReturn(manifest.replace(digest, "0".repeat(64)).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        doReturn(first, second).when(http).send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class));
+        assertThrows(BgmTmdbMappings.MappingUnavailableException.class,
+                () -> new BgmTmdbMappings(config, json, http).find(Set.of(513352L)));
+    }
+
     @Test
     void fullReadFailureRetainsSnapshotAndBaseline() throws Exception {
         Fixture f = new Fixture();
@@ -345,6 +422,7 @@ class BgmWishlistWorkflowTest {
         final AuthService auth = mock(AuthService.class);
         final UserMapper users = mock(UserMapper.class);
         final TmdbClient tmdb = mock(TmdbClient.class);
+        final BgmTmdbMappings mappings = mock(BgmTmdbMappings.class);
         final BgmWishlistTaskGateway gateway;
         final Map<String, ActiveTask> ledger = new HashMap<>();
         final MediaLibraryPresenceService presence = mock(MediaLibraryPresenceService.class);
@@ -443,7 +521,8 @@ class BgmWishlistWorkflowTest {
             });
             BangumiProperties config = new BangumiProperties();
             config.setBaseUrl("https://bgm.invalid"); config.setUserAgent("BgmWishlistWorkflowTest"); config.setTimeout(Duration.ofSeconds(1));
-            wishlist = new BgmWishlistService(auth, sources, new BangumiClient(config, json, http), tmdb, presence, gateway);
+            config.setCatalogConcurrency(4);
+            wishlist = new BgmWishlistService(auth, sources, new BangumiClient(config, json, http), tmdb, presence, gateway, mappings, config);
             when(presence.checkForAutomation(anyString(), anyInt(), isNull(), nullable(Integer.class))).thenAnswer(call -> {
                 int id = call.getArgument(1);
                 return new MediaLibraryPresenceResponse(!unknownPresence.contains(id), presentTargets.contains(id), id, null, call.getArgument(3));

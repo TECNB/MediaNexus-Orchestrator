@@ -20,6 +20,9 @@ spring:
 
 medianexus:
   bangumi:
+    mapping-release-base-url: ${MEDIANEXUS_BANGUMI_MAPPING_RELEASE_BASE_URL:https://github.com/open-ani/bangumi-tmdb/releases}
+    mapping-cache-ttl: ${MEDIANEXUS_BANGUMI_MAPPING_CACHE_TTL:6h}
+    catalog-concurrency: ${MEDIANEXUS_BANGUMI_CATALOG_CONCURRENCY:4}
     base-url: ${MEDIANEXUS_BANGUMI_BASE_URL:https://api.bgm.tv}
     user-agent: ${MEDIANEXUS_BANGUMI_USER_AGENT:MediaNexus-Orchestrator/0.1.0 (BGM wishlist; read-only)}
     timeout: ${MEDIANEXUS_BANGUMI_TIMEOUT:20s}

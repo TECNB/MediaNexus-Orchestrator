@@ -107,6 +107,21 @@ public class BgmWishlistSourceStore {
         });
     }
 
+    /** 自动映射只补齐当前条目的空身份；行锁内再次核对，不能覆盖并行人工纠正。 */
+    public SourceState saveAutomaticIdentities(String sourceId, Map<Long, Identity> verified) {
+        return mutate(sourceId, state -> {
+            Map<Long, Identity> identities = new HashMap<>(state.identities());
+            Set<Long> current = new HashSet<>();
+            state.subjects().forEach(subject -> current.add(subject.subjectId()));
+            verified.forEach((id, identity) -> {
+                if (current.contains(id)) identities.putIfAbsent(id, identity);
+            });
+            return new SourceState(state.source(), state.subjects(), state.knownSubjectIds(), state.candidateSubjectIds(),
+                    Map.copyOf(identities), state.createdTasks(), state.refreshStatus(), state.refreshError(),
+                    state.lastAttemptAt(), state.lastSuccessAt());
+        });
+    }
+
     public void recordCreated(String sourceId, long subjectId, TaskLink task) {
         mutate(sourceId, state -> {
             Set<Long> candidates = new HashSet<>(state.candidateSubjectIds());

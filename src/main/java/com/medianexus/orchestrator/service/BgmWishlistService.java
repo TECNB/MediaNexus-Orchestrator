@@ -1,6 +1,8 @@
 package com.medianexus.orchestrator.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.medianexus.orchestrator.config.BangumiProperties;
+import com.medianexus.orchestrator.integration.bangumi.BgmTmdbMappings;
 import com.medianexus.orchestrator.common.exception.BusinessException;
 import com.medianexus.orchestrator.common.exception.ErrorCode;
 import com.medianexus.orchestrator.dto.bgm.BgmWishlistContract.CatalogCandidate;
@@ -27,6 +29,14 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.Map;
+import java.util.HashMap;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import jakarta.annotation.PreDestroy;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
@@ -36,6 +46,9 @@ import org.springframework.stereotype.Service;
  */
 @Service
 public class BgmWishlistService {
+    private static final Logger log = LoggerFactory.getLogger(BgmWishlistService.class);
+    private final BgmTmdbMappings mappings;
+    private final ExecutorService catalogChecks;
     private final AuthService auth;
     private final BgmWishlistSourceStore store;
     private final BangumiClient bangumi;
@@ -44,7 +57,14 @@ public class BgmWishlistService {
     private final BgmWishlistTaskGateway tasks;
 
     public BgmWishlistService(AuthService auth, BgmWishlistSourceStore store, BangumiClient bangumi,
-                               TmdbClient tmdb, MediaLibraryPresenceService presence, BgmWishlistTaskGateway tasks) {
+                               TmdbClient tmdb, MediaLibraryPresenceService presence, BgmWishlistTaskGateway tasks,
+                               BgmTmdbMappings mappings, BangumiProperties properties) {
+        this.mappings = mappings;
+        this.catalogChecks = Executors.newFixedThreadPool(properties.getCatalogConcurrency(), runnable -> {
+            Thread thread = new Thread(runnable, "bgm-catalog-check");
+            thread.setDaemon(true);
+            return thread;
+        });
         this.auth = auth;
         this.store = store;
         this.bangumi = bangumi;
@@ -86,7 +106,7 @@ public class BgmWishlistService {
 
     public Wishlist items(String sourceId) {
         auth.requireAdminUser();
-        return wishlist(store.get(sourceId));
+        return wishlist(matchMissing(store.get(sourceId)));
     }
 
     public Wishlist refresh(String sourceId) {
@@ -99,7 +119,7 @@ public class BgmWishlistService {
         SourceState state = store.get(sourceId);
         Instant started = Instant.now();
         try {
-            return wishlist(store.recordRefresh(sourceId, bangumi.readWishlist(state.source().bgmUsername()), started));
+            return wishlist(matchMissing(store.recordRefresh(sourceId, bangumi.readWishlist(state.source().bgmUsername()), started)));
         } catch (BangumiReadException exception) {
             SourceState retained = store.recordRefreshFailure(sourceId, started);
             return wishlist(new SourceState(retained.source(), retained.subjects(), retained.knownSubjectIds(),
@@ -109,8 +129,46 @@ public class BgmWishlistService {
     }
 
     private Wishlist wishlist(SourceState state) {
-        return new Wishlist(state.source(), state.subjects().stream().map(subject -> evaluate(state, subject)).toList(),
+        List<CompletableFuture<Item>> checks = state.subjects().stream()
+                .map(subject -> CompletableFuture.supplyAsync(() -> evaluate(state, subject), catalogChecks)).toList();
+        return new Wishlist(state.source(), checks.stream().map(CompletableFuture::join).toList(),
                 state.refreshStatus(), state.refreshError(), state.lastAttemptAt(), state.lastSuccessAt());
+    }
+
+    private SourceState matchMissing(SourceState state) {
+        if (!"SUCCESS".equals(state.refreshStatus())) return state;
+        Set<Long> missing = new HashSet<>();
+        state.subjects().forEach(subject -> {
+            if (!state.identities().containsKey(subject.subjectId())) missing.add(subject.subjectId());
+        });
+        if (missing.isEmpty()) return state;
+        Map<Long, IdentityInput> candidates;
+        try {
+            candidates = mappings.find(missing);
+        } catch (BgmTmdbMappings.MappingUnavailableException exception) {
+            log.warn("BGM 自动映射读取失败，保留已有目录 sourceId={}", state.source().id(), exception);
+            return state;
+        }
+        List<CompletableFuture<Map.Entry<Long, Identity>>> checks = missing.stream()
+                .filter(candidates::containsKey)
+                .map(id -> CompletableFuture.supplyAsync(() -> {
+                    try {
+                        return Map.entry(id, resolveIdentity(candidates.get(id)));
+                    } catch (TmdbClientException | BusinessException exception) {
+                        log.warn("BGM 映射目录无法核实 subjectId={}，保留待纠正", id);
+                        return null;
+                    }
+                }, catalogChecks)).toList();
+        Map<Long, Identity> verified = new HashMap<>();
+        checks.stream().map(CompletableFuture::join).filter(java.util.Objects::nonNull)
+                .forEach(entry -> verified.put(entry.getKey(), entry.getValue()));
+        if (verified.isEmpty()) return state;
+        return store.saveAutomaticIdentities(state.source().id(), verified);
+    }
+
+    @PreDestroy
+    public void closeCatalogChecks() {
+        catalogChecks.shutdownNow();
     }
 
     /**
@@ -146,7 +204,7 @@ public class BgmWishlistService {
         String availability = "UNKNOWN";
         TaskLink active = null;
         if (identity == null) {
-            reasons.add(new Reason("IDENTITY_UNKNOWN", "请选择真实电影目录或剧集目录及目标季度"));
+            reasons.add(new Reason("IDENTITY_UNKNOWN", "自动匹配未能确认唯一目录和目标季度，可手动纠正"));
         } else {
             try {
                 availability = "MOVIE".equals(identity.mediaType()) ? movieAvailability(identity) : seasonAvailability(identity);
@@ -215,38 +273,43 @@ public class BgmWishlistService {
         auth.requireAdminUser();
         BgmWishlistSourceStore.requireSubject(store.get(sourceId), subjectId);
         try {
-            JsonNode details;
-            String titleField;
-            String originalField;
-            String dateField;
-            if ("MOVIE".equals(input.mediaType())) {
-                if (input.seasonNumber() != null) throw bad("电影目录不能指定季度");
-                details = tmdb.getMovieDetails(input.tmdbId(), "zh-CN");
-                titleField = "title";
-                originalField = "original_title";
-                dateField = "release_date";
-            } else {
-                if (input.seasonNumber() == null) throw bad("剧集型动漫必须选择真实目标季度");
-                details = tmdb.getTvDetails(input.tmdbId(), "zh-CN");
-                if (findSeason(details, input.seasonNumber()) == null) throw bad("所选季度不在真实剧集目录中");
-                JsonNode season = tmdb.getTvSeasonDetails(input.tmdbId(), input.seasonNumber(), "zh-CN");
-                if (!season.path("id").isIntegralNumber() || season.path("id").asLong() <= 0
-                        || !season.path("season_number").isIntegralNumber()
-                        || season.path("season_number").asInt() != input.seasonNumber()) throw bad("所选季度无法核实");
-                titleField = "name";
-                originalField = "original_name";
-                dateField = "first_air_date";
-            }
-            requireCatalog(details, input.tmdbId());
-            String title = displayTitle(details, titleField, originalField);
-            if (title == null) throw bad("所选目录缺少可核实的作品名称");
-            Identity identity = new Identity(input.mediaType(), input.tmdbId(), input.seasonNumber(), title,
-                    text(details, originalField), year(text(details, dateField)));
+            Identity identity = resolveIdentity(input);
             SourceState saved = store.saveIdentity(sourceId, subjectId, identity);
             return evaluate(saved, BgmWishlistSourceStore.requireSubject(saved, subjectId));
         } catch (TmdbClientException exception) {
             throw upstream("所选真实目录或季度暂不可核实，未覆盖原匹配");
         }
+    }
+
+    private Identity resolveIdentity(IdentityInput input) {
+        JsonNode details;
+        String titleField;
+        String originalField;
+        String dateField;
+        if ("MOVIE".equals(input.mediaType())) {
+            if (input.seasonNumber() != null) throw bad("电影目录不能指定季度");
+            details = tmdb.getMovieDetails(input.tmdbId(), "zh-CN");
+            titleField = "title";
+            originalField = "original_title";
+            dateField = "release_date";
+    } else {
+        if (input.seasonNumber() == null) throw bad("剧集型动漫必须选择真实目标季度");
+        details = tmdb.getTvDetails(input.tmdbId(), "zh-CN");
+        requireCatalog(details, input.tmdbId());
+        if (findSeason(details, input.seasonNumber()) == null) throw bad("所选季度不在真实剧集目录中");
+        JsonNode season = tmdb.getTvSeasonDetails(input.tmdbId(), input.seasonNumber(), "zh-CN");
+        if (season == null || !season.path("id").isIntegralNumber() || season.path("id").asLong() <= 0
+                || !season.path("season_number").isIntegralNumber()
+                || season.path("season_number").asInt() != input.seasonNumber()) throw bad("所选季度无法核实");
+        titleField = "name";
+        originalField = "original_name";
+        dateField = "first_air_date";
+    }
+    requireCatalog(details, input.tmdbId());
+    String title = displayTitle(details, titleField, originalField);
+    if (title == null) throw bad("所选目录缺少可核实的作品名称");
+    return new Identity(input.mediaType(), input.tmdbId(), input.seasonNumber(), title,
+            text(details, originalField), year(text(details, dateField)));
     }
 
     public static BgmWishlistTaskGateway.Target target(Identity identity) {
@@ -338,7 +401,7 @@ public class BgmWishlistService {
     }
 
     private void requireCatalog(JsonNode details, int id) {
-        if (!details.path("id").isIntegralNumber() || details.path("id").asInt() != id) throw bad("真实目录身份无法核实");
+        if (details == null || !details.path("id").isIntegralNumber() || details.path("id").asInt() != id) throw bad("真实目录身份无法核实");
     }
 
     private String displayTitle(JsonNode node, String title, String original) {
