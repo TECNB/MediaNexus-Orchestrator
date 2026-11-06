@@ -75,16 +75,23 @@ public class AutoSymlinkAccountClient {
     public void verifyReadableDirectory(AutoSymlinkProperties connection, String path) {
         OnboardingHttp http = http(connection);
         String parent = path.substring(0, path.lastIndexOf('/'));
-        JsonNode siblings = http.post("/get_sub_dir", json.createObjectNode().put("folder_path", parent.isEmpty() ? "/" : parent));
-        if (!siblings.isArray()) { throw OnboardingHttp.unavailable("AS_DIRECTORY_SCHEMA_UNSUPPORTED: AS 目录读取协议尚未核实"); }
+        JsonNode siblings = directoryChildren(http, parent.isEmpty() ? "/" : parent);
         boolean found = false;
         for (JsonNode child : siblings) {
-            if (child.path("id").isTextual() && child.path("id").asText().equals(path)) { found = true; }
+            if (child.path("folder_path").asText().equals(path)) { found = true; }
         }
         if (!found) { throw OnboardingHttp.failure("AS 容器内未读回计划目录，需核对挂载传播"); }
-        if (!http.post("/get_sub_dir", json.createObjectNode().put("folder_path", path)).isArray()) {
-            throw OnboardingHttp.failure("AS 容器内目录当前无法读取");
+        directoryChildren(http, path);
+    }
+
+    /** 实际目录选择器返回根对象及 children；节点身份来自 folder_path，空目录仍有空 children。 */
+    private JsonNode directoryChildren(OnboardingHttp http, String path) {
+        JsonNode children = http.post("/get_sub_dir", json.createObjectNode().put("folder_path", path)).path("children");
+        if (!children.isArray() || java.util.stream.StreamSupport.stream(children.spliterator(), false)
+                .anyMatch(child -> !child.path("folder_path").isTextual())) {
+            throw OnboardingHttp.unavailable("AS_DIRECTORY_SCHEMA_UNSUPPORTED: AS 目录读取协议尚未核实");
         }
+        return children;
     }
 
     /** 仅在服务端使用；完整配置可能含 cloud_url/sign_file_url，禁止直接作为管理响应。 */

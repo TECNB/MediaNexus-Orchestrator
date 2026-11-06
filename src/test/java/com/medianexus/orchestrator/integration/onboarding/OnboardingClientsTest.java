@@ -232,6 +232,38 @@ class OnboardingClientsTest {
     }
 
     @Test
+    void asDirectoryPickerRequiresRealChildPathAndReadableDirectoryResponse() throws Exception {
+        var parentBody = new java.util.concurrent.atomic.AtomicReference<String>(
+                "{\"folder_name\":\"\",\"folder_path\":\"\",\"children\":[{\"folder_name\":\"新 盘\",\"folder_path\":\"/mounted/新 盘\",\"children\":[]}]}");
+        var ownBody = new java.util.concurrent.atomic.AtomicReference<String>(
+                "{\"folder_name\":\"\",\"folder_path\":\"\",\"children\":[]}");
+        var requests = new java.util.concurrent.CopyOnWriteArrayList<String>();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/get_sub_dir", exchange -> {
+            assertThat(exchange.getRequestHeaders().getFirst("Cookie")).isEqualTo("session=test-only");
+            String folder = json.readTree(exchange.getRequestBody()).path("folder_path").asText();
+            requests.add(folder);
+            assertThat(folder).isIn("/mounted", "/mounted/新 盘");
+            byte[] response = (folder.equals("/mounted") ? parentBody.get() : ownBody.get()).getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, response.length); exchange.getResponseBody().write(response); exchange.close();
+        });
+        server.start();
+        try {
+            AutoSymlinkProperties p = new AutoSymlinkProperties();
+            p.setBaseUrl("http://127.0.0.1:" + server.getAddress().getPort());
+            p.setCookie("session=test-only"); p.setTimeout(Duration.ofSeconds(2));
+            var client = new AutoSymlinkAccountClient(json);
+            client.verifyReadableDirectory(p, "/mounted/新 盘");
+            assertThat(requests).containsExactly("/mounted", "/mounted/新 盘");
+            parentBody.set("{\"folder_name\":\"\",\"folder_path\":\"\",\"children\":[]}");
+            assertThatThrownBy(() -> client.verifyReadableDirectory(p, "/mounted/新 盘")).hasMessageContaining("未读回计划目录");
+            parentBody.set("{\"children\":[{\"folder_path\":\"/mounted/新 盘\"}]}");
+            ownBody.set("{\"unexpected\":[]}");
+            assertThatThrownBy(() -> client.verifyReadableDirectory(p, "/mounted/新 盘")).hasMessageContaining("协议尚未核实");
+        } finally { server.stop(0); }
+    }
+
+    @Test
     void newAsConfigurationChangesWholePathMappingAndPreservesGenericScanOptions() {
         ObjectNode source = json.createObjectNode();
         AutoSymlinkAccountClient.CONFIG_STRINGS.forEach(key -> source.put(key, ""));
