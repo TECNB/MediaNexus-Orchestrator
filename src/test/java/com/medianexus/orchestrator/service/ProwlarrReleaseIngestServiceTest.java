@@ -949,7 +949,7 @@ class ProwlarrReleaseIngestServiceTest {
         private TaskRetryReference retryReference;
 
         FakeAnimeMagnetIngestTaskService() {
-            super(null, null, null, null, null, null, null, null, null, null, mock(IngestCompletionNotifier.class));
+            super(null, null, null, null, null, null, null, null, null, null, mock(IngestTaskNotifier.class));
         }
 
         @Override
@@ -997,7 +997,7 @@ class ProwlarrReleaseIngestServiceTest {
         private TaskRetryReference retryReference;
 
         FakeMagnetIngestService() {
-            super(null, null, null, null, null, null, null, null, null, null, null, null, mock(IngestCompletionNotifier.class));
+            super(null, null, null, null, null, null, null, null, null, null, null, null, mock(IngestTaskNotifier.class));
         }
 
         @Override

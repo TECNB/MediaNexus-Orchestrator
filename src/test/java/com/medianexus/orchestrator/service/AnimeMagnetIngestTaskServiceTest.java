@@ -45,6 +45,7 @@ class AnimeMagnetIngestTaskServiceTest {
     private final TestUserActionQuotaService quotaService = new TestUserActionQuotaService();
     private final MediaLibraryPresenceService mediaLibraryPresenceService = mock(MediaLibraryPresenceService.class);
     private final ControlledExecutor taskExecutor = new ControlledExecutor();
+    private final IngestTaskNotifier notifier = mock(IngestTaskNotifier.class);
     private final AtomicReference<AnimeMagnetIngestTask> insertedTask = new AtomicReference<>();
     private final AnimeMagnetIngestTaskService service = new AnimeMagnetIngestTaskService(
             taskMapper,
@@ -58,7 +59,7 @@ class AnimeMagnetIngestTaskServiceTest {
             null,
             mediaLibraryPresenceService,
             taskExecutor,
-            mock(IngestCompletionNotifier.class)
+            notifier
     );
 
     @BeforeEach
@@ -139,6 +140,7 @@ class AnimeMagnetIngestTaskServiceTest {
 
         verify(taskLogMapper).delete(any());
         verify(taskMapper).deleteById(insertedTask.get().getId());
+        org.mockito.Mockito.verifyNoInteractions(notifier);
     }
 
     @Test
@@ -170,7 +172,7 @@ class AnimeMagnetIngestTaskServiceTest {
                 null,
                 mediaLibraryPresenceService,
                 taskExecutor,
-                mock(IngestCompletionNotifier.class)
+                notifier
         );
 
         ReflectionTestUtils.invokeMethod(service, "organizeFiles", animeTask());
@@ -211,7 +213,7 @@ class AnimeMagnetIngestTaskServiceTest {
                 null,
                 mediaLibraryPresenceService,
                 taskExecutor,
-                mock(IngestCompletionNotifier.class)
+                notifier
         );
 
         Boolean hasVideoFiles = ReflectionTestUtils.invokeMethod(service, "hasVideoFiles", "/anime/Show/Season 01");
@@ -255,7 +257,7 @@ class AnimeMagnetIngestTaskServiceTest {
                 null,
                 mediaLibraryPresenceService,
                 taskExecutor,
-                mock(IngestCompletionNotifier.class)
+                notifier
         );
 
         ReflectionTestUtils.invokeMethod(service, "organizeFiles", animeTask());
@@ -312,6 +314,21 @@ class AnimeMagnetIngestTaskServiceTest {
         return normalized;
     }
 
+    @Test
+    void notifiesNewTaskOnceAfterQueueAcceptanceButNotForAnExistingTask() {
+        AnimeMagnetIngestTaskService worker = serviceWithAnimePathTemplate();
+        AnimeMagnetIngestTaskCreateRequest request = new AnimeMagnetIngestTaskCreateRequest(
+                "magnet:?xt=urn:btih:notificationhash", null, null, "Show", "Show", "Show", 1, "Show", 209867);
+
+        worker.createTask(request);
+        verify(notifier).animeStarted(insertedTask.get());
+        when(taskMapper.selectOne(any())).thenReturn(insertedTask.get());
+        worker.createTask(request);
+
+        verify(notifier, times(1)).animeStarted(insertedTask.get());
+        verify(notifier, never()).animeCompleted(any());
+    }
+
     private AnimeMagnetIngestTaskService serviceWithAnimePathTemplate() {
         OpenListProperties properties = new OpenListProperties();
         properties.setTimeout(Duration.ofSeconds(5));
@@ -329,7 +346,7 @@ class AnimeMagnetIngestTaskServiceTest {
                 null,
                 mediaLibraryPresenceService,
                 taskExecutor,
-                mock(IngestCompletionNotifier.class)
+                notifier
         );
     }
 

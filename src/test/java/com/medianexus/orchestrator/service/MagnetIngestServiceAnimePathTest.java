@@ -105,7 +105,7 @@ class MagnetIngestServiceAnimePathTest {
                 null,
                 null,
                 null,
-                org.mockito.Mockito.mock(IngestCompletionNotifier.class)
+                org.mockito.Mockito.mock(IngestTaskNotifier.class)
         );
     }
 

@@ -31,7 +31,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 
-class IngestCompletionNotifierTest {
+class IngestTaskNotifierTest {
 
     private final ObjectMapper mapper = new ObjectMapper();
     private final WeComProperties properties = new WeComProperties();
@@ -39,7 +39,7 @@ class IngestCompletionNotifierTest {
     private final TmdbClient tmdb = mock(TmdbClient.class);
     private final WeComClient wecom = mock(WeComClient.class);
     private final ControlledExecutor executor = new ControlledExecutor();
-    private final IngestCompletionNotifier notifier = new IngestCompletionNotifier(
+    private final IngestTaskNotifier notifier = new IngestTaskNotifier(
             properties, tmdbProperties, tmdb, wecom, executor);
 
     @BeforeEach
@@ -174,6 +174,37 @@ class IngestCompletionNotifierTest {
         assertThatCode(executor::runPending).doesNotThrowAnyException();
 
         verifyNoInteractions(wecom);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"movie", "series", "shared-anime", "anime"})
+    void initiationUsesItsOwnMessageAndActualTaskDetailRoute(String kind) throws Exception {
+        when(tmdb.getMovieImages(157336)).thenReturn(mapper.readTree("{\"posters\":[{\"file_path\":\"/cover.jpg\"}]}"));
+        when(tmdb.getTvImages(209867)).thenReturn(mapper.readTree("{\"posters\":[{\"file_path\":\"/cover.jpg\"}]}"));
+        String route;
+        switch (kind) {
+            case "movie" -> {
+                notifier.movieStarted(movie());
+                route = "movie/movie-1";
+            }
+            case "anime" -> {
+                AnimeMagnetIngestTask task = new AnimeMagnetIngestTask();
+                task.setId("anime-1"); task.setTitle("Show"); task.setTmdbId(209867);
+                notifier.animeStarted(task);
+                route = "anime/anime-1";
+            }
+            default -> {
+                SeriesMagnetIngestTask task = new SeriesMagnetIngestTask();
+                task.setId("series-1"); task.setTitle("Show"); task.setTmdbId(209867);
+                task.setTaskProductType("shared-anime".equals(kind) ? "ANIME" : "SERIES");
+                notifier.seriesStarted(task);
+                route = "series/series-1";
+            }
+        }
+        verifyNoInteractions(wecom);
+        executor.runPending();
+        verify(wecom).sendNews(contains(" · 任务已发起"), contains("已创建并排入后台队列"),
+                eq("https://image.tmdb.org/t/p/w500/cover.jpg"), eq("https://media.example/tasks/" + route));
     }
 
     private MovieMagnetIngestTask movie() {

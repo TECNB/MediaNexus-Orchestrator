@@ -100,7 +100,7 @@ public class AnimeMagnetIngestTaskService {
     private final UserActionQuotaService userActionQuotaService;
     private final AutoSymlinkRefreshService autoSymlinkRefreshService;
     private final MediaLibraryPresenceService mediaLibraryPresenceService;
-    private final IngestCompletionNotifier completionNotifier;
+    private final IngestTaskNotifier taskNotifier;
     private final ExecutorService executorService;
 
     @Autowired
@@ -115,7 +115,7 @@ public class AnimeMagnetIngestTaskService {
             UserActionQuotaService userActionQuotaService,
             AutoSymlinkRefreshService autoSymlinkRefreshService,
             MediaLibraryPresenceService mediaLibraryPresenceService,
-            IngestCompletionNotifier completionNotifier
+            IngestTaskNotifier taskNotifier
     ) {
         this.taskMapper = taskMapper;
         this.taskLogMapper = taskLogMapper;
@@ -127,7 +127,7 @@ public class AnimeMagnetIngestTaskService {
         this.userActionQuotaService = userActionQuotaService;
         this.autoSymlinkRefreshService = autoSymlinkRefreshService;
         this.mediaLibraryPresenceService = mediaLibraryPresenceService;
-        this.completionNotifier = completionNotifier;
+        this.taskNotifier = taskNotifier;
         this.executorService = Executors.newSingleThreadExecutor(new WorkerThreadFactory());
     }
 
@@ -143,7 +143,7 @@ public class AnimeMagnetIngestTaskService {
             AutoSymlinkRefreshService autoSymlinkRefreshService,
             MediaLibraryPresenceService mediaLibraryPresenceService,
             ExecutorService executorService,
-            IngestCompletionNotifier completionNotifier
+            IngestTaskNotifier taskNotifier
     ) {
         this.taskMapper = taskMapper;
         this.taskLogMapper = taskLogMapper;
@@ -155,7 +155,7 @@ public class AnimeMagnetIngestTaskService {
         this.userActionQuotaService = userActionQuotaService;
         this.autoSymlinkRefreshService = autoSymlinkRefreshService;
         this.mediaLibraryPresenceService = mediaLibraryPresenceService;
-        this.completionNotifier = completionNotifier;
+        this.taskNotifier = taskNotifier;
         this.executorService = executorService;
     }
 
@@ -353,6 +353,7 @@ public class AnimeMagnetIngestTaskService {
             );
 
             executorService.submit(() -> runTask(taskId));
+            taskNotifier.animeStarted(task);
             return response;
         } catch (RuntimeException exception) {
             removeTaskAfterCreationFailure(taskId, exception);
@@ -500,7 +501,7 @@ public class AnimeMagnetIngestTaskService {
                 result.organizedCount(),
                 result.skippedCount()
         );
-        completionNotifier.animeCompleted(task);
+        taskNotifier.animeCompleted(task);
     }
 
     private void refreshAutoSymlink(String taskId) {

@@ -19,12 +19,11 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
-/** 成功保存后的尽力通知；缺图、配置或发送失败只记录日志，不修改入库状态。 */
+/** 任务创建和成功保存后的尽力通知；缺图、配置或发送失败只记录日志，不修改入库状态。 */
 @Service
-public class IngestCompletionNotifier {
+public class IngestTaskNotifier {
 
-    private static final Logger log = LoggerFactory.getLogger(IngestCompletionNotifier.class);
-    private static final String TITLE_SUFFIX = " · 任务处理完成";
+    private static final Logger log = LoggerFactory.getLogger(IngestTaskNotifier.class);
     private final WeComProperties properties;
     private final TmdbProperties tmdbProperties;
     private final TmdbClient tmdbClient;
@@ -32,7 +31,7 @@ public class IngestCompletionNotifier {
     private final ExecutorService executor;
 
     @Autowired
-    public IngestCompletionNotifier(
+    public IngestTaskNotifier(
             WeComProperties properties, TmdbProperties tmdbProperties, TmdbClient tmdbClient, WeComClient weComClient
     ) {
         this(properties, tmdbProperties, tmdbClient, weComClient, Executors.newSingleThreadExecutor(runnable -> {
@@ -42,7 +41,7 @@ public class IngestCompletionNotifier {
         }));
     }
 
-    IngestCompletionNotifier(
+    IngestTaskNotifier(
             WeComProperties properties, TmdbProperties tmdbProperties, TmdbClient tmdbClient,
             WeComClient weComClient, ExecutorService executor
     ) {
@@ -53,25 +52,47 @@ public class IngestCompletionNotifier {
         this.executor = executor;
     }
 
+    public void movieStarted(MovieMagnetIngestTask task) {
+        submit(task.getId(), task.getTmdbId(), () -> {
+            String title = task.getTitle() + (task.getYear() == null ? "" : "（" + task.getYear() + "）");
+            send(new IngestNotice("movie", task.getId(), title, "电影"), "任务已发起", "入库任务已创建并排入后台队列，进度请查看任务详情。", tmdbClient.getMovieImages(task.getTmdbId()));
+        });
+    }
+
+    public void seriesStarted(SeriesMagnetIngestTask task) {
+        submit(task.getId(), task.getTmdbId(), () -> send(
+                new IngestNotice("series", task.getId(), seasonTitle(task.getTitle(), task.getSeasonNumber()),
+                        "ANIME".equals(task.getTaskProductType()) ? "动漫" : "剧集"),
+                "任务已发起", "入库任务已创建并排入后台队列，进度请查看任务详情。", tmdbClient.getTvImages(task.getTmdbId())
+        ));
+    }
+
+    public void animeStarted(AnimeMagnetIngestTask task) {
+        submit(task.getId(), task.getTmdbId(), () -> send(
+                new IngestNotice("anime", task.getId(), seasonTitle(task.getTitle(), task.getSeasonNumber()), "动漫"),
+                "任务已发起", "入库任务已创建并排入后台队列，进度请查看任务详情。", tmdbClient.getTvImages(task.getTmdbId())
+        ));
+    }
+
     public void movieCompleted(MovieMagnetIngestTask task) {
         submit(task.getId(), task.getTmdbId(), () -> {
             String title = task.getTitle() + (task.getYear() == null ? "" : "（" + task.getYear() + "）");
-            send(new CompletionNotice("movie", task.getId(), title, "电影"), tmdbClient.getMovieImages(task.getTmdbId()));
+            send(new IngestNotice("movie", task.getId(), title, "电影"), "任务处理完成", "入库任务已处理完成。\n播放可用性请以媒体库为准。", tmdbClient.getMovieImages(task.getTmdbId()));
         });
     }
 
     public void seriesCompleted(SeriesMagnetIngestTask task) {
         submit(task.getId(), task.getTmdbId(), () -> send(
-                new CompletionNotice("series", task.getId(), seasonTitle(task.getTitle(), task.getSeasonNumber()),
+                new IngestNotice("series", task.getId(), seasonTitle(task.getTitle(), task.getSeasonNumber()),
                         "ANIME".equals(task.getTaskProductType()) ? "动漫" : "剧集"),
-                tmdbClient.getTvImages(task.getTmdbId())
+                "任务处理完成", "入库任务已处理完成。\n播放可用性请以媒体库为准。", tmdbClient.getTvImages(task.getTmdbId())
         ));
     }
 
     public void animeCompleted(AnimeMagnetIngestTask task) {
         submit(task.getId(), task.getTmdbId(), () -> send(
-                new CompletionNotice("anime", task.getId(), seasonTitle(task.getTitle(), task.getSeasonNumber()), "动漫"),
-                tmdbClient.getTvImages(task.getTmdbId())
+                new IngestNotice("anime", task.getId(), seasonTitle(task.getTitle(), task.getSeasonNumber()), "动漫"),
+                "任务处理完成", "入库任务已处理完成。\n播放可用性请以媒体库为准。", tmdbClient.getTvImages(task.getTmdbId())
         ));
     }
 
@@ -80,7 +101,7 @@ public class IngestCompletionNotifier {
             return;
         }
         if (tmdbId == null || tmdbId <= 0) {
-            log.warn("企业微信完成通知未发送 taskId={} 原因=任务缺少 TMDB 身份，无法取得封面", taskId);
+            log.warn("企业微信任务通知未发送 taskId={} 原因=任务缺少 TMDB 身份，无法取得封面", taskId);
             return;
         }
         try {
@@ -88,24 +109,25 @@ public class IngestCompletionNotifier {
                 try {
                     notification.run();
                 } catch (RuntimeException exception) {
-                    log.warn("企业微信完成通知未发送 taskId={} 原因={}", taskId, exception.getMessage());
+                    log.warn("企业微信任务通知未发送 taskId={} 原因={}", taskId, exception.getMessage());
                 }
             });
         } catch (RuntimeException exception) {
-            log.warn("企业微信完成通知未排入发送队列 taskId={}", taskId);
+            log.warn("企业微信任务通知未排入发送队列 taskId={}", taskId);
         }
     }
 
-    private void send(CompletionNotice notice, JsonNode images) {
+    private void send(IngestNotice notice, String heading, String summary, JsonNode images) {
         String imageUrl = imageUrl(images);
         if (imageUrl == null) {
-            log.warn("企业微信完成通知未发送 taskId={} 原因=该条目没有可用横图或海报", notice.taskId());
+            log.warn("企业微信任务通知未发送 taskId={} 原因=该条目没有可用横图或海报", notice.taskId());
             return;
         }
-        String title = truncateUtf8(notice.title(), 128 - TITLE_SUFFIX.getBytes(StandardCharsets.UTF_8).length) + TITLE_SUFFIX;
-        String description = notice.mediaLabel() + "入库任务已处理完成。\n播放可用性请以媒体库为准。";
+        String suffix = " · " + heading;
+        String title = truncateUtf8(notice.title(), 128 - suffix.getBytes(StandardCharsets.UTF_8).length) + suffix;
+        String description = notice.mediaLabel() + summary;
         weComClient.sendNews(title, description, imageUrl, detailUrl(notice));
-        log.info("企业微信 API 已受理完成通知 taskId={}，普通微信实际收件仍需核实", notice.taskId());
+        log.info("企业微信 API 已受理任务通知 taskId={} 类型={}，普通微信实际收件仍需核实", notice.taskId(), heading);
     }
 
     private String imageUrl(JsonNode images) {
@@ -120,7 +142,7 @@ public class IngestCompletionNotifier {
         return null;
     }
 
-    private String detailUrl(CompletionNotice notice) {
+    private String detailUrl(IngestNotice notice) {
         if (!StringUtils.hasText(properties.getFrontendBaseUrl())) {
             throw new IllegalStateException("企业微信通知缺少前端站点地址");
         }
@@ -165,5 +187,5 @@ public class IngestCompletionNotifier {
         executor.shutdownNow();
     }
 
-    private record CompletionNotice(String taskType, String taskId, String title, String mediaLabel) { }
+    private record IngestNotice(String taskType, String taskId, String title, String mediaLabel) { }
 }

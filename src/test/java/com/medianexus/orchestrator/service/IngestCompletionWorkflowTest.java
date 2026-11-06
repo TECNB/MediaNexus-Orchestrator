@@ -42,7 +42,7 @@ class IngestCompletionWorkflowTest {
     private final AnimeMagnetIngestTaskMapper anime = mock(AnimeMagnetIngestTaskMapper.class);
     private final OpenListClient openList = mock(OpenListClient.class);
     private final LibraryOrganizer organizer = mock(LibraryOrganizer.class);
-    private final IngestCompletionNotifier notifier = mock(IngestCompletionNotifier.class);
+    private final IngestTaskNotifier notifier = mock(IngestTaskNotifier.class);
     private final AutoSymlinkRefreshService refresh = mock(AutoSymlinkRefreshService.class);
     private final OpenListProperties properties = new OpenListProperties();
     private final List<String> savedStatuses = new ArrayList<>();
