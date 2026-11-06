@@ -24,23 +24,11 @@ public class EmbyAccountLibraryClient {
         return List.copyOf(result);
     }
 
-    /** 只调用当前实例自描述的只读路径验证，不启用 ValidateWriteable 或推测旧版本支持。 */
+    /** Emby 4.9 已核实的只读验证：Path 属于 query，禁用写入检查，不依赖实例提供 OpenAPI 文件。 */
     public void verifyReadableDirectory(EmbyProperties connection, String path) {
-        OnboardingHttp http = http(connection);
-        JsonNode schema = http.read("/openapi.json");
-        JsonNode operation = schema.path("paths").path("/Environment/ValidatePath").path("post");
-        JsonNode body = operation.path("requestBody").path("content").path("application/json").path("schema");
-        if (body.path("$ref").isTextual()) {
-            String reference = body.path("$ref").asText();
-            body = reference.startsWith("#/") ? schema.at(reference.substring(1)) : json.createObjectNode();
-        }
-        JsonNode fields = body.path("properties");
-        if (!fields.path("Path").path("type").asText().equals("string")
-                || !fields.path("ValidateWriteable").path("type").asText().equals("boolean")
-                || !fields.path("IsFile").path("type").asText().equals("boolean")) {
-            throw OnboardingHttp.unavailable("EMBY_PATH_VALIDATION_UNSUPPORTED: 当前 Emby 未公开已核实的只读路径验证协议");
-        }
-        http.post("/Environment/ValidatePath", json.createObjectNode().put("Path", path).put("ValidateWriteable", false).put("IsFile", false));
+        String encoded = java.net.URLEncoder.encode(path, java.nio.charset.StandardCharsets.UTF_8);
+        http(connection).post("/Environment/ValidatePath?Path=" + encoded,
+                json.createObjectNode().put("ValidateWriteable", false).put("IsFile", false));
     }
 
     public LibraryView appendAndVerify(EmbyProperties connection, String libraryId, String path) {

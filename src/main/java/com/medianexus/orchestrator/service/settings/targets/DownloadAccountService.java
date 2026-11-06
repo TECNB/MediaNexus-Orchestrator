@@ -358,6 +358,8 @@ public class DownloadAccountService {
         }
         for (PlannedBinding binding : bindings) {
             resources.add(new PlannedResource("MEDIA_DIRECTORIES", "CREATE", "MediaDirectory", null, binding.rootPath(), binding.category()));
+            resources.add(new PlannedResource("AS_BINDINGS", "CREATE", "StrmOutputDirectory", null, binding.strmRootPath(),
+                    "准备本账号的空 STRM 输出目录；不创建或改写媒体文件"));
             resources.add(new PlannedResource("AS_BINDINGS", "CREATE", "AutoSymlinkTask", null, binding.strmRootPath(), binding.category()));
             for (LibraryPath library : binding.embyLibraries()) resources.add(new PlannedResource("EMBY_PATHS", "APPEND", "EmbyLibrary", library.libraryId(), library.path(), binding.category()));
         }

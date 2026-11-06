@@ -123,6 +123,7 @@ public class OnboardingExecutor implements AutoCloseable {
                 for(var binding:plan.bindings()){
                     String category=binding.category();
                     perform("AS_BINDINGS",category,() -> {
+                        prepareStrmOutput(binding);
                         String uuid=as.createAndReadUuid(symlink,configuration(category)); uuids.put(category,uuid);
                         return List.of(new ResourceRef("AutoSymlinkTask",uuid,binding.strmRootPath()));
                     },() -> readAsBinding(binding));
@@ -191,12 +192,18 @@ public class OnboardingExecutor implements AutoCloseable {
                     .flatMap(s -> s.resourceRefs().stream()).findFirst();
         }
         private List<ResourceRef> readAsBinding(PlannedBinding binding){
+            prepareStrmOutput(binding);
             String uuid=savedReference("AS_BINDINGS",binding.category()).map(ResourceRef::resourceId)
                     .orElseGet(() -> as.findCreatedUuid(symlink,configuration(binding.category()))
                             .orElseThrow(() -> conflict("先前 AS 创建结果尚未确定，未重发创建")));
             verifyAsConfiguration(binding.category(),uuid);
             uuids.put(binding.category(),uuid);
             return List.of(new ResourceRef("AutoSymlinkTask",uuid,binding.strmRootPath()));
+        }
+        private void prepareStrmOutput(PlannedBinding binding){
+            try{java.nio.file.Files.createDirectories(java.nio.file.Path.of(binding.strmRootPath()));}
+            catch(java.io.IOException exception){throw conflict("计划 STRM 输出目录无法准备；未改写已有文件");}
+            as.verifyReadableDirectory(symlink,binding.strmRootPath());
         }
         private void verifyAsConfiguration(String category,String uuid){
             ObjectNode actual=as.readConfiguration(symlink,uuid);

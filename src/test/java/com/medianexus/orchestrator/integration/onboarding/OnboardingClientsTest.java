@@ -288,6 +288,34 @@ class OnboardingClientsTest {
     }
 
     @Test
+    void embyPathValidationUsesQueryPathAndNeverTestsWritingWithoutOpenApi() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        server.createContext("/Environment/ValidatePath", exchange -> {
+            assertThat(exchange.getRequestHeaders().getFirst("X-Emby-Token")).isEqualTo("test-api-key");
+            assertThat(exchange.getRequestMethod()).isEqualTo("POST");
+            String query = exchange.getRequestURI().getRawQuery();
+            assertThat(query).startsWith("Path=");
+            String path = java.net.URLDecoder.decode(query.substring(5), StandardCharsets.UTF_8);
+            var request = json.readTree(exchange.getRequestBody());
+            assertThat(request.size()).isEqualTo(2);
+            assertThat(request.path("ValidateWriteable").booleanValue()).isFalse();
+            assertThat(request.path("IsFile").booleanValue()).isFalse();
+            calls.incrementAndGet();
+            exchange.sendResponseHeaders(path.equals("/strm/新 盘") ? 200 : 404, -1); exchange.close();
+        });
+        server.start();
+        try {
+            var p = new EmbyProperties(); p.setBaseUrl("http://127.0.0.1:" + server.getAddress().getPort());
+            p.setApiKey("test-api-key"); p.setTimeout(Duration.ofSeconds(2));
+            var client = new EmbyAccountLibraryClient(json);
+            client.verifyReadableDirectory(p, "/strm/新 盘");
+            assertThatThrownBy(() -> client.verifyReadableDirectory(p, "/missing")).hasMessageContaining("HTTP 404");
+            assertThat(calls.get()).isEqualTo(2);
+        } finally { server.stop(0); }
+    }
+
+    @Test
     void appendsEmbyPathWithoutResendingOptionsAndPreservesExistingPathAttributes() throws Exception {
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         ObjectNode library = (ObjectNode) json.readTree("""

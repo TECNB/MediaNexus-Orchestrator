@@ -103,7 +103,7 @@ class OnboardingExecutorTest {
             assertThat(records.plan(plan.id()).protectedPayload()).isNull();
             assertThat(completed.submit(records.execution(plan.id()))).isEqualTo(done);
             verify(ol,times(1)).createAndRead(any(),anyString(),any());
-        } finally {completed.close();java.nio.file.Files.delete(source.resolve("Movie"));java.nio.file.Files.delete(source);}
+        } finally {completed.close();deleteTestDirectory(source);}
     }
     @Test
     void adultBindingAppendsAndRegistersBothLibraries() throws Exception {
@@ -318,6 +318,21 @@ class OnboardingExecutorTest {
         }
     }
 
+    @Test
+    void asBindingPreparesItsExactStrmOutputBeforeCreatingTheTask() throws Exception {
+        try (Scenario s = new Scenario()) {
+            var preparedAtCreate = new java.util.concurrent.atomic.AtomicBoolean();
+            doAnswer(call -> {
+                preparedAtCreate.set(java.nio.file.Files.isDirectory(java.nio.file.Path.of(s.output)));
+                return "adult-uuid";
+            }).when(s.as).createAndReadUuid(any(), any());
+            s.worker.submit(s.records.begin(s.plan.id(), 0, 0));
+            assertThat(awaitStopped(s.records, s.plan.id()).status()).isEqualTo("SUCCEEDED");
+            assertThat(preparedAtCreate.get()).isTrue();
+            verify(s.as).verifyReadableDirectory(any(), eq(s.output));
+        }
+    }
+
     private static final class Scenario implements AutoCloseable {
         final ObjectMapper json=new ObjectMapper().findAndRegisterModules();
         final Map<String,String> rows=new java.util.concurrent.ConcurrentHashMap<>();
@@ -384,7 +399,12 @@ class OnboardingExecutorTest {
         }
         void savePayload() { rows.put("target_plan_"+plan.id(),encode(new OnboardingRecords.PlanRecord(plan,cipher.encrypt("onboarding-plan/"+plan.id(),payload.toString()),Map.of()))); }
         String encode(Object value) {try{return json.writeValueAsString(value);}catch(Exception e){throw new AssertionError(e);}}
-        @Override public void close() throws Exception {worker.close();java.nio.file.Files.delete(source.resolve("Adult"));java.nio.file.Files.delete(source);}
+        @Override public void close() throws Exception {worker.close();deleteTestDirectory(source);}
+    }
+    private static void deleteTestDirectory(java.nio.file.Path directory) throws Exception {
+        try (var paths = java.nio.file.Files.walk(directory)) {
+            for (var path : paths.sorted(java.util.Comparator.reverseOrder()).toList()) java.nio.file.Files.delete(path);
+        }
     }
     private Execution awaitStopped(OnboardingRecords records,String id) throws Exception {
         long deadline=System.nanoTime()+java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
