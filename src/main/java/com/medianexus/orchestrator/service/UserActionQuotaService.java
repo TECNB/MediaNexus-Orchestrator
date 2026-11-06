@@ -6,6 +6,7 @@ import com.medianexus.orchestrator.mapper.UserActionUsageMapper;
 import com.medianexus.orchestrator.model.User;
 import com.medianexus.orchestrator.model.UserActionType;
 import com.medianexus.orchestrator.model.UserActionUsage;
+import io.swagger.v3.oas.annotations.media.Schema;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.List;
@@ -72,6 +73,24 @@ public class UserActionQuotaService {
                 dailyContentCreateActionNames()
         );
         assertWithinDailyContentCreateLimit(user, usedCount == null ? 0 : usedCount);
+    }
+
+    /** 预览与运行结果读取实际用量；管理员豁免不伪装成无限剩余次数。 */
+    public DailyContentCreateQuota dailyContentCreateQuota(User user) {
+        LocalDate date = LocalDate.now(USAGE_ZONE);
+        Integer used = usageMapper.sumUsageCount(user.getId(), date, dailyContentCreateActionNames());
+        int usedCount = used == null ? 0 : used;
+        int limit = quotaSettingsService.resolveDailyContentCreateLimit(user);
+        boolean exempt = isAdmin(user);
+        return new DailyContentCreateQuota(user.getId(), user.getUsername(), date.toString(),
+                usedCount, limit, exempt ? null : Math.max(0, limit - usedCount), exempt);
+    }
+
+    @Schema(description = "任务归属成员的北京时间自然日创建次数；预览不预留额度")
+    public record DailyContentCreateQuota(Long ownerUserId, String ownerUsername, String usageDate,
+                                          int used, int limit,
+                                          @Schema(description = "普通成员剩余创建次数；管理员豁免时为 null", nullable = true)
+                                          Integer remaining, boolean exempt) {
     }
 
     private List<String> dailyContentCreateActionNames() {

@@ -1,6 +1,7 @@
 package com.medianexus.orchestrator;
 
 import com.medianexus.orchestrator.config.AuthProperties;
+import com.medianexus.orchestrator.config.BangumiProperties;
 import com.medianexus.orchestrator.config.AutoSymlinkProperties;
 import com.medianexus.orchestrator.config.AniRssProperties;
 import com.medianexus.orchestrator.config.CloudDrive2Properties;
@@ -25,6 +26,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 @EnableConfigurationProperties({
         AniRssProperties.class,
         AuthProperties.class,
+        BangumiProperties.class,
         AutoSymlinkProperties.class,
         CloudDrive2Properties.class,
         DatabaseSshTunnelProperties.class,

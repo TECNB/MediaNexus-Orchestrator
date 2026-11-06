@@ -19,6 +19,10 @@ spring:
       initialization-fail-timeout: ${MEDIANEXUS_DB_INITIALIZATION_FAIL_TIMEOUT:10000}
 
 medianexus:
+  bangumi:
+    base-url: ${MEDIANEXUS_BANGUMI_BASE_URL:https://api.bgm.tv}
+    user-agent: ${MEDIANEXUS_BANGUMI_USER_AGENT:MediaNexus-Orchestrator/0.1.0 (BGM wishlist; read-only)}
+    timeout: ${MEDIANEXUS_BANGUMI_TIMEOUT:20s}
   wecom:
     enabled: ${MEDIANEXUS_WECOM_ENABLED:false}
     api-base-url: ${MEDIANEXUS_WECOM_API_BASE_URL:https://qyapi.weixin.qq.com}

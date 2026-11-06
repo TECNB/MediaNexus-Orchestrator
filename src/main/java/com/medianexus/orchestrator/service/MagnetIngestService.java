@@ -249,6 +249,33 @@ public class MagnetIngestService {
         return insertMovieTask(user, plan, releaseMetadata, null);
     }
 
+    /** BGM 已核实目录、状态及在库结果后，以配置成员复用现有任务和额度链路。 */
+    MovieMagnetIngestTaskResponse createMovieTaskForOwner(
+            MovieMagnetIngestRequest request, ReleaseIngestMetadata metadata, User owner
+    ) {
+        MovieTaskPlan plan = buildMoviePlan(request);
+        MovieMagnetIngestTask active = movieTaskMapper.selectOne(new LambdaQueryWrapper<MovieMagnetIngestTask>()
+                .eq(MovieMagnetIngestTask::getMagnetHash, plan.magnetHash())
+                .in(MovieMagnetIngestTask::getStatus, ACTIVE_STATUSES).last("LIMIT 1"));
+        if (active != null) {
+            throw badRequest("相同 magnet 正在处理中，请稍后再试");
+        }
+        return insertMovieTask(owner, plan, metadata, null);
+    }
+
+    SeriesMagnetIngestTaskResponse createAnimeSeasonTaskForOwner(
+            SeriesMagnetIngestRequest request, ReleaseIngestMetadata metadata, User owner
+    ) {
+        SeriesTaskPlan plan = buildAnimeSeasonSeriesPlan(request);
+        SeriesMagnetIngestTask active = seriesTaskMapper.selectOne(new LambdaQueryWrapper<SeriesMagnetIngestTask>()
+                .eq(SeriesMagnetIngestTask::getMagnetHash, plan.magnetHash())
+                .in(SeriesMagnetIngestTask::getStatus, ACTIVE_STATUSES).last("LIMIT 1"));
+        if (active != null) {
+            throw badRequest("相同 magnet 正在处理中，请稍后再试");
+        }
+        return insertSeriesTask(owner, plan, metadata, ANIME_PRODUCT_TYPE, null);
+    }
+
     public MovieMagnetIngestTaskResponse createMovieRetryTask(
             MovieMagnetIngestTask originalTask,
             String magnet,

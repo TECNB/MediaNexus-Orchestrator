@@ -60,6 +60,15 @@ public class TmdbClient {
         return results;
     }
 
+    public JsonNode getMovieDetails(int movieId, String language) {
+        return get("/movie/" + movieId, "language=" + encode(language), "movie details");
+    }
+
+    /** 发行类型用于区分院线与已发生的数字、实体或电视发行。 */
+    public JsonNode getMovieReleaseDates(int movieId) {
+        return get("/movie/" + movieId + "/release_dates", "", "movie release dates");
+    }
+
     public JsonNode getTvDetails(int seriesId, String language) {
         return get("/tv/" + seriesId, "language=" + encode(language), "tv details");
     }

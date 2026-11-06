@@ -23,6 +23,7 @@ import com.medianexus.orchestrator.integration.prowlarr.ProwlarrClient;
 import com.medianexus.orchestrator.integration.prowlarr.ProwlarrClientException;
 import com.medianexus.orchestrator.integration.prowlarr.ProwlarrRelease;
 import com.medianexus.orchestrator.model.MovieMagnetIngestTask;
+import com.medianexus.orchestrator.model.User;
 import com.medianexus.orchestrator.model.AnimeMagnetIngestTask;
 import com.medianexus.orchestrator.model.SeriesMagnetIngestTask;
 import com.medianexus.orchestrator.service.ReleaseTitleTagParser.ReleaseTitleTags;
@@ -110,6 +111,10 @@ public class ProwlarrReleaseIngestService {
 
     public ProwlarrReleaseRecommendationResponse recommendMovieRelease(MovieReleaseRecommendationRequest request) {
         authService.requireCurrentUser();
+        return recommendMovieReleaseForAutomation(request);
+    }
+
+    ProwlarrReleaseRecommendationResponse recommendMovieReleaseForAutomation(MovieReleaseRecommendationRequest request) {
         MovieReleaseIdentity movie = movieReleaseIdentity(request);
         String quality = normalizeQuality(request.quality());
         return movieRecommendationResponse(
@@ -192,6 +197,10 @@ public class ProwlarrReleaseIngestService {
 
     public ProwlarrReleaseRecommendationResponse recommendSeriesRelease(SeriesReleaseRecommendationRequest request) {
         authService.requireCurrentUser();
+        return recommendSeriesReleaseForAutomation(request);
+    }
+
+    ProwlarrReleaseRecommendationResponse recommendSeriesReleaseForAutomation(SeriesReleaseRecommendationRequest request) {
         SeriesReleaseIdentity series = seriesReleaseIdentity(request);
         String quality = normalizeQuality(request.quality());
         return seriesRecommendationResponse(
@@ -369,6 +378,29 @@ public class ProwlarrReleaseIngestService {
         return magnetIngestService.createSeriesTask(ingestRequest, releaseMetadata);
     }
 
+    /** 仅供已校验归属的后台编排调用；沿用发布解析、任务类别与扣额规则。 */
+    MovieMagnetIngestTaskResponse ingestSelectedMovieForOwner(MovieReleaseOpenListIngestRequest request, User owner) {
+        String title = requiredText(request.title(), "电影标题不能为空");
+        String releaseTitle = requiredText(request.releaseTitle(), "发布标题不能为空");
+        String magnet = resolveMagnet(request.indexerId(), request.downloadRef(), releaseTitle);
+        return magnetIngestService.createMovieTaskForOwner(
+                new MovieMagnetIngestRequest(magnet, title, trimToNull(request.originalTitle()),
+                        validateYear(request.year()), request.tmdbId()),
+                requestMetadata(releaseTitle, request.indexer(), request.size(), request.indexerId(),
+                        request.resolutionTags(), request.dynamicRangeTags()), owner);
+    }
+
+    SeriesMagnetIngestTaskResponse ingestSelectedAnimeForOwner(SeriesReleaseOpenListIngestRequest request, User owner) {
+        String title = requiredText(request.title(), "动漫标题不能为空");
+        String releaseTitle = requiredText(request.releaseTitle(), "发布标题不能为空");
+        String magnet = resolveMagnet(request.indexerId(), request.downloadRef(), releaseTitle);
+        return magnetIngestService.createAnimeSeasonTaskForOwner(
+                new SeriesMagnetIngestRequest(magnet, title, trimToNull(request.originalTitle()),
+                        validateSeasonNumber(request.seasonNumber()), request.tmdbId()),
+                requestMetadata(releaseTitle, request.indexer(), request.size(), request.indexerId(),
+                        request.resolutionTags(), request.dynamicRangeTags()), owner);
+    }
+
     public MovieMagnetIngestTaskResponse ingestSelectedMovieRetry(
             MovieMagnetIngestTask originalTask,
             OpenListReleaseRetryRequest request,
@@ -483,7 +515,7 @@ public class ProwlarrReleaseIngestService {
                 return new ReleaseRecommendation(quality, fallbackQualityTag, fallbackRecommendations);
             }
         }
-        throw badRequest("未找到匹配分辨率且有做种的电影发布资源");
+        throw new NoMatchingReleaseException("未找到匹配分辨率且有做种的电影发布资源");
     }
 
     private ReleaseRecommendation recommendSeriesReleases(
@@ -523,7 +555,7 @@ public class ProwlarrReleaseIngestService {
                 return new ReleaseRecommendation(quality, fallbackQualityTag, fallbackRecommendations);
             }
         }
-        throw badRequest("未找到匹配分辨率且有做种的剧集发布资源");
+        throw new NoMatchingReleaseException("未找到匹配分辨率且有做种的剧集发布资源");
     }
 
     private List<RecommendedRelease> movieReleaseSearchCandidates(List<MovieReleaseSearchResult> searchResults) {
@@ -1311,4 +1343,11 @@ public class ProwlarrReleaseIngestService {
 
     private record SelectedRelease(ProwlarrRelease release, ReleaseTitleTags tags) {
     }
+    /** 没有合适推荐与上游查询失败不同；原手动 API 保持原 400 响应。 */
+    static class NoMatchingReleaseException extends BusinessException {
+        NoMatchingReleaseException(String message) {
+            super(ErrorCode.BAD_REQUEST, message);
+        }
+    }
+
 }

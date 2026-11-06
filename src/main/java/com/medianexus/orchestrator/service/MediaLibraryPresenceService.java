@@ -43,6 +43,13 @@ public class MediaLibraryPresenceService {
             Integer seasonNumber
     ) {
         authService.requireCurrentUser();
+        return checkForAutomation(mediaType, tmdbId, bgmId, seasonNumber);
+    }
+
+    /** 后台编排使用已确定的目录身份检查媒体，不依赖浏览器登录态。 */
+    MediaLibraryPresenceResponse checkForAutomation(
+            String mediaType, Integer tmdbId, String bgmId, Integer seasonNumber
+    ) {
         String normalizedMediaType = normalizeMediaType(mediaType);
         Integer resolvedTmdbId = resolveTmdbId(tmdbId, bgmId);
         if (resolvedTmdbId == null) {
