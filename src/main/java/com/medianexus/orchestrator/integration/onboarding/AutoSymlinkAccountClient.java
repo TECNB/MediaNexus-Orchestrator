@@ -110,7 +110,8 @@ public class AutoSymlinkAccountClient {
         ObjectNode configuration = configurationFields(protectedConfiguration);
         Optional<String> existing = find(http, configuration);
         if (existing.isPresent()) { return existing.get(); }
-        try { http.post("/add_sync", configuration); }
+        // 原接口在 schema 字段之外读取 isNew，缺少时会在创建前拒绝请求。
+        try { http.post("/add_sync", configuration.deepCopy().put("isNew", true)); }
         catch (BusinessException ignored) {
             return find(http, configuration).orElseThrow(() ->
                     OnboardingHttp.failure("AS 创建结果未确定，需读回核对真实任务；未重复提交"));

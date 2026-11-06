@@ -202,7 +202,7 @@ class OnboardingClientsTest {
                 AutoSymlinkAccountClient.CONFIG_STRINGS.forEach(required::add); AutoSymlinkAccountClient.CONFIG_BOOLEANS.forEach(required::add);
                 body = schema.toString();
             } else if (path.equals("/add_sync") && exchange.getRequestMethod().equals("POST")) {
-                assertThat(json.readTree(exchange.getRequestBody())).isEqualTo(form);
+                assertThat(json.readTree(exchange.getRequestBody())).isEqualTo(form.deepCopy().put("isNew", true));
                 assertThat(created.get()).isFalse();
                 created.set(true); body = "{\"save_status\":true}";
                 byte[] rejected = "private-callback-token".getBytes(StandardCharsets.UTF_8);
