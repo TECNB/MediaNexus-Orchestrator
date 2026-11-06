@@ -56,7 +56,8 @@ class MagnetIngestServiceTest {
                 authService,
                 null,
                 null,
-                null
+                null,
+                mock(IngestCompletionNotifier.class)
         );
 
         service.listMovieTasks();
@@ -326,7 +327,8 @@ class MagnetIngestServiceTest {
                 null,
                 null,
                 null,
-                null
+                null,
+                mock(IngestCompletionNotifier.class)
         );
     }
 

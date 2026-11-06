@@ -98,6 +98,13 @@ class OpenListIngestTaskCenterServiceTest {
 
     @BeforeEach
     void setUp() {
+        for (Class<?> entity : List.of(MovieMagnetIngestTask.class, SeriesMagnetIngestTask.class,
+                AnimeMagnetIngestTask.class, AdultMagnetIngestTask.class, MovieMagnetIngestTaskLog.class,
+                SeriesMagnetIngestTaskLog.class, AnimeMagnetIngestTaskLog.class, AdultMagnetIngestTaskLog.class)) {
+            com.baomidou.mybatisplus.core.metadata.TableInfoHelper.initTableInfo(
+                    new org.apache.ibatis.builder.MapperBuilderAssistant(
+                            new com.baomidou.mybatisplus.core.MybatisConfiguration(), ""), entity);
+        }
         when(adultTaskMapper.selectList(any())).thenReturn(List.of());
         when(movieTaskLogMapper.selectList(any())).thenReturn(List.of());
         when(seriesTaskLogMapper.selectList(any())).thenReturn(List.of());
@@ -628,9 +635,9 @@ class OpenListIngestTaskCenterServiceTest {
         when(movieTaskMapper.selectById("movie-1")).thenReturn(task);
         when(userMapper.selectById(1L)).thenReturn(user(1L, "USER", "owner"));
         when(movieTaskLogMapper.selectList(any())).thenReturn(List.of(
-                movieLog(1L, "movie-1", "INFO", "created", "已创建"),
+                movieLog(3L, "movie-1", "ERROR", "failed", "下载失败"),
                 movieLog(2L, "movie-1", "WARN", "downloading", "下载较慢"),
-                movieLog(3L, "movie-1", "ERROR", "failed", "下载失败")
+                movieLog(1L, "movie-1", "INFO", "created", "已创建")
         ));
 
         OpenListIngestTaskCenterDetailResponse response = service.getOpenListIngestTaskDetail("movie", "movie-1");
@@ -1780,7 +1787,7 @@ class OpenListIngestTaskCenterServiceTest {
         private final MovieSeriesRetryRecorder recorder;
 
         RecordingMagnetIngestService(MovieSeriesRetryRecorder recorder) {
-            super(null, null, null, null, null, null, null, null, null, null, null, null);
+            super(null, null, null, null, null, null, null, null, null, null, null, null, mock(IngestCompletionNotifier.class));
             this.recorder = recorder;
         }
 
@@ -1815,7 +1822,7 @@ class OpenListIngestTaskCenterServiceTest {
         private final AnimeRetryRecorder recorder;
 
         RecordingAnimeMagnetIngestTaskService(AnimeRetryRecorder recorder) {
-            super(null, null, null, null, null, null, null, null, null, null);
+            super(null, null, null, null, null, null, null, null, null, null, mock(IngestCompletionNotifier.class));
             this.recorder = recorder;
         }
 

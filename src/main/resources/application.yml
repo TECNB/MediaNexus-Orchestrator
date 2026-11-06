@@ -19,6 +19,15 @@ spring:
       initialization-fail-timeout: ${MEDIANEXUS_DB_INITIALIZATION_FAIL_TIMEOUT:10000}
 
 medianexus:
+  wecom:
+    enabled: ${MEDIANEXUS_WECOM_ENABLED:false}
+    api-base-url: ${MEDIANEXUS_WECOM_API_BASE_URL:https://qyapi.weixin.qq.com}
+    corp-id: ${MEDIANEXUS_WECOM_CORP_ID:}
+    agent-id: ${MEDIANEXUS_WECOM_AGENT_ID:}
+    app-secret: ${MEDIANEXUS_WECOM_APP_SECRET:}
+    user-id: ${MEDIANEXUS_WECOM_USER_ID:}
+    frontend-base-url: ${MEDIANEXUS_WECOM_FRONTEND_BASE_URL:}
+    timeout: ${MEDIANEXUS_WECOM_TIMEOUT:10s}
   datasource:
     ssh-tunnel:
       enabled: ${MEDIANEXUS_DB_SSH_TUNNEL_ENABLED:false}

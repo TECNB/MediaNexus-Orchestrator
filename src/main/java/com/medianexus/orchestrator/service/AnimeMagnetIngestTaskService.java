@@ -100,6 +100,7 @@ public class AnimeMagnetIngestTaskService {
     private final UserActionQuotaService userActionQuotaService;
     private final AutoSymlinkRefreshService autoSymlinkRefreshService;
     private final MediaLibraryPresenceService mediaLibraryPresenceService;
+    private final IngestCompletionNotifier completionNotifier;
     private final ExecutorService executorService;
 
     @Autowired
@@ -113,7 +114,8 @@ public class AnimeMagnetIngestTaskService {
             AuthService authService,
             UserActionQuotaService userActionQuotaService,
             AutoSymlinkRefreshService autoSymlinkRefreshService,
-            MediaLibraryPresenceService mediaLibraryPresenceService
+            MediaLibraryPresenceService mediaLibraryPresenceService,
+            IngestCompletionNotifier completionNotifier
     ) {
         this.taskMapper = taskMapper;
         this.taskLogMapper = taskLogMapper;
@@ -125,6 +127,7 @@ public class AnimeMagnetIngestTaskService {
         this.userActionQuotaService = userActionQuotaService;
         this.autoSymlinkRefreshService = autoSymlinkRefreshService;
         this.mediaLibraryPresenceService = mediaLibraryPresenceService;
+        this.completionNotifier = completionNotifier;
         this.executorService = Executors.newSingleThreadExecutor(new WorkerThreadFactory());
     }
 
@@ -139,7 +142,8 @@ public class AnimeMagnetIngestTaskService {
             UserActionQuotaService userActionQuotaService,
             AutoSymlinkRefreshService autoSymlinkRefreshService,
             MediaLibraryPresenceService mediaLibraryPresenceService,
-            ExecutorService executorService
+            ExecutorService executorService,
+            IngestCompletionNotifier completionNotifier
     ) {
         this.taskMapper = taskMapper;
         this.taskLogMapper = taskLogMapper;
@@ -151,6 +155,7 @@ public class AnimeMagnetIngestTaskService {
         this.userActionQuotaService = userActionQuotaService;
         this.autoSymlinkRefreshService = autoSymlinkRefreshService;
         this.mediaLibraryPresenceService = mediaLibraryPresenceService;
+        this.completionNotifier = completionNotifier;
         this.executorService = executorService;
     }
 
@@ -451,7 +456,7 @@ public class AnimeMagnetIngestTaskService {
             }
 
             refreshAutoSymlink(taskId);
-            markSucceeded(taskId, openListTaskId, result);
+            markSucceeded(task, openListTaskId, result);
         } catch (Exception exception) {
             log.warn("Anime magnet ingest task failed id={}", taskId, exception);
             markFailed(taskId, safeMessage(exception));
@@ -484,7 +489,8 @@ public class AnimeMagnetIngestTaskService {
         updateTask(taskId, "FAILED", "failed", openListTaskId, result, "没有识别到可入库的视频文件");
     }
 
-    private void markSucceeded(String taskId, String openListTaskId, OrganizeResult result) {
+    private void markSucceeded(AnimeMagnetIngestTask task, String openListTaskId, OrganizeResult result) {
+        String taskId = task.getId();
         writeLog(taskId, "INFO", "succeeded", "任务完成", "organized=" + result.organizedCount() + ", skipped=" + result.skippedCount());
         updateTask(taskId, "SUCCEEDED", "succeeded", openListTaskId, result, null);
         log.info(
@@ -494,6 +500,7 @@ public class AnimeMagnetIngestTaskService {
                 result.organizedCount(),
                 result.skippedCount()
         );
+        completionNotifier.animeCompleted(task);
     }
 
     private void refreshAutoSymlink(String taskId) {

@@ -14,6 +14,7 @@ import com.medianexus.orchestrator.config.SubtitleUploadProperties;
 import com.medianexus.orchestrator.config.TelegramWorkerProperties;
 import com.medianexus.orchestrator.config.TmdbProperties;
 import com.medianexus.orchestrator.config.UserQuotaProperties;
+import com.medianexus.orchestrator.config.WeComProperties;
 import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
@@ -35,7 +36,8 @@ import org.springframework.scheduling.annotation.EnableScheduling;
         SubtitleUploadProperties.class,
         TelegramWorkerProperties.class,
         TmdbProperties.class,
-        UserQuotaProperties.class
+        UserQuotaProperties.class,
+        WeComProperties.class
 })
 @SpringBootApplication
 @EnableScheduling

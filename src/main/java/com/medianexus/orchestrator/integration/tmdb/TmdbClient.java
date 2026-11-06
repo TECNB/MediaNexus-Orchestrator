@@ -72,6 +72,15 @@ public class TmdbClient {
         );
     }
 
+    /** 不设置语言筛选，保留其他语种及无语言图片作为封面候选。 */
+    public JsonNode getMovieImages(int movieId) {
+        return get("/movie/" + movieId + "/images", "", "movie images");
+    }
+
+    public JsonNode getTvImages(int seriesId) {
+        return get("/tv/" + seriesId + "/images", "", "tv images");
+    }
+
     private JsonNode get(String path, String query, String operation) {
         validateConfiguration();
         HttpRequest request = HttpRequest.newBuilder(buildUri(path, query))

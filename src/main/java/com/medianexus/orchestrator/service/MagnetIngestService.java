@@ -125,6 +125,7 @@ public class MagnetIngestService {
     private final UserActionQuotaService userActionQuotaService;
     private final AutoSymlinkRefreshService autoSymlinkRefreshService;
     private final MediaLibraryPresenceService mediaLibraryPresenceService;
+    private final IngestCompletionNotifier completionNotifier;
     private final ExecutorService executorService;
 
     @Autowired
@@ -142,7 +143,8 @@ public class MagnetIngestService {
             AuthService authService,
             UserActionQuotaService userActionQuotaService,
             AutoSymlinkRefreshService autoSymlinkRefreshService,
-            MediaLibraryPresenceService mediaLibraryPresenceService
+            MediaLibraryPresenceService mediaLibraryPresenceService,
+            IngestCompletionNotifier completionNotifier
     ) {
         this.movieTaskMapper = movieTaskMapper;
         this.movieTaskLogMapper = movieTaskLogMapper;
@@ -158,6 +160,7 @@ public class MagnetIngestService {
         this.userActionQuotaService = userActionQuotaService;
         this.autoSymlinkRefreshService = autoSymlinkRefreshService;
         this.mediaLibraryPresenceService = mediaLibraryPresenceService;
+        this.completionNotifier = completionNotifier;
         this.executorService = Executors.newSingleThreadExecutor(new WorkerThreadFactory());
     }
 
@@ -173,7 +176,8 @@ public class MagnetIngestService {
             AuthService authService,
             UserActionQuotaService userActionQuotaService,
             AutoSymlinkRefreshService autoSymlinkRefreshService,
-            MediaLibraryPresenceService mediaLibraryPresenceService
+            MediaLibraryPresenceService mediaLibraryPresenceService,
+            IngestCompletionNotifier completionNotifier
     ) {
         this(
                 movieTaskMapper,
@@ -189,7 +193,8 @@ public class MagnetIngestService {
                 authService,
                 userActionQuotaService,
                 autoSymlinkRefreshService,
-                mediaLibraryPresenceService
+                mediaLibraryPresenceService,
+                completionNotifier
         );
     }
 
@@ -596,7 +601,7 @@ public class MagnetIngestService {
             }
 
             refreshMovieAutoSymlink(taskId);
-            markMovieSucceeded(taskId, openListTaskId, result);
+            markMovieSucceeded(task, openListTaskId, result);
         } catch (Exception exception) {
             log.warn("Movie magnet ingest task failed id={}", taskId, exception);
             markMovieFailed(taskId, safeMessage(exception));
@@ -654,7 +659,7 @@ public class MagnetIngestService {
         } else {
             refreshSeriesAutoSymlink(taskId);
         }
-        markSeriesSucceeded(taskId, openListTaskId, result);
+        markSeriesSucceeded(task, openListTaskId, result);
     }
 
     private void prepareMovieDownloadRoot(MovieMagnetIngestTask task) {
@@ -729,7 +734,8 @@ public class MagnetIngestService {
         updateSeriesTask(taskId, "FAILED", "failed", openListTaskId, result, "没有识别到可入库的视频文件");
     }
 
-    private void markMovieSucceeded(String taskId, String openListTaskId, OrganizeResult result) {
+    private void markMovieSucceeded(MovieMagnetIngestTask task, String openListTaskId, OrganizeResult result) {
+        String taskId = task.getId();
         writeMovieLog(
                 taskId,
                 "INFO",
@@ -740,9 +746,11 @@ public class MagnetIngestService {
         updateMovieTask(taskId, "SUCCEEDED", "succeeded", openListTaskId, result, null);
         log.info("Movie magnet ingest task succeeded taskId={} openListTaskId={} organized={} skipped={}",
                 taskId, openListTaskId, result.organizedCount(), result.skippedCount());
+        completionNotifier.movieCompleted(task);
     }
 
-    private void markSeriesSucceeded(String taskId, String openListTaskId, OrganizeResult result) {
+    private void markSeriesSucceeded(SeriesMagnetIngestTask task, String openListTaskId, OrganizeResult result) {
+        String taskId = task.getId();
         writeSeriesLog(
                 taskId,
                 "INFO",
@@ -753,6 +761,7 @@ public class MagnetIngestService {
         updateSeriesTask(taskId, "SUCCEEDED", "succeeded", openListTaskId, result, null);
         log.info("Series magnet ingest task succeeded taskId={} openListTaskId={} organized={} skipped={}",
                 taskId, openListTaskId, result.organizedCount(), result.skippedCount());
+        completionNotifier.seriesCompleted(task);
     }
 
     private void refreshMovieAutoSymlink(String taskId) {

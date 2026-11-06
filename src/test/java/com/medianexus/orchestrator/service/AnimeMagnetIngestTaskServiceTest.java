@@ -57,7 +57,8 @@ class AnimeMagnetIngestTaskServiceTest {
             quotaService,
             null,
             mediaLibraryPresenceService,
-            taskExecutor
+            taskExecutor,
+            mock(IngestCompletionNotifier.class)
     );
 
     @BeforeEach
@@ -168,7 +169,8 @@ class AnimeMagnetIngestTaskServiceTest {
                 quotaService,
                 null,
                 mediaLibraryPresenceService,
-                taskExecutor
+                taskExecutor,
+                mock(IngestCompletionNotifier.class)
         );
 
         ReflectionTestUtils.invokeMethod(service, "organizeFiles", animeTask());
@@ -208,7 +210,8 @@ class AnimeMagnetIngestTaskServiceTest {
                 quotaService,
                 null,
                 mediaLibraryPresenceService,
-                taskExecutor
+                taskExecutor,
+                mock(IngestCompletionNotifier.class)
         );
 
         Boolean hasVideoFiles = ReflectionTestUtils.invokeMethod(service, "hasVideoFiles", "/anime/Show/Season 01");
@@ -251,7 +254,8 @@ class AnimeMagnetIngestTaskServiceTest {
                 quotaService,
                 null,
                 mediaLibraryPresenceService,
-                taskExecutor
+                taskExecutor,
+                mock(IngestCompletionNotifier.class)
         );
 
         ReflectionTestUtils.invokeMethod(service, "organizeFiles", animeTask());
@@ -324,7 +328,8 @@ class AnimeMagnetIngestTaskServiceTest {
                 quotaService,
                 null,
                 mediaLibraryPresenceService,
-                taskExecutor
+                taskExecutor,
+                mock(IngestCompletionNotifier.class)
         );
     }
 

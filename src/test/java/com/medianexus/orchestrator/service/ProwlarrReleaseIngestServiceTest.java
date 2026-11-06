@@ -1,5 +1,7 @@
 package com.medianexus.orchestrator.service;
 
+import static org.mockito.Mockito.mock;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -947,7 +949,7 @@ class ProwlarrReleaseIngestServiceTest {
         private TaskRetryReference retryReference;
 
         FakeAnimeMagnetIngestTaskService() {
-            super(null, null, null, null, null, null, null, null, null, null);
+            super(null, null, null, null, null, null, null, null, null, null, mock(IngestCompletionNotifier.class));
         }
 
         @Override
@@ -995,7 +997,7 @@ class ProwlarrReleaseIngestServiceTest {
         private TaskRetryReference retryReference;
 
         FakeMagnetIngestService() {
-            super(null, null, null, null, null, null, null, null, null, null, null, null);
+            super(null, null, null, null, null, null, null, null, null, null, null, null, mock(IngestCompletionNotifier.class));
         }
 
         @Override

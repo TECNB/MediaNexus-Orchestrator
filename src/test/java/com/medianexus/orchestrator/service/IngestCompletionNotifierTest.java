@@ -1,0 +1,209 @@
+package com.medianexus.orchestrator.service;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.contains;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.medianexus.orchestrator.config.TmdbProperties;
+import com.medianexus.orchestrator.config.WeComProperties;
+import com.medianexus.orchestrator.integration.tmdb.TmdbClient;
+import com.medianexus.orchestrator.integration.wecom.WeComClient;
+import com.medianexus.orchestrator.model.AnimeMagnetIngestTask;
+import com.medianexus.orchestrator.model.MovieMagnetIngestTask;
+import com.medianexus.orchestrator.model.SeriesMagnetIngestTask;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.AbstractExecutorService;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeUnit;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.ArgumentCaptor;
+
+class IngestCompletionNotifierTest {
+
+    private final ObjectMapper mapper = new ObjectMapper();
+    private final WeComProperties properties = new WeComProperties();
+    private final TmdbProperties tmdbProperties = new TmdbProperties();
+    private final TmdbClient tmdb = mock(TmdbClient.class);
+    private final WeComClient wecom = mock(WeComClient.class);
+    private final ControlledExecutor executor = new ControlledExecutor();
+    private final IngestCompletionNotifier notifier = new IngestCompletionNotifier(
+            properties, tmdbProperties, tmdb, wecom, executor);
+
+    @BeforeEach
+    void configure() {
+        properties.setEnabled(true);
+        properties.setFrontendBaseUrl("https://media.example/");
+        tmdbProperties.setImageBaseUrl("https://image.tmdb.org/t/p/w500");
+    }
+
+    @Test
+    void queuesAfterCompletionWithoutRunningNetworkInTheCaller() throws Exception {
+        MovieMagnetIngestTask task = movie();
+        task.setCreatedByUserId(99L);
+        when(tmdb.getMovieImages(157336)).thenReturn(mapper.readTree("""
+                {"backdrops":[{"file_path":"/backdrop.jpg","iso_639_1":null}],
+                 "posters":[{"file_path":"/poster.jpg"}]}
+                """));
+
+        notifier.movieCompleted(task);
+        verifyNoInteractions(tmdb, wecom);
+        executor.runPending();
+
+        verify(wecom).sendNews(eq("星际穿越（2014） · 任务处理完成"), contains("电影入库任务"),
+                eq("https://image.tmdb.org/t/p/w500/backdrop.jpg"), eq("https://media.example/tasks/movie/movie-1"));
+        assertThat(task.getStatus()).isEqualTo("SUCCEEDED");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"SERIES", "ANIME"})
+    void sharedSeriesTasksUseTvImagesAndTheirActualDetailRoute(String productType) throws Exception {
+        SeriesMagnetIngestTask task = new SeriesMagnetIngestTask();
+        task.setId("series-1");
+        task.setTitle("葬送的芙莉莲");
+        task.setSeasonNumber(2);
+        task.setTaskProductType(productType);
+        task.setTmdbId(209867);
+        when(tmdb.getTvImages(209867)).thenReturn(mapper.readTree("{\"posters\":[{\"file_path\":\"/poster.jpg\"}]}"));
+
+        notifier.seriesCompleted(task);
+        executor.runPending();
+
+        verify(wecom).sendNews(contains("第2季 · 任务处理完成"),
+                contains("ANIME".equals(productType) ? "动漫" : "剧集"),
+                eq("https://image.tmdb.org/t/p/w500/poster.jpg"), eq("https://media.example/tasks/series/series-1"));
+    }
+
+    @Test
+    void independentAnimeTaskUsesTvImagesButAnimeDetailRoute() throws Exception {
+        AnimeMagnetIngestTask task = new AnimeMagnetIngestTask();
+        task.setId("anime-1");
+        task.setTitle("葬送的芙莉莲");
+        task.setTmdbId(209867);
+        task.setSeasonNumber(1);
+        when(tmdb.getTvImages(209867)).thenReturn(mapper.readTree("{\"backdrops\":[{\"file_path\":\"/cover.jpg\"}]}"));
+
+        notifier.animeCompleted(task);
+        executor.runPending();
+
+        verify(wecom).sendNews(contains("第1季"), contains("动漫"),
+                eq("https://image.tmdb.org/t/p/w500/cover.jpg"), eq("https://media.example/tasks/anime/anime-1"));
+    }
+
+    @Test
+    void skipsMissingImagesInsteadOfUsingLogoOrText() throws Exception {
+        when(tmdb.getMovieImages(157336)).thenReturn(mapper.readTree("""
+                {"backdrops":[],"posters":[],"logos":[{"file_path":"/logo.png"}]}
+                """));
+
+        notifier.movieCompleted(movie());
+        executor.runPending();
+
+        verifyNoInteractions(wecom);
+    }
+
+    @Test
+    void disabledNotificationsAndMissingIdentityDoNotQueryImages() {
+        properties.setEnabled(false);
+        notifier.movieCompleted(movie());
+        properties.setEnabled(true);
+        MovieMagnetIngestTask historicalTask = movie();
+        historicalTask.setTmdbId(null);
+        notifier.movieCompleted(historicalTask);
+        executor.runPending();
+
+        verifyNoInteractions(tmdb, wecom);
+    }
+
+    @Test
+    void tokenOrSendFailureCannotEscapeIntoTheTaskResult() throws Exception {
+        when(tmdb.getMovieImages(157336)).thenReturn(mapper.readTree("{\"backdrops\":[{\"file_path\":\"/cover.jpg\"}]}"));
+        doThrow(new IllegalStateException("企业微信 API 业务错误码 60020"))
+                .when(wecom).sendNews(anyString(), anyString(), anyString(), anyString());
+        MovieMagnetIngestTask task = movie();
+
+        notifier.movieCompleted(task);
+
+        assertThatCode(executor::runPending).doesNotThrowAnyException();
+        assertThat(task.getStatus()).isEqualTo("SUCCEEDED");
+    }
+
+    @Test
+    void schedulingFailureCannotEscapeIntoTheTaskResult() {
+        executor.shutdown();
+
+        assertThatCode(() -> notifier.movieCompleted(movie())).doesNotThrowAnyException();
+        verifyNoInteractions(tmdb, wecom);
+    }
+
+    @Test
+    void longUnicodeTitleRetainsCompletionResultAndFitsUtf8Budget() throws Exception {
+        MovieMagnetIngestTask task = movie();
+        task.setTitle("🎬中文".repeat(50));
+        when(tmdb.getMovieImages(157336)).thenReturn(mapper.readTree("{\"posters\":[{\"file_path\":\"/cover.jpg\"}]}"));
+
+        notifier.movieCompleted(task);
+        executor.runPending();
+
+        ArgumentCaptor<String> title = ArgumentCaptor.forClass(String.class);
+        verify(wecom).sendNews(title.capture(), anyString(), anyString(), anyString());
+        assertThat(title.getValue()).endsWith("… · 任务处理完成");
+        assertThat(title.getValue().getBytes(StandardCharsets.UTF_8).length).isLessThanOrEqualTo(128);
+        assertThat(StandardCharsets.UTF_8.newEncoder().canEncode(title.getValue())).isTrue();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"", "file:///tmp/site", "https://user:pass@media.example", "https://media.example/?token=secret"})
+    void invalidFrontendConfigurationNeverProducesAnUnsafeLink(String baseUrl) throws Exception {
+        properties.setFrontendBaseUrl(baseUrl);
+        when(tmdb.getMovieImages(157336)).thenReturn(mapper.readTree("{\"posters\":[{\"file_path\":\"/cover.jpg\"}]}"));
+
+        notifier.movieCompleted(movie());
+        assertThatCode(executor::runPending).doesNotThrowAnyException();
+
+        verifyNoInteractions(wecom);
+    }
+
+    private MovieMagnetIngestTask movie() {
+        MovieMagnetIngestTask task = new MovieMagnetIngestTask();
+        task.setId("movie-1");
+        task.setTitle("星际穿越");
+        task.setYear(2014);
+        task.setTmdbId(157336);
+        task.setStatus("SUCCEEDED");
+        return task;
+    }
+
+    private static class ControlledExecutor extends AbstractExecutorService {
+        private final List<Runnable> pending = new ArrayList<>();
+        private boolean shutdown;
+
+        void runPending() {
+            List<Runnable> tasks = List.copyOf(pending);
+            pending.clear();
+            tasks.forEach(Runnable::run);
+        }
+
+        @Override public void execute(Runnable command) {
+            if (shutdown) throw new RejectedExecutionException();
+            pending.add(command);
+        }
+        @Override public void shutdown() { shutdown = true; }
+        @Override public List<Runnable> shutdownNow() { shutdown = true; return List.of(); }
+        @Override public boolean isShutdown() { return shutdown; }
+        @Override public boolean isTerminated() { return shutdown; }
+        @Override public boolean awaitTermination(long timeout, TimeUnit unit) { return shutdown; }
+    }
+}
