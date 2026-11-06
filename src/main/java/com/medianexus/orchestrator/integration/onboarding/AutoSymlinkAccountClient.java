@@ -52,18 +52,9 @@ public class AutoSymlinkAccountClient {
         if (!paths.mediaDir().startsWith(paths.sourcePrefix() + "/")) {
             throw OnboardingHttp.failure("AS 新扫描路径不在新目标挂载根内");
         }
-        String cloudUrl = source.path("cloud_url").asText();
-        if (!cloudUrl.isBlank()) {
-            try {
-                java.net.URI uri = java.net.URI.create(cloudUrl);
-                String path = uri.getPath();
-                if (uri.getUserInfo() != null || uri.getQuery() != null || uri.getFragment() != null
-                        || path == null || !(path.isEmpty() || path.equals("/") || path.replaceAll("/+$", "").endsWith("/False"))) {
-                    throw OnboardingHttp.failure("AS cloud_url 不是已核实的通用服务根，不能复制为新账号映射");
-                }
-            } catch (IllegalArgumentException exception) { throw OnboardingHttp.failure("AS cloud_url 格式不支持"); }
-        }
         ObjectNode copy = configurationFields(source);
+        // local STRM 不使用云端 URL；旧表单可保留 ip:19798 占位值，新任务不继承该未使用字段。
+        copy.put("cloud_url", "");
         copy.put("task_name", paths.taskName()).put("media_dir", paths.mediaDir()).put("symlink_dir", paths.symlinkDir())
                 .put("clouddrive2_path", paths.sourcePrefix());
         manualRequest(copy);

@@ -238,7 +238,7 @@ class OnboardingClientsTest {
         AutoSymlinkAccountClient.CONFIG_BOOLEANS.forEach(key -> source.put(key, false));
         source.put("task_name", "old").put("media_dir", "/old/Movie").put("symlink_dir", "/strm/old")
                 .put("cloud_type", "cd2").put("symlink_mode", "strm").put("strm_mode", "local")
-                .put("clouddrive2_path", "/old").put("cloud_url", "http://example.invalid:19798")
+                .put("clouddrive2_path", "/old").put("cloud_url", "ip:19798")
                 .put("num_threads", "8").put("observer_time", "10").put("symlink_size", "0");
         var client = new AutoSymlinkAccountClient(json);
         ObjectNode prepared = client.configurationForNewTarget(source,
@@ -246,6 +246,8 @@ class OnboardingClientsTest {
         assertThat(prepared.path("clouddrive2_path").asText()).isEqualTo("/next");
         assertThat(prepared.path("media_dir").asText()).isEqualTo("/next/中文 空格/Movie");
         assertThat(prepared.path("num_threads").asText()).isEqualTo("8");
+        assertThat(prepared.path("cloud_url").asText()).isEmpty();
+        assertThat(source.path("cloud_url").asText()).isEqualTo("ip:19798");
         assertThat(source.path("media_dir").asText()).isEqualTo("/old/Movie");
         source.put("cloud_checker", true).put("sign_file", "/old/probe");
         assertThatThrownBy(() -> client.configurationForNewTarget(source,
