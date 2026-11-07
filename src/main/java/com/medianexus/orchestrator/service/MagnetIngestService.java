@@ -1846,6 +1846,7 @@ public class MagnetIngestService {
             OrganizeResult result,
             String errorMessage
     ) {
+        var failedTask = "FAILED".equals(status) ? movieTaskMapper.selectById(taskId) : null;
         LambdaUpdateWrapper<MovieMagnetIngestTask> updateWrapper = new LambdaUpdateWrapper<MovieMagnetIngestTask>()
                 .eq(MovieMagnetIngestTask::getId, taskId)
                 .set(MovieMagnetIngestTask::getStatus, status)
@@ -1865,6 +1866,9 @@ public class MagnetIngestService {
             updateWrapper.set(MovieMagnetIngestTask::getFinishedAt, LocalDateTime.now());
         }
         movieTaskMapper.update(updateWrapper);
+        if (failedTask != null) {
+            taskNotifier.failed("movie", taskId, failedTask.getTitle(), failedTask.getStage(), errorMessage);
+        }
     }
 
     private void updateSeriesTask(
@@ -1875,6 +1879,7 @@ public class MagnetIngestService {
             OrganizeResult result,
             String errorMessage
     ) {
+        var failedTask = "FAILED".equals(status) ? seriesTaskMapper.selectById(taskId) : null;
         LambdaUpdateWrapper<SeriesMagnetIngestTask> updateWrapper = new LambdaUpdateWrapper<SeriesMagnetIngestTask>()
                 .eq(SeriesMagnetIngestTask::getId, taskId)
                 .set(SeriesMagnetIngestTask::getStatus, status)
@@ -1894,6 +1899,9 @@ public class MagnetIngestService {
             updateWrapper.set(SeriesMagnetIngestTask::getFinishedAt, LocalDateTime.now());
         }
         seriesTaskMapper.update(updateWrapper);
+        if (failedTask != null) {
+            taskNotifier.failed("series", taskId, failedTask.getTitle(), failedTask.getStage(), errorMessage);
+        }
     }
 
     private void removeMovieTaskAfterCreationFailure(String taskId, RuntimeException cause) {

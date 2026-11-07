@@ -38,15 +38,32 @@ class IngestTaskNotifierTest {
     private final TmdbProperties tmdbProperties = new TmdbProperties();
     private final TmdbClient tmdb = mock(TmdbClient.class);
     private final WeComClient wecom = mock(WeComClient.class);
+    private final IngestExceptionNotifier exceptions = mock(IngestExceptionNotifier.class);
     private final ControlledExecutor executor = new ControlledExecutor();
     private final IngestTaskNotifier notifier = new IngestTaskNotifier(
-            properties, tmdbProperties, tmdb, wecom, executor);
+            properties, tmdbProperties, tmdb, wecom, executor, exceptions);
 
     @BeforeEach
     void configure() {
         properties.setEnabled(true);
         properties.setFrontendBaseUrl("https://media.example/");
         tmdbProperties.setImageBaseUrl("https://image.tmdb.org/t/p/w500");
+    }
+
+    @Test
+    void organizingFailureDoesNotRecommendChangingTorrent() {
+        notifier.failed("series", "series-2", "作品", "organizing", "下载文件整理失败");
+        executor.runPending();
+        verify(exceptions).send(eq("task:series:series-2"), eq("入库处理失败｜作品"), contains("查看具体失败阶段"), eq("/tasks/series/series-2"));
+    }
+
+    @Test
+    void finalDownloadTimeoutUsesTextNotificationAndActualTaskLinkWithoutLoadingImages() {
+        notifier.failed("series", "series-1", "作品", "downloading", "OpenList 离线下载超时");
+        verifyNoInteractions(exceptions, tmdb, wecom);
+        executor.runPending();
+        verify(exceptions).send(eq("task:series:series-1"), eq("下载超时｜作品"), contains("更换种子"), eq("/tasks/series/series-1"));
+        verifyNoInteractions(tmdb, wecom);
     }
 
     @Test

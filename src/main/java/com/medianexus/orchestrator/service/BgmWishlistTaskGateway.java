@@ -105,6 +105,40 @@ public class BgmWishlistTaskGateway {
         }
     }
 
+    /** BGM 自动操作保留整个推荐集合，以当前顺序优先选择标题含汉字的发布。 */
+    public List<ProwlarrReleaseItemResponse> candidates(Target target, String quality,
+            java.util.function.Consumer<ProwlarrReleaseIngestService.ReleaseSearchProgress> progress) {
+        try {
+            if ("MOVIE".equals(target.mediaType())) {
+                return releases.recommendMovieReleaseForAutomation(new MovieReleaseRecommendationRequest(
+                        target.tmdbId(), null, target.title(), target.originalTitle(), target.year(), quality), progress).items();
+            }
+            return releases.recommendSeriesReleaseForAutomation(new SeriesReleaseRecommendationRequest(
+                    null, target.tmdbId(), null, target.title(), target.originalTitle(), target.seasonNumber(), quality), progress).items();
+        } catch (ProwlarrReleaseIngestService.NoMatchingReleaseException noMatch) { return List.of(); }
+    }
+
+    public com.medianexus.orchestrator.dto.bgm.BgmWishlistOperationContract.Task currentTask(String type, String id) {
+        return switch (type) {
+            case "MOVIE" -> {
+                var task = movies.selectById(id);
+                yield task == null ? null : new com.medianexus.orchestrator.dto.bgm.BgmWishlistOperationContract.Task(
+                        type, id, task.getStatus(), task.getStage(), task.getErrorMessage(), null);
+            }
+            case "SERIES" -> {
+                var task = series.selectById(id);
+                yield task == null ? null : new com.medianexus.orchestrator.dto.bgm.BgmWishlistOperationContract.Task(
+                        type, id, task.getStatus(), task.getStage(), task.getErrorMessage(), null);
+            }
+            case "ANIME" -> {
+                var task = anime.selectById(id);
+                yield task == null ? null : new com.medianexus.orchestrator.dto.bgm.BgmWishlistOperationContract.Task(
+                        type, id, task.getStatus(), task.getStage(), task.getErrorMessage(), null);
+            }
+            default -> throw new IllegalArgumentException("不支持的入库任务类型");
+        };
+    }
+
     /**
      * MySQL 会话锁覆盖跨来源、跨成员和多个实例的 BGM 提交；持锁连接不承载任务事务，
      * 因而不会把旧链路已扣额度的创建失败改成退额。所有 BGM 创建均经此边界。

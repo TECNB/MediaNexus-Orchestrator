@@ -59,4 +59,25 @@ public interface BgmWishlistExecutionMapper {
             </script>
             """)
     long countRuns(@Param("sourceId") String sourceId);
+
+    @Select("SELECT payload FROM bgm_wishlist_executions WHERE id=#{id} AND kind='OPERATION' FOR UPDATE")
+    String lockOperation(String id);
+
+    @Update("UPDATE bgm_wishlist_executions SET payload=#{payload} WHERE id=#{id} AND kind='OPERATION'")
+    void updateOperation(@Param("id") String id, @Param("payload") String payload);
+
+    @Select("""
+        SELECT payload FROM bgm_wishlist_executions WHERE kind='OPERATION' AND source_id=#{sourceId}
+        ORDER BY created_at DESC,id DESC LIMIT #{limit} OFFSET #{offset}
+        """)
+    List<String> listOperations(@Param("sourceId") String sourceId, @Param("offset") long offset, @Param("limit") int limit);
+
+    @Select("SELECT COUNT(*) FROM bgm_wishlist_executions WHERE kind='OPERATION' AND source_id=#{sourceId}")
+    long countOperations(String sourceId);
+
+    @Select("""
+        SELECT payload FROM bgm_wishlist_executions WHERE kind='OPERATION'
+        AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.status')) IN ('QUEUED','RUNNING','WAITING')
+        """)
+    List<String> openOperations();
 }

@@ -44,6 +44,24 @@ import org.springframework.transaction.support.SimpleTransactionStatus;
 /** The agreed BGM application seam, with deterministic HTTP, database and task adapters; no downloads. */
 class BgmWishlistWorkflowTest {
     @Test
+    void asynchronousRefreshReadsWholeSourceButOnlyChecksSelectedCatalog() throws Exception {
+        Fixture f = new Fixture(); f.collection = List.of(1L,2L);
+        Source source = f.source(false,"NEW_ONLY",3); f.wishlist.refresh(source.id());
+        f.identify(source,1L,101); f.identify(source,2L,102);
+        org.mockito.Mockito.clearInvocations(f.tmdb,f.presence);
+        var refreshed = f.wishlist.refreshSourceForOperation(source.id());
+        assertEquals(2,refreshed.subjects().size());
+        org.mockito.Mockito.verifyNoInteractions(f.tmdb,f.presence);
+        assertTrue(f.wishlist.evaluateForOperation(source.id(),1L).eligible());
+        org.mockito.Mockito.verify(f.presence).checkForAutomation("movie",101,null,null);
+        org.mockito.Mockito.verify(f.presence,org.mockito.Mockito.never()).checkForAutomation("movie",102,null,null);
+        f.responses.add(new IOException("upstream"));
+        assertThrows(RuntimeException.class,()->f.wishlist.refreshSourceForOperation(source.id()));
+        assertEquals("FAILED",f.sources.get(source.id()).refreshStatus());
+        assertEquals(2,f.sources.get(source.id()).subjects().size());
+    }
+
+    @Test
     void refreshAutomaticallyMatchesTypedTargetsAndPreservesManualIdentity() throws Exception {
         Fixture f = new Fixture();
         f.collection = List.of(1L, 2L, 3L, 4L, 5L);

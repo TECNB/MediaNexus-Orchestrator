@@ -116,11 +116,18 @@ public class ProwlarrReleaseIngestService {
 
     ProwlarrReleaseRecommendationResponse recommendMovieReleaseForAutomation(MovieReleaseRecommendationRequest request) {
         MovieReleaseIdentity movie = movieReleaseIdentity(request);
+        return movieRecommendationResponse(movie, normalizeQuality(request.quality()),
+                searchQueriesInParallel(movieReleaseSearchPlan(movie)));
+    }
+
+    ProwlarrReleaseRecommendationResponse recommendMovieReleaseForAutomation(
+            MovieReleaseRecommendationRequest request, java.util.function.Consumer<ReleaseSearchProgress> progress) {
+        MovieReleaseIdentity movie = movieReleaseIdentity(request);
         String quality = normalizeQuality(request.quality());
         return movieRecommendationResponse(
                 movie,
                 quality,
-                searchQueriesInParallel(movieReleaseSearchPlan(movie))
+                searchQueriesWithProgress(movieReleaseSearchPlan(movie), progress)
         );
     }
 
@@ -202,11 +209,18 @@ public class ProwlarrReleaseIngestService {
 
     ProwlarrReleaseRecommendationResponse recommendSeriesReleaseForAutomation(SeriesReleaseRecommendationRequest request) {
         SeriesReleaseIdentity series = seriesReleaseIdentity(request);
+        return seriesRecommendationResponse(series, normalizeQuality(request.quality()),
+                searchQueriesInParallel(seriesReleaseSearchPlan(series)));
+    }
+
+    ProwlarrReleaseRecommendationResponse recommendSeriesReleaseForAutomation(
+            SeriesReleaseRecommendationRequest request, java.util.function.Consumer<ReleaseSearchProgress> progress) {
+        SeriesReleaseIdentity series = seriesReleaseIdentity(request);
         String quality = normalizeQuality(request.quality());
         return seriesRecommendationResponse(
                 series,
                 quality,
-                searchQueriesInParallel(seriesReleaseSearchPlan(series))
+                searchQueriesWithProgress(seriesReleaseSearchPlan(series), progress)
         );
     }
 
@@ -896,6 +910,30 @@ public class ProwlarrReleaseIngestService {
             log.warn("Prowlarr search configuration has invalid URI query={}", logValue(query), exception);
             throw serviceUnavailable("Prowlarr 服务尚未配置");
         }
+    }
+
+    /** 每个事件对应真实查询开始/结束，不改变旧入口的候选集合及排名。 */
+    public record ReleaseSearchProgress(String query, String source, String status, long elapsedMs, Integer resultCount) {}
+
+    private List<MovieReleaseSearchResult> searchQueriesWithProgress(
+            List<MovieReleaseSearchQuery> queries, java.util.function.Consumer<ReleaseSearchProgress> progress) {
+        queries.forEach(query -> progress.accept(new ReleaseSearchProgress(query.query(), query.source(), "RUNNING", 0, null)));
+        List<CompletableFuture<MovieReleaseSearchResult>> futures = queries.stream().map(query ->
+                CompletableFuture.supplyAsync(() -> {
+                    long started = System.nanoTime();
+                    try {
+                        MovieReleaseSearchResult result = executeReleaseSearch(query);
+                        progress.accept(new ReleaseSearchProgress(query.query(), query.source(), "SUCCEEDED",
+                                elapsedMillis(started), result.releases().size()));
+                        return result;
+                    } catch (RuntimeException exception) {
+                        progress.accept(new ReleaseSearchProgress(query.query(), query.source(), "FAILED", elapsedMillis(started), null));
+                        throw exception;
+                    }
+                })).toList();
+        // 全部查询结束后才形成终态，避免失败后的迟到回报覆盖新的人工操作。
+        CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).handle((ignored, error) -> null).join();
+        return futures.stream().map(this::joinSearchResult).toList();
     }
 
     private List<MovieReleaseSearchResult> searchQueriesInParallel(List<MovieReleaseSearchQuery> queries) {

@@ -29,27 +29,29 @@ public class IngestTaskNotifier {
     private final TmdbClient tmdbClient;
     private final WeComClient weComClient;
     private final ExecutorService executor;
+    private final IngestExceptionNotifier exceptions;
 
     @Autowired
     public IngestTaskNotifier(
-            WeComProperties properties, TmdbProperties tmdbProperties, TmdbClient tmdbClient, WeComClient weComClient
+            WeComProperties properties, TmdbProperties tmdbProperties, TmdbClient tmdbClient, WeComClient weComClient, IngestExceptionNotifier exceptions
     ) {
         this(properties, tmdbProperties, tmdbClient, weComClient, Executors.newSingleThreadExecutor(runnable -> {
             Thread thread = new Thread(runnable, "wecom-ingest-notifications");
             thread.setDaemon(true);
             return thread;
-        }));
+        }), exceptions);
     }
 
     IngestTaskNotifier(
             WeComProperties properties, TmdbProperties tmdbProperties, TmdbClient tmdbClient,
-            WeComClient weComClient, ExecutorService executor
+            WeComClient weComClient, ExecutorService executor, IngestExceptionNotifier exceptions
     ) {
         this.properties = properties;
         this.tmdbProperties = tmdbProperties;
         this.tmdbClient = tmdbClient;
         this.weComClient = weComClient;
         this.executor = executor;
+        this.exceptions = exceptions;
     }
 
     public void movieStarted(MovieMagnetIngestTask task) {
@@ -94,6 +96,21 @@ public class IngestTaskNotifier {
                 new IngestNotice("anime", task.getId(), seasonTitle(task.getTitle(), task.getSeasonNumber()), "动漫"),
                 "任务处理完成", "入库任务已处理完成。\n播放可用性请以媒体库为准。", snapshot -> tmdbClient.getTvImages(task.getTmdbId(), snapshot)
         ));
+    }
+
+    /** 最终失败后发送无图消息；持久去重以任务尝试为单位，通知故障不影响任务结果。 */
+    public void failed(String type, String id, String title, String failedStage, String error) {
+        try {
+            executor.execute(() -> {
+                boolean downloading = !"organizing".equals(failedStage) && ("downloading".equals(failedStage) || "submitted".equals(failedStage)
+                        || error != null && (error.contains("离线") || error.contains("下载")));
+                String heading = downloading ? error != null && error.contains("超时") ? "下载超时" : "下载失败" : "入库处理失败";
+                String body = downloading ? "离线下载未完成，可以前往任务中心查看详情，并更换种子重试。"
+                        : "任务处理未完成，请前往任务中心查看具体失败阶段和日志。";
+                exceptions.send("task:" + type + ":" + id, heading + "｜" + title, body,
+                        "/tasks/" + type + "/" + java.net.URLEncoder.encode(id, StandardCharsets.UTF_8));
+            });
+        } catch (RuntimeException exception) { log.warn("失败通知未排入队列 taskId={}", id); }
     }
 
     private void submit(String taskId, Integer tmdbId, Runnable notification) {

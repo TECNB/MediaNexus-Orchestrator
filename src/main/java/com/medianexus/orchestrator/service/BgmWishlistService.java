@@ -128,6 +128,31 @@ public class BgmWishlistService {
         }
     }
 
+    /** 异步执行完整读取来源，但不对无关条目调用目录和在库接口。 */
+    public SourceState refreshSourceForOperation(String sourceId) {
+        SourceState state = store.get(sourceId);
+        Instant started = Instant.now();
+        try {
+            return store.recordRefresh(sourceId, bangumi.readWishlist(state.source().bgmUsername()), started);
+        } catch (BangumiReadException exception) {
+            store.recordRefreshFailure(sourceId, started);
+            throw upstream("完整想看清单刷新失败，本轮不能创建任务");
+        }
+    }
+
+    public Item evaluateForOperation(String sourceId, long subjectId) {
+        SourceState state = store.get(sourceId);
+        CollectedSubject subject = BgmWishlistSourceStore.requireSubject(state, subjectId);
+        if (!state.identities().containsKey(subjectId)) {
+            SourceState selected = new SourceState(state.source(), List.of(subject), state.knownSubjectIds(),
+                    state.candidateSubjectIds(), state.identities(), state.createdTasks(), state.refreshStatus(),
+                    state.refreshError(), state.lastAttemptAt(), state.lastSuccessAt());
+            matchMissing(selected);
+            state = store.get(sourceId);
+        }
+        return evaluate(state, subject);
+    }
+
     private Wishlist wishlist(SourceState state) {
         List<CompletableFuture<Item>> checks = state.subjects().stream()
                 .map(subject -> CompletableFuture.supplyAsync(() -> evaluate(state, subject), catalogChecks)).toList();

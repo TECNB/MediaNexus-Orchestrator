@@ -14,9 +14,9 @@ import org.springframework.stereotype.Component;
 public class BgmWishlistScheduler {
     private static final Logger log = LoggerFactory.getLogger(BgmWishlistScheduler.class);
     private final BgmWishlistSourceStore sources;
-    private final BgmWishlistExecutionService execution;
+    private final BgmWishlistOperationService execution;
 
-    public BgmWishlistScheduler(BgmWishlistSourceStore sources, BgmWishlistExecutionService execution) {
+    public BgmWishlistScheduler(BgmWishlistSourceStore sources, BgmWishlistOperationService execution) {
         this.sources = sources;
         this.execution = execution;
     }
@@ -26,7 +26,7 @@ public class BgmWishlistScheduler {
         ZonedDateTime now = ZonedDateTime.now(ZoneId.of("Asia/Shanghai"));
         for (var state : sources.list()) {
             try {
-                execution.runScheduledIfDue(state.source().id(), now);
+                execution.schedule(state.source().id(), now);
             } catch (BusinessException exception) {
                 if (!exception.getCode().equals(ErrorCode.CONFLICT.getCode())) {
                     log.warn("BGM 每日执行未完成 sourceId={}", state.source().id(), exception);

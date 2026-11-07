@@ -901,6 +901,7 @@ public class AnimeMagnetIngestTaskService {
             OrganizeResult result,
             String errorMessage
     ) {
+        var failedTask = "FAILED".equals(status) ? taskMapper.selectById(taskId) : null;
         LambdaUpdateWrapper<AnimeMagnetIngestTask> updateWrapper = new LambdaUpdateWrapper<AnimeMagnetIngestTask>()
                 .eq(AnimeMagnetIngestTask::getId, taskId)
                 .set(AnimeMagnetIngestTask::getStatus, status)
@@ -920,6 +921,9 @@ public class AnimeMagnetIngestTaskService {
             updateWrapper.set(AnimeMagnetIngestTask::getFinishedAt, LocalDateTime.now());
         }
         taskMapper.update(updateWrapper);
+        if (failedTask != null) {
+            taskNotifier.failed("anime", taskId, failedTask.getTitle(), failedTask.getStage(), errorMessage);
+        }
     }
 
     private void removeTaskAfterCreationFailure(String taskId, RuntimeException cause) {

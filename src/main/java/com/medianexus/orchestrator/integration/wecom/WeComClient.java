@@ -43,6 +43,22 @@ public class WeComClient {
         this.clock = clock;
     }
 
+    /** 纯文本异常消息不依赖封面或 TMDB。 */
+    public void sendText(String content) {
+        validateConfiguration();
+        ObjectNode payload = objectMapper.createObjectNode()
+                .put("touser", properties.getUserId().trim())
+                .put("agentid", properties.getAgentId()).put("msgtype", "text");
+        payload.putObject("text").put("content", content);
+        String token = token();
+        JsonNode response = request(HttpRequest.newBuilder(uri("/cgi-bin/message/send?access_token=" + encode(token)))
+                .timeout(properties.getTimeout()).header("Content-Type", "application/json; charset=UTF-8")
+                .POST(HttpRequest.BodyPublishers.ofString(payload.toString(), StandardCharsets.UTF_8)).build());
+        int code = response.path("errcode").asInt(-1);
+        if (code == 40014 || code == 42001 || code == 40001) invalidateToken(token);
+        requireSuccess(response);
+    }
+
     public void sendNews(String title, String description, String imageUrl, String detailUrl) {
         validateConfiguration();
         ObjectNode article = objectMapper.createObjectNode()
