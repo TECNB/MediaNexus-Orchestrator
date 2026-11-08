@@ -77,6 +77,7 @@ public class OpenListIngestTaskCenterService {
     private static final String ADULT_PRODUCT_TYPE = "ADULT";
     private static final String MANUAL_MAGNET_SOURCE = "MANUAL_MAGNET";
     private static final String PROWLARR_RELEASE_SOURCE = "PROWLARR_RELEASE";
+    private static final String PANSOU_SOURCE = "PANSOU";
     private static final String JAVDB_AUTOMATION_SOURCE = "JAVDB_AUTOMATION";
     private static final String ALL_FILTER = "ALL";
     private static final String IN_PROGRESS_VIEW = "IN_PROGRESS";
@@ -295,7 +296,7 @@ public class OpenListIngestTaskCenterService {
         return switch (normalizedTaskType) {
             case MOVIE_TASK_TYPE -> retryMovieWithOriginalMagnet(getAccessibleMovieTask(taskId, user));
             case SERIES_TASK_TYPE -> retrySeriesWithOriginalMagnet(getAccessibleSeriesTask(taskId, user));
-            case ANIME_TASK_TYPE -> retryAnimeWithSelectedMagnet(getAccessibleAnimeTask(taskId, user), null);
+            case ANIME_TASK_TYPE -> retryAnimeWithOriginalMagnet(getAccessibleAnimeTask(taskId, user));
             default -> throw manualMagnetRetryNotSupportedException();
         };
     }
@@ -392,7 +393,12 @@ public class OpenListIngestTaskCenterService {
 
     private OpenListManualMagnetRetryResponse retryMovieWithOriginalMagnet(MovieMagnetIngestTask originalTask) {
         ensureMagnetReplacementAllowed(originalTask.getStatus(), sourceType(originalTask.getSourceType()));
-        return retryMovieWithSelectedMagnet(originalTask, originalTask.getMagnet());
+        var response = magnetIngestService.createMovieRetryTask(originalTask, originalTask.getMagnet(),
+                new ReleaseIngestMetadata(sourceType(originalTask.getSourceType()), originalTask.getReleaseTitle(),
+                        originalTask.getReleaseIndexer(), originalTask.getReleaseSize(), originalTask.getReleaseIndexerId(),
+                        originalTask.getReleaseGuid(), splitTags(originalTask.getResolutionTags()), splitTags(originalTask.getDynamicRangeTags())),
+                retryReference(MOVIE_TASK_TYPE, originalTask.getId(), originalTask.getAttemptGroupId()));
+        return retryResponse(MOVIE_TASK_TYPE, response.id());
     }
 
     private OpenListManualMagnetRetryResponse retrySeriesWithSelectedMagnet(
@@ -410,7 +416,22 @@ public class OpenListIngestTaskCenterService {
 
     private OpenListManualMagnetRetryResponse retrySeriesWithOriginalMagnet(SeriesMagnetIngestTask originalTask) {
         ensureMagnetReplacementAllowed(originalTask.getStatus(), sourceType(originalTask.getSourceType()));
-        return retrySeriesWithSelectedMagnet(originalTask, originalTask.getMagnet());
+        var response = magnetIngestService.createSeriesRetryTask(originalTask, originalTask.getMagnet(),
+                new ReleaseIngestMetadata(sourceType(originalTask.getSourceType()), originalTask.getReleaseTitle(),
+                        originalTask.getReleaseIndexer(), originalTask.getReleaseSize(), originalTask.getReleaseIndexerId(),
+                        originalTask.getReleaseGuid(), splitTags(originalTask.getResolutionTags()), splitTags(originalTask.getDynamicRangeTags())),
+                retryReference(SERIES_TASK_TYPE, originalTask.getId(), originalTask.getAttemptGroupId()));
+        return retryResponse(SERIES_TASK_TYPE, response.id());
+    }
+
+    private OpenListManualMagnetRetryResponse retryAnimeWithOriginalMagnet(AnimeMagnetIngestTask originalTask) {
+        ensureRecoverableStatus(originalTask.getStatus());
+        var response = animeMagnetIngestTaskService.createRetryTask(originalTask, originalTask.getMagnet(),
+                new ReleaseIngestMetadata(sourceType(originalTask.getSourceType()), originalTask.getReleaseTitle(),
+                        originalTask.getReleaseIndexer(), originalTask.getReleaseSize(), originalTask.getReleaseIndexerId(),
+                        originalTask.getReleaseGuid(), splitTags(originalTask.getResolutionTags()), splitTags(originalTask.getDynamicRangeTags())),
+                retryReference(ANIME_TASK_TYPE, originalTask.getId(), originalTask.getAttemptGroupId()));
+        return retryResponse(ANIME_TASK_TYPE, response.id());
     }
 
     private OpenListManualMagnetRetryResponse retryAnimeWithSelectedMagnet(
@@ -428,7 +449,8 @@ public class OpenListIngestTaskCenterService {
 
     private void ensureMagnetReplacementAllowed(String status, String sourceType) {
         ensureRecoverableStatus(status);
-        if (!MANUAL_MAGNET_SOURCE.equals(sourceType) && !PROWLARR_RELEASE_SOURCE.equals(sourceType)) {
+        if (!MANUAL_MAGNET_SOURCE.equals(sourceType) && !PROWLARR_RELEASE_SOURCE.equals(sourceType)
+                && !PANSOU_SOURCE.equals(sourceType)) {
             throw badRequest("当前任务来源不支持手动提供 magnet");
         }
     }
@@ -627,7 +649,8 @@ public class OpenListIngestTaskCenterService {
 
     private void ensureReleaseSelectionAllowed(String status, String sourceType) {
         ensureRecoverableStatus(status);
-        if (!MANUAL_MAGNET_SOURCE.equals(sourceType) && !PROWLARR_RELEASE_SOURCE.equals(sourceType)) {
+        if (!MANUAL_MAGNET_SOURCE.equals(sourceType) && !PROWLARR_RELEASE_SOURCE.equals(sourceType)
+                && !PANSOU_SOURCE.equals(sourceType)) {
             throw badRequest("当前任务来源不支持重新选择发布资源");
         }
     }

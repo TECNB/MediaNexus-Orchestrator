@@ -4,7 +4,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import io.swagger.v3.oas.annotations.media.Schema;
 import java.util.List;
 
-@Schema(description = "Prowlarr 发布资源条目")
+@Schema(description = "磁力发布候选；兼容 Prowlarr 发布和 PanSou 直接磁力")
 public record ProwlarrReleaseItemResponse(
         @Schema(description = "发布标题")
         String title,
@@ -16,15 +16,15 @@ public record ProwlarrReleaseItemResponse(
         Integer leechers,
         @Schema(description = "抓取次数；上游未返回时为 null", nullable = true)
         Integer grabs,
-        @Schema(description = "索引器名称")
+        @Schema(description = "实际来源站点或频道名称")
         String indexer,
         @Schema(description = "发布时间文本；上游未返回时为 null", nullable = true)
         @JsonProperty("publish_date")
         String publishDate,
-        @Schema(description = "Prowlarr 索引器 id")
+        @Schema(description = "Prowlarr 索引器 id；PanSou 直接磁力为 null", nullable = true)
         @JsonProperty("indexer_id")
         Integer indexerId,
-        @Schema(description = "服务端用于解析 magnet 的不透明下载引用")
+        @Schema(description = "候选自身的下载引用；Prowlarr 为不透明引用，PanSou 为真实 magnet，不随全局引擎切换而改写")
         @JsonProperty("download_ref")
         String downloadRef,
         @Schema(description = "从发布标题解析出的分辨率标签")

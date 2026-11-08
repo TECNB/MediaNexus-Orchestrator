@@ -54,6 +54,27 @@ class AdminSettingsControllerTest {
     }
 
     @Test
+    void defaultsToPanSouAndPersistsOnlySupportedEngineThroughSettings() throws Exception {
+        SettingsService settings = service(key);
+        MagnetSearchProperties defaults = new MagnetSearchProperties();
+        defaults.setEngine("PANSOU");
+        settings.configureMagnetSearch(defaults);
+        assertThat(settings.usesPanSouForMagnetSearch()).isTrue();
+        MockMvc api = api(settings);
+        api.perform(put("/api/v1/admin/settings/groups/magnet-search").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"version\":0,\"values\":{\"engine\":\"PROWLARR\"}}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.effective.engine").value("PROWLARR"));
+        assertThat(settings.usesPanSouForMagnetSearch()).isFalse();
+        SettingsService restarted = service(key);
+        restarted.configureMagnetSearch(defaults);
+        assertThat(restarted.usesPanSouForMagnetSearch()).isFalse();
+        api.perform(put("/api/v1/admin/settings/groups/magnet-search").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"version\":1,\"values\":{\"engine\":\"OTHER\"}}"))
+                .andExpect(status().isBadRequest());
+        assertThat(settings.usesPanSouForMagnetSearch()).isFalse();
+    }
+
+    @Test
     void savesTmdbThroughAdminApiAndNextRealRequestUsesEncryptedPersistentSelection() throws Exception {
         AtomicReference<String> authorization = new AtomicReference<>();
         HttpServer upstream = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);

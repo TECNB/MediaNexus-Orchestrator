@@ -97,6 +97,17 @@ public class GlobalExceptionHandler {
                 .body(ApiResponse.failed(HttpStatus.NOT_FOUND.value(), "not found"));
     }
 
+    @ExceptionHandler(com.medianexus.orchestrator.integration.pansou.PanSouClientException.class)
+    public ResponseEntity<ApiResponse<Void>> handlePanSouException(
+            com.medianexus.orchestrator.integration.pansou.PanSouClientException exception) {
+        HttpStatus status = switch (exception.getReason()) {
+            case CONFIGURATION -> HttpStatus.SERVICE_UNAVAILABLE;
+            case TIMEOUT -> HttpStatus.GATEWAY_TIMEOUT;
+            case AUTHENTICATION, UPSTREAM, INVALID_RESPONSE -> HttpStatus.BAD_GATEWAY;
+        };
+        return ResponseEntity.status(status).body(ApiResponse.failed(status.value(), exception.getMessage()));
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiResponse<Void>> handleException(Exception exception, HttpServletRequest request) {
         log.error("Unhandled exception method={} path={}", request.getMethod(), request.getRequestURI(), exception);

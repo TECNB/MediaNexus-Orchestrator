@@ -55,7 +55,7 @@ public class MovieSeriesResourceController {
     }
 
     @PostMapping("/movies/openlist-ingest")
-    @Operation(summary = "从资源页创建电影 OpenList 入库任务", description = "后端自动搜索 Prowlarr、选择匹配分辨率的发布资源，解析为 magnet 后创建电影入库任务。")
+    @Operation(summary = "从资源页创建电影 OpenList 入库任务", description = "使用全局磁力引擎搜索，选择匹配分辨率的候选，按候选引用解析 magnet 后创建入库任务。")
     public ApiResponse<MovieMagnetIngestTaskResponse> ingestMovieFromResource(
             @Valid @RequestBody MovieOpenListIngestRequest request
     ) {
@@ -71,7 +71,7 @@ public class MovieSeriesResourceController {
     }
 
     @PostMapping("/movies/releases/recommendation")
-    @Operation(summary = "推荐电影发布资源", description = "使用已选电影的展示标题和原始标题加年份搜索全部启用索引器，并返回可确认的推荐发布。")
+    @Operation(summary = "推荐电影发布资源", description = "使用全局磁力引擎按已选目录标题查找候选；PanSou 仅在缺少合格候选时补搜，不自动切换引擎。")
     public ApiResponse<ProwlarrReleaseRecommendationResponse> recommendMovieRelease(
             @Valid @RequestBody MovieReleaseRecommendationRequest request
     ) {
@@ -79,7 +79,7 @@ public class MovieSeriesResourceController {
     }
 
     @PostMapping("/movies/releases/recommendation/refresh")
-    @Operation(summary = "刷新电影发布资源推荐", description = "绕过搜索缓存重新执行完整电影发布搜索计划，全部成功后替换缓存并返回新推荐。")
+    @Operation(summary = "刷新电影发布资源推荐", description = "使用当前全局磁力引擎绕过搜索缓存重新查询并返回推荐。")
     public ApiResponse<ProwlarrReleaseRecommendationResponse> refreshMovieReleaseRecommendation(
             @Valid @RequestBody MovieReleaseRecommendationRequest request
     ) {
@@ -95,7 +95,7 @@ public class MovieSeriesResourceController {
     }
 
     @PostMapping("/movies/releases/search/refresh")
-    @Operation(summary = "刷新电影发布资源列表", description = "绕过搜索缓存重新执行完整电影发布搜索计划，全部成功后替换缓存。")
+    @Operation(summary = "刷新电影发布资源列表", description = "使用当前全局磁力引擎绕过搜索缓存重新查询。")
     public ApiResponse<ProwlarrReleaseSearchResponse> refreshMovieReleases(
             @Valid @RequestBody MovieReleaseSearchRequest request
     ) {
@@ -121,7 +121,7 @@ public class MovieSeriesResourceController {
     }
 
     @PostMapping("/series/openlist-ingest")
-    @Operation(summary = "从资源页创建剧集 OpenList 入库任务", description = "后端自动搜索 Prowlarr、选择匹配分辨率的发布资源，解析为 magnet 后创建剧集季度入库任务。")
+    @Operation(summary = "从资源页创建剧集 OpenList 入库任务", description = "使用全局磁力引擎搜索，选择匹配季度和分辨率的候选后创建剧集季度入库任务。")
     public ApiResponse<SeriesMagnetIngestTaskResponse> ingestSeriesFromResource(
             @Valid @RequestBody SeriesOpenListIngestRequest request
     ) {
@@ -137,7 +137,7 @@ public class MovieSeriesResourceController {
     }
 
     @PostMapping("/series/releases/recommendation")
-    @Operation(summary = "推荐剧集发布资源", description = "使用已选剧集的展示标题、原始标题及目标季搜索全部启用索引器，并返回可确认的推荐发布。")
+    @Operation(summary = "推荐剧集发布资源", description = "使用全局磁力引擎按已选目录标题查找候选；PanSou 自动推荐要求目标季及整季证据，不因做种未知而拒绝。")
     public ApiResponse<ProwlarrReleaseRecommendationResponse> recommendSeriesRelease(
             @Valid @RequestBody SeriesReleaseRecommendationRequest request
     ) {
@@ -145,7 +145,7 @@ public class MovieSeriesResourceController {
     }
 
     @PostMapping("/series/releases/recommendation/refresh")
-    @Operation(summary = "刷新剧集发布资源推荐", description = "绕过搜索缓存重新执行完整剧集发布搜索计划，全部成功后替换缓存并返回新推荐。")
+    @Operation(summary = "刷新剧集发布资源推荐", description = "使用当前全局磁力引擎绕过搜索缓存重新查询并返回推荐。")
     public ApiResponse<ProwlarrReleaseRecommendationResponse> refreshSeriesReleaseRecommendation(
             @Valid @RequestBody SeriesReleaseRecommendationRequest request
     ) {
@@ -161,7 +161,7 @@ public class MovieSeriesResourceController {
     }
 
     @PostMapping("/series/releases/search/refresh")
-    @Operation(summary = "刷新剧集发布资源列表", description = "绕过搜索缓存重新执行完整剧集发布搜索计划，全部成功后替换缓存。")
+    @Operation(summary = "刷新剧集发布资源列表", description = "使用当前全局磁力引擎绕过搜索缓存重新查询。")
     public ApiResponse<ProwlarrReleaseSearchResponse> refreshSeriesReleases(
             @Valid @RequestBody SeriesReleaseSearchRequest request
     ) {
@@ -169,7 +169,7 @@ public class MovieSeriesResourceController {
     }
 
     @GetMapping("/releases/search")
-    @Operation(summary = "搜索可下载的 Prowlarr 发布资源")
+    @Operation(summary = "使用全局磁力引擎搜索发布候选")
     public ApiResponse<ProwlarrReleaseSearchResponse> searchReleases(
             @RequestParam(name = "term", required = false) String term,
             @RequestParam(name = "media_type", required = false) String mediaType,

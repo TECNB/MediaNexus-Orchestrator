@@ -76,6 +76,16 @@ public class SettingsService {
     }
 
     @Autowired
+    public void configureMagnetSearch(com.medianexus.orchestrator.config.MagnetSearchProperties properties) {
+        register("magnet-search", "默认磁力搜索引擎", properties, List.of("engine"), Set.of());
+    }
+
+    public boolean usesPanSouForMagnetSearch() {
+        return "PANSOU".equals(effectiveSnapshot("magnet-search",
+                com.medianexus.orchestrator.config.MagnetSearchProperties.class).getEngine());
+    }
+
+    @Autowired
     public void configureMultipartLimits(MultipartConfigElement multipart) { this.multipart = multipart; }
 
     @Autowired

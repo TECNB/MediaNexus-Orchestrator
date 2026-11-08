@@ -979,6 +979,25 @@ class OpenListIngestTaskCenterServiceTest {
     }
 
     @Test
+    void reusesPanSouSourceWithoutSearchAndAllowsSelectingAnotherRelease() {
+        authService.currentUser = user(1L, "USER", "owner");
+        MovieMagnetIngestTask original = movieTask("pansou-1", "Movie", "FAILED", "old-hash",
+                LocalDateTime.parse("2026-07-01T10:00:00"));
+        original.setSourceType("PANSOU");
+        original.setReleaseTitle("Movie 2024 1080p");
+        original.setMagnet("magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567");
+        original.setAttemptGroupId("pansou-group");
+        when(movieTaskMapper.selectById("pansou-1")).thenReturn(original);
+        movieSeriesRetryRecorder.nextMovieResponse = movieRetryResponse("pansou-2");
+        service.reuseOriginalManualMagnet("movie", "pansou-1");
+        assertThat(movieSeriesRetryRecorder.lastMetadata.sourceType()).isEqualTo("PANSOU");
+        assertThat(movieSeriesRetryRecorder.lastMetadata.releaseTitle()).isEqualTo(original.getReleaseTitle());
+        assertThat(movieSeriesRetryRecorder.lastMovieMagnet).isEqualTo(original.getMagnet());
+        assertThat(movieSeriesRetryRecorder.lastMovieRetryReference.attemptGroupId()).isEqualTo("pansou-group");
+        assertThat(service.getReleaseRetryContext("movie", "pansou-1").title()).isEqualTo("Movie");
+    }
+
+    @Test
     void replacesSeriesManualMagnetAndKeepsSharedAnimeProductContext() {
         authService.currentUser = user(1L, "USER", "owner");
         SeriesMagnetIngestTask original = seriesTask(
@@ -1816,6 +1835,19 @@ class OpenListIngestTaskCenterServiceTest {
             recorder.lastSeriesRetryReference = retryReference;
             return recorder.nextSeriesResponse;
         }
+        @Override
+        public MovieMagnetIngestTaskResponse createMovieRetryTask(MovieMagnetIngestTask originalTask,
+                String magnet, ReleaseIngestMetadata metadata, TaskRetryReference retryReference) {
+            recorder.lastMetadata = metadata;
+            return createMovieRetryTask(originalTask, magnet, retryReference);
+        }
+
+        @Override
+        public SeriesMagnetIngestTaskResponse createSeriesRetryTask(SeriesMagnetIngestTask originalTask,
+                String magnet, ReleaseIngestMetadata metadata, TaskRetryReference retryReference) {
+            recorder.lastMetadata = metadata;
+            return createSeriesRetryTask(originalTask, magnet, retryReference);
+        }
     }
 
     private static class RecordingAnimeMagnetIngestTaskService extends AnimeMagnetIngestTaskService {
@@ -1836,6 +1868,11 @@ class OpenListIngestTaskCenterServiceTest {
             recorder.callCount++;
             recorder.lastMagnet = magnet;
             return recorder.nextResponse;
+        }
+        @Override
+        public AnimeMagnetIngestTaskResponse createRetryTask(AnimeMagnetIngestTask originalTask,
+                String magnet, ReleaseIngestMetadata metadata, TaskRetryReference retryReference) {
+            return createRetryTask(originalTask, magnet, retryReference);
         }
     }
 
@@ -1870,7 +1907,7 @@ class OpenListIngestTaskCenterServiceTest {
                 MovieSeriesReleaseRetryRecorder movieSeriesRecorder,
                 AnimeReleaseRetryRecorder animeRecorder
         ) {
-            super(null, null, null, null, null, null);
+            super(null, null, null, null, null, null, null, null);
             this.movieSeriesRecorder = movieSeriesRecorder;
             this.animeRecorder = animeRecorder;
         }
@@ -1913,6 +1950,7 @@ class OpenListIngestTaskCenterServiceTest {
     }
 
     private static class MovieSeriesRetryRecorder {
+        private ReleaseIngestMetadata lastMetadata;
 
         private MovieMagnetIngestTaskResponse nextMovieResponse;
         private SeriesMagnetIngestTaskResponse nextSeriesResponse;

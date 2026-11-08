@@ -135,7 +135,8 @@ public class BgmWishlistOperationService {
                     || !Objects.equals(identity.seasonNumber(), input.identity().seasonNumber())) throw bad("补充来源不能更换目标作品或季度");
             ProwlarrReleaseItemResponse release = input.release();
             if (release.title() == null || release.title().isBlank() || release.downloadRef() == null || release.downloadRef().isBlank()
-                    || release.indexerId() == null || release.resolutionTags() == null) throw bad("发布来源信息不完整");
+                    || release.indexerId() == null && !release.downloadRef().regionMatches(true, 0, "magnet:", 0, 7)
+                    || release.resolutionTags() == null) throw bad("发布来源信息不完整");
             boolean qualityMatches = release.resolutionTags().contains(operation.source().quality())
                     || "2160p".equals(operation.source().quality()) && release.resolutionTags().contains("1080p");
             if (!qualityMatches) throw bad("补充来源不符合本次清晰度条件");
@@ -277,6 +278,14 @@ public class BgmWishlistOperationService {
                         return new Entry(previous.item(), previous.status(), previous.startedAt(), List.copyOf(searches),
                                 previous.candidates(), previous.selected(), null, previous.reason(), previous.notification());
                     })).stream().map(release -> new Candidate(candidateKey(release), release)).toList();
+            } catch (ProwlarrReleaseIngestService.NoMatchingReleaseException noMatch) {
+                updateEntry(id, subjectId, previous -> new Entry(previous.item(),
+                        noMatch.candidates().isEmpty() ? "WAITING_RESOURCE" : "WAITING_CONFIRMATION",
+                        previous.startedAt(), previous.searches(), noMatch.candidates().stream()
+                                .map(release -> new Candidate(candidateKey(release), release)).toList(),
+                        null, null, reason(noMatch.reasonCode(), noMatch.getMessage() + "，尚未创建任务"), null));
+                notifyContent(id, subjectId);
+                return false;
             } catch (RuntimeException exception) {
                 updateEntry(id, subjectId, previous -> outcome(previous, "FAILED", reason("RELEASE_CHECK_FAILED", "发布搜索失败，无法判断是否有合适资源；请重新搜索")));
                 return false;
@@ -286,7 +295,7 @@ public class BgmWishlistOperationService {
             updateEntry(id, subjectId, previous -> new Entry(previous.item(), choice != null ? "CREATING" : candidates.isEmpty() ? "WAITING_RESOURCE" : "WAITING_CONFIRMATION",
                     previous.startedAt(), previous.searches(), candidates, choice, null,
                     choice != null ? null : reason(candidates.isEmpty() ? "NO_RELEASE" : "NON_CHINESE", candidates.isEmpty()
-                            ? "未找到符合季度和清晰度条件的发布，尚未创建任务" : "发布标题未检测到中文，字幕未经验证；尚未下载"), null));
+                            ? "未找到可推荐的发布资源，尚未创建任务" : "发布标题未检测到中文，字幕未经验证；尚未下载"), null));
             if (selected == null) { notifyContent(id, subjectId); return false; }
         }
         // 搜索期间配置、目标或在库可能变化；最终提交必须再次核验，人工确认不绕过此边界。

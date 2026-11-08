@@ -3,7 +3,6 @@ package com.medianexus.orchestrator.dto.taskcenter.request;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.NotNull;
 import java.util.List;
 
 @Schema(description = "任务中心发布资源重试请求")
@@ -16,11 +15,10 @@ public record OpenListReleaseRetryRequest(
         String indexer,
         @Schema(description = "发布资源大小；上游未返回时为 null", nullable = true)
         Long size,
-        @Schema(description = "发布来源索引器 ID")
+        @Schema(description = "Prowlarr 索引器 ID；PanSou 直接磁力为 null", nullable = true)
         @JsonProperty("indexer_id")
-        @NotNull(message = "发布索引器 ID 不能为空")
         Integer indexerId,
-        @Schema(description = "发布下载引用，用于后端重新解析 magnet")
+        @Schema(description = "候选自身下载引用；Prowlarr 不透明引用或 PanSou 真实 magnet")
         @JsonProperty("download_ref")
         @NotBlank(message = "发布下载引用不能为空")
         String downloadRef,

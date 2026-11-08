@@ -139,6 +139,42 @@ class BgmWishlistOperationTest {
         assertEquals("CREATED", f.rows.get(accepted.id()).entries().get(0).status());
     }
 
+    @Test void retainsUncertainPanSouCandidatesForManualConfirmationWithoutCreating() {
+        Fixture f = new Fixture();
+        var release = f.release("中文作品 Batch 1080p");
+        doThrow(new ProwlarrReleaseIngestService.NoMatchingReleaseException("SEASON_UNKNOWN", "季度待核对", List.of(release)))
+                .when(f.tasks).candidates(any(), anyString(), any());
+        Operation accepted = f.service.submit("source", List.of(1L));
+        f.executor.runPending();
+        Entry entry = f.rows.get(accepted.id()).entries().get(0);
+        assertEquals("WAITING_CONFIRMATION", entry.status());
+        assertEquals(release, entry.candidates().get(0).release());
+        verify(f.tasks, never()).create(any(), any(), any());
+    }
+
+    @Test void createsQualifiedPanSouWithoutSeedersAndConfirmsSavedCandidateWithoutNewSearch() {
+        Fixture f = new Fixture();
+        var chinese = new ProwlarrReleaseItemResponse("中文作品 S01 Complete 1080p", null, null, null, null,
+                "Nyaa", null, null, "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567",
+                List.of("1080p"), List.of(), List.of("S01"), "展示标题", "中文作品");
+        var english = new ProwlarrReleaseItemResponse("English S01 Complete 1080p", null, null, null, null,
+                "Nyaa", null, null, "magnet:?xt=urn:btih:abcdef0123456789abcdef0123456789abcdef01",
+                List.of("1080p"), List.of(), List.of("S01"), "原始标题", "English");
+        doReturn(List.of(chinese)).when(f.tasks).candidates(argThat(target -> target.tmdbId() == 1), anyString(), any());
+        doReturn(List.of(english)).when(f.tasks).candidates(argThat(target -> target.tmdbId() == 2), anyString(), any());
+        Operation accepted = f.service.submit("source", List.of(1L, 2L));
+        f.executor.runPending();
+        assertEquals("CREATED", f.rows.get(accepted.id()).entries().get(0).status());
+        verify(f.tasks).create(any(), eq(chinese), eq(f.owner));
+        Entry pending = f.rows.get(accepted.id()).entries().get(1);
+        assertEquals("WAITING_CONFIRMATION", pending.status());
+        clearInvocations(f.tasks);
+        f.service.confirm(accepted.id(), new CandidateInput(2L, pending.candidates().get(0).key()));
+        f.executor.runPending();
+        verify(f.tasks, never()).candidates(any(), anyString(), any());
+        verify(f.tasks).create(any(), eq(english), eq(f.owner));
+    }
+
     static class Fixture {
         final AuthService auth = mock(AuthService.class);
         final BgmWishlistService wishlist = mock(BgmWishlistService.class);

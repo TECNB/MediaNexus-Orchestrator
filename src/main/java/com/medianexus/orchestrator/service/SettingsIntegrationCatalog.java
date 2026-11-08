@@ -147,6 +147,7 @@ public final class SettingsIntegrationCatalog {
             case "maxSupSize" -> "SUP 字幕大小上限（字节）";
             case "maxTotalExtractedSize" -> "解压总大小上限（字节）";
             case "maxCompressionRatio" -> "解压压缩比上限";
+            case "engine" -> "默认磁力搜索引擎";
             default -> key;
         };
     }

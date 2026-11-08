@@ -111,6 +111,55 @@ public class PanSouClient implements AutoCloseable {
         return new PanSouSearchResult(result);
     }
 
+    /** 磁力只读取合并分类；类型过滤不改变夸克入口，也不修改实例默认来源。 */
+    public PanSouSearchResult searchMagnets(PanSouSearchCommand command) {
+        if (command == null || !StringUtils.hasText(command.keyword())) {
+            throw new IllegalArgumentException("PanSou 搜索词不能为空");
+        }
+        ObjectNode payload = objectMapper.createObjectNode();
+        payload.put("kw", command.keyword().trim());
+        payload.putArray("cloud_types").add("magnet");
+        payload.put("res", "merge");
+        payload.put("src", "plugin");
+        payload.putArray("plugins").add("nyaa").add("clxiong");
+        payload.put("refresh", command.refresh());
+        JsonNode root = sendAuthorized("/api/search", payload);
+        if (root == null || !root.isObject()
+                || (root.has("success") && !root.path("success").asBoolean())
+                || root.hasNonNull("error")
+                || (root.has("code") && root.path("code").asInt(-1) != 0
+                    && root.path("code").asInt(-1) != 200)) {
+            throw new PanSouClientException(INVALID_RESPONSE, "PanSou 磁力搜索响应无效");
+        }
+        JsonNode body = root.has("data") ? root.path("data") : root;
+        JsonNode merged = body.path("merged_by_type");
+        if (!merged.isObject()) {
+            throw new PanSouClientException(INVALID_RESPONSE, "PanSou 磁力搜索响应缺少合并结果");
+        }
+        JsonNode entries = merged.path("magnet");
+        if (entries.isMissingNode() && merged.isEmpty()) {
+            return new PanSouSearchResult(List.of());
+        }
+        if (!entries.isArray()) {
+            throw new PanSouClientException(INVALID_RESPONSE, "PanSou 磁力分类不是结果列表");
+        }
+        List<PanSouSearchEntry> result = new ArrayList<>();
+        for (JsonNode entry : entries) {
+            String type = text(entry, "type");
+            if (!entry.isObject() || (StringUtils.hasText(type) && !"magnet".equalsIgnoreCase(type))
+                    || PanSouMagnetIdentity.fromUrl(text(entry, "url")).isEmpty()) {
+                throw new PanSouClientException(INVALID_RESPONSE, "PanSou 磁力分类包含无效链接");
+            }
+            result.add(new PanSouSearchEntry(
+                    text(entry, "url"), "",
+                    firstText(entry, "note", "title", "name", "work_title", "desc"),
+                    firstText(entry, "datetime", "time", "created_at"),
+                    firstText(entry, "source", "channel", "plugin")
+            ));
+        }
+        return new PanSouSearchResult(result);
+    }
+
     public List<PanSouLinkCheckResult> checkLinks(List<PanSouLinkCheckRequest> requests) {
         if (requests == null || requests.isEmpty()) {
             return List.of();

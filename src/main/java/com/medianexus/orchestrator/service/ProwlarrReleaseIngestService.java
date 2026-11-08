@@ -44,6 +44,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
+/** 保留既有发布接口；新搜索读取全局引擎，提交按候选自身的下载引用解析。 */
 @Service
 public class ProwlarrReleaseIngestService {
 
@@ -66,6 +67,8 @@ public class ProwlarrReleaseIngestService {
     private final ReleaseTitleTagParser tagParser;
     private final MagnetIngestService magnetIngestService;
     private final AnimeMagnetIngestTaskService animeMagnetIngestTaskService;
+    private final SettingsService settings;
+    private final PanSouMagnetSearch panSou;
 
     public ProwlarrReleaseIngestService(
             AuthService authService,
@@ -73,7 +76,9 @@ public class ProwlarrReleaseIngestService {
             ProwlarrReleaseSearchCache releaseSearchCache,
             ReleaseTitleTagParser tagParser,
             MagnetIngestService magnetIngestService,
-            AnimeMagnetIngestTaskService animeMagnetIngestTaskService
+            AnimeMagnetIngestTaskService animeMagnetIngestTaskService,
+            SettingsService settings,
+            PanSouMagnetSearch panSou
     ) {
         this.authService = authService;
         this.prowlarrClient = prowlarrClient;
@@ -81,6 +86,8 @@ public class ProwlarrReleaseIngestService {
         this.tagParser = tagParser;
         this.magnetIngestService = magnetIngestService;
         this.animeMagnetIngestTaskService = animeMagnetIngestTaskService;
+        this.settings = settings;
+        this.panSou = panSou;
     }
 
     public ProwlarrReleaseSearchResponse searchReleases(
@@ -89,6 +96,17 @@ public class ProwlarrReleaseIngestService {
             Integer seasonNumber
     ) {
         authService.requireCurrentUser();
+        if (settings.usesPanSouForMagnetSearch()) {
+            if ("movie".equalsIgnoreCase(mediaType)) {
+                return panSou.searchMovie(new MovieReleaseSearchRequest(null, null,
+                        requiredText(term, "搜索词不能为空"), null, null, null));
+            }
+            if ("series".equalsIgnoreCase(mediaType)) {
+                return panSou.searchSeries(new SeriesReleaseSearchRequest(null, null, null,
+                        requiredText(term, "搜索词不能为空"), null, validateSeasonNumber(seasonNumber), null));
+            }
+            throw badRequest("不支持的媒体类型");
+        }
         String normalizedMediaType = requiredText(mediaType, "媒体类型不能为空").toLowerCase(Locale.ROOT);
         String query;
         if ("movie".equals(normalizedMediaType)) {
@@ -115,6 +133,7 @@ public class ProwlarrReleaseIngestService {
     }
 
     ProwlarrReleaseRecommendationResponse recommendMovieReleaseForAutomation(MovieReleaseRecommendationRequest request) {
+        if (settings.usesPanSouForMagnetSearch()) return panSou.recommendMovie(request);
         MovieReleaseIdentity movie = movieReleaseIdentity(request);
         return movieRecommendationResponse(movie, normalizeQuality(request.quality()),
                 searchQueriesInParallel(movieReleaseSearchPlan(movie)));
@@ -122,6 +141,7 @@ public class ProwlarrReleaseIngestService {
 
     ProwlarrReleaseRecommendationResponse recommendMovieReleaseForAutomation(
             MovieReleaseRecommendationRequest request, java.util.function.Consumer<ReleaseSearchProgress> progress) {
+        if (settings.usesPanSouForMagnetSearch()) return panSou.recommendMovie(request, progress);
         MovieReleaseIdentity movie = movieReleaseIdentity(request);
         String quality = normalizeQuality(request.quality());
         return movieRecommendationResponse(
@@ -135,6 +155,7 @@ public class ProwlarrReleaseIngestService {
             MovieReleaseRecommendationRequest request
     ) {
         authService.requireCurrentUser();
+        if (settings.usesPanSouForMagnetSearch()) return panSou.refreshRecommendMovie(request);
         MovieReleaseIdentity movie = movieReleaseIdentity(request);
         String quality = normalizeQuality(request.quality());
         return movieRecommendationResponse(
@@ -164,6 +185,7 @@ public class ProwlarrReleaseIngestService {
 
     public ProwlarrReleaseSearchResponse searchMovieReleases(MovieReleaseSearchRequest request) {
         authService.requireCurrentUser();
+        if (settings.usesPanSouForMagnetSearch()) return panSou.searchMovie(request);
         MovieReleaseIdentity movie = movieReleaseIdentity(request);
         String quality = normalizeOptionalQuality(request.quality());
         return movieReleaseSearchResponse(
@@ -175,6 +197,7 @@ public class ProwlarrReleaseIngestService {
 
     public ProwlarrReleaseSearchResponse refreshMovieReleases(MovieReleaseSearchRequest request) {
         authService.requireCurrentUser();
+        if (settings.usesPanSouForMagnetSearch()) return panSou.refreshMovie(request);
         MovieReleaseIdentity movie = movieReleaseIdentity(request);
         String quality = normalizeOptionalQuality(request.quality());
         return movieReleaseSearchResponse(
@@ -208,6 +231,7 @@ public class ProwlarrReleaseIngestService {
     }
 
     ProwlarrReleaseRecommendationResponse recommendSeriesReleaseForAutomation(SeriesReleaseRecommendationRequest request) {
+        if (settings.usesPanSouForMagnetSearch()) return panSou.recommendSeries(request);
         SeriesReleaseIdentity series = seriesReleaseIdentity(request);
         return seriesRecommendationResponse(series, normalizeQuality(request.quality()),
                 searchQueriesInParallel(seriesReleaseSearchPlan(series)));
@@ -216,6 +240,7 @@ public class ProwlarrReleaseIngestService {
     ProwlarrReleaseRecommendationResponse recommendSeriesReleaseForAutomation(
             SeriesReleaseRecommendationRequest request, java.util.function.Consumer<ReleaseSearchProgress> progress) {
         SeriesReleaseIdentity series = seriesReleaseIdentity(request);
+        if (settings.usesPanSouForMagnetSearch()) return panSou.recommendSeries(request, progress);
         String quality = normalizeQuality(request.quality());
         return seriesRecommendationResponse(
                 series,
@@ -228,6 +253,7 @@ public class ProwlarrReleaseIngestService {
             SeriesReleaseRecommendationRequest request
     ) {
         authService.requireCurrentUser();
+        if (settings.usesPanSouForMagnetSearch()) return panSou.refreshRecommendSeries(request);
         SeriesReleaseIdentity series = seriesReleaseIdentity(request);
         String quality = normalizeQuality(request.quality());
         return seriesRecommendationResponse(
@@ -257,6 +283,7 @@ public class ProwlarrReleaseIngestService {
 
     public ProwlarrReleaseSearchResponse searchSeriesReleases(SeriesReleaseSearchRequest request) {
         authService.requireCurrentUser();
+        if (settings.usesPanSouForMagnetSearch()) return panSou.searchSeries(request);
         SeriesReleaseIdentity series = seriesReleaseIdentity(request);
         String quality = normalizeOptionalQuality(request.quality());
         return seriesReleaseSearchResponse(
@@ -270,6 +297,7 @@ public class ProwlarrReleaseIngestService {
         authService.requireCurrentUser();
         SeriesReleaseIdentity series = seriesReleaseIdentity(request);
         String quality = normalizeOptionalQuality(request.quality());
+        if (settings.usesPanSouForMagnetSearch()) return panSou.refreshSeries(request);
         return seriesReleaseSearchResponse(
                 series,
                 quality,
@@ -300,6 +328,13 @@ public class ProwlarrReleaseIngestService {
 
     public MovieMagnetIngestTaskResponse ingestMovie(MovieOpenListIngestRequest request) {
         authService.requireCurrentUser();
+        if (settings.usesPanSouForMagnetSearch()) {
+            var selected = panSou.recommendMovie(new MovieReleaseRecommendationRequest(request.tmdbId(), null,
+                    request.title(), request.originalTitle(), request.year(), request.quality())).item();
+            return ingestSelectedMovie(new MovieReleaseOpenListIngestRequest(request.title(), request.originalTitle(),
+                    request.year(), selected.title(), selected.indexer(), selected.size(), selected.indexerId(),
+                    selected.downloadRef(), selected.resolutionTags(), selected.dynamicRangeTags(), request.tmdbId()));
+        }
         String title = requiredText(request == null ? null : request.title(), "电影标题不能为空");
         String quality = normalizeQuality(request == null ? null : request.quality());
         String query = movieQuery(request == null ? null : request.term());
@@ -319,6 +354,13 @@ public class ProwlarrReleaseIngestService {
 
     public SeriesMagnetIngestTaskResponse ingestSeries(SeriesOpenListIngestRequest request) {
         authService.requireCurrentUser();
+        if (settings.usesPanSouForMagnetSearch()) {
+            var selected = panSou.recommendSeries(new SeriesReleaseRecommendationRequest(null, request.tmdbId(), null,
+                    request.title(), request.originalTitle(), request.seasonNumber(), request.quality())).item();
+            return ingestSelectedSeries(new SeriesReleaseOpenListIngestRequest(request.title(), request.originalTitle(),
+                    request.seasonNumber(), request.taskProductType(), selected.title(), selected.indexer(), selected.size(),
+                    selected.indexerId(), selected.downloadRef(), selected.resolutionTags(), selected.dynamicRangeTags(), request.tmdbId()));
+        }
         String title = requiredText(request == null ? null : request.title(), "剧集标题不能为空");
         String quality = normalizeQuality(request == null ? null : request.quality());
         int seasonNumber = validateSeasonNumber(request == null ? null : request.seasonNumber());
@@ -358,6 +400,7 @@ public class ProwlarrReleaseIngestService {
                         request.indexer(),
                         request.size(),
                         request.indexerId(),
+                        request.downloadRef(),
                         request.resolutionTags(),
                         request.dynamicRangeTags()
                 )
@@ -383,6 +426,7 @@ public class ProwlarrReleaseIngestService {
                 request.indexer(),
                 request.size(),
                 request.indexerId(),
+                request.downloadRef(),
                 request.resolutionTags(),
                 request.dynamicRangeTags()
         );
@@ -401,6 +445,7 @@ public class ProwlarrReleaseIngestService {
                 new MovieMagnetIngestRequest(magnet, title, trimToNull(request.originalTitle()),
                         validateYear(request.year()), request.tmdbId()),
                 requestMetadata(releaseTitle, request.indexer(), request.size(), request.indexerId(),
+                        request.downloadRef(),
                         request.resolutionTags(), request.dynamicRangeTags()), owner);
     }
 
@@ -412,6 +457,7 @@ public class ProwlarrReleaseIngestService {
                 new SeriesMagnetIngestRequest(magnet, title, trimToNull(request.originalTitle()),
                         validateSeasonNumber(request.seasonNumber()), request.tmdbId()),
                 requestMetadata(releaseTitle, request.indexer(), request.size(), request.indexerId(),
+                        request.downloadRef(),
                         request.resolutionTags(), request.dynamicRangeTags()), owner);
     }
 
@@ -431,6 +477,7 @@ public class ProwlarrReleaseIngestService {
                         request.indexer(),
                         request.size(),
                         request.indexerId(),
+                        request.downloadRef(),
                         request.resolutionTags(),
                         request.dynamicRangeTags()
                 ),
@@ -454,6 +501,7 @@ public class ProwlarrReleaseIngestService {
                         request.indexer(),
                         request.size(),
                         request.indexerId(),
+                        request.downloadRef(),
                         request.resolutionTags(),
                         request.dynamicRangeTags()
                 ),
@@ -477,6 +525,7 @@ public class ProwlarrReleaseIngestService {
                         request.indexer(),
                         request.size(),
                         request.indexerId(),
+                        request.downloadRef(),
                         request.resolutionTags(),
                         request.dynamicRangeTags()
                 ),
@@ -1008,6 +1057,13 @@ public class ProwlarrReleaseIngestService {
     }
 
     private String resolveMagnet(Integer indexerId, String downloadRef, String releaseTitle) {
+        if (isMagnetReference(downloadRef) && indexerId == null) {
+            String magnet = downloadRef.trim();
+            if (com.medianexus.orchestrator.integration.pansou.PanSouMagnetIdentity.fromUrl(magnet).isEmpty()) {
+                throw badRequest("盘搜候选缺少有效的 BTIH magnet 链接");
+            }
+            return magnet;
+        }
         try {
             return prowlarrClient.resolveMagnet(indexerId, downloadRef, releaseTitle);
         } catch (ProwlarrClientException exception) {
@@ -1049,16 +1105,17 @@ public class ProwlarrReleaseIngestService {
             String indexer,
             Long size,
             Integer indexerId,
+            String downloadRef,
             List<String> resolutionTags,
             List<String> dynamicRangeTags
     ) {
         return new ReleaseIngestMetadata(
-                "PROWLARR_RELEASE",
+                isMagnetReference(downloadRef) && indexerId == null ? "PANSOU" : "PROWLARR_RELEASE",
                 releaseTitle,
                 trimToNull(indexer),
                 size,
                 indexerId,
-                null,
+                downloadRef,
                 knownTags(resolutionTags, RESOLUTION_TAGS),
                 knownTags(dynamicRangeTags, DYNAMIC_RANGE_TAGS)
         );
@@ -1383,9 +1440,27 @@ public class ProwlarrReleaseIngestService {
     }
     /** 没有合适推荐与上游查询失败不同；原手动 API 保持原 400 响应。 */
     static class NoMatchingReleaseException extends BusinessException {
+        private final String reasonCode;
+        private final List<ProwlarrReleaseItemResponse> candidates;
+
         NoMatchingReleaseException(String message) {
-            super(ErrorCode.BAD_REQUEST, message);
+            this("NO_RELEASE", message);
         }
+
+        NoMatchingReleaseException(String reasonCode, String message) {
+            this(reasonCode, message, List.of());
+        }
+
+        NoMatchingReleaseException(String reasonCode, String message, List<ProwlarrReleaseItemResponse> candidates) {
+            super(ErrorCode.BAD_REQUEST, message);
+            this.reasonCode = reasonCode;
+            this.candidates = List.copyOf(candidates);
+        }
+
+        String reasonCode() {
+            return reasonCode;
+        }
+        List<ProwlarrReleaseItemResponse> candidates() { return candidates; }
     }
 
 }

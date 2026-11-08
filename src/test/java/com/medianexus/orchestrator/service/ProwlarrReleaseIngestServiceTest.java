@@ -45,20 +45,53 @@ class ProwlarrReleaseIngestServiceTest {
     private FakeAnimeMagnetIngestTaskService animeMagnetIngestTaskService;
 
     private ProwlarrReleaseIngestService service;
+    private SettingsService settings;
+    private PanSouMagnetSearch panSou;
 
     @BeforeEach
     void setUp() {
         prowlarrClient = new FakeProwlarrClient();
         magnetIngestService = new FakeMagnetIngestService();
         animeMagnetIngestTaskService = new FakeAnimeMagnetIngestTaskService();
+        settings = mock(SettingsService.class);
+        panSou = mock(PanSouMagnetSearch.class);
         service = new ProwlarrReleaseIngestService(
                 new TestAuthService(),
                 prowlarrClient,
                 new ProwlarrReleaseSearchCache(prowlarrClient, new ProwlarrProperties()),
                 new ReleaseTitleTagParser(),
                 magnetIngestService,
-                animeMagnetIngestTaskService
+                animeMagnetIngestTaskService,
+                settings,
+                panSou
         );
+    }
+
+    @Test
+    void routesNewSearchBySettingAndKeepsSelectedPanSouMagnetAfterSwitch() {
+        var request = seriesRequest(null, 209867, null, "葬送的芙莉莲", "Frieren", 1, "1080p");
+        var selected = new com.medianexus.orchestrator.dto.resources.response.ProwlarrReleaseItemResponse(
+                "葬送的芙莉莲 S01 Complete 1080p", null, null, null, null, "Nyaa", null, null,
+                "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567", List.of("1080p"),
+                List.of(), List.of("S01"), "展示标题", "葬送的芙莉莲");
+        org.mockito.Mockito.when(settings.usesPanSouForMagnetSearch()).thenReturn(true);
+        org.mockito.Mockito.when(panSou.recommendSeries(request)).thenReturn(
+                new ProwlarrReleaseRecommendationResponse("葬送的芙莉莲", "1080p", "1080p", selected, List.of(selected)));
+        assertThat(service.recommendSeriesRelease(request).item()).isEqualTo(selected);
+        assertThat(prowlarrClient.calls()).isEmpty();
+        org.mockito.Mockito.when(settings.usesPanSouForMagnetSearch()).thenReturn(false);
+        service.ingestSelectedSeries(new SeriesReleaseOpenListIngestRequest("葬送的芙莉莲", "Frieren", 1,
+                "ANIME", selected.title(), selected.indexer(), null, null, selected.downloadRef(),
+                selected.resolutionTags(), List.of(), 209867));
+        assertThat(magnetIngestService.lastSeriesRequest.magnet()).isEqualTo(selected.downloadRef());
+        var original = new SeriesMagnetIngestTask();
+        var chain = new TaskRetryReference("group", "SERIES", "previous");
+        service.ingestSelectedSeriesRetry(original, new OpenListReleaseRetryRequest(selected.title(), selected.indexer(),
+                null, null, selected.downloadRef(), selected.resolutionTags(), List.of()), chain);
+        assertThat(magnetIngestService.retryMetadata.sourceType()).isEqualTo("PANSOU");
+        assertThat(magnetIngestService.retryReference).isEqualTo(chain);
+        assertThat(magnetIngestService.retryMagnet).isEqualTo(selected.downloadRef());
+        assertThat(prowlarrClient.calls()).isEmpty();
     }
 
     @Test

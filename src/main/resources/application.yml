@@ -137,6 +137,8 @@ medianexus:
     max-sup-size: ${MEDIANEXUS_SUBTITLE_UPLOAD_MAX_SUP_SIZE:50MB}
     max-total-extracted-size: ${MEDIANEXUS_SUBTITLE_UPLOAD_MAX_TOTAL_EXTRACTED_SIZE:150MB}
     max-compression-ratio: ${MEDIANEXUS_SUBTITLE_UPLOAD_MAX_COMPRESSION_RATIO:100}
+  magnet-search:
+    engine: ${MEDIANEXUS_MAGNET_SEARCH_ENGINE:PANSOU}
   prowlarr:
     disabled: ${MEDIANEXUS_PROWLARR_DISABLED:false}
     base-url: ${MEDIANEXUS_PROWLARR_BASE_URL:}
