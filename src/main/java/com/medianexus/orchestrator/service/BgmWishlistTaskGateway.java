@@ -94,6 +94,7 @@ public class BgmWishlistTaskGateway {
     /** 无符合条件的资源返回 null；上游故障继续抛出，不能冒充无资源。 */
     public ProwlarrReleaseItemResponse recommend(Target target, String quality) {
         try {
+            if (supplementTitle(target) != null) return candidates(target, quality, progress -> {}).get(0);
             if ("MOVIE".equals(target.mediaType())) {
                 return releases.recommendMovieReleaseForAutomation(new MovieReleaseRecommendationRequest(
                         target.tmdbId(), null, target.title(), target.originalTitle(), target.year(), quality)).item();
@@ -108,12 +109,25 @@ public class BgmWishlistTaskGateway {
     /** BGM 自动操作保留整个推荐集合，以当前顺序优先选择标题含汉字的发布。 */
     public List<ProwlarrReleaseItemResponse> candidates(Target target, String quality,
             java.util.function.Consumer<ProwlarrReleaseIngestService.ReleaseSearchProgress> progress) {
+        String bangumiTitle = supplementTitle(target);
         if ("MOVIE".equals(target.mediaType())) {
-            return releases.recommendMovieReleaseForAutomation(new MovieReleaseRecommendationRequest(
-                    target.tmdbId(), null, target.title(), target.originalTitle(), target.year(), quality), progress).items();
+            var request = new MovieReleaseRecommendationRequest(target.tmdbId(), null, target.title(),
+                    target.originalTitle(), target.year(), quality);
+            return (bangumiTitle == null ? releases.recommendMovieReleaseForAutomation(request, progress)
+                    : releases.recommendMovieReleaseForAutomation(request, bangumiTitle, progress)).items();
         }
-        return releases.recommendSeriesReleaseForAutomation(new SeriesReleaseRecommendationRequest(
-                null, target.tmdbId(), null, target.title(), target.originalTitle(), target.seasonNumber(), quality), progress).items();
+        var request = new SeriesReleaseRecommendationRequest(null, target.tmdbId(), null, target.title(),
+                target.originalTitle(), target.seasonNumber(), quality);
+        return (bangumiTitle == null ? releases.recommendSeriesReleaseForAutomation(request, progress)
+                : releases.recommendSeriesReleaseForAutomation(request, bangumiTitle, progress)).items();
+    }
+
+    private String supplementTitle(Target target) {
+        String title = target.bangumiTitle();
+        if (title == null || !title.matches(".*[\\u3400-\\u9fff].*")) return null;
+        String normalized = java.text.Normalizer.normalize(title.trim(), java.text.Normalizer.Form.NFKC);
+        if (normalized.equalsIgnoreCase(target.title()) || normalized.equalsIgnoreCase(target.originalTitle())) return null;
+        return title.trim();
     }
 
     public com.medianexus.orchestrator.dto.bgm.BgmWishlistOperationContract.Task currentTask(String type, String id) {
@@ -249,7 +263,10 @@ public class BgmWishlistTaskGateway {
     }
 
     public record Target(String mediaType, int tmdbId, Integer seasonNumber, String title,
-                         String originalTitle, Integer year) {
+                         String originalTitle, Integer year, String bangumiTitle) {
+        public Target(String mediaType, int tmdbId, Integer seasonNumber, String title, String originalTitle, Integer year) {
+            this(mediaType, tmdbId, seasonNumber, title, originalTitle, year, null);
+        }
     }
 
     public record ActiveTask(String taskType, String taskId, String status) {

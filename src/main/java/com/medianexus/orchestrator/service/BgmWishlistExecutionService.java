@@ -95,7 +95,7 @@ public class BgmWishlistExecutionService {
                 continue;
             }
             try {
-                if (tasks.recommend(target(item.identity()), source.quality()) == null) {
+                if (tasks.recommend(bangumiTarget(item), source.quality()) == null) {
                     skipped.add(skip(releaseStatus(item, "UNAVAILABLE"), reason("NO_RELEASE", "没有符合清晰度条件的发布资源"), null));
                     continue;
                 }
@@ -146,6 +146,12 @@ public class BgmWishlistExecutionService {
             if (!due(current, local) || !executions.claimDay(sourceId, local.toLocalDate())) return null;
             return executeScheduled(start(current, "DAILY", "SCHEDULED", null));
         });
+    }
+
+    private Target bangumiTarget(Item item) {
+        var identity = item.identity();
+        return new Target(identity.mediaType(), identity.tmdbId(), identity.seasonNumber(), identity.title(),
+                identity.originalTitle(), identity.year(), item.title());
     }
 
     private boolean due(Source source, ZonedDateTime local) {
@@ -235,7 +241,7 @@ public class BgmWishlistExecutionService {
             Target target = target(item.identity());
             ProwlarrReleaseItemResponse release;
             try {
-                release = tasks.recommend(target, run.source().quality());
+                release = tasks.recommend(bangumiTarget(item), run.source().quality());
             } catch (RuntimeException exception) {
                 log.warn("BGM 执行发布查询失败 runId={} subjectId={}", run.id(), item.subjectId(), exception);
                 skipped.add(skip(releaseStatus(item, "UNKNOWN"), reason("RELEASE_CHECK_FAILED", "发布资源查询失败，本次跳过"), null));

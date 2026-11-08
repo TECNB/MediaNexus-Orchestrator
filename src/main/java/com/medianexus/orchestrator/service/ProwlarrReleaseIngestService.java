@@ -151,6 +151,12 @@ public class ProwlarrReleaseIngestService {
         );
     }
 
+    ProwlarrReleaseRecommendationResponse recommendMovieReleaseForAutomation(MovieReleaseRecommendationRequest request,
+            String bangumiTitle, java.util.function.Consumer<ReleaseSearchProgress> progress) {
+        if (settings.usesPanSouForMagnetSearch()) return panSou.recommendMovie(request, bangumiTitle, progress);
+        return recommendMovieReleaseForAutomation(request, progress);
+    }
+
     public ProwlarrReleaseRecommendationResponse refreshMovieReleaseRecommendation(
             MovieReleaseRecommendationRequest request
     ) {
@@ -247,6 +253,12 @@ public class ProwlarrReleaseIngestService {
                 quality,
                 searchQueriesWithProgress(seriesReleaseSearchPlan(series), progress)
         );
+    }
+
+    ProwlarrReleaseRecommendationResponse recommendSeriesReleaseForAutomation(SeriesReleaseRecommendationRequest request,
+            String bangumiTitle, java.util.function.Consumer<ReleaseSearchProgress> progress) {
+        if (settings.usesPanSouForMagnetSearch()) return panSou.recommendSeries(request, bangumiTitle, progress);
+        return recommendSeriesReleaseForAutomation(request, progress);
     }
 
     public ProwlarrReleaseRecommendationResponse refreshSeriesReleaseRecommendation(

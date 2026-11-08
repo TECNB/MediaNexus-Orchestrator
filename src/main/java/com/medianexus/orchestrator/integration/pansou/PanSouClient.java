@@ -14,6 +14,8 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.medianexus.orchestrator.config.PanSouProperties;
 import jakarta.annotation.PreDestroy;
 import java.io.IOException;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -21,7 +23,14 @@ import java.net.http.HttpResponse;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
@@ -29,6 +38,13 @@ import org.springframework.util.StringUtils;
 public class PanSouClient implements AutoCloseable {
 
     private static final long TOKEN_REFRESH_SKEW_SECONDS = 300;
+    private static final Pattern CONTENT_SIZE_LABEL = Pattern.compile(
+            "(?<![\\p{L}\\p{N}_])(?:大小|Size)\\s*[:：]", Pattern.CASE_INSENSITIVE);
+    private static final Pattern CONTENT_SIZE_VALUE = Pattern.compile(
+            "\\s*([0-9]+(?:\\.[0-9]+)?)\\s*(KiB|MiB|GiB|TiB|KB|MB|GB|TB|B)"
+                    + "(?=$|[\\s|,，;；)）\\]】。])", Pattern.CASE_INSENSITIVE);
+    private static final Pattern CONTENT_MAGNET_URL = Pattern.compile(
+            "magnet:\\?[^\\s<>\\\"'|)）\\]】,，;；。]+", Pattern.CASE_INSENSITIVE);
 
     private final PanSouProperties properties;
     private final ObjectMapper objectMapper;
@@ -111,7 +127,7 @@ public class PanSouClient implements AutoCloseable {
         return new PanSouSearchResult(result);
     }
 
-    /** 磁力只读取合并分类；类型过滤不改变夸克入口，也不修改实例默认来源。 */
+    /** 磁力候选只读取合并分类，原始正文仅按 BTIH 补充大小；不改变夸克入口及默认来源。 */
     public PanSouSearchResult searchMagnets(PanSouSearchCommand command) {
         if (command == null || !StringUtils.hasText(command.keyword())) {
             throw new IllegalArgumentException("PanSou 搜索词不能为空");
@@ -119,7 +135,7 @@ public class PanSouClient implements AutoCloseable {
         ObjectNode payload = objectMapper.createObjectNode();
         payload.put("kw", command.keyword().trim());
         payload.putArray("cloud_types").add("magnet");
-        payload.put("res", "merge");
+        payload.put("res", "all");
         payload.put("src", "plugin");
         payload.putArray("plugins").add("nyaa").add("clxiong");
         payload.put("refresh", command.refresh());
@@ -148,20 +164,97 @@ public class PanSouClient implements AutoCloseable {
             throw new PanSouClientException(INVALID_RESPONSE, "PanSou 磁力分类不是结果列表");
         }
         List<PanSouSearchEntry> result = new ArrayList<>();
+        Map<PanSouMagnetIdentity, Long> sizes = magnetSizes(body.path("results"));
         for (JsonNode entry : entries) {
             String type = text(entry, "type");
+            PanSouMagnetIdentity identity = PanSouMagnetIdentity.fromUrl(text(entry, "url")).orElse(null);
             if (!entry.isObject() || (StringUtils.hasText(type) && !"magnet".equalsIgnoreCase(type))
-                    || PanSouMagnetIdentity.fromUrl(text(entry, "url")).isEmpty()) {
+                    || identity == null) {
                 throw new PanSouClientException(INVALID_RESPONSE, "PanSou 磁力分类包含无效链接");
             }
             result.add(new PanSouSearchEntry(
                     text(entry, "url"), "",
                     firstText(entry, "note", "title", "name", "work_title", "desc"),
                     firstText(entry, "datetime", "time", "created_at"),
-                    firstText(entry, "source", "channel", "plugin")
+                    firstText(entry, "source", "channel", "plugin"),
+                    sizes.get(identity), sizes.containsKey(identity) && sizes.get(identity) == null
             ));
         }
         return new PanSouSearchResult(result);
+    }
+
+    private Map<PanSouMagnetIdentity, Long> magnetSizes(JsonNode messages) {
+        Map<PanSouMagnetIdentity, Long> sizes = new HashMap<>();
+        Set<PanSouMagnetIdentity> conflicts = new HashSet<>();
+        if (!messages.isArray()) {
+            return sizes;
+        }
+        for (JsonNode message : messages) {
+            JsonNode links = message.path("links");
+            if (!links.isArray()) {
+                continue;
+            }
+            Set<PanSouMagnetIdentity> identities = new HashSet<>();
+            for (JsonNode link : links) {
+                if ("magnet".equalsIgnoreCase(text(link, "type"))) {
+                    PanSouMagnetIdentity.fromUrl(text(link, "url")).ifPresent(identities::add);
+                }
+            }
+            if (identities.size() != 1) {
+                continue;
+            }
+            PanSouMagnetIdentity identity = identities.iterator().next();
+            String content = text(message, "content");
+            // 正文总大小不能分摊给多条种子；正文中额外出现的不同 BTIH 同样构成歧义。
+            Matcher magnets = CONTENT_MAGNET_URL.matcher(content);
+            while (magnets.find()) {
+                PanSouMagnetIdentity.fromUrl(magnets.group()).ifPresent(identities::add);
+            }
+            if (identities.size() != 1 || conflicts.contains(identity)) {
+                continue;
+            }
+            Long size = contentSizeBytes(content);
+            if (size == null) {
+                continue;
+            }
+            Long previous = sizes.putIfAbsent(identity, size);
+            // 上游没有统一的舍入精度契约，不同字节值保守视为冲突，且不能被后续记录覆盖。
+            if (previous != null && !previous.equals(size)) {
+                sizes.put(identity, null);
+                conflicts.add(identity);
+            }
+        }
+        return sizes;
+    }
+
+    private Long contentSizeBytes(String content) {
+        Matcher labels = CONTENT_SIZE_LABEL.matcher(content);
+        Long sizeBytes = null;
+        while (labels.find()) {
+            Matcher size = CONTENT_SIZE_VALUE.matcher(content).region(labels.end(), content.length());
+            if (!size.lookingAt()) {
+                return null;
+            }
+            String unit = size.group(2).toUpperCase(Locale.ROOT);
+            int exponent = switch (unit.charAt(0)) {
+                case 'K' -> 1;
+                case 'M' -> 2;
+                case 'G' -> 3;
+                case 'T' -> 4;
+                default -> 0;
+            };
+            BigDecimal bytes = new BigDecimal(size.group(1)).multiply(
+                    BigDecimal.valueOf(unit.contains("I") ? 1024 : 1000).pow(exponent));
+            if (bytes.compareTo(BigDecimal.valueOf(Long.MAX_VALUE)) > 0) {
+                return null;
+            }
+            long parsed = bytes.setScale(0, RoundingMode.HALF_UP).longValueExact();
+            if (sizeBytes != null && sizeBytes != parsed) {
+                return null;
+            }
+            sizeBytes = parsed;
+        }
+        return sizeBytes;
     }
 
     public List<PanSouLinkCheckResult> checkLinks(List<PanSouLinkCheckRequest> requests) {

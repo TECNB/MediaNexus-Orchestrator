@@ -72,11 +72,11 @@ public class PanSouMagnetSearch {
     }
 
     public ProwlarrReleaseSearchResponse searchMovie(MovieReleaseSearchRequest request) {
-        return searchResponse(movieTarget(request), query -> client.searchMagnets(new PanSouSearchCommand(query, false)));
+        return searchResponse(withBangumiTitle(movieTarget(request), request.bangumiTitle()), query -> client.searchMagnets(new PanSouSearchCommand(query, false)));
     }
 
     public ProwlarrReleaseSearchResponse refreshMovie(MovieReleaseSearchRequest request) {
-        return searchResponse(movieTarget(request), query -> client.searchMagnets(new PanSouSearchCommand(query, true)));
+        return searchResponse(withBangumiTitle(movieTarget(request), request.bangumiTitle()), query -> client.searchMagnets(new PanSouSearchCommand(query, true)));
     }
 
     public ProwlarrReleaseRecommendationResponse recommendMovie(MovieReleaseRecommendationRequest request) {
@@ -88,16 +88,22 @@ public class PanSouMagnetSearch {
         return recommendation(movieTarget(request), query -> client.searchMagnets(new PanSouSearchCommand(query, false)), progress);
     }
 
+    ProwlarrReleaseRecommendationResponse recommendMovie(MovieReleaseRecommendationRequest request,
+            String bangumiTitle, Consumer<ReleaseSearchProgress> progress) {
+        return recommendation(withBangumiTitle(movieTarget(request), bangumiTitle),
+                query -> client.searchMagnets(new PanSouSearchCommand(query, false)), progress);
+    }
+
     public ProwlarrReleaseRecommendationResponse refreshRecommendMovie(MovieReleaseRecommendationRequest request) {
         return recommendation(movieTarget(request), query -> client.searchMagnets(new PanSouSearchCommand(query, true)), NO_PROGRESS);
     }
 
     public ProwlarrReleaseSearchResponse searchSeries(SeriesReleaseSearchRequest request) {
-        return searchResponse(seriesTarget(request), query -> client.searchMagnets(new PanSouSearchCommand(query, false)));
+        return searchResponse(withBangumiTitle(seriesTarget(request), request.bangumiTitle()), query -> client.searchMagnets(new PanSouSearchCommand(query, false)));
     }
 
     public ProwlarrReleaseSearchResponse refreshSeries(SeriesReleaseSearchRequest request) {
-        return searchResponse(seriesTarget(request), query -> client.searchMagnets(new PanSouSearchCommand(query, true)));
+        return searchResponse(withBangumiTitle(seriesTarget(request), request.bangumiTitle()), query -> client.searchMagnets(new PanSouSearchCommand(query, true)));
     }
 
     public ProwlarrReleaseRecommendationResponse recommendSeries(SeriesReleaseRecommendationRequest request) {
@@ -107,6 +113,12 @@ public class PanSouMagnetSearch {
     public ProwlarrReleaseRecommendationResponse recommendSeries(
             SeriesReleaseRecommendationRequest request, Consumer<ReleaseSearchProgress> progress) {
         return recommendation(seriesTarget(request), query -> client.searchMagnets(new PanSouSearchCommand(query, false)), progress);
+    }
+
+    ProwlarrReleaseRecommendationResponse recommendSeries(SeriesReleaseRecommendationRequest request,
+            String bangumiTitle, Consumer<ReleaseSearchProgress> progress) {
+        return recommendation(withBangumiTitle(seriesTarget(request), bangumiTitle),
+                query -> client.searchMagnets(new PanSouSearchCommand(query, false)), progress);
     }
 
     public ProwlarrReleaseRecommendationResponse refreshRecommendSeries(SeriesReleaseRecommendationRequest request) {
@@ -122,8 +134,10 @@ public class PanSouMagnetSearch {
     private ProwlarrReleaseRecommendationResponse recommendation(
             Target target, Function<String, PanSouSearchResult> search, Consumer<ReleaseSearchProgress> progress) {
         List<Candidate> candidates = discover(target, search, progress);
-        List<Candidate> qualified = candidates.stream().filter(candidate -> qualified(target, candidate)).toList();
-        if (qualified.isEmpty()) throw rejection(target, candidates);
+        Target identity = target.bangumiTitle() == null ? target
+                : new Target(union(target.titles(), List.of(target.bangumiTitle())), target.year(), target.season(), target.quality());
+        List<Candidate> qualified = candidates.stream().filter(candidate -> qualified(identity, candidate)).toList();
+        if (qualified.isEmpty()) throw rejection(identity, candidates);
         String selectedQuality = target.quality();
         if (qualified.stream().noneMatch(candidate -> candidate.tags().resolutionTags().contains(target.quality()))) {
             selectedQuality = "1080p";
@@ -160,16 +174,19 @@ public class PanSouMagnetSearch {
                     return sorted(target, candidates);
                 }
             }
-            for (String query : supplements(target)) {
+            Target supplementTarget = target.bangumiTitle() == null ? target
+                    : new Target(union(target.titles(), List.of(target.bangumiTitle())), target.year(),
+                            target.season(), target.quality(), target.bangumiTitle());
+            for (String query : supplements(supplementTarget)) {
                 progress.accept(new ReleaseSearchProgress(query, "PanSou 补搜", "RUNNING", 0, null));
-                acceptBatch(target, candidates, failures, queryBatch(query, search), progress);
-                if (candidates.values().stream().anyMatch(candidate -> qualified(target, candidate))) {
-                    return sorted(target, candidates);
+                acceptBatch(supplementTarget, candidates, failures, queryBatch(query, search), progress);
+                if (candidates.values().stream().anyMatch(candidate -> qualified(supplementTarget, candidate))) {
+                    return sorted(supplementTarget, candidates);
                 }
             }
             // 尚有失败的来源时，证据不足不能被宣称为确定无匹配。
             if (!failures.isEmpty()) throw failures.get(0);
-            return sorted(target, candidates);
+            return sorted(supplementTarget, candidates);
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             throw new PanSouClientException(PanSouClientException.Reason.UPSTREAM, "PanSou 搜索被中断", exception);
@@ -224,15 +241,18 @@ public class PanSouMagnetSearch {
         boolean complete = (range || PACK.matcher(title).find())
                 && !SINGLE_EPISODE.matcher(EPISODE_RANGE.matcher(episodeEvidence).replaceAll(" ")).find();
         return new Candidate(entry, new ReleaseTitleTags(parsed.resolutionTags(), parsed.dynamicRangeTags(), List.copyOf(seasons)),
-                complete, List.of(query), List.of(source(entry)), List.of(title));
+                complete, List.of(query), List.of(source(entry)), List.of(title), entry.sizeBytes(), entry.sizeConflict());
     }
 
     private Candidate merge(Target target, Candidate previous, Candidate next) {
         Candidate preferred = related(target, next) && (!related(target, previous)
                 || evidenceRank(target, next) < evidenceRank(target, previous)) ? next : previous;
+        boolean conflict = previous.sizeConflict() || next.sizeConflict()
+                || previous.sizeBytes() != null && next.sizeBytes() != null && !previous.sizeBytes().equals(next.sizeBytes());
+        Long size = conflict ? null : previous.sizeBytes() != null ? previous.sizeBytes() : next.sizeBytes();
         return new Candidate(preferred.entry(), preferred.tags(), preferred.complete(),
                 union(previous.queries(), next.queries()), union(previous.sources(), next.sources()),
-                union(previous.titles(), next.titles()));
+                union(previous.titles(), next.titles()), size, conflict);
     }
 
     private List<String> union(List<String> first, List<String> second) {
@@ -246,7 +266,8 @@ public class PanSouMagnetSearch {
                 .sorted(Comparator.comparingInt((Candidate candidate) -> evidenceRank(target, candidate))
                         .thenComparingInt(candidate -> CHINESE_SUBTITLES.matcher(candidate.entry().note()).find() ? 0 : 1)
                         .thenComparingInt(candidate -> candidate.entry().note().matches(".*[\\u3400-\\u9fff].*") ? 0 : 1)
-                        .thenComparingInt(candidate -> dynamicPriority(candidate.tags()))).toList();
+                        .thenComparingInt(candidate -> dynamicPriority(candidate.tags()))
+                        .thenComparing(Candidate::sizeBytes, Comparator.nullsLast(Comparator.reverseOrder()))).toList();
     }
 
     private int evidenceRank(Target target, Candidate candidate) {
@@ -320,14 +341,15 @@ public class PanSouMagnetSearch {
         String uncertainty = target.season() == null && !scopeConfirmed(target, candidate) ? "；年份/版本待核对"
                 : target.season() != null && candidate.tags().seasonTags().isEmpty() ? "；季度未知，需人工核对"
                 : target.season() != null && !scopeConfirmed(target, candidate) ? "；整季/混季证据不足，需人工核对" : "";
-        return new ProwlarrReleaseItemResponse(candidate.entry().note(), null, null, null, null,
+        return new ProwlarrReleaseItemResponse(candidate.entry().note(), candidate.sizeBytes(), null, null, null,
                 String.join(" / ", candidate.sources()), candidate.entry().datetime(), null, candidate.entry().url(),
                 candidate.tags().resolutionTags(), candidate.tags().dynamicRangeTags(), candidate.tags().seasonTags(),
                 "PanSou：" + String.join(" / ", candidate.sources()) + uncertainty
                         + (candidate.complete() ? "；标题含整包线索" : "；未确认整季，可能为单集")
                         + (CHINESE_SUBTITLES.matcher(candidate.entry().note()).find()
                                 ? "；标题标注中文字幕，内容未经核验" : "；字幕语言未标明")
-                        + "；做种、体积及可下载性未知"
+                        + (candidate.sizeBytes() == null ? "；体积未知" : "；体积为来源报告的近似种子总大小")
+                        + "；做种及可下载性未知"
                         + (candidate.titles().size() > 1 ? "；同 hash 标题：" + String.join(" | ", candidate.titles()) : ""),
                 String.join(" / ", candidate.queries()));
     }
@@ -349,6 +371,7 @@ public class PanSouMagnetSearch {
 
     private List<String> supplements(Target target) {
         LinkedHashSet<String> queries = new LinkedHashSet<>();
+        if (target.bangumiTitle() != null) queries.add(target.bangumiTitle());
         for (String title : target.titles()) {
             String variant = title.replace('×', 'x').replaceAll("[：:;；/\\[\\]【】()（）・]", " ")
                     .replaceAll("\\s+", " ").trim();
@@ -362,7 +385,7 @@ public class PanSouMagnetSearch {
         } else if (target.year() != null) {
             queries.add(target.titles().get(0) + " " + target.year());
         }
-        queries.removeAll(target.titles());
+        queries.removeIf(query -> target.titles().contains(query) && !query.equals(target.bangumiTitle()));
         return queries.stream().limit(2).toList();
     }
 
@@ -409,8 +432,18 @@ public class PanSouMagnetSearch {
         return normalized;
     }
 
-    private record Target(List<String> titles, Integer year, Integer season, String quality) {}
+    private Target withBangumiTitle(Target target, String title) {
+        String alias = StringUtils.hasText(title) && title.matches(".*[\\u3400-\\u9fff].*") ? title.trim() : null;
+        if (alias != null && target.titles().stream().anyMatch(value -> comparable(value).equals(comparable(title)))) alias = null;
+        return new Target(target.titles(), target.year(), target.season(), target.quality(), alias);
+    }
+
+    private record Target(List<String> titles, Integer year, Integer season, String quality, String bangumiTitle) {
+        Target(List<String> titles, Integer year, Integer season, String quality) {
+            this(titles, year, season, quality, null);
+        }
+    }
     private record Candidate(PanSouSearchEntry entry, ReleaseTitleTags tags, boolean complete,
-            List<String> queries, List<String> sources, List<String> titles) {}
+            List<String> queries, List<String> sources, List<String> titles, Long sizeBytes, boolean sizeConflict) {}
     private record QueryBatch(String query, List<PanSouSearchEntry> entries, PanSouClientException failure, long elapsedMs) {}
 }

@@ -29,8 +29,17 @@ public record MovieReleaseSearchRequest(
         @Min(value = 1888, message = "电影年份无效")
         Integer year,
         @Schema(description = "当前选择的分辨率标签；用于列表推荐排序，不会过滤其他分辨率", nullable = true)
-        String quality
+        String quality,
+        @Schema(description = "已关联 Bangumi 条目的中文名；仅在目录词无合格候选时补搜", nullable = true)
+        @JsonProperty("bangumi_title")
+        String bangumiTitle
 ) {
+
+
+    public MovieReleaseSearchRequest(Integer tmdbId, String imdbId, String title, String originalTitle,
+            Integer year, String quality) {
+        this(tmdbId, imdbId, title, originalTitle, year, quality, null);
+    }
 
     @JsonAnySetter
     public void rejectUnknownField(String fieldName, Object ignored) {

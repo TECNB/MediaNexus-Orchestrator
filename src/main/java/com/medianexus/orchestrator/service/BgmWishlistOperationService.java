@@ -268,7 +268,9 @@ public class BgmWishlistOperationService {
         if (!"CREATING".equals(original.status())) {
             List<Candidate> candidates;
             try {
-                candidates = tasks.candidates(target(item.identity()), operation.source().quality(), progress ->
+                candidates = tasks.candidates(new BgmWishlistTaskGateway.Target(item.identity().mediaType(), item.identity().tmdbId(),
+                        item.identity().seasonNumber(), item.identity().title(), item.identity().originalTitle(),
+                        item.identity().year(), item.title()), operation.source().quality(), progress ->
                     updateEntry(id, subjectId, previous -> {
                         List<Search> searches = new ArrayList<>(previous.searches());
                         Search search = new Search(progress.query(), progress.source(), progress.status(), progress.elapsedMs(), progress.resultCount());

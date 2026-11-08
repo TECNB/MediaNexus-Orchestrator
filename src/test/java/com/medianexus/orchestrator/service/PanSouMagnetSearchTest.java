@@ -102,6 +102,50 @@ class PanSouMagnetSearchTest {
     }
 
     @Test
+    void ranksLargerOnlyAfterEvidenceAndUsesBangumiTitleOnlyAsFallback() {
+        List<String> calls = new CopyOnWriteArrayList<>();
+        when(client.searchMagnets(any())).thenAnswer(call -> {
+            String query = call.<PanSouSearchCommand>getArgument(0).keyword(); calls.add(query);
+            if (!query.equals("雾尾粉丝后援会")) return new PanSouSearchResult(List.of());
+            return new PanSouSearchResult(List.of(
+                    new PanSouSearchEntry(magnet(1), "", "雾尾粉丝后援会 [01-12 合集][1080p][简繁字幕]", null, "nyaa", 100L),
+                    new PanSouSearchEntry(magnet(2), "", "雾尾粉丝后援会 [01-12 合集][1080p][简繁字幕]", null, "nyaa", 300L),
+                    new PanSouSearchEntry(magnet(3), "", "雾尾粉丝后援会 [01-12 合集][720p][简繁字幕]", null, "nyaa", 900L),
+                    entry(magnet(4), "雾尾粉丝后援会 [01-12 合集][1080p][简繁字幕]", "nyaa")));
+        });
+        var request = new SeriesReleaseRecommendationRequest(null, null, null, "雾尾粉丝俱乐部", "霧尾ファンクラブ", 1, "1080p");
+        assertThatThrownBy(() -> search.recommendSeries(request, "雾尾粉丝后援会", progress -> {}))
+                .isInstanceOfSatisfying(ProwlarrReleaseIngestService.NoMatchingReleaseException.class, failure -> {
+                    assertThat(failure.candidates()).extracting("downloadRef").containsExactly(magnet(2), magnet(1), magnet(4), magnet(3));
+                    assertThat(failure.candidates().get(0).size()).isEqualTo(300L);
+                    assertThat(failure.candidates().get(0).matchQuery()).contains("雾尾粉丝后援会");
+                });
+        assertThat(calls.subList(0, 2)).containsExactlyInAnyOrder("雾尾粉丝俱乐部", "霧尾ファンクラブ");
+        assertThat(calls).filteredOn("雾尾粉丝后援会"::equals).hasSize(1);
+        calls.clear();
+        org.mockito.Mockito.reset(client);
+        when(client.searchMagnets(any())).thenAnswer(call -> {
+            calls.add(call.<PanSouSearchCommand>getArgument(0).keyword());
+            return new PanSouSearchResult(List.of(entry(magnet(1), "雾尾粉丝俱乐部 S01 Complete 1080p", "nyaa")));
+        });
+        assertThat(search.recommendSeries(request, "雾尾粉丝后援会", progress -> {}).item().downloadRef()).isEqualTo(magnet(1));
+        assertThat(calls).doesNotContain("雾尾粉丝后援会");
+    }
+
+    @Test
+    void preservesSizeConflictAcrossQueryBatches() {
+        when(client.searchMagnets(any())).thenAnswer(call -> {
+            String query = call.<PanSouSearchCommand>getArgument(0).keyword();
+            return new PanSouSearchResult(List.of(new PanSouSearchEntry(magnet(1), "", "Show Batch 1080p", null,
+                    "nyaa", query.equals("Show") ? null : 400L, query.equals("Show"))));
+        });
+        assertThatThrownBy(() -> search.recommendSeries(new SeriesReleaseRecommendationRequest(
+                null, null, null, "Show", "Original", 1, "1080p")))
+                .isInstanceOfSatisfying(ProwlarrReleaseIngestService.NoMatchingReleaseException.class,
+                        failure -> assertThat(failure.candidates()).singleElement().satisfies(item -> assertThat(item.size()).isNull()));
+    }
+
+    @Test
     void recommendsOnlyExplicitTargetSeasonPacksEvenWithUnknownSeeders() {
         when(client.searchMagnets(any())).thenReturn(new PanSouSearchResult(List.of(
                 entry(magnet(1), "Show S02E01 1080p Complete", "nyaa"),
@@ -258,10 +302,31 @@ class PanSouMagnetSearchTest {
                         .isInstanceOfSatisfying(PanSouClientException.class,
                                 failure -> assertThat(failure.getReason()).isEqualTo(PanSouClientException.Reason.INVALID_RESPONSE));
             }
+            List<java.util.Map<String, Object>> raw = new ArrayList<>();
+            List<java.util.Map<String, Object>> merged = new ArrayList<>();
+            String[] values = {"大小: 1 GiB", "Size: 1 GB", "大小: -1 GiB", "Size: 999999999999999999999 TB", "大小: 0 B"};
+            for (int i = 0; i < values.length; i++) {
+                raw.add(java.util.Map.of("content", values[i], "links", List.of(java.util.Map.of("type", "magnet", "url", magnet(i+1)))));
+                merged.add(java.util.Map.of("url", magnet(i+1), "note", "Show S02 Batch 1080p"));
+            }
+            raw.add(java.util.Map.of("content", "大小: 2 GiB", "links", List.of(java.util.Map.of("type", "magnet", "url", magnet(6)))));
+            raw.add(java.util.Map.of("content", "大小: 3 GiB", "links", List.of(java.util.Map.of("type", "magnet", "url", magnet(6)))));
+            merged.add(java.util.Map.of("url", magnet(6), "note", "Show S02 Batch 1080p"));
+            raw.add(java.util.Map.of("content", "大小: 4 GiB", "links", List.of(
+                    java.util.Map.of("type", "magnet", "url", magnet(7)), java.util.Map.of("type", "magnet", "url", magnet(8)))));
+            merged.add(java.util.Map.of("url", magnet(7), "note", "Show S02 Batch 1080p"));
+            java.util.Collections.reverse(raw);
+            response.set(mapper.writeValueAsString(java.util.Map.of("data", java.util.Map.of("results", raw,
+                    "merged_by_type", java.util.Map.of("magnet", merged)))));
+            int previousRequests = payloads.size();
+            var sized = actualClient.searchMagnets(new PanSouSearchCommand("Show", false)).entries();
+            assertThat(sized).extracting(PanSouSearchEntry::sizeBytes).containsExactly(1_073_741_824L, 1_000_000_000L, null, null, 0L, null, null);
+            assertThat(payloads).hasSize(previousRequests + 1);
+            assertThat(sized.get(5).sizeConflict()).isTrue();
             assertThat(logins).hasValue(1);
             assertThat(payloads).allSatisfy(payload -> {
                 assertThat(payload.path("cloud_types")).extracting(JsonNode::asText).containsExactly("magnet");
-                assertThat(payload.path("res").asText()).isEqualTo("merge");
+                assertThat(payload.path("res").asText()).isEqualTo("all");
                 assertThat(payload.path("plugins")).extracting(JsonNode::asText).containsExactly("nyaa", "clxiong");
             });
             assertThat(payloads.get(1).path("refresh").asBoolean()).isTrue();

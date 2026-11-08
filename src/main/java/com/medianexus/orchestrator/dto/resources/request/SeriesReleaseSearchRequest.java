@@ -34,8 +34,17 @@ public record SeriesReleaseSearchRequest(
         @Min(value = 1, message = "季编号必须大于 0")
         Integer seasonNumber,
         @Schema(description = "当前选择的分辨率标签；用于列表推荐排序，不会过滤其他分辨率", nullable = true)
-        String quality
+        String quality,
+        @Schema(description = "已关联 Bangumi 条目的中文名；仅在目录词无合格候选时补搜", nullable = true)
+        @JsonProperty("bangumi_title")
+        String bangumiTitle
 ) {
+
+
+    public SeriesReleaseSearchRequest(Integer tvdbId, Integer tmdbId, String imdbId, String title,
+            String originalTitle, Integer seasonNumber, String quality) {
+        this(tvdbId, tmdbId, imdbId, title, originalTitle, seasonNumber, quality, null);
+    }
 
     @JsonAnySetter
     public void rejectUnknownField(String fieldName, Object ignored) {

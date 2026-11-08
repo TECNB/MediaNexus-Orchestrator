@@ -161,6 +161,28 @@ class BgmWishlistOperationTest {
         verify(f.tasks).create(any(), eq(release), eq(f.owner));
     }
 
+    @Test void passesBangumiChineseTitleToRealGatewayAndKeepsFallbackForConfirmation() {
+        Fixture f = new Fixture();
+        var releases = mock(ProwlarrReleaseIngestService.class);
+        var previous = f.item(1L, true);
+        var identity = new Identity("SERIES", 1, 1, "雾尾粉丝俱乐部", "霧尾ファンクラブ", 2026);
+        var item = new Item(1L, "雾尾粉丝后援会", "霧尾ファンクラブ", null, 2026, previous.updatedAt(), identity,
+                "ABSENT", "AVAILABLE", true, List.of(), null, true, "NOT_CHECKED", null);
+        when(f.wishlist.evaluateForOperation("source", 1L)).thenReturn(item);
+        var release = f.release("[LoliHouse] 雾尾粉丝后援会 [01-12 合集][1080p][简繁字幕]");
+        org.springframework.test.util.ReflectionTestUtils.setField(f.tasks, "releases", releases);
+        doCallRealMethod().when(f.tasks).candidates(any(), anyString(), any());
+        doThrow(new ProwlarrReleaseIngestService.NoMatchingReleaseException("SEASON_UNKNOWN", "季度待核对", List.of(release)))
+                .when(releases).recommendSeriesReleaseForAutomation(any(), eq("雾尾粉丝后援会"), any());
+        Operation accepted = f.service.submit("source", List.of(1L)); f.executor.runPending();
+        Entry entry = f.rows.get(accepted.id()).entries().get(0);
+        assertEquals("WAITING_CONFIRMATION", entry.status());
+        assertEquals(release, entry.candidates().get(0).release());
+        verify(releases).recommendSeriesReleaseForAutomation(argThat(request -> request.title().equals("雾尾粉丝俱乐部")),
+                eq("雾尾粉丝后援会"), any());
+        verify(f.tasks, never()).create(any(), any(), any());
+    }
+
     @Test void retainsUncertainPanSouCandidatesForManualConfirmationWithoutCreating() {
         Fixture f = new Fixture();
         var release = f.release("中文作品 Batch 1080p");
