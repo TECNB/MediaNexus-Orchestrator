@@ -108,14 +108,12 @@ public class BgmWishlistTaskGateway {
     /** BGM 自动操作保留整个推荐集合，以当前顺序优先选择标题含汉字的发布。 */
     public List<ProwlarrReleaseItemResponse> candidates(Target target, String quality,
             java.util.function.Consumer<ProwlarrReleaseIngestService.ReleaseSearchProgress> progress) {
-        try {
-            if ("MOVIE".equals(target.mediaType())) {
-                return releases.recommendMovieReleaseForAutomation(new MovieReleaseRecommendationRequest(
-                        target.tmdbId(), null, target.title(), target.originalTitle(), target.year(), quality), progress).items();
-            }
-            return releases.recommendSeriesReleaseForAutomation(new SeriesReleaseRecommendationRequest(
-                    null, target.tmdbId(), null, target.title(), target.originalTitle(), target.seasonNumber(), quality), progress).items();
-        } catch (ProwlarrReleaseIngestService.NoMatchingReleaseException noMatch) { return List.of(); }
+        if ("MOVIE".equals(target.mediaType())) {
+            return releases.recommendMovieReleaseForAutomation(new MovieReleaseRecommendationRequest(
+                    target.tmdbId(), null, target.title(), target.originalTitle(), target.year(), quality), progress).items();
+        }
+        return releases.recommendSeriesReleaseForAutomation(new SeriesReleaseRecommendationRequest(
+                null, target.tmdbId(), null, target.title(), target.originalTitle(), target.seasonNumber(), quality), progress).items();
     }
 
     public com.medianexus.orchestrator.dto.bgm.BgmWishlistOperationContract.Task currentTask(String type, String id) {

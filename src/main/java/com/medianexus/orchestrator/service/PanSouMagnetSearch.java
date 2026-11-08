@@ -48,17 +48,19 @@ public class PanSouMagnetSearch {
                     + "|(?<!\\d)\\d{1,2}(?:st|nd|rd|th)[ ._-]*season(?![a-z0-9])"
                     + "|第\\s*[0-9一二三四五六七八九十两]+\\s*季");
     private static final Pattern PACK = Pattern.compile(
-            "(?i)(?<![a-z])(?:batch|complete)(?![a-z])|全集|完结|完結|全\\s*\\d{1,3}\\s*[集話话]");
+            "(?i)(?<![a-z])(?:batch|complete|fin|all)(?![a-z])|全集|合集|完结|完結|全\\s*\\d{1,3}\\s*[集話话]");
     private static final Pattern EPISODE_RANGE = Pattern.compile(
             "(?i)(?<![a-z0-9])(?:e(?:p)?)?(\\d{1,3})\\s*[-~–—]\\s*(?:e(?:p)?)?(\\d{1,3})(?![0-9])");
     private static final Pattern SINGLE_EPISODE = Pattern.compile(
             "(?i)(?<![a-z])(?:s\\d{1,2})?e(?:p)?[ ._-]*\\d{1,3}(?!\\d)|第\\s*\\d+\\s*[集話话]"
-                    + "|(?:^|[\\s\\[\\]_-])\\d{1,3}\\s*(?:[集話话]|v[1-9])");
+                    + "|(?:^|[\\s\\[\\]_-])\\d{1,3}\\s*(?:[集話话]|v[1-9])"
+                    + "|[\\[【]\\s*\\d{1,3}\\s*[\\]】]|\\s-\\s*\\d{1,3}(?=\\s|$|[\\[【])");
     private static final Pattern NON_FEATURE = Pattern.compile(
-            "(?i)(?<![a-z])(?:ost|soundtrack|ncop|nced|trailer|op|ed|pv|ova|oad|sp)(?![a-z])"
-                    + "|主题曲|主題歌|片头曲|片尾曲|预告|預告|截图|特典|花絮");
+            "(?i)(?<![a-z])(?:ost|soundtrack|ncop|nced|trailer|op|ed|pv|ova|oad|sp|epub|novel|manga)(?![a-z])"
+                    + "|主题曲|主題歌|片头曲|片尾曲|预告|預告|截图|特典|花絮|小説|小说|漫畫|漫画|コミック|ラノベ|巻|MP3|320K");
     private static final Pattern YEAR = Pattern.compile("(?<![0-9])(?:18|19|20)\\d{2}(?![0-9])");
     private static final Pattern DATE = Pattern.compile("(?<!\\d)(?:19|20)\\d{2}[-./]\\d{1,2}[-./]\\d{1,2}(?!\\d)");
+    private static final Pattern CHINESE_SUBTITLES = Pattern.compile("(?i)简繁|簡繁|简体|簡體|繁体|繁體|中文字幕|中字|(?<![a-z])(?:chs|cht|sc|tc)(?![a-z])");
     private static final Consumer<ReleaseSearchProgress> NO_PROGRESS = progress -> {};
 
     private final PanSouClient client;
@@ -242,13 +244,16 @@ public class PanSouMagnetSearch {
     private List<Candidate> sorted(Target target, Map<PanSouMagnetIdentity, Candidate> candidates) {
         return candidates.values().stream().filter(candidate -> related(target, candidate))
                 .sorted(Comparator.comparingInt((Candidate candidate) -> evidenceRank(target, candidate))
+                        .thenComparingInt(candidate -> CHINESE_SUBTITLES.matcher(candidate.entry().note()).find() ? 0 : 1)
+                        .thenComparingInt(candidate -> candidate.entry().note().matches(".*[\\u3400-\\u9fff].*") ? 0 : 1)
                         .thenComparingInt(candidate -> dynamicPriority(candidate.tags()))).toList();
     }
 
     private int evidenceRank(Target target, Candidate candidate) {
         if (qualified(target, candidate)) return candidate.tags().resolutionTags().contains(target.quality()) ? 0 : 1;
         if (scopeConfirmed(target, candidate)) return 2;
-        return 3;
+        if (candidate.complete() && (target.quality() == null || candidate.tags().resolutionTags().contains(target.quality()))) return 3;
+        return 4;
     }
 
     private boolean qualified(Target target, Candidate candidate) {
@@ -318,7 +323,11 @@ public class PanSouMagnetSearch {
         return new ProwlarrReleaseItemResponse(candidate.entry().note(), null, null, null, null,
                 String.join(" / ", candidate.sources()), candidate.entry().datetime(), null, candidate.entry().url(),
                 candidate.tags().resolutionTags(), candidate.tags().dynamicRangeTags(), candidate.tags().seasonTags(),
-                "PanSou：" + String.join(" / ", candidate.sources()) + uncertainty + "；做种、体积及可下载性未知"
+                "PanSou：" + String.join(" / ", candidate.sources()) + uncertainty
+                        + (candidate.complete() ? "；标题含整包线索" : "；未确认整季，可能为单集")
+                        + (CHINESE_SUBTITLES.matcher(candidate.entry().note()).find()
+                                ? "；标题标注中文字幕，内容未经核验" : "；字幕语言未标明")
+                        + "；做种、体积及可下载性未知"
                         + (candidate.titles().size() > 1 ? "；同 hash 标题：" + String.join(" | ", candidate.titles()) : ""),
                 String.join(" / ", candidate.queries()));
     }
@@ -334,7 +343,8 @@ public class PanSouMagnetSearch {
                     candidates.stream().map(candidate -> toItem(target, candidate)).toList());
         }
         return new NoMatchingReleaseException(candidates.stream().allMatch(candidate -> candidate.tags().resolutionTags().isEmpty())
-                ? "RESOLUTION_UNKNOWN" : "RESOLUTION_NOT_FOUND", "盘搜候选没有符合要求的清晰度证据");
+                ? "RESOLUTION_UNKNOWN" : "RESOLUTION_NOT_FOUND", "盘搜候选没有符合要求的清晰度证据",
+                candidates.stream().map(candidate -> toItem(target, candidate)).toList());
     }
 
     private List<String> supplements(Target target) {

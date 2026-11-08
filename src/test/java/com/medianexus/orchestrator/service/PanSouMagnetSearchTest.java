@@ -73,6 +73,35 @@ class PanSouMagnetSearchTest {
     }
 
     @Test
+    void keepsChineseAnimeBatchesForSelectionAndRejectsBooksAndMusic() {
+        String[][] samples = {
+                {"世界顶尖的暗杀者，转生为异世界贵族", "世界最高の暗殺者、異世界貴族に転生する",
+                        "[DBD-Raws][世界顶尖的暗杀者转生为异世界贵族/世界最高の暗殺者、異世界貴族に転生する][01-12TV全集][1080P][BDRip]"},
+                {"2.5次元的诱惑", "2.5次元の誘惑",
+                        "[LoliHouse] 2.5次元的诱惑 / 2.5-jigen no Ririsa [01-24 合集][WebRip 1080p][简繁内封字幕][Fin]"},
+                {"工作细胞BLACK", "はたらく細胞BLACK",
+                        "【喵萌奶茶屋】[工作细胞BLACK / Hataraku Saibou Black][01-13][BDRip][1080p][简体][v2]"}
+        };
+        for (String[] sample : samples) {
+            when(client.searchMagnets(any())).thenReturn(new PanSouSearchResult(List.of(
+                    entry(magnet(1), sample[2], "plugin:nyaa"),
+                    entry(magnet(2), "[Novel] " + sample[1] + " 第01-12巻 EPUB", "plugin:nyaa"),
+                    entry(magnet(3), sample[1] + " ORIGINAL SOUNDTRACK MP3 320K", "plugin:nyaa"))));
+            assertThatThrownBy(() -> search.recommendSeries(new SeriesReleaseRecommendationRequest(
+                    null, null, null, sample[0], sample[1], 1, "1080p")))
+                    .isInstanceOfSatisfying(ProwlarrReleaseIngestService.NoMatchingReleaseException.class, failure -> {
+                        assertThat(failure.candidates()).singleElement().satisfies(item -> {
+                            assertThat(item.title()).isEqualTo(sample[2]);
+                            assertThat(item.resolutionTags()).contains("1080p");
+                            assertThat(item.matchSource()).contains("整包线索");
+                        });
+                    });
+        }
+        assertThat(new ReleaseTitleTagParser().parse("Show BD 1920x1080p AVC").resolutionTags()).containsExactly("1080p");
+        assertThat(new ReleaseTitleTagParser().parse("Show BD 1920x1080 AVC").resolutionTags()).containsExactly("1080p");
+    }
+
+    @Test
     void recommendsOnlyExplicitTargetSeasonPacksEvenWithUnknownSeeders() {
         when(client.searchMagnets(any())).thenReturn(new PanSouSearchResult(List.of(
                 entry(magnet(1), "Show S02E01 1080p Complete", "nyaa"),
@@ -80,6 +109,8 @@ class PanSouMagnetSearchTest {
                 entry(magnet(3), "Show Batch 1080p", "tg:test"),
                 entry(magnet(4), "Show 2 Batch 1080p", "tg:test"),
                 entry(magnet(5), "Show S01-03 Complete 1080p", "tg:test"),
+                entry(magnet(7), "Show S02 - 24 [1080p][Fin]", "nyaa"),
+                entry(magnet(8), "Show S02 [24][1080p][Complete]", "nyaa"),
                 entry(magnet(6), "Show S02 01-12 1080p", "nyaa"))));
         List<ProwlarrReleaseIngestService.ReleaseSearchProgress> progress = new ArrayList<>();
         var recommendation = search.recommendSeries(series("1080p"), progress::add);

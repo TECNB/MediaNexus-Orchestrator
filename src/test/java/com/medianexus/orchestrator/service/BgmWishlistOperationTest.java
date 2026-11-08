@@ -139,6 +139,28 @@ class BgmWishlistOperationTest {
         assertEquals("CREATED", f.rows.get(accepted.id()).entries().get(0).status());
     }
 
+    @Test void realGatewayPreservesUncertainCandidatesThroughOperationAndConfirmation() {
+        Fixture f = new Fixture();
+        var releases = mock(ProwlarrReleaseIngestService.class);
+        var release = f.release("[LoliHouse] 2.5次元的诱惑 [01-24 合集][1080p][简繁内封字幕]");
+        org.springframework.test.util.ReflectionTestUtils.setField(f.tasks, "releases", releases);
+        doCallRealMethod().when(f.tasks).candidates(any(), anyString(), any());
+        doThrow(new ProwlarrReleaseIngestService.NoMatchingReleaseException(
+                "SEASON_UNKNOWN", "季度待核对", List.of(release)))
+                .when(releases).recommendSeriesReleaseForAutomation(any(), any());
+        Operation accepted = f.service.submit("source", List.of(1L));
+        f.executor.runPending();
+        Entry entry = f.rows.get(accepted.id()).entries().get(0);
+        assertEquals("WAITING_CONFIRMATION", entry.status());
+        assertEquals(release, entry.candidates().get(0).release());
+        verify(f.tasks, never()).create(any(), any(), any());
+        clearInvocations(releases);
+        f.service.confirm(accepted.id(), new CandidateInput(1L, entry.candidates().get(0).key()));
+        f.executor.runPending();
+        verifyNoInteractions(releases);
+        verify(f.tasks).create(any(), eq(release), eq(f.owner));
+    }
+
     @Test void retainsUncertainPanSouCandidatesForManualConfirmationWithoutCreating() {
         Fixture f = new Fixture();
         var release = f.release("中文作品 Batch 1080p");

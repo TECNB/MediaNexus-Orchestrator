@@ -1,5 +1,6 @@
 package com.medianexus.orchestrator.service;
 
+import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
@@ -16,7 +17,9 @@ import org.springframework.stereotype.Service;
 public class ReleaseTitleTagParser {
 
     private static final Pattern RESOLUTION_PATTERN = Pattern.compile(
-            "(?i)(?<![a-z0-9])(?<resolution>2160p|4k|uhd|1080p|1080i|fhd|720p)(?![a-z0-9])"
+            "(?i)(?<![a-z0-9])(?<resolution>2160p|4k|uhd|1080p|1080i|fhd|720p"
+                    + "|(?:3840|4096)\\s*[x×*]\\s*2160p?|(?:1920|1440|2048)\\s*[x×*]\\s*1080p?"
+                    + "|(?:1280|960)\\s*[x×*]\\s*720p?)(?![a-z0-9])"
     );
     private static final List<DynamicRangePattern> DYNAMIC_RANGE_PATTERNS = List.of(
             new DynamicRangePattern(
@@ -73,7 +76,7 @@ public class ReleaseTitleTagParser {
 
     private List<String> parseResolutionTags(String title) {
         Set<String> tags = new LinkedHashSet<>();
-        Matcher matcher = RESOLUTION_PATTERN.matcher(title);
+        Matcher matcher = RESOLUTION_PATTERN.matcher(Normalizer.normalize(title, Normalizer.Form.NFKC));
         while (matcher.find()) {
             tags.add(normalizeResolution(matcher.group("resolution")));
         }
@@ -81,9 +84,11 @@ public class ReleaseTitleTagParser {
     }
 
     private String normalizeResolution(String value) {
-        return switch (value.toLowerCase(Locale.ROOT)) {
-            case "4k", "uhd", "2160p" -> "2160p";
-            case "1080i", "fhd", "1080p" -> "1080p";
+        String normalized = value.toLowerCase(Locale.ROOT).replaceAll("\\s+", "")
+                .replace('×', 'x').replace('*', 'x').replaceAll("(x\\d+)p$", "$1");
+        return switch (normalized) {
+            case "4k", "uhd", "2160p", "3840x2160", "4096x2160" -> "2160p";
+            case "1080i", "fhd", "1080p", "1920x1080", "1440x1080", "2048x1080" -> "1080p";
             default -> "720p";
         };
     }
