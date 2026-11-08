@@ -283,7 +283,10 @@ public class PanSouMagnetSearch {
                 .matcher(normalizedRelease);
         while (match.find()) {
             String suffix = normalizedRelease.substring(match.end()).stripLeading();
-            if (!suffix.matches("^[0-9]{1,3}(?:\\s|$).*") && !suffix.startsWith("续集")) return true;
+            boolean startsWithEpisodeRange = EPISODE_RANGE.matcher(release).results()
+                    .anyMatch(range -> suffix.startsWith(comparable(range.group())));
+            if ((!suffix.matches("^[0-9]{1,3}(?:\\s|$).*") || startsWithEpisodeRange)
+                    && !suffix.startsWith("续集")) return true;
         }
         return false;
     }

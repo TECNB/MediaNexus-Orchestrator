@@ -133,6 +133,10 @@ public class PanSouClient implements AutoCloseable {
         }
         JsonNode body = root.has("data") ? root.path("data") : root;
         JsonNode merged = body.path("merged_by_type");
+        // 上游零命中时省略 merged_by_type，只返回 total: 0。
+        if (merged.isMissingNode() && body.path("total").isIntegralNumber() && body.path("total").asLong() == 0) {
+            return new PanSouSearchResult(List.of());
+        }
         if (!merged.isObject()) {
             throw new PanSouClientException(INVALID_RESPONSE, "PanSou 磁力搜索响应缺少合并结果");
         }

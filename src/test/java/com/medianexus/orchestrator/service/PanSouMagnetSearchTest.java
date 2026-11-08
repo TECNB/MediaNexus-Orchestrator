@@ -184,6 +184,7 @@ class PanSouMagnetSearchTest {
         ObjectMapper mapper = new ObjectMapper();
         AtomicReference<String> response = new AtomicReference<>("{\"data\":{\"merged_by_type\":{}}}");
         List<JsonNode> payloads = new CopyOnWriteArrayList<>();
+        AtomicReference<String> originalTitleResponse = new AtomicReference<>();
         AtomicInteger logins = new AtomicInteger();
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/api/auth/login", exchange -> {
@@ -194,8 +195,11 @@ class PanSouMagnetSearchTest {
             exchange.close();
         });
         server.createContext("/api/search", exchange -> {
-            payloads.add(mapper.readTree(exchange.getRequestBody()));
-            byte[] bytes = response.get().getBytes(StandardCharsets.UTF_8);
+            JsonNode request = mapper.readTree(exchange.getRequestBody());
+            payloads.add(request);
+            String body = originalTitleResponse.get() != null && request.path("kw").asText().equals("世界最高の暗殺者、異世界貴族に転生する")
+                    ? originalTitleResponse.get() : response.get();
+            byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(200, bytes.length);
             exchange.getResponseBody().write(bytes);
             exchange.close();
@@ -230,6 +234,27 @@ class PanSouMagnetSearchTest {
                 assertThat(payload.path("plugins")).extracting(JsonNode::asText).containsExactly("nyaa", "clxiong");
             });
             assertThat(payloads.get(1).path("refresh").asBoolean()).isTrue();
+            response.set("{\"code\":200,\"message\":\"success\",\"data\":{\"total\":0}}");
+            assertThat(actualClient.searchMagnets(new PanSouSearchCommand("空查询", false)).entries()).isEmpty();
+            response.set("{\"code\":200,\"data\":{\"total\":32}}");
+            assertThatThrownBy(() -> actualClient.searchMagnets(new PanSouSearchCommand("坏响应", false)))
+                    .isInstanceOfSatisfying(PanSouClientException.class,
+                            failure -> assertThat(failure.getReason()).isEqualTo(PanSouClientException.Reason.INVALID_RESPONSE));
+            response.set("{\"code\":200,\"message\":\"success\",\"data\":{\"total\":0}}");
+            originalTitleResponse.set(mapper.writeValueAsString(java.util.Map.of("code", 200, "data", java.util.Map.of(
+                    "total", 2, "merged_by_type", java.util.Map.of("magnet", List.of(
+                            java.util.Map.of("url", magnet(1), "source", "plugin:nyaa", "note",
+                                    "[DBD-Raws][世界顶尖的暗杀者转生为异世界贵族/世界最高の暗殺者、異世界貴族に転生する][01-12TV全集][1080P][BDRip]"),
+                            java.util.Map.of("url", magnet(2), "source", "plugin:nyaa", "note",
+                                    "[UCCUSS] 世界最高の暗殺者、異世界貴族に転生する 全12話 (BD 1920x1080p AVC FLAC)")))))));
+            var realSearch = new PanSouMagnetSearch(actualClient, new ReleaseTitleTagParser());
+            assertThatThrownBy(() -> realSearch.recommendSeries(new SeriesReleaseRecommendationRequest(
+                    null, null, null, "世界顶尖的暗杀者，转生为异世界贵族", "世界最高の暗殺者、異世界貴族に転生する", 1, "1080p")))
+                    .isInstanceOfSatisfying(ProwlarrReleaseIngestService.NoMatchingReleaseException.class, failure -> {
+                        assertThat(failure.reasonCode()).isEqualTo("SEASON_UNKNOWN");
+                        assertThat(failure.candidates()).hasSize(2);
+                        assertThat(failure.candidates()).allSatisfy(item -> assertThat(item.matchSource()).contains("季度未知"));
+                    });
         } finally {
             server.stop(0);
         }
