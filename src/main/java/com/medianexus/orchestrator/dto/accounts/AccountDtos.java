@@ -114,9 +114,19 @@ public final class AccountDtos {
     @Schema(description = "新号计划输入；凭据只用于受保护的服务端流程")
     public record OnboardingPlanRequest(@NotNull @Min(0) Long expectedRegistryVersion, @NotBlank String displayName,
                                         @NotEmpty List<@NotBlank String> categories, @NotNull @Valid PikPakAuthorization authorization,
-                                        @Valid PathOverrides pathOverrides) {
+                                        @Valid PathOverrides pathOverrides, String accountAlias) {
+        public OnboardingPlanRequest(Long expectedRegistryVersion, String displayName, List<String> categories,
+                                     PikPakAuthorization authorization, PathOverrides pathOverrides) {
+            this(expectedRegistryVersion, displayName, categories, authorization, pathOverrides, null);
+        }
         @JsonAnySetter public void rejectUnknown(String key, Object value) { throw invalid(); }
         @Override public String toString() { return "OnboardingPlanRequest[protected]"; }
+    }
+    @Schema(description = "用户在 PikPak 开通官方 WebDAV 后，为尚未执行的计划补齐凭据")
+    public record NativeDavRequest(@NotNull @Min(0) Long expectedPlanVersion, @NotBlank String endpoint,
+                                   @NotBlank String username, @NotBlank String password) {
+        @JsonAnySetter public void rejectUnknown(String key, Object value) { throw invalid(); }
+        @Override public String toString() { return "NativeDavRequest[protected]"; }
     }
     @Schema(description = "按计划和目标版本提交执行")
     public record ExecuteRequest(@NotNull @Min(0) Long expectedPlanVersion,

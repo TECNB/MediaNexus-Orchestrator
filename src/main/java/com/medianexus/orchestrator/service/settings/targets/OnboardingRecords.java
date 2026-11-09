@@ -43,7 +43,16 @@ public class OnboardingRecords {
     public record ExecutionRecord(Execution view, String claimOwner, String claimUntil) {}
     public record Observation(long openListStorageId, String openListMountPath, String cloudName,
                               String cloudPath, String mountPoint, Map<String, String> libraryNames,
-                              Capacity capacity, List<Check> checks, String createdAt, String updatedAt) {}
+                              Capacity capacity, List<Check> checks, String createdAt, String updatedAt, String playbackCloudPath) {
+        public Observation(long openListStorageId, String openListMountPath, String cloudName,
+                           String cloudPath, String mountPoint, Map<String, String> libraryNames,
+                           Capacity capacity, List<Check> checks, String createdAt, String updatedAt) {
+            this(openListStorageId, openListMountPath, cloudName, cloudPath, mountPoint, libraryNames,
+                    capacity, checks, createdAt, updatedAt, null);
+        }
+
+        public String mountedCloudPath() { return playbackCloudPath == null ? cloudPath : playbackCloudPath; }
+    }
 
     @org.springframework.scheduling.annotation.Scheduled(fixedDelay = 60_000)
     public void cleanupExpired() { cleanupExpired(Instant.now()); }
@@ -105,6 +114,27 @@ public class OnboardingRecords {
         return record.protectedPayload() == null && record.view().authorizationConfigured()
                 ? new PlanRecord(withoutAuthorization(record.view(), record.view().issues(), Instant.now()), null, record.fingerprints()) : record;
     }
+    OnboardingPlan authorizeNativeDav(String planId, long expectedVersion, String protectedPayload) {
+        return transactions.execute(status -> {
+            String key = PLAN + id(planId);
+            PlanRecord record = decode(mapper.selectSettingValueForUpdate(key), PlanRecord.class);
+            OnboardingPlan p = record.view();
+            if (p.planVersion() != expectedVersion || p.registryVersion() != registry.readState().version()
+                    || record.protectedPayload() == null || expired(p, Instant.now())
+                    || mapper.selectSettingValue(EXECUTION + id(planId)) != null
+                    || p.resources().stream().noneMatch(r -> r.stage().equals("CD2_PLAYBACK_CLOUD"))) {
+                throw conflict("计划已过期、变化或执行，请重新预览");
+            }
+            List<Issue> remaining = p.issues().stream().filter(i -> !i.code().equals("NATIVE_DAV_REQUIRED")).toList();
+            var updated = new OnboardingPlan(p.id(), p.planVersion() + 1, p.registryVersion(), p.targetId(), p.displayName(),
+                    p.categories(), p.ingestPrefix(), p.cloudDrivePrefix(), p.mediaSourcePrefix(), p.bindings(),
+                    p.connectionVersions(), p.defaultChanges(), p.resources(), true, remaining.isEmpty(), remaining,
+                    p.createdAt(), Instant.now().toString());
+            mapper.upsertSetting(key, encode(new PlanRecord(updated, protectedPayload, record.fingerprints())));
+            return updated;
+        });
+    }
+
     public void createAdoption(AdoptionRecord plan) { create(ADOPT + id(plan.view().id()), plan); }
     public AdoptionRecord adoption(String id) { return required(ADOPT + id(id), AdoptionRecord.class); }
     /** 全部只读证据由调用者重新核对；这里将登记、初始默认与观测一次提交。 */
@@ -319,6 +349,11 @@ public class OnboardingRecords {
                 if (v.steps().stream().noneMatch(step -> step.stage().equals(stage) && step.status().equals("SUCCEEDED"))) {
                     throw conflict("必要阶段尚未全部读回，不能登记或切默认");
                 }
+            }
+            if (plan.resources().stream().anyMatch(r -> r.stage().equals("CD2_PLAYBACK_CLOUD"))
+                    && (observation.playbackCloudPath() == null || v.steps().stream().noneMatch(
+                            step -> step.stage().equals("CD2_PLAYBACK_CLOUD") && step.status().equals("SUCCEEDED")))) {
+                throw conflict("官方 WebDAV 尚未读回，不能登记或切默认");
             }
             for (String category : plan.categories()) {
                 for (String stage : List.of("AS_BINDINGS", "EMBY_PATHS")) {

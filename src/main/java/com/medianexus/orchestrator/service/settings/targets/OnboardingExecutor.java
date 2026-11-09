@@ -55,6 +55,15 @@ public class OnboardingExecutor implements AutoCloseable {
         return claimed.view();
     }
 
+    private record CloudLogin(String stage, String checkpointSuffix, String targetPath, String url,
+                              String username, String password) {
+        String preparedKey() { return "cloudLoginPrepared" + checkpointSuffix; }
+        String cloudsKey() { return "cloudsBefore" + checkpointSuffix; }
+        String mountsKey() { return "mountsBefore" + checkpointSuffix; }
+        String observedKey() { return "cloudObserved" + checkpointSuffix; }
+        @Override public String toString() { return "CloudLogin[protected]"; }
+    }
+
     private final class Run {
         private OnboardingRecords.ExecutionRecord state;
         private final String owner;
@@ -66,6 +75,8 @@ public class OnboardingExecutor implements AutoCloseable {
         private EmbyProperties library;
         private OpenListAccountClient.StorageView storage;
         private CloudDriveAccountClient.CloudView cloud;
+        private CloudDriveAccountClient.CloudView playbackCloud;
+        private CloudDriveAccountClient.CloudView identifiedCloud;
         private final Map<String,String> uuids=new LinkedHashMap<>();
         private final Map<String,String> libraryNames=new LinkedHashMap<>();
 
@@ -87,6 +98,9 @@ public class OnboardingExecutor implements AutoCloseable {
                 cd=json.treeToValue(payload.path("cloudDriveConnection"),CloudDrive2Properties.class);
                 symlink=json.treeToValue(payload.path("asConnection"),AutoSymlinkProperties.class);
                 library=json.treeToValue(payload.path("embyConnection"),EmbyProperties.class);
+                if(payload.hasNonNull("playbackCloudPath") && !payload.path("nativeDav").isObject()){
+                    throw conflict("请先补齐 PikPak 官方 WebDAV 授权");
+                }
                 if(symlink.isDisabled()){throw conflict("AutoSymlink 已停用，不能执行接入");}
                 perform("OPENLIST_STORAGE",null,() -> {
                     storage=openList.createAndRead(ol,plan.targetId(),object("openListStorage"));
@@ -100,10 +114,17 @@ public class OnboardingExecutor implements AutoCloseable {
                 });
                 if(!storage.healthy()){throw conflict("OPENLIST_AUTHORIZATION_REQUIRED");}
                 perform("MEDIA_DIRECTORIES",null,this::prepareMediaDirectories,this::prepareMediaDirectories);
-                perform("CD2_CLOUD",null,this::connectNewCloud,() -> {
-                    return payload.path("cloudLoginPrepared").asBoolean() ? readCloud() : connectNewCloud();
-                });
+                boolean nativePlayback = payload.hasNonNull("playbackCloudPath");
+                registerCloud(new CloudLogin("CD2_CLOUD","",plan.cloudDrivePrefix(),
+                        payload.path("davUrl").asText(),ol.getDavUsername(),ol.getDavPassword()));
+                cloud=identifiedCloud;
                 var resolved=records.resolveCloudPath(state.view().id(),state.view().executionVersion(),owner,cloud.path()); plan=resolved.view();
+                if(nativePlayback){
+                    var dav=object("nativeDav");
+                    registerCloud(new CloudLogin("CD2_PLAYBACK_CLOUD","Playback",payload.path("playbackCloudPath").asText(),
+                            dav.path("endpoint").asText(),dav.path("username").asText(),dav.path("password").asText()));
+                    playbackCloud=identifiedCloud;
+                }
                 perform("CD2_MOUNT",null,() -> {
                     var resources=cd2.readResources(cd);
                     var found=resources.mounts().stream().filter(m -> m.mountPoint().equals(plan.mediaSourcePrefix())).toList();
@@ -155,7 +176,7 @@ public class OnboardingExecutor implements AutoCloseable {
                 }
                 var target=new IngestTargetState.Target(plan.targetId(),plan.displayName(),plan.ingestPrefix(),plan.cloudDrivePrefix(),plan.mediaSourcePrefix(),true,bindings);
                 var observation=new OnboardingRecords.Observation(storage.id(),storage.mountPath(),cloud.name(),cloud.path(),plan.mediaSourcePrefix(),
-                        Map.copyOf(libraryNames),capacity(storage,now),List.of(new Check("READBACK","HEALTHY",now,"配置与目录读回通过；未验证影片播放")),now,now);
+                        Map.copyOf(libraryNames),capacity(storage,now),List.of(new Check("READBACK","HEALTHY",now,"配置与目录读回通过；未验证影片播放")),now,now,playbackCloud==null?null:playbackCloud.path());
                 records.commitVerifiedExecution(state.view().id(),state.view().executionVersion(),owner,target,observation,registration,Instant.now());
             } catch (RuntimeException | JsonProcessingException failure) { fail(failure); }
             finally {renewal.cancel(false);}
@@ -230,30 +251,43 @@ public class OnboardingExecutor implements AutoCloseable {
         private ObjectNode configuration(String category){JsonNode v=payload.path("asConfigurations").path(category);if(!v.isObject()){throw conflict("计划缺少完整 AS 模板");}return (ObjectNode)v;}
 
         /** 未提交登录的前置失败可重新检查；持久标记存在时，恢复只能读回未知结果。 */
-        private List<ResourceRef> connectNewCloud(){
-            var before=cd2.readResources(cd);
-            if(!before.canAddCloud()){throw conflict("CD2 当前不允许新增云盘");}
-            if(before.clouds().stream().anyMatch(v -> Objects.equals(plan.cloudDrivePrefix(),v.path()))){
-                throw conflict("CD2 计划云盘根已存在，不能按名称复用");
-            }
-            payload.set("cloudsBefore",json.valueToTree(before.clouds()));
-            payload.set("mountsBefore",json.valueToTree(before.mounts()));
-            payload.put("cloudLoginPrepared",true);
-            records.saveExecutionPayload(state.view().id(),state.view().executionVersion(),owner,
-                    cipher.encrypt("onboarding-plan/"+plan.id(),payload.toString()));
-            cd2.connectWebDav(cd,payload.path("davUrl").asText(),ol.getDavUsername(),ol.getDavPassword());
-            return readCloud();
+        private void registerCloud(CloudLogin login){
+            perform(login.stage(),null,() -> connectNewCloud(login),() ->
+                    payload.path(login.preparedKey()).asBoolean() ? readCloud(login) : connectNewCloud(login));
         }
 
-        private List<ResourceRef> readCloud(){
-            if(!payload.path("cloudLoginPrepared").asBoolean() || !payload.path("cloudsBefore").isArray()){
+        private List<ResourceRef> connectNewCloud(CloudLogin login){
+            var before=cd2.readResources(cd);
+            if(!before.canAddCloud()){throw conflict("CD2 当前不允许新增云盘");}
+            if(before.clouds().stream().anyMatch(v -> Objects.equals(login.targetPath(),v.path()))){
+                throw conflict("CD2 计划云盘根已存在，不能按名称复用");
+            }
+            payload.set(login.cloudsKey(),json.valueToTree(before.clouds()));
+            payload.set(login.mountsKey(),json.valueToTree(before.mounts()));
+            payload.put(login.preparedKey(),true);
+            records.saveExecutionPayload(state.view().id(),state.view().executionVersion(),owner,
+                    cipher.encrypt("onboarding-plan/"+plan.id(),payload.toString()));
+            cd2.connectWebDav(cd,login.url(),login.username(),login.password());
+            return readCloud(login);
+        }
+
+        private List<ResourceRef> readCloud(CloudLogin login){
+            if(!payload.path(login.preparedKey()).asBoolean() || !payload.path(login.cloudsKey()).isArray()){
                 throw conflict("CD2 缺少登录前资源基线，未重复登录");
             }
-            Set<String> before=new HashSet<>(); payload.path("cloudsBefore").forEach(v -> before.add(v.path("path").asText()));
+            Set<String> before=new HashSet<>(); payload.path(login.cloudsKey()).forEach(v -> before.add(v.path("path").asText()));
             var resources=cd2.readResources(cd);
-            var saved=state.view().steps().stream().filter(s -> s.stage().equals("CD2_CLOUD"))
+            var saved=state.view().steps().stream().filter(s -> s.stage().equals(login.stage()))
                     .flatMap(s -> s.resourceRefs().stream()).filter(r -> r.resourceType().equals("CloudDriveCloud")).toList();
             var candidates=resources.clouds().stream().filter(v -> v.path()!=null && !before.contains(v.path())).toList();
+            if(payload.hasNonNull("playbackCloudPath")){
+                String observed=payload.path(login.observedKey()).asText();
+                if(!observed.isEmpty() || !saved.isEmpty()){
+                    candidates=candidates.stream().filter(c -> c.path().equals(observed)
+                            || Objects.equals(c.path(),login.targetPath())
+                            || saved.stream().anyMatch(ref -> c.path().equals(ref.path()))).toList();
+                }
+            }
             var owned=new ArrayList<CloudDriveAccountClient.CloudView>();
             String marker="/MediaNexus-account-"+plan.targetId();
             for(var candidate:candidates){
@@ -269,47 +303,57 @@ public class OnboardingExecutor implements AutoCloseable {
                 var exact=candidates.stream().filter(v -> v.path().equals(saved.get(0).path())).toList();
                 // 重命名响应丢失时原引用会消失；仍须 before 差集唯一指向计划根，不能仅按名称采用。
                 if(!exact.isEmpty()){candidates=exact;}
-                else if(candidates.size()!=1 || !Objects.equals(plan.cloudDrivePrefix(),candidates.get(0).path())){
+                else if(candidates.size()!=1 || !Objects.equals(login.targetPath(),candidates.get(0).path())){
                     throw conflict("CD2 已保存云盘引用无法读回；未重复登录");
                 }
             }
             if(candidates.size()!=1 || candidates.get(0).locked()){throw conflict("CD2 新云盘无法唯一读回；未重复登录");}
-            cloud=candidates.get(0);
+            var cloud=candidates.get(0);
             String path=IngestTargetRegistry.normalizePath(cloud.path());
             for(var target:registry.readState().targets()){
                 if(overlaps(path,target.cloudDrivePrefix())
-                        || (plan.cloudDrivePrefix()!=null && overlaps(plan.cloudDrivePrefix(),target.cloudDrivePrefix()))){
+                        || (login.targetPath()!=null && overlaps(login.targetPath(),target.cloudDrivePrefix()))){
                     throw conflict("CD2 云盘路径与既有目标重叠");
                 }
             }
-            if(plan.cloudDrivePrefix()!=null&&!plan.cloudDrivePrefix().equals(path)){
-                for(var mount:payload.path("mountsBefore")){
+            if(login.targetPath()!=null&&!login.targetPath().equals(path)){
+                for(var mount:payload.path(login.mountsKey())){
                     if(overlaps(path,mount.path("sourceDir").asText())){throw conflict("CD2 新云盘根已被既有挂载引用，未重命名");}
                 }
-                Step prior=state.view().steps().stream().filter(s -> s.stage().equals("CD2_CLOUD")).findFirst().orElseThrow();
-                replaceStep(new Step(prior.stage(),prior.category(),"RUNNING",prior.attempt(),
-                        List.of(new ResourceRef("CloudDriveCloud",cloud.name(),path)),prior.evidence(),
-                        "已保存本次新云盘引用，正在核对计划根重命名",null,prior.startedAt(),null),"RUNNING",null);
-                cd2.renameCreatedCloudRoot(cd,path,plan.cloudDrivePrefix());
-                var renamed=cd2.readResources(cd).clouds().stream().filter(v -> plan.cloudDrivePrefix().equals(v.path()) && !v.locked()).toList();
+                if(payload.hasNonNull("playbackCloudPath")){
+                    // CD2 can put the DAV username in a newly generated root name.
+                    payload.put(login.observedKey(),path);
+                    records.saveExecutionPayload(state.view().id(),state.view().executionVersion(),owner,
+                            cipher.encrypt("onboarding-plan/"+plan.id(),payload.toString()));
+                } else {
+                    Step prior=state.view().steps().stream().filter(s -> s.stage().equals(login.stage())).findFirst().orElseThrow();
+                    replaceStep(new Step(prior.stage(),prior.category(),"RUNNING",prior.attempt(),
+                            List.of(new ResourceRef("CloudDriveCloud",cloud.name(),path)),prior.evidence(),
+                            "已保存本次新云盘引用，正在核对计划根重命名",null,prior.startedAt(),null),"RUNNING",null);
+                }
+                cd2.renameCreatedCloudRoot(cd,path,login.targetPath());
+                var renamed=cd2.readResources(cd).clouds().stream().filter(v -> login.targetPath().equals(v.path()) && !v.locked()).toList();
                 if(renamed.size()!=1){throw conflict("CD2 计划云盘根重命名尚未读回");}
                 cloud=renamed.get(0);path=cloud.path();
             }
             cd2.verifyDirectory(cd,path+marker);
             for(var binding:plan.bindings()){cd2.verifyDirectory(cd,path+binding.rootPath().substring(plan.ingestPrefix().length()));}
+            if(payload.hasNonNull("playbackCloudPath")){cd2.applyNewAccountDownloadProfile(cd,path);}
+            identifiedCloud=cloud;
             return List.of(new ResourceRef("CloudDriveCloud",cloud.name(),path));
         }
 
+        private String mountedCloudPath(){return playbackCloud==null?cloud.path():playbackCloud.path();}
         private MountOption mountOption(){
             JsonNode t=payload.path("mountTemplate");if(!t.isObject()){throw conflict("计划缺少实际系统挂载模板");}
-            return MountOption.newBuilder().setMountPoint(plan.mediaSourcePrefix()).setSourceDir(cloud.path())
-                    .setLocalMount(t.path("localMount").asBoolean()).setReadOnly(t.path("readOnly").asBoolean())
-                    .setAutoMount(t.path("autoMount").asBoolean()).setUid(t.path("uid").asInt()).setGid(t.path("gid").asInt())
-                    .setPermissions(t.path("permissions").asText()).setName("medianexus-"+plan.targetId()).build();
+            return MountOption.newBuilder().setMountPoint(plan.mediaSourcePrefix()).setSourceDir(mountedCloudPath())
+                    .setLocalMount(t.path("localMount").asBoolean()).setReadOnly(playbackCloud!=null || t.path("readOnly").asBoolean())
+                    .setAutoMount(playbackCloud!=null || t.path("autoMount").asBoolean()).setUid(t.path("uid").asInt()).setGid(t.path("gid").asInt())
+                    .setPermissions(t.path("permissions").asText()).setName(playbackCloud==null?"medianexus-"+plan.targetId():"PikPak · "+payload.path("accountAlias").asText()+" · 官方播放").build();
         }
         private void verifyMount(List<CloudDriveAccountClient.MountView> matches){
-            if(matches.size()!=1 || !matches.get(0).sourceDir().equals(cloud.path()) || matches.get(0).readOnly()){
-                throw conflict("CD2 系统挂载身份不符或只读，未覆盖");
+            if(matches.size()!=1 || !matches.get(0).sourceDir().equals(mountedCloudPath()) || matches.get(0).readOnly() != (playbackCloud!=null)){
+                throw conflict("CD2 系统挂载身份或读写模式不符，未覆盖");
             }
         }
         private List<ResourceRef> readMount(){
@@ -321,11 +365,14 @@ public class OnboardingExecutor implements AutoCloseable {
                 verifyMount(matches);
                 if(!matches.get(0).mounted()){throw conflict("CD2 系统挂载尚未启动，需核对后继续");}
             }
-            return List.of(new ResourceRef("CloudDriveMount",plan.mediaSourcePrefix(),cloud.path()));
+            return List.of(new ResourceRef("CloudDriveMount",plan.mediaSourcePrefix(),mountedCloudPath()));
         }
         private void verifyMediaVisibility(){
             for(var b:plan.bindings()){
-                cd2.verifyDirectory(cd,cloud.path()+b.rootPath().substring(plan.ingestPrefix().length()));
+                String relative=b.rootPath().substring(plan.ingestPrefix().length());
+                cd2.verifyDirectory(cd,cloud.path()+relative);
+                if(playbackCloud!=null){cd2.verifyDirectory(cd,playbackCloud.path()+relative);}
+                if(playbackCloud!=null){emby.verifyReadableDirectory(library,b.mediaSourceRoot());}
                 try(var ignored=java.nio.file.Files.newDirectoryStream(java.nio.file.Path.of(b.mediaSourceRoot()))){}
                 catch(java.io.IOException exception){throw conflict("后端容器尚无法读取新系统挂载");}
                 as.verifyReadableDirectory(symlink,b.mediaSourceRoot());
@@ -353,6 +400,9 @@ public class OnboardingExecutor implements AutoCloseable {
                 throw conflict("CD2 最终云盘引用无法唯一读回");
             }
             cd2.verifyDirectory(cd,cloud.path()+"/MediaNexus-account-"+plan.targetId());
+            if(playbackCloud!=null){
+                cd2.verifyDirectory(cd,playbackCloud.path()+"/MediaNexus-account-"+plan.targetId());
+            }
             openList.verifyDirectory(ol,plan.ingestPrefix()); readMount(); verifyMediaVisibility();
             for(var b:plan.bindings()){
                 verifyAsConfiguration(b.category(),uuids.get(b.category()));

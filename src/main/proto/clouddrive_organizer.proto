@@ -13,6 +13,8 @@ service CloudDriveFileSrv {
   rpc CanAddMoreCloudApis(google.protobuf.Empty) returns (FileOperationResult) {}
   rpc CanAddMoreMountPoints(google.protobuf.Empty) returns (FileOperationResult) {}
   rpc GetAllCloudApis(google.protobuf.Empty) returns (CloudAPIList) {}
+  rpc GetCloudAPIConfig(GetCloudAPIConfigRequest) returns (CloudAPIConfig) {}
+  rpc SetCloudAPIConfig(SetCloudAPIConfigRequest) returns (google.protobuf.Empty) {}
   rpc GetMountPoints(google.protobuf.Empty) returns (GetMountPointsResult) {}
   rpc APILoginWebDav(LoginWebDavRequest) returns (APILoginResult) {}
   rpc AddMountPoint(MountOption) returns (MountPointResult) {}
@@ -124,4 +126,20 @@ message FileOperationResult {
   bool success = 1;
   string errorMessage = 2;
   repeated string resultFilePaths = 3;
+}
+
+message GetCloudAPIConfigRequest {
+  string cloudName = 1;
+  string userName = 2;
+}
+message CloudAPIConfig {
+  uint32 maxDownloadThreads = 1;
+  uint64 minReadLengthKB = 2;
+  uint64 defaultReadLengthKB = 4;
+  uint64 maxBufferPoolSizeMB = 5;
+}
+message SetCloudAPIConfigRequest {
+  string cloudName = 1;
+  string userName = 2;
+  CloudAPIConfig config = 3;
 }

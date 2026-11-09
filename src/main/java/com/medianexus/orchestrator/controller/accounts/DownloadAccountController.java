@@ -30,6 +30,10 @@ public class DownloadAccountController {
     public ApiResponse<OnboardingPlan> plan(@Valid @RequestBody OnboardingPlanRequest request) { return ApiResponse.success(accounts.previewOnboarding(request)); }
     @GetMapping("/onboarding-plans/{planId}") @Operation(summary = "读取接入计划")
     public ApiResponse<OnboardingPlan> plan(@PathVariable String planId) { return ApiResponse.success(accounts.plan(planId)); }
+    @PutMapping("/onboarding-plans/{planId}/native-webdav") @Operation(summary = "验证并补齐官方 WebDAV 授权")
+    public ApiResponse<OnboardingPlan> nativeDav(@PathVariable String planId, @Valid @RequestBody NativeDavRequest request) {
+        return ApiResponse.success(accounts.authorizeNativeDav(planId, request));
+    }
     @PostMapping("/onboarding-plans/{planId}/execute") @Operation(summary = "显式提交接入执行")
     public ApiResponse<Execution> execute(@PathVariable String planId, @Valid @RequestBody ExecuteRequest request) {
         return ApiResponse.success(accounts.execute(planId, request));

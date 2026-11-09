@@ -244,18 +244,29 @@ public class DownloadAccountService {
                 category(value); if (!unique.contains(value)) { throw invalid("路径覆盖只能指定本次所选类别"); }
             });
         }
+        if (request.displayName().contains("@")
+                || request.pathOverrides() != null && json.valueToTree(request.pathOverrides()).toString().contains("@")) {
+            throw invalid("显示名和接入路径不能含邮箱，请使用不含个人信息的别名");
+        }
         String id = UUID.randomUUID().toString(); String now = Instant.now().toString();
+        String alias = accountAlias(state, request.accountAlias());
+        String label = "PikPak · " + alias;
         List<Issue> issues = new ArrayList<>(); List<ConnectionVersion> versions = new ArrayList<>();
         Map<String, String> fingerprints = new LinkedHashMap<>();
         List<PlannedBinding> bindings = new ArrayList<>(); List<PlannedResource> resources = new ArrayList<>();
         String ingest = null; String cloud = null; String source = null;
         ObjectNode protectedPayload = json.createObjectNode();
         protectedPayload.set("authorization", json.valueToTree(request.authorization()));
+        protectedPayload.put("accountAlias", alias);
+        issues.add(new Issue("NATIVE_DAV_REQUIRED", "CD2_PLAYBACK_CLOUD", null, "请在 PikPak 开启官方 WebDAV，再补齐播放授权"));
         if (!state.managed()) { issues.add(new Issue("MASTER_NOT_ADOPTED", null, null, "请先完成已有主号的真实资源接管")); }
         try {
             Connections c = connections(versions, fingerprints);
-            ingest = override(request.pathOverrides() == null ? null : request.pathOverrides().ingestPrefix(), c.cd2().getIngestPathPrefix(), id);
-            cloud = override(request.pathOverrides() == null ? null : request.pathOverrides().cloudDrivePrefix(), c.cd2().getCloudDrivePathPrefix(), id);
+            ingest = override(request.pathOverrides() == null ? null : request.pathOverrides().ingestPrefix(), c.cd2().getIngestPathPrefix(), alias);
+            cloud = override(request.pathOverrides() == null ? null : request.pathOverrides().cloudDrivePrefix(), c.cd2().getCloudDrivePathPrefix(), alias);
+            String playbackCloud = "/PikPak-" + alias + "-play";
+            protectedPayload.put("playbackCloudPath", playbackCloud);
+            if (overlaps(playbackCloud, cloud)) { throw invalid("播放云盘路径与整理云盘路径重叠"); }
             if (cloud.substring(1).contains("/")) {
                 throw invalid("CD2 云盘映射必须是直接根目录；媒体子目录请在类别路径中设置");
             }
@@ -264,14 +275,14 @@ public class DownloadAccountService {
                     || !org.springframework.util.StringUtils.hasText(c.openList().getDavPassword())) {
                 issues.add(new Issue("DAV_AUTHENTICATION_REQUIRED", "CD2_CLOUD", null, "请配置独立 DAV 用户名和密码；不使用管理 Token 代替"));
             }
-            source = override(request.pathOverrides() == null ? null : request.pathOverrides().mediaSourcePrefix(), c.cd2().getMediaSourcePathPrefix(), id);
+            source = override(request.pathOverrides() == null ? null : request.pathOverrides().mediaSourcePrefix(), c.cd2().getMediaSourcePathPrefix(), alias);
             validateDisjoint(state, ingest, cloud, source);
             for (var storage : openList.readStorages(c.openList())) {
                 if (overlaps(ingest, storage.mountPath())) throw invalid("新号路径与现有存储重叠，未覆盖任何资源");
             }
             var libraries = emby.readLibraries(c.emby());
             var cloudResources = cd2.readResources(c.cd2());
-            for (var existing : cloudResources.clouds()) if (existing.path() != null && overlaps(cloud, existing.path())) throw invalid("计划云盘路径已被占用");
+            for (var existing : cloudResources.clouds()) if (existing.path() != null && (overlaps(cloud, existing.path()) || overlaps(playbackCloud, existing.path()))) throw invalid("计划云盘路径已被占用");
             for (var existing : cloudResources.mounts()) if (overlaps(source, existing.mountPoint())) throw invalid("计划系统挂载路径已被占用");
             if (!cloudResources.canAddCloud()) { issues.add(new Issue("CD2_CLOUD_LICENSE_DENIED", "CD2_CLOUD", null, "当前许可不允许新增云盘")); }
             if (!cloudResources.canAddMount()) { issues.add(new Issue("CD2_MOUNT_LICENSE_DENIED", "CD2_MOUNT", null, "当前许可不允许新增系统挂载")); }
@@ -288,7 +299,6 @@ public class DownloadAccountService {
                 storageTemplate.put("mount_path", ingest).put("addition", addition.toString()).put("disabled", false);
                 protectedPayload.set("openListStorage", storageTemplate);
                 var mount = cd2.readMountTemplate(c.cd2(), templateTarget.mediaSourcePrefix());
-                if (mount.getReadOnly()) { issues.add(new Issue("MOUNT_TEMPLATE_READ_ONLY", "CD2_MOUNT", null, "现有挂载模板为只读，不能用于接入")); }
                 protectedPayload.putObject("mountTemplate").put("localMount", mount.getLocalMount()).put("readOnly", mount.getReadOnly())
                         .put("autoMount", mount.getAutoMount()).put("uid", mount.getUid()).put("gid", mount.getGid()).put("permissions", mount.getPermissions());
             }
@@ -301,7 +311,12 @@ public class DownloadAccountService {
             resources.add(new PlannedResource("MEDIA_DIRECTORIES", "CREATE", "AccountIdentityDirectory", null,
                     ingest + "/MediaNexus-account-" + id, "空身份目录：用于证明 CD2 新云盘确实指向本次账号，保留供续接读回"));
             resources.add(new PlannedResource("CD2_CLOUD", "CREATE", "CloudDriveCloud", null, cloud, "仅对本次新建云盘重命名并读回计划中的准确路径"));
-            resources.add(new PlannedResource("CD2_MOUNT", "CREATE", "CloudDriveMount", null, source, "继承实际挂载权限模板"));
+            resources.add(new PlannedResource("CD2_PLAYBACK_CLOUD", "CREATE", "CloudDriveCloud", null, playbackCloud, "PikPak 官方 WebDAV；与入库账号核对身份并应用下载设置"));
+            resources.add(new PlannedResource("CD2_MOUNT", "CREATE", "CloudDriveMount", null, source, "官方播放只读挂载；启用自动挂载"));
+            String strmAccountRoot = c.cd2().getStrmPathPrefix() + "/accounts/" + alias;
+            if (java.nio.file.Files.exists(java.nio.file.Path.of(strmAccountRoot), java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                throw invalid("路径别名对应的 STRM 目录已存在，请选用其他别名");
+            }
             ObjectNode templates = protectedPayload.putObject("asConfigurations");
             for (String category : unique) {
                 IngestTargetState.Binding registered = state.managed() ? registeredBinding(state, category) : null;
@@ -311,7 +326,7 @@ public class DownloadAccountService {
                 String oldRoot = oldRoot(category, c.openList(), state);
                 String suffix = suffix(oldRoot, originalIngest);
                 String root = ingest + suffix;
-                String strm = c.cd2().getStrmPathPrefix() + "/accounts/" + id + "/" + category;
+                String strm = strmAccountRoot + "/" + category;
                 CategoryPathOverride paths = request.pathOverrides() == null || request.pathOverrides().categories() == null
                         ? null : request.pathOverrides().categories().get(category);
                 if (paths != null && paths.rootPath() != null) { root = IngestTargetRegistry.normalizePath(paths.rootPath()); requireChild(root, ingest); }
@@ -340,7 +355,7 @@ public class DownloadAccountService {
                     try {
                         templates.set(category, as.configurationForNewTarget(com.medianexus.orchestrator.service.AutoSymlinkScanParameters.apply(
                                 json, c.as().getNewAccountScanParametersJson(), form), new AutoSymlinkAccountClient.TaskPaths(
-                                "medianexus-" + id + "-" + category, mediaRoot, strm, source)));
+                                label + " · " + category, mediaRoot, strm, source)));
                     } catch (BusinessException exception) {
                         issues.add(new Issue("AS_TEMPLATE_UNSUPPORTED", "AS_BINDINGS", category, "模板包含未核实的 STRM 模式或需另行准备的掉盘探针"));
                     }
@@ -364,12 +379,32 @@ public class DownloadAccountService {
             for (LibraryPath library : binding.embyLibraries()) resources.add(new PlannedResource("EMBY_PATHS", "APPEND", "EmbyLibrary", library.libraryId(), library.path(), binding.category()));
         }
         List<DefaultChange> defaults = unique.stream().map(category -> new DefaultChange(category, state.categoryDefaults().get(category), id)).toList();
-        OnboardingPlan plan = new OnboardingPlan(id, 0, state.version(), id, request.displayName(), List.copyOf(unique), ingest, cloud, source,
+        OnboardingPlan plan = new OnboardingPlan(id, 0, state.version(), id, request.displayName().trim(), List.copyOf(unique), ingest, cloud, source,
                 List.copyOf(bindings), List.copyOf(versions), defaults, List.copyOf(resources), true, issues.isEmpty(), List.copyOf(issues), now, now);
         records.createPlan(new OnboardingRecords.PlanRecord(plan, cipher.encrypt("onboarding-plan/" + id, protectedPayload.toString()), Map.copyOf(fingerprints)));
         return plan;
     }
     public OnboardingPlan plan(String id) { auth.requireAdminUser(); return records.plan(id).view(); }
+    public OnboardingPlan authorizeNativeDav(String id, NativeDavRequest request) {
+        auth.requireAdminUser();
+        var record = records.plan(id);
+        if (record.view().planVersion() != request.expectedPlanVersion() || record.protectedPayload() == null
+                || record.view().resources().stream().noneMatch(r -> r.stage().equals("CD2_PLAYBACK_CLOUD"))) {
+            throw conflict("接入计划已变化或过期，请重新预览");
+        }
+        verifyFingerprints(record.fingerprints());
+        String endpoint = cd2.verifyNativeWebDav(request.endpoint(), request.username(), request.password());
+        try {
+            String key = "onboarding-plan/" + id;
+            ObjectNode payload = (ObjectNode) json.readTree(cipher.decrypt(key, record.protectedPayload()));
+            payload.putObject("nativeDav").put("endpoint", endpoint)
+                    .put("username", request.username().trim()).put("password", request.password());
+            return records.authorizeNativeDav(id, request.expectedPlanVersion(), cipher.encrypt(key, payload.toString()));
+        } catch (com.fasterxml.jackson.core.JsonProcessingException exception) {
+            throw conflict("受保护计划不可读取，请重新预览");
+        }
+    }
+
     public Execution execute(String id, ExecuteRequest request) {
         auth.requireAdminUser();
         var execution = records.begin(id, request.expectedPlanVersion(), request.expectedRegistryVersion());
@@ -396,14 +431,19 @@ public class DownloadAccountService {
         if (!storage.healthy()) { throw conflict("已登记 OpenList 存储当前未就绪"); }
         var resources = cd2.readResources(c.cd2());
         if (resources.mounts().stream().noneMatch(mount -> mount.mounted() && mount.mountPoint().equals(observation.mountPoint())
-                && mount.sourceDir().equals(target.cloudDrivePrefix()))) { throw conflict("已登记系统挂载当前无法确认"); }
+                && mount.sourceDir().equals(observation.mountedCloudPath())
+                && (observation.playbackCloudPath() == null || mount.readOnly()))) { throw conflict("已登记系统挂载当前无法确认"); }
         for (var binding : target.bindings()) {
             var config = as.readConfiguration(c.as(), binding.asUuid());
             if (!config.path("symlink_dir").asText().equals(binding.strmRootPath())
                     || !config.path("media_dir").asText().equals(target.mediaSourcePrefix() + suffix(binding.rootPath(), target.ingestPrefix()))) {
                 throw conflict("AS 来源或输出与登记绑定不一致");
             }
-            cd2.verifyDirectory(c.cd2(), target.cloudDrivePrefix() + suffix(binding.rootPath(), target.ingestPrefix()));
+            String relative = suffix(binding.rootPath(), target.ingestPrefix());
+            cd2.verifyDirectory(c.cd2(), target.cloudDrivePrefix() + relative);
+            if (observation.playbackCloudPath() != null) {
+                cd2.verifyDirectory(c.cd2(), observation.playbackCloudPath() + relative);
+            }
             var libraries = emby.readLibraries(c.emby());
             for (var linked : binding.embyLibraries()) {
                 String path = binding.strmRootPath() + (linked.relativePath().isEmpty() ? "" : "/" + linked.relativePath());
@@ -421,7 +461,7 @@ public class DownloadAccountService {
                 validCapacity ? now : null, validCapacity ? "AVAILABLE" : "UNAVAILABLE", validCapacity ? null : "当前驱动未返回有效容量");
         records.refreshObservation(id, new OnboardingRecords.Observation(observation.openListStorageId(), observation.openListMountPath(),
                 observation.cloudName(), observation.cloudPath(), observation.mountPoint(), observation.libraryNames(), capacity,
-                List.of(new Check("READBACK", "HEALTHY", now, "配置与云内目录读回通过；未验证容器间传播或真实播放")), observation.createdAt(), now));
+                List.of(new Check("READBACK", "HEALTHY", now, "配置与云内目录读回通过；未验证容器间传播或真实播放")), observation.createdAt(), now, observation.playbackCloudPath()));
         return detail(id);
     }
 
@@ -478,6 +518,17 @@ public class DownloadAccountService {
             throw invalid("请提供 refresh token 或完整账号密码");
         }
     }
+    private String accountAlias(IngestTargetState state, String requested) {
+        if (requested == null || requested.isBlank()) {
+            return "media-" + (state.version() + 1);
+        }
+        String alias = requested.trim().toLowerCase(java.util.Locale.ROOT);
+        if (!alias.matches("[a-z][a-z0-9]{0,15}(-[a-z0-9]{1,16})*") || alias.length() > 32) {
+            throw invalid("路径别名须使用小写字母、数字和短横线，不能使用邮箱或手机号");
+        }
+        return alias;
+    }
+
     private String override(String value, String legacy, String id) {
         String original = IngestTargetRegistry.normalizePath(legacy);
         String candidate = value == null ? original + "-" + id : IngestTargetRegistry.normalizePath(value);

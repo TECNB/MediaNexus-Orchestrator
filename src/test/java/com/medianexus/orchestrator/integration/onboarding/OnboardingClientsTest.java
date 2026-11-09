@@ -137,6 +137,40 @@ class OnboardingClientsTest {
     }
 
     @Test
+    void appliesDownloadProfileOnlyToTheNamedCloudAndReadsItBack() throws Exception {
+        var saved = new java.util.concurrent.atomic.AtomicReference<>(CloudAPIConfig.newBuilder().setMaxDownloadThreads(2).build());
+        var writes = new java.util.concurrent.atomic.AtomicInteger();
+        Server server = ServerBuilder.forPort(0).addService(new CloudDriveFileSrvGrpc.CloudDriveFileSrvImplBase() {
+            @Override public void getAllCloudApis(Empty request, StreamObserver<CloudAPIList> observer) {
+                observer.onNext(CloudAPIList.newBuilder()
+                        .addApis(CloudAPI.newBuilder().setName("WebDAV").setUserName("old-user").setPath("/old"))
+                        .addApis(CloudAPI.newBuilder().setName("WebDAV").setUserName("new-user").setPath("/new")).build());
+                observer.onCompleted();
+            }
+            @Override public void getCloudAPIConfig(GetCloudAPIConfigRequest request, StreamObserver<CloudAPIConfig> observer) {
+                observer.onNext(saved.get()); observer.onCompleted();
+            }
+            @Override public void setCloudAPIConfig(SetCloudAPIConfigRequest request, StreamObserver<Empty> observer) {
+                if (!request.getCloudName().equals("WebDAV") || !request.getUserName().equals("new-user")) {
+                    observer.onError(io.grpc.Status.PERMISSION_DENIED.asRuntimeException()); return;
+                }
+                writes.incrementAndGet(); saved.set(request.getConfig());
+                observer.onNext(Empty.getDefaultInstance()); observer.onCompleted();
+            }
+        }).build().start();
+        try {
+            var connection = new CloudDrive2Properties();
+            connection.setHost("127.0.0.1"); connection.setPort(server.getPort()); connection.setApiToken("test-token");
+            var client = new CloudDriveAccountClient();
+            client.applyNewAccountDownloadProfile(connection, "/new");
+            assertThat(saved.get()).isEqualTo(CloudAPIConfig.newBuilder().setMaxDownloadThreads(4)
+                    .setMinReadLengthKB(64).setDefaultReadLengthKB(2048).setMaxBufferPoolSizeMB(128).build());
+            client.applyNewAccountDownloadProfile(connection, "/new");
+            assertThat(writes.get()).isEqualTo(1);
+        } finally { server.shutdownNow(); }
+    }
+
+    @Test
     void grpcFailuresExposeStableSafeCategories() throws Exception {
         io.grpc.Status[] failures = {io.grpc.Status.UNAUTHENTICATED, io.grpc.Status.PERMISSION_DENIED, io.grpc.Status.UNIMPLEMENTED};
         int[] codes = {401, 403, 503};

@@ -164,6 +164,40 @@ class OnboardingExecutorTest {
     }
 
     @Test
+    void nativePlaybackResumesAfterMountFailureWithoutReloginAndKeepsIngestMapping() throws Exception {
+        try(Scenario s=new Scenario()){
+            s.payload.put("playbackCloudPath","/PikPak-media-b-play").put("accountAlias","media-b").put("davUrl","http://openlist/dav/new");
+            s.payload.putObject("nativeDav").put("endpoint","https://dav.pikpak.ai/").put("username","native-user").put("password","native-password");
+            s.savePayload();
+            List<CloudDriveAccountClient.CloudView> clouds=new java.util.concurrent.CopyOnWriteArrayList<>();
+            var mounted=new java.util.concurrent.atomic.AtomicBoolean();
+            when(s.cd.readResources(any())).thenAnswer(c -> new CloudDriveAccountClient.Resources(List.copyOf(clouds),
+                    mounted.get()?List.of(new CloudDriveAccountClient.MountView(s.source.toString(),"/PikPak-media-b-play",true,true)):List.of(),true,true));
+            doAnswer(c -> {
+                String url=c.getArgument(1);
+                clouds.add(new CloudDriveAccountClient.CloudView("WebDAV",url.startsWith("https")?"/WebDAV(native-user)":"/planned",false));
+                return null;
+            }).when(s.cd).connectWebDav(any(),anyString(),any(),any());
+            doAnswer(c -> {
+                clouds.removeIf(x -> x.path().equals("/WebDAV(native-user)"));
+                clouds.add(new CloudDriveAccountClient.CloudView("WebDAV","/PikPak-media-b-play",false));
+                return null;
+            }).when(s.cd).renameCreatedCloudRoot(any(),eq("/WebDAV(native-user)"),eq("/PikPak-media-b-play"));
+            doAnswer(c -> {mounted.set(true);throw new IllegalStateException("response lost");}).when(s.cd).createMount(any(),any());
+            s.worker.submit(s.records.begin(s.plan.id(),0,0));
+            assertThat(awaitStopped(s.records,s.plan.id()).currentStage()).isEqualTo("CD2_MOUNT");
+            s.worker.submit(s.records.execution(s.plan.id()));
+            assertThat(awaitStopped(s.records,s.plan.id()).status()).isEqualTo("SUCCEEDED");
+            assertThat(s.registry.toCloudDrivePath("/new/Adult/Film",null,null)).isEqualTo("/planned/Adult/Film");
+            assertThat(s.records.observation(s.plan.targetId()).mountedCloudPath()).isEqualTo("/PikPak-media-b-play");
+            verify(s.cd,times(2)).connectWebDav(any(),anyString(),any(),any());
+            verify(s.cd,atLeastOnce()).applyNewAccountDownloadProfile(any(),eq("/PikPak-media-b-play"));
+            verify(s.cd).createMount(any(),argThat(m -> m.getReadOnly()&&m.getAutoMount()&&m.getSourceDir().equals("/PikPak-media-b-play")));
+            assertThat(s.rows.get("target_execution_"+s.plan.id())).doesNotContain("native-user","native-password");
+        }
+    }
+
+    @Test
     void lostMountResponseStartsExistingMountWithoutCreatingAgain() throws Exception {
         try(Scenario s=new Scenario()){
             var cloud=new java.util.concurrent.atomic.AtomicBoolean();

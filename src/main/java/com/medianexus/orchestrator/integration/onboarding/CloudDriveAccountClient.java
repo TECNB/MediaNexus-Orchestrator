@@ -47,6 +47,71 @@ public class CloudDriveAccountClient {
         });
     }
 
+    /** 仅向明确支持的官方 HTTPS 根发送专用 DAV 凭据，不跟随重定向。 */
+    public String verifyNativeWebDav(String endpoint, String username, String password) {
+        java.net.URI uri;
+        try {
+            uri = java.net.URI.create(endpoint.trim());
+        } catch (IllegalArgumentException failure) {
+            throw rejected("请输入 PikPak 官方 WebDAV HTTPS 地址");
+        }
+        if (!"https".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null
+                || !java.util.Set.of("dav.pikpak.ai", "dav.mypikpak.com").contains(uri.getHost().toLowerCase(java.util.Locale.ROOT))
+                || uri.getPort() != -1 && uri.getPort() != 443 || uri.getRawUserInfo() != null
+                || uri.getRawQuery() != null || uri.getRawFragment() != null
+                || !java.util.Set.of("", "/").contains(uri.getRawPath())
+                || !StringUtils.hasText(username) || username.contains(":") || !StringUtils.hasText(password)) {
+            throw rejected("请填写 PikPak 官方 WebDAV 根地址和专用凭据");
+        }
+        String url = "https://" + uri.getHost().toLowerCase(java.util.Locale.ROOT) + "/";
+        var timeout = java.time.Duration.ofSeconds(12);
+        String basic = java.util.Base64.getEncoder().encodeToString(
+                (username.trim() + ":" + password).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        var request = java.net.http.HttpRequest.newBuilder(java.net.URI.create(url)).timeout(timeout)
+                .header("Authorization", "Basic " + basic).header("Depth", "0")
+                .method("PROPFIND", java.net.http.HttpRequest.BodyPublishers.noBody()).build();
+        try {
+            var response = java.net.http.HttpClient.newBuilder().connectTimeout(timeout).build()
+                    .send(request, java.net.http.HttpResponse.BodyHandlers.discarding());
+            if (response.statusCode() != 207) { throw rejected("PikPak 官方 WebDAV 未通过授权检查"); }
+            return url;
+        } catch (java.io.IOException failure) {
+            throw rejected("PikPak 官方 WebDAV 无法访问");
+        } catch (InterruptedException failure) {
+            Thread.currentThread().interrupt();
+            throw rejected("PikPak 官方 WebDAV 检查中断");
+        }
+    }
+
+    /** 只更新四项已验证的下载参数；保留 CD2 版本返回的其他字段。 */
+    public void applyNewAccountDownloadProfile(CloudDrive2Properties connection, String cloudPath) {
+        call(connection, stub -> {
+            var matches = stub.getAllCloudApis(Empty.getDefaultInstance()).getApisList().stream()
+                    .filter(a -> cloudPath.equals(a.getPath()) && !a.getIsLocked()).toList();
+            if (matches.size() != 1 || !"WebDAV".equals(matches.get(0).getName())
+                    || !StringUtils.hasText(matches.get(0).getUserName())) {
+                throw rejected("CD2 云盘身份无法唯一确认，未更新下载设置");
+            }
+            var cloud = matches.get(0);
+            var key = GetCloudAPIConfigRequest.newBuilder().setCloudName(cloud.getName()).setUserName(cloud.getUserName()).build();
+            var before = stub.getCloudAPIConfig(key);
+            var desired = before.toBuilder().setMaxDownloadThreads(4).setMinReadLengthKB(64)
+                    .setDefaultReadLengthKB(2048).setMaxBufferPoolSizeMB(128).build();
+            if (!before.equals(desired)) {
+                stub.setCloudAPIConfig(SetCloudAPIConfigRequest.newBuilder().setCloudName(cloud.getName())
+                        .setUserName(cloud.getUserName()).setConfig(desired).build());
+            }
+            var actual = stub.getCloudAPIConfig(key);
+            if (actual.getMaxDownloadThreads() != desired.getMaxDownloadThreads()
+                    || actual.getMinReadLengthKB() != desired.getMinReadLengthKB()
+                    || actual.getDefaultReadLengthKB() != desired.getDefaultReadLengthKB()
+                    || actual.getMaxBufferPoolSizeMB() != desired.getMaxBufferPoolSizeMB()) {
+                throw rejected("CD2 下载设置未按计划生效");
+            }
+            return null;
+        });
+    }
+
     /** 返回只表示请求接受；调用者必须另行读取真实云盘根，不能推测名字。 */
     public void connectWebDav(CloudDrive2Properties connection, String serverUrl, String username, String password) {
         call(connection, stub -> {

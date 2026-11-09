@@ -87,14 +87,25 @@ class AccountAdoptionPlanTest {
         accounts.confirmAdoption(plan.id(),new AdoptionConfirmRequest(0L,0L));
         assertThat(registry.readState().version()).isEqualTo(1);
         symlink.setNewAccountScanParametersJson("{\"num_threads\":\"8\"}");
-        OnboardingPlan next = accounts.previewOnboarding(new OnboardingPlanRequest(1L,"新号",List.of("MOVIE","ADULT"),new PikPakAuthorization("web",null,null,"private-refresh-token",null,null),null));
-        assertThat(next.canExecute()).as(next.issues().toString()).isTrue();
+        OnboardingPlan next = accounts.previewOnboarding(new OnboardingPlanRequest(1L,"新号",List.of("MOVIE","ADULT"),new PikPakAuthorization("web",null,null,"private-refresh-token",null,null),null,"media-b"));
+        assertThat(next.canExecute()).isFalse();
+        assertThat(next.issues()).extracting(Issue::code).containsExactly("NATIVE_DAV_REQUIRED");
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> accounts.execute(next.id(),new ExecuteRequest(0L,1L)))
+                .hasMessageContaining("接入前提尚未满足");
+        when(cd.verifyNativeWebDav("https://dav.pikpak.ai/","private-native-user","private-native-password"))
+                .thenReturn("https://dav.pikpak.ai/");
+        var authorized=accounts.authorizeNativeDav(next.id(),new NativeDavRequest(0L,"https://dav.pikpak.ai/","private-native-user","private-native-password"));
+        assertThat(authorized.canExecute()).isTrue();
+        assertThat(authorized.planVersion()).isEqualTo(1);
+        assertThat(json.writeValueAsString(authorized)).doesNotContain("private-native-user","private-native-password");
         var stored=json.readValue(rows.get("target_plan_"+next.id()),OnboardingRecords.PlanRecord.class);
         var protectedPlan=json.readTree(cipher.decrypt("onboarding-plan/"+next.id(),stored.protectedPayload()));
+        assertThat(protectedPlan.path("nativeDav").path("password").asText()).isEqualTo("private-native-password");
+        assertThat(protectedPlan.path("asConfigurations").path("MOVIE").path("task_name").asText()).isEqualTo("PikPak · media-b · MOVIE");
         assertThat(protectedPlan.path("asConfigurations").path("MOVIE").path("num_threads").asText()).isEqualTo("8");
         var primaryMovie=registry.readState().targets().get(0).bindings().stream().filter(b->b.category().equals("MOVIE")).findFirst().orElseThrow();
         assertThat(json.readTree(primaryMovie.asRequestBodyJson()).path("num_threads").asText()).isEqualTo("4");
-        assertThat(next.cloudDrivePrefix()).isEqualTo("/Cloud-"+next.targetId());
+        assertThat(next.cloudDrivePrefix()).isEqualTo("/Cloud-media-b");
         assertThat(next.defaultChanges()).extracting(DefaultChange::category).containsExactly("MOVIE","ADULT");
         assertThat(next.bindings().stream().filter(b->b.category().equals("ADULT")).findFirst().orElseThrow().embyLibraries()).extracting(LibraryPath::libraryId).containsExactly("jav","other");
         assertThat(json.writeValueAsString(next)).doesNotContain("private-refresh-token","private-dav-password");
