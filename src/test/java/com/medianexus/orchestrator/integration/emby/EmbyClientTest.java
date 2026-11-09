@@ -210,6 +210,7 @@ class EmbyClientTest {
                         "Name": "Movie title",
                         "Path": "/srv/media/STRM/Movies/original-file-name.strm",
                         "Type": "Movie",
+                        "Size": 4123000000,
                         "ProductionYear": 2026,
                         "DateCreated": "2026-07-20T12:34:56.0000000Z",
                         "ImageTags": {"Primary": "tag"}
@@ -242,13 +243,13 @@ class EmbyClientTest {
                 2026,
                 "2026-07-20T12:34:56.0000000Z",
                 "tag",
-                "/srv/media/STRM/Movies/original-file-name.strm"
+                4_123_000_000L
         ));
         assertThat(queryParameters(query.get())).contains(
                 "ParentId=movies-id",
                 "Recursive=true",
                 "IncludeItemTypes=Movie",
-                "Fields=Path%2CDateCreated%2CProductionYear%2CImageTags",
+                "Fields=Path%2CDateCreated%2CProductionYear%2CImageTags%2CSize",
                 "GroupItemsIntoCollections=false",
                 "SortBy=DateCreated",
                 "SortOrder=Descending",
@@ -256,6 +257,35 @@ class EmbyClientTest {
                 "Limit=24",
                 "SearchTerm=Movie+title"
         );
+    }
+
+    @Test
+    void sumsEpisodeSizesBySeriesAcrossPagesAndMarksMissingSizes() {
+        server.createContext("/Items", exchange -> {
+            Set<String> query = queryParameters(exchange.getRequestURI().getRawQuery());
+            assertThat(query).contains("Fields=Size", "ParentId=tv", "IncludeItemTypes=Episode");
+            String items = query.contains("StartIndex=0")
+                    ? """
+                      [{"SeriesId":"complete","Size":4000000000},
+                       {"SeriesId":"partial","Size":2000000000}]
+                      """
+                    : """
+                      [{"SeriesId":"complete","Size":3000000000},
+                       {"SeriesId":"partial","Size":0},
+                       {"SeriesId":"unknown"}]
+                      """;
+            byte[] response = ("{\"Items\":" + items + ",\"TotalRecordCount\":5}").getBytes();
+            exchange.sendResponseHeaders(200, response.length);
+            exchange.getResponseBody().write(response);
+            exchange.close();
+        });
+        server.start();
+
+        var sizes = new EmbyClient(properties(), new ObjectMapper()).listSeriesStorageSizes("tv");
+
+        assertThat(sizes.get("complete")).isEqualTo(new EmbyMediaSize(7_000_000_000L, false));
+        assertThat(sizes.get("partial")).isEqualTo(new EmbyMediaSize(2_000_000_000L, true));
+        assertThat(sizes.get("unknown")).isEqualTo(EmbyMediaSize.UNKNOWN);
     }
 
     @Test

@@ -26,17 +26,6 @@ public class QuarkMediaDeletion {
         return mediaSourcePath != null && mediaSourcePath.contains(SOURCE_MARKER);
     }
 
-    /** SmartStrm playback URLs identify the exact source files by fid. */
-    public Long sourceBytes(List<String> sources) {
-        List<String> ids = sources.stream().map(this::requireFileId).distinct().toList();
-        if (ids.isEmpty()) return 0L;
-        var sizes = quarkClient.ownedFileBytes(ids);
-        if (!sizes.keySet().containsAll(ids)) return null;
-        long bytes = 0;
-        for (String id : ids) bytes = Math.addExact(bytes, sizes.get(id));
-        return bytes;
-    }
-
     public void deleteMediaSourcePaths(List<String> mediaSourcePaths) {
         deleteMediaSourcePaths(mediaSourcePaths, null);
     }

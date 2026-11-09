@@ -18,10 +18,8 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.function.Consumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -145,35 +143,6 @@ public class QuarkDirectClient {
         ).path("data");
         return entries.isArray() && entries.size() > 0
                 && StringUtils.hasText(entries.path(0).path("fid").asText(""));
-    }
-
-    /** The STRM URL's path is display text. The fid identifies the owned file. */
-    Map<String, Long> ownedFileBytes(List<String> fileIds) {
-        Map<String, Long> sizes = new LinkedHashMap<>();
-        for (String fid : fileIds) {
-            if (sizes.containsKey(fid)) continue;
-            JsonNode entry = request("GET", "/1/clouddrive/file/info?pr=ucpro&fr=pc&uc_param_str=&fid="
-                    + enc(fid), null).path("data");
-            if (!fid.equals(entry.path("fid").asText())) continue;
-            addOwnedFileBytes(sizes, entry);
-            String parent = entry.path("pdir_fid").asText("");
-            if (fileIds.size() > 2 && sizes.size() == 1 && StringUtils.hasText(parent)) {
-                JsonNode siblings = request("GET", "/1/clouddrive/file/sort?pr=ucpro&fr=pc&uc_param_str="
-                        + "&_page=1&_size=100&_fetch_total=1&_fetch_sub_dirs=0&pdir_fid=" + enc(parent), null)
-                        .path("data").path("list");
-                for (JsonNode file : siblings) {
-                    if (fileIds.contains(file.path("fid").asText())) addOwnedFileBytes(sizes, file);
-                }
-            }
-        }
-        return sizes;
-    }
-
-    private void addOwnedFileBytes(Map<String, Long> sizes, JsonNode entry) {
-        JsonNode size = entry.path("size");
-        if (!entry.path("dir").asBoolean() && size.canConvertToLong() && size.asLong() >= 0) {
-            sizes.put(entry.path("fid").asText(), size.asLong());
-        }
     }
 
     private void deleteOwnedFileIfPresent(List<String> fileIds) {

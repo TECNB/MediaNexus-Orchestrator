@@ -355,9 +355,7 @@ public class MediaLibraryDeletionWorkflow {
         mediaSourceDeletion.delete(sourceDeletionTargets, wholeWork ? null : sourceDirectoryName(task));
         if (scope == AdminMediaLibraryScope.ADULT_OTHER || scope == AdminMediaLibraryScope.ADULT_JAV) {
             Function<String, String> mapping = storage.sourcePathMapping();
-            capacities.invalidate(strmPaths, sourceDeletionTargets.stream().map(mapping).filter(java.util.Objects::nonNull).toList());
-        } else {
-            capacities.invalidate(strmPaths, List.of());
+            capacities.invalidate(sourceDeletionTargets.stream().map(mapping).filter(java.util.Objects::nonNull).toList());
         }
 
         saveStage(task, "CLEANING_STRM");
@@ -380,7 +378,7 @@ public class MediaLibraryDeletionWorkflow {
             saveStage(task, "DELETING_CLOUD");
             planStorageCleanup(task, target);
             storage.deleteAdultTarget(task.getLibrary(), target);
-            capacities.invalidate(read(task.getStrmPaths()), List.of(target.path()));
+            capacities.invalidate(List.of(target.path()));
             saveStage(task, "CLEANING_STRM");
         }
         List<String> paths = read(task.getStrmPaths());

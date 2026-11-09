@@ -8,7 +8,7 @@ public record EmbyMediaLibraryItem(
         Integer year,
         String dateCreated,
         String primaryImageTag,
-        String path
+        Long storageBytes
 ) {
     public boolean hasPrimaryImage() {
         return primaryImageTag != null && !primaryImageTag.isBlank();

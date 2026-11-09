@@ -17,6 +17,7 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.Base64;
 import java.util.Collection;
 import java.util.HashSet;
@@ -26,6 +27,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
@@ -449,7 +451,7 @@ public class EmbyClient {
         params.put("ParentId", libraryId);
         params.put("Recursive", "true");
         params.put("IncludeItemTypes", itemType);
-        params.put("Fields", "Path,DateCreated,ProductionYear,ImageTags");
+        params.put("Fields", "Path,DateCreated,ProductionYear,ImageTags,Size");
         params.put("GroupItemsIntoCollections", "false");
         params.put("SortBy", "DateCreated");
         params.put("SortOrder", "Descending");
@@ -459,6 +461,54 @@ public class EmbyClient {
             params.put("SearchTerm", searchTerm.trim());
         }
         return mediaLibraryPage(params);
+    }
+
+    /** Emby reports video sizes, while series and collections have no total of their own. */
+    public Map<String, EmbyMediaSize> listSeriesStorageSizes(String libraryId) {
+        Map<String, EmbyMediaSize> totals = new HashMap<>();
+        visitSizedVideos(Map.of("ParentId", libraryId, "IncludeItemTypes", "Episode"), item -> {
+            String seriesId = text(item, "SeriesId", "seriesId");
+            if (StringUtils.hasText(seriesId)) {
+                totals.merge(seriesId, new EmbyMediaSize(mediaBytes(item), false), EmbyMediaSize::plus);
+            }
+        });
+        return totals;
+    }
+
+    public EmbyMediaSize collectionStorageSize(String collectionId) {
+        List<EmbyMediaSize> sizes = new ArrayList<>();
+        visitSizedVideos(Map.of("CollectionIds", collectionId, "IncludeItemTypes", "Movie,Video,Episode"),
+                item -> sizes.add(new EmbyMediaSize(mediaBytes(item), false)));
+        return sizes.stream().reduce(EmbyMediaSize::plus).orElse(EmbyMediaSize.UNKNOWN);
+    }
+
+    private void visitSizedVideos(Map<String, String> scope, Consumer<JsonNode> visit) {
+        Map<String, String> params = new HashMap<>(scope);
+        params.put("Recursive", "true");
+        params.put("GroupItemsIntoCollections", "false");
+        params.put("Fields", "Size");
+        params.put("SortBy", "Id");
+        params.put("Limit", "1000");
+        int offset = 0;
+        while (true) {
+            params.put("StartIndex", String.valueOf(offset));
+            JsonNode response = get("/Items", params);
+            JsonNode items = response.path("Items");
+            JsonNode total = response.path("TotalRecordCount");
+            if (!items.isArray() || !total.canConvertToInt()
+                    || (items.isEmpty() && offset < total.intValue())) {
+                throw new EmbyClientException("Emby 媒体容量分页结果不完整");
+            }
+            items.forEach(visit);
+            offset += items.size();
+            if (offset >= total.intValue()) return;
+        }
+    }
+
+    private Long mediaBytes(JsonNode item) {
+        JsonNode bytes = item.path("Size");
+        return bytes.isIntegralNumber() && bytes.canConvertToLong() && bytes.longValue() > 0
+                ? bytes.longValue() : null;
     }
 
     public EmbyMediaLibraryItem getTopLevelMediaItem(
@@ -837,7 +887,7 @@ public class EmbyClient {
                     integerOrNull(item, "ProductionYear", "productionYear"),
                     text(item, "DateCreated", "dateCreated"),
                     item.path("ImageTags").path("Primary").asText(null),
-                    text(item, "Path", "path")
+                    mediaBytes(item)
             ));
         }
         return new EmbyMediaLibraryPage(result, totalRecordCount.asInt());

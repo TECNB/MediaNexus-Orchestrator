@@ -91,7 +91,7 @@ public class AdminMediaLibraryController {
     }
 
     @GetMapping("/items")
-    @Operation(summary = "分页浏览媒体库", description = "默认按 Emby 入库时间倒序；可按网盘逻辑容量从大到小排序，未知容量排最后。")
+    @Operation(summary = "分页浏览媒体库", description = "默认按 Emby 入库时间倒序；可按 Emby 逻辑容量从大到小排序，不完整或未知的排最后。")
     public ApiResponse<AdminMediaLibraryPageResponse> listItems(
             @Parameter(description = "媒体库：movies、tv、variety、anime、adult-other 或 adult-jav")
             @RequestParam @NotBlank String library,

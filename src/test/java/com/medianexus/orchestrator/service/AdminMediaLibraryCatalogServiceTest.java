@@ -15,6 +15,7 @@ import com.medianexus.orchestrator.integration.emby.EmbyClient;
 import com.medianexus.orchestrator.integration.emby.EmbyClientException;
 import com.medianexus.orchestrator.integration.emby.EmbyLibrary;
 import com.medianexus.orchestrator.integration.emby.EmbyMediaLibraryItem;
+import com.medianexus.orchestrator.integration.emby.EmbyMediaSize;
 import com.medianexus.orchestrator.integration.emby.EmbyMediaLibraryPage;
 import com.medianexus.orchestrator.integration.emby.EmbyPrimaryImage;
 import com.medianexus.orchestrator.integration.emby.EmbyRemoteSearchCandidate;
@@ -27,11 +28,9 @@ class AdminMediaLibraryCatalogServiceTest {
 
     private final AuthService authService = mock(AuthService.class);
     private final EmbyClient embyClient = mock(EmbyClient.class);
-    private final MediaCapacityIndex capacities = mock(MediaCapacityIndex.class);
     private final AdminMediaLibraryCatalogService service = new AdminMediaLibraryCatalogService(
             authService,
-            embyClient,
-            capacities
+            embyClient
     );
 
     @Test
@@ -48,7 +47,7 @@ class AdminMediaLibraryCatalogServiceTest {
                         "Movie",
                         1999,
                         "2026-07-20T12:00:00Z",
-                        "tag", "/movies/The.Matrix.1999.strm"
+                        "tag", 1024L
                 )), 25));
 
         var response = service.listItems("MOVIES", 2, 24, "matrix");
@@ -248,28 +247,33 @@ class AdminMediaLibraryCatalogServiceTest {
     }
 
     @Test
-    void ranksAllFilteredWorksBeforePagingAndKeepsUnknownLast() {
-        EmbyLibrary library = new EmbyLibrary("movies-id", "Movies", List.of("/movies"));
-        var small = mediaItem("small", "Small", null);
-        var unknown = mediaItem("unknown", "Unknown", null);
-        var large = mediaItem("large", "Large", null);
-        var excluded = mediaItem("excluded", "Has poster", "poster");
+    void ranksCompleteSeriesFirstAcrossPagesEvenWhenPartialSubtotalIsLarger() {
+        EmbyLibrary library = new EmbyLibrary("tv-id", "TV", List.of("/tv"));
+        var small = series("small", null);
+        var unknown = series("unknown", null);
+        var large = series("large", null);
+        var partial = series("partial", null);
+        var excluded = series("excluded", "poster");
         when(embyClient.listLibraries()).thenReturn(List.of(library));
-        when(embyClient.listTopLevelMediaItems("movies-id", "Movie", 0, 1000, "query"))
-                .thenReturn(new EmbyMediaLibraryPage(List.of(small, unknown, large, excluded), 4));
-        when(capacities.work(AdminMediaLibraryScope.MOVIES, library, small))
-                .thenReturn(MediaCapacityIndex.Capacity.measured(10));
-        when(capacities.work(AdminMediaLibraryScope.MOVIES, library, large))
-                .thenReturn(MediaCapacityIndex.Capacity.measured(30));
-        when(capacities.work(AdminMediaLibraryScope.MOVIES, library, unknown))
-                .thenReturn(new MediaCapacityIndex.Capacity(null, "unknown"));
+        when(embyClient.listTopLevelMediaItems("tv-id", "Series", 0, 1000, "query"))
+                .thenReturn(new EmbyMediaLibraryPage(List.of(small, unknown, large, partial, excluded), 5));
+        when(embyClient.listSeriesStorageSizes("tv-id")).thenReturn(Map.of(
+                "small", new EmbyMediaSize(10L, false),
+                "large", new EmbyMediaSize(30L, false),
+                "partial", new EmbyMediaSize(50L, true)
+        ));
 
-        assertThat(service.listItems("movies", 1, 1, "query", true, true).items())
-                .extracting(item -> item.itemId()).containsExactly("large");
-        assertThat(service.listItems("movies", 2, 1, "query", true, true).items())
-                .extracting(item -> item.itemId()).containsExactly("small");
-        assertThat(service.listItems("movies", 3, 1, "query", true, true).items())
-                .extracting(item -> item.itemId()).containsExactly("unknown");
+        assertThat(service.listItems("tv", 1, 2, "query", true, true).items())
+                .extracting(item -> item.itemId()).containsExactly("large", "small");
+        var lastPage = service.listItems("tv", 2, 2, "query", true, true);
+        assertThat(lastPage.items()).extracting(item -> item.itemId()).containsExactly("partial", "unknown");
+        assertThat(lastPage.items().get(0).storageBytes()).isEqualTo(50L);
+        assertThat(lastPage.items().get(0).capacityStatus()).isEqualTo("partial");
+        assertThat(lastPage.total()).isEqualTo(4);
+    }
+
+    private EmbyMediaLibraryItem series(String id, String imageTag) {
+        return new EmbyMediaLibraryItem(id, id, id, "Series", null, null, imageTag, null);
     }
 
     private EmbyMediaLibraryItem mediaItem(String id, String title, String imageTag) {
