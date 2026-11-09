@@ -24,6 +24,21 @@ class MovieSeriesFileRenameServiceTest {
     }
 
     @Test
+    void recognizesBdParenthesesAndExcludesAuxiliaryFiles() {
+        for (int episode = 1; episode <= 12; episode++) {
+            String name = "[LowPower-Raws] Hai to Gensou no Grimgar - " + String.format("%02d", episode)
+                    + " (BD 1080P x264 FLAC).mkv";
+            assertThat(renameService.episodeNumber(name, 1)).contains(episode);
+        }
+        for (String name : java.util.List.of("Show - 02.5 (BD 1080P).mkv", "Show - NCOP1 (BD).mkv",
+                "Show - NCED2 [1080p].mkv", "Show - 13(OVA) [1080p].mkv", "Show - CM01 [1080p].mkv",
+                "Show [PV] S01E01.mkv", "Show Menu01 [01].mkv")) {
+            assertThat(renameService.episodeNumber(name, 1)).as(name).isEmpty();
+        }
+        assertThat(renameService.episodeNumber("2.5 Jigen no Ririsa - 01 (BD 1080P).mkv", 1)).contains(1);
+    }
+
+    @Test
     void doesNotTreatReleaseMetadataAsBareEpisode() {
         assertThat(renameService.episodeNumber(
                 "[LoliHouse] Hell Mode [01-12][WebRip 1080p HEVC-10bit AAC].mkv",

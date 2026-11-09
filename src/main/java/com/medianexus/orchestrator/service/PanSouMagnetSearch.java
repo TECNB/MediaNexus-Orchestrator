@@ -1,5 +1,6 @@
 package com.medianexus.orchestrator.service;
 
+import com.medianexus.orchestrator.config.PanSouProperties;
 import com.medianexus.orchestrator.dto.resources.request.MovieReleaseRecommendationRequest;
 import com.medianexus.orchestrator.dto.resources.request.MovieReleaseSearchRequest;
 import com.medianexus.orchestrator.dto.resources.request.SeriesReleaseRecommendationRequest;
@@ -46,7 +47,7 @@ public class PanSouMagnetSearch {
     private static final Pattern EXPLICIT_SEASON = Pattern.compile(
             "(?i)(?<![a-z0-9])s(?:eason)?[ ._-]*\\d{1,2}(?!\\d)(?:[ ._-]*[-~–—][ ._-]*s?(?:eason)?[ ._-]*\\d{1,2}(?!\\d))?"
                     + "|(?<!\\d)\\d{1,2}(?:st|nd|rd|th)[ ._-]*season(?![a-z0-9])"
-                    + "|第\\s*[0-9一二三四五六七八九十两]+\\s*季");
+                    + "|第\\s*[0-9一二三四五六七八九十两]+\\s*[季期]");
     private static final Pattern PACK = Pattern.compile(
             "(?i)(?<![a-z])(?:batch|complete|fin|all)(?![a-z])|全集|合集|完结|完結|全\\s*\\d{1,3}\\s*[集話话]");
     private static final Pattern EPISODE_RANGE = Pattern.compile(
@@ -54,21 +55,25 @@ public class PanSouMagnetSearch {
     private static final Pattern SINGLE_EPISODE = Pattern.compile(
             "(?i)(?<![a-z])(?:s\\d{1,2})?e(?:p)?[ ._-]*\\d{1,3}(?!\\d)|第\\s*\\d+\\s*[集話话]"
                     + "|(?:^|[\\s\\[\\]_-])\\d{1,3}\\s*(?:[集話话]|v[1-9])"
-                    + "|[\\[【]\\s*\\d{1,3}\\s*[\\]】]|\\s-\\s*\\d{1,3}(?=\\s|$|[\\[【])");
+                    + "|[\\[【]\\s*\\d{1,3}\\s*[\\]】]|\\s-\\s*\\d{1,3}(?=\\s|$|[\\[【])|(?<![a-z0-9])\\d{1,2}x\\d{1,3}(?!\\d)");
     private static final Pattern NON_FEATURE = Pattern.compile(
             "(?i)(?<![a-z])(?:ost|soundtrack|ncop|nced|trailer|op|ed|pv|ova|oad|sp|epub|novel|manga)(?![a-z])"
                     + "|主题曲|主題歌|片头曲|片尾曲|预告|預告|截图|特典|花絮|小説|小说|漫畫|漫画|コミック|ラノベ|巻|MP3|320K");
     private static final Pattern YEAR = Pattern.compile("(?<![0-9])(?:18|19|20)\\d{2}(?![0-9])");
     private static final Pattern DATE = Pattern.compile("(?<!\\d)(?:19|20)\\d{2}[-./]\\d{1,2}[-./]\\d{1,2}(?!\\d)");
     private static final Pattern CHINESE_SUBTITLES = Pattern.compile("(?i)简繁|簡繁|简体|簡體|繁体|繁體|中文字幕|中字|(?<![a-z])(?:chs|cht|sc|tc)(?![a-z])");
+    private static final Pattern PACK_SOURCE = Pattern.compile("(?i)(?<![a-z])(?:bd|bdrip|bluray|web-dl|webrip)(?![a-z])");
     private static final Consumer<ReleaseSearchProgress> NO_PROGRESS = progress -> {};
 
     private final PanSouClient client;
     private final ReleaseTitleTagParser tagParser;
+    private final PanSouProperties properties;
 
-    public PanSouMagnetSearch(PanSouClient client, ReleaseTitleTagParser tagParser) {
+    public PanSouMagnetSearch(PanSouClient client, ReleaseTitleTagParser tagParser,
+            PanSouProperties properties) {
         this.client = client;
         this.tagParser = tagParser;
+        this.properties = properties;
     }
 
     public ProwlarrReleaseSearchResponse searchMovie(MovieReleaseSearchRequest request) {
@@ -138,10 +143,9 @@ public class PanSouMagnetSearch {
                 : new Target(union(target.titles(), List.of(target.bangumiTitle())), target.year(), target.season(), target.quality());
         List<Candidate> qualified = candidates.stream().filter(candidate -> qualified(identity, candidate)).toList();
         if (qualified.isEmpty()) throw rejection(identity, candidates);
-        String selectedQuality = target.quality();
-        if (qualified.stream().noneMatch(candidate -> candidate.tags().resolutionTags().contains(target.quality()))) {
-            selectedQuality = "1080p";
-        }
+        String selectedQuality = qualityPreference(target.quality()).stream()
+                .filter(quality -> qualified.stream().anyMatch(candidate -> candidate.tags().resolutionTags().contains(quality)))
+                .findFirst().orElseThrow();
         String selected = selectedQuality;
         List<ProwlarrReleaseItemResponse> items = qualified.stream()
                 .filter(candidate -> candidate.tags().resolutionTags().contains(selected))
@@ -150,7 +154,7 @@ public class PanSouMagnetSearch {
                 items.get(0), items);
     }
 
-    /** 两个目录标题同时首查；任一批已有合格候选即返回，不等待无关查询或发起补搜。 */
+    /** 两个目录标题同时首查；目标画质可提前返回，升级或回退等待已发起查询结束。 */
     private List<Candidate> discover(
             Target target, Function<String, PanSouSearchResult> search, Consumer<ReleaseSearchProgress> progress) {
         Map<PanSouMagnetIdentity, Candidate> candidates = new LinkedHashMap<>();
@@ -166,7 +170,8 @@ public class PanSouMagnetSearch {
             for (int remaining = pending.size(); remaining > 0; remaining--) {
                 QueryBatch batch = completion.take().get();
                 acceptBatch(target, candidates, failures, batch, progress);
-                if (candidates.values().stream().anyMatch(candidate -> qualified(target, candidate))) {
+                if (candidates.values().stream().anyMatch(candidate -> qualified(target, candidate)
+                        && (target.quality() == null || candidate.tags().resolutionTags().contains(target.quality())))) {
                     Future<QueryBatch> completed;
                     while ((completed = completion.poll()) != null) {
                         acceptBatch(target, candidates, failures, completed.get(), progress);
@@ -174,6 +179,7 @@ public class PanSouMagnetSearch {
                     return sorted(target, candidates);
                 }
             }
+            if (candidates.values().stream().anyMatch(candidate -> qualified(target, candidate))) return sorted(target, candidates);
             Target supplementTarget = target.bangumiTitle() == null ? target
                     : new Target(union(target.titles(), List.of(target.bangumiTitle())), target.year(),
                             target.season(), target.quality(), target.bangumiTitle());
@@ -271,7 +277,8 @@ public class PanSouMagnetSearch {
     }
 
     private int evidenceRank(Target target, Candidate candidate) {
-        if (qualified(target, candidate)) return candidate.tags().resolutionTags().contains(target.quality()) ? 0 : 1;
+        if (qualified(target, candidate)) return qualityPreference(target.quality()).indexOf(candidate.tags().resolutionTags().stream()
+                .filter(qualityPreference(target.quality())::contains).findFirst().orElse(""));
         if (scopeConfirmed(target, candidate)) return 2;
         if (candidate.complete() && (target.quality() == null || candidate.tags().resolutionTags().contains(target.quality()))) return 3;
         return 4;
@@ -279,13 +286,42 @@ public class PanSouMagnetSearch {
 
     private boolean qualified(Target target, Candidate candidate) {
         return related(target, candidate) && scopeConfirmed(target, candidate) && (target.quality() == null
-                || candidate.tags().resolutionTags().contains(target.quality())
-                || ("2160p".equals(target.quality()) && candidate.tags().resolutionTags().contains("1080p")));
+                || candidate.tags().resolutionTags().stream().anyMatch(qualityPreference(target.quality())::contains));
     }
 
     private boolean scopeConfirmed(Target target, Candidate candidate) {
         if (target.season() == null) return target.year() != null && releaseYears(target, candidate.entry().note()).contains(target.year().toString());
-        return candidate.tags().seasonTags().equals(List.of(seasonTag(target.season()))) && candidate.complete();
+        List<String> seasons = candidate.tags().seasonTags();
+        boolean seasonMatches = seasons.equals(List.of(seasonTag(target.season())))
+                || target.season() == 1 && seasons.isEmpty();
+        if (!seasonMatches || singleEpisode(candidate.entry().note())) return false;
+        return candidate.complete() || capacitySuggestsPack(candidate);
+    }
+
+    private List<String> qualityPreference(String quality) {
+        if ("720p".equals(quality)) return List.of("720p", "1080p", "2160p");
+        if ("2160p".equals(quality)) return List.of("2160p", "1080p");
+        return List.of("1080p", "2160p");
+    }
+
+    private boolean singleEpisode(String title) {
+        String evidence = DATE.matcher(title).replaceAll(" ");
+        return SINGLE_EPISODE.matcher(EPISODE_RANGE.matcher(evidence).replaceAll(" ")).find();
+    }
+
+    /** 容量仅为整包启发式；不代表文件集数已核验，也不等待文件列表。 */
+    private boolean capacitySuggestsPack(Candidate candidate) {
+        if (candidate.sizeBytes() == null || candidate.sizeConflict()
+                || !PACK_SOURCE.matcher(candidate.entry().note()).find()) return false;
+        for (String quality : candidate.tags().resolutionTags()) {
+            Long minimum = switch (quality) {
+                case "2160p" -> properties.getSeasonPack2160MinBytes();
+                case "1080p" -> properties.getSeasonPack1080MinBytes();
+                default -> properties.getSeasonPack720MinBytes();
+            };
+            if (minimum != null && candidate.sizeBytes() >= minimum) return true;
+        }
+        return false;
     }
 
     private boolean related(Target target, Candidate candidate) {
@@ -341,18 +377,19 @@ public class PanSouMagnetSearch {
         List<String> reviewFlags = new ArrayList<>();
         boolean confirmed = scopeConfirmed(target, candidate);
         if (target.season() == null && !confirmed) reviewFlags.add("VERSION_UNKNOWN");
-        if (target.season() != null && candidate.tags().seasonTags().isEmpty()) reviewFlags.add("SEASON_UNKNOWN");
+        if (target.season() != null && !confirmed && candidate.tags().seasonTags().isEmpty()) reviewFlags.add("SEASON_UNKNOWN");
         else if (target.season() != null && !confirmed) reviewFlags.add("SEASON_PACK_UNCERTAIN");
         boolean subtitleMarked = CHINESE_SUBTITLES.matcher(candidate.entry().note()).find();
         if (!subtitleMarked) reviewFlags.add("SUBTITLES_UNMARKED");
         String uncertainty = target.season() == null && !confirmed ? "；年份/版本待核对"
-                : target.season() != null && candidate.tags().seasonTags().isEmpty() ? "；季度未知，需人工核对"
+                : target.season() != null && !confirmed && candidate.tags().seasonTags().isEmpty() ? "；季度未知，需人工核对"
                 : target.season() != null && !confirmed ? "；整季/混季证据不足，需人工核对" : "";
         return new ProwlarrReleaseItemResponse(candidate.entry().note(), candidate.sizeBytes(), null, null, null,
                 String.join(" / ", candidate.sources()), candidate.entry().datetime(), null, candidate.entry().url(),
                 candidate.tags().resolutionTags(), candidate.tags().dynamicRangeTags(), candidate.tags().seasonTags(),
                 "PanSou：" + String.join(" / ", candidate.sources()) + uncertainty
-                        + (candidate.complete() ? "；标题含整包线索" : "；未确认整季，可能为单集")
+                        + (candidate.complete() ? "；标题含整包线索" : capacitySuggestsPack(candidate) && !singleEpisode(candidate.entry().note())
+                                ? "；容量符合整包特征，集数未核验" : "；未确认整季，可能为单集")
                         + (subtitleMarked ? "；标题标注中文字幕，内容未经核验" : "；字幕语言未标明")
                         + (candidate.sizeBytes() == null ? "；体积未知" : "；体积为来源报告的近似种子总大小")
                         + "；做种及可下载性未知"

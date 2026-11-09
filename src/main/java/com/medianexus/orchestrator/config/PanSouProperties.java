@@ -15,6 +15,22 @@ public class PanSouProperties {
     public boolean isDisabled() { return disabled; }
     public void setDisabled(boolean disabled) { this.disabled = disabled; }
 
+    @NotNull
+    @jakarta.validation.constraints.Positive
+    private Long seasonPack720MinBytes;
+    @NotNull
+    @jakarta.validation.constraints.Positive
+    private Long seasonPack1080MinBytes;
+    @NotNull
+    @jakarta.validation.constraints.Positive
+    private Long seasonPack2160MinBytes;
+    public Long getSeasonPack720MinBytes() { return seasonPack720MinBytes; }
+    public void setSeasonPack720MinBytes(Long bytes) { seasonPack720MinBytes = bytes; }
+    public Long getSeasonPack1080MinBytes() { return seasonPack1080MinBytes; }
+    public void setSeasonPack1080MinBytes(Long bytes) { seasonPack1080MinBytes = bytes; }
+    public Long getSeasonPack2160MinBytes() { return seasonPack2160MinBytes; }
+    public void setSeasonPack2160MinBytes(Long bytes) { seasonPack2160MinBytes = bytes; }
+
     private String baseUrl;
     private String username;
     private String password;

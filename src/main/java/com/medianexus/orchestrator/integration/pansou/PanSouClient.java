@@ -12,6 +12,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.medianexus.orchestrator.config.PanSouProperties;
+import com.medianexus.orchestrator.service.TorrentEpisodeCoverage;
 import jakarta.annotation.PreDestroy;
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -31,6 +32,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
@@ -49,11 +51,18 @@ public class PanSouClient implements AutoCloseable {
     private final PanSouProperties properties;
     private final ObjectMapper objectMapper;
     private final HttpClient httpClient;
+    private final TorrentEpisodeCoverage episodeCoverage;
     private final Object tokenLock = new Object();
     private volatile String accessToken;
     private volatile Instant tokenExpiresAt = Instant.EPOCH;
 
     public PanSouClient(PanSouProperties properties, ObjectMapper objectMapper) {
+        this(properties, objectMapper, null);
+    }
+
+    @Autowired
+    public PanSouClient(PanSouProperties properties, ObjectMapper objectMapper, TorrentEpisodeCoverage episodeCoverage) {
+        this.episodeCoverage = episodeCoverage;
         this.properties = properties;
         this.objectMapper = objectMapper;
         this.httpClient = HttpClient.newBuilder()
@@ -164,6 +173,9 @@ public class PanSouClient implements AutoCloseable {
             throw new PanSouClientException(INVALID_RESPONSE, "PanSou 磁力分类不是结果列表");
         }
         List<PanSouSearchEntry> result = new ArrayList<>();
+        if (episodeCoverage != null) {
+            episodeCoverage.registerSources(body.path("results"));
+        }
         Map<PanSouMagnetIdentity, Long> sizes = magnetSizes(body.path("results"));
         for (JsonNode entry : entries) {
             String type = text(entry, "type");

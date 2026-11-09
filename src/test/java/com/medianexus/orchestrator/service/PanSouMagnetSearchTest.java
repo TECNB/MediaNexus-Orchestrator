@@ -38,7 +38,15 @@ class PanSouMagnetSearchTest {
     private static final String MAGNET = "magnet:?xt=urn:btih:" + "00".repeat(20);
     private static final String BASE32 = "magnet:?xt=urn:btih:" + "A".repeat(32);
     private final PanSouClient client = mock(PanSouClient.class);
-    private final PanSouMagnetSearch search = new PanSouMagnetSearch(client, new ReleaseTitleTagParser());
+    private final PanSouMagnetSearch search = new PanSouMagnetSearch(client, new ReleaseTitleTagParser(), packProperties());
+
+    private static com.medianexus.orchestrator.config.PanSouProperties packProperties() {
+        var properties = new com.medianexus.orchestrator.config.PanSouProperties();
+        properties.setSeasonPack720MinBytes(1610612736L);
+        properties.setSeasonPack1080MinBytes(3221225472L);
+        properties.setSeasonPack2160MinBytes(6442450944L);
+        return properties;
+    }
 
     @Test
     void supplementsUnqualifiedResultsAndMergesBtihWithoutInventingMetrics() {
@@ -87,14 +95,11 @@ class PanSouMagnetSearchTest {
                     entry(magnet(1), sample[2], "plugin:nyaa"),
                     entry(magnet(2), "[Novel] " + sample[1] + " 第01-12巻 EPUB", "plugin:nyaa"),
                     entry(magnet(3), sample[1] + " ORIGINAL SOUNDTRACK MP3 320K", "plugin:nyaa"))));
-            assertThatThrownBy(() -> search.recommendSeries(new SeriesReleaseRecommendationRequest(
-                    null, null, null, sample[0], sample[1], 1, "1080p")))
-                    .isInstanceOfSatisfying(ProwlarrReleaseIngestService.NoMatchingReleaseException.class, failure -> {
-                        assertThat(failure.candidates()).singleElement().satisfies(item -> {
-                            assertThat(item.title()).isEqualTo(sample[2]);
-                            assertThat(item.resolutionTags()).contains("1080p");
-                            assertThat(item.matchSource()).contains("整包线索");
-                        });
+            assertThat(search.recommendSeries(new SeriesReleaseRecommendationRequest(
+                    null, null, null, sample[0], sample[1], 1, "1080p")).items()).singleElement().satisfies(item -> {
+                        assertThat(item.title()).isEqualTo(sample[2]);
+                        assertThat(item.resolutionTags()).contains("1080p");
+                        assertThat(item.reviewFlags()).doesNotContain("SEASON_UNKNOWN");
                     });
         }
         assertThat(new ReleaseTitleTagParser().parse("Show BD 1920x1080p AVC").resolutionTags()).containsExactly("1080p");
@@ -114,12 +119,10 @@ class PanSouMagnetSearchTest {
                     entry(magnet(4), "雾尾粉丝后援会 [01-12 合集][1080p][简繁字幕]", "nyaa")));
         });
         var request = new SeriesReleaseRecommendationRequest(null, null, null, "雾尾粉丝俱乐部", "霧尾ファンクラブ", 1, "1080p");
-        assertThatThrownBy(() -> search.recommendSeries(request, "雾尾粉丝后援会", progress -> {}))
-                .isInstanceOfSatisfying(ProwlarrReleaseIngestService.NoMatchingReleaseException.class, failure -> {
-                    assertThat(failure.candidates()).extracting("downloadRef").containsExactly(magnet(2), magnet(1), magnet(4), magnet(3));
-                    assertThat(failure.candidates().get(0).size()).isEqualTo(300L);
-                    assertThat(failure.candidates().get(0).matchQuery()).contains("雾尾粉丝后援会");
-                });
+        var fallback = search.recommendSeries(request, "雾尾粉丝后援会", progress -> {});
+        assertThat(fallback.items()).extracting("downloadRef").containsExactly(magnet(2), magnet(1), magnet(4));
+        assertThat(fallback.item().size()).isEqualTo(300L);
+        assertThat(fallback.item().matchQuery()).contains("雾尾粉丝后援会");
         assertThat(calls.subList(0, 2)).containsExactlyInAnyOrder("雾尾粉丝俱乐部", "霧尾ファンクラブ");
         assertThat(calls).filteredOn("雾尾粉丝后援会"::equals).hasSize(1);
         calls.clear();
@@ -140,9 +143,72 @@ class PanSouMagnetSearchTest {
                     "nyaa", query.equals("Show") ? null : 400L, query.equals("Show"))));
         });
         assertThatThrownBy(() -> search.recommendSeries(new SeriesReleaseRecommendationRequest(
-                null, null, null, "Show", "Original", 1, "1080p")))
+                null, null, null, "Show", "Original", 2, "1080p")))
                 .isInstanceOfSatisfying(ProwlarrReleaseIngestService.NoMatchingReleaseException.class,
                         failure -> assertThat(failure.candidates()).singleElement().satisfies(item -> assertThat(item.size()).isNull()));
+    }
+
+    @Test
+    void allowsCapacityHeuristicAndQualityUpgradeWithoutConsultingFileCoverage() {
+        when(client.searchMagnets(any())).thenReturn(new PanSouSearchResult(List.of(
+                new PanSouSearchEntry(magnet(1), "", "Show S1 [BDRip 1080p x265 OPUS]", null, "nyaa", 4_831_838_208L),
+                new PanSouSearchEntry(magnet(2), "", "Show S1 - 01 [BDRip 1080p]", null, "nyaa", 12_000_000_000L),
+                new PanSouSearchEntry(magnet(3), "", "Show S1 [BDRip 1080p]", null, "nyaa", 500_000_000L))));
+        var first = new SeriesReleaseRecommendationRequest(null, null, null, "Show", null, 1, "1080p");
+        assertThat(search.recommendSeries(first).items()).singleElement().satisfies(item -> {
+            assertThat(item.downloadRef()).isEqualTo(magnet(1));
+            assertThat(item.matchSource()).contains("容量符合整包特征");
+        });
+        when(client.searchMagnets(any())).thenReturn(new PanSouSearchResult(List.of(
+                entry(magnet(4), "Show [01-24 Fin][4K]", "nyaa"))));
+        assertThat(search.recommendSeries(first).selectedQuality()).isEqualTo("2160p");
+        when(client.searchMagnets(any())).thenReturn(new PanSouSearchResult(List.of(
+                entry(magnet(5), "Show [01-24 Fin][4K]", "nyaa"),
+                entry(magnet(6), "Show [01-12 合集][1080p]", "nyaa"))));
+        assertThat(search.recommendSeries(first).selectedQuality()).isEqualTo("1080p");
+        when(client.searchMagnets(any())).thenReturn(new PanSouSearchResult(List.of(
+                entry(magnet(7), "Movie BluRay 1080p", "nyaa"))));
+        assertThatThrownBy(() -> search.recommendMovie(new MovieReleaseRecommendationRequest(
+                null, null, "Movie", null, 2025, "1080p")))
+                .isInstanceOf(ProwlarrReleaseIngestService.NoMatchingReleaseException.class);
+    }
+
+    @Test
+    void rejectsExplicitWrongCourAndLargeNxEpisode() {
+        var request = new SeriesReleaseRecommendationRequest(null, null, null, "Show", null, 1, "1080p");
+        for (String title : List.of("Show 第2期 [01-12][1080p]", "Show 1x01 [BDRip 1080p]")) {
+            when(client.searchMagnets(any())).thenReturn(new PanSouSearchResult(List.of(
+                    new PanSouSearchEntry(magnet(1), "", title, null, "nyaa", 4_294_967_296L))));
+            assertThatThrownBy(() -> search.recommendSeries(request))
+                    .isInstanceOf(ProwlarrReleaseIngestService.NoMatchingReleaseException.class);
+        }
+    }
+
+    @Test
+    void waitsForStartedTitleQueryBeforeUpgradingQuality() throws Exception {
+        CountDownLatch upgradeAccepted = new CountDownLatch(1);
+        CountDownLatch releaseExact = new CountDownLatch(1);
+        when(client.searchMagnets(any())).thenAnswer(call -> {
+            String query = call.<PanSouSearchCommand>getArgument(0).keyword();
+            if (query.equals("Original")) {
+                assertThat(releaseExact.await(2, TimeUnit.SECONDS)).isTrue();
+                return new PanSouSearchResult(List.of(entry(magnet(2), "Show Batch 1080p", "nyaa")));
+            }
+            return new PanSouSearchResult(List.of(entry(magnet(1), "Show Batch 4K", "nyaa")));
+        });
+        var executor = java.util.concurrent.Executors.newSingleThreadExecutor();
+        try {
+            var future = executor.submit(() -> search.recommendSeries(new SeriesReleaseRecommendationRequest(
+                    null, null, null, "Show", "Original", 1, "1080p"), progress -> {
+                        if (progress.query().equals("Show") && progress.status().equals("SUCCEEDED")) upgradeAccepted.countDown();
+                    }));
+            assertThat(upgradeAccepted.await(1, TimeUnit.SECONDS)).isTrue();
+            releaseExact.countDown();
+            assertThat(future.get(2, TimeUnit.SECONDS).selectedQuality()).isEqualTo("1080p");
+        } finally {
+            releaseExact.countDown();
+            executor.shutdownNow();
+        }
     }
 
     @Test
@@ -345,14 +411,11 @@ class PanSouMagnetSearchTest {
                                     "[DBD-Raws][世界顶尖的暗杀者转生为异世界贵族/世界最高の暗殺者、異世界貴族に転生する][01-12TV全集][1080P][BDRip]"),
                             java.util.Map.of("url", magnet(2), "source", "plugin:nyaa", "note",
                                     "[UCCUSS] 世界最高の暗殺者、異世界貴族に転生する 全12話 (BD 1920x1080p AVC FLAC)")))))));
-            var realSearch = new PanSouMagnetSearch(actualClient, new ReleaseTitleTagParser());
-            assertThatThrownBy(() -> realSearch.recommendSeries(new SeriesReleaseRecommendationRequest(
-                    null, null, null, "世界顶尖的暗杀者，转生为异世界贵族", "世界最高の暗殺者、異世界貴族に転生する", 1, "1080p")))
-                    .isInstanceOfSatisfying(ProwlarrReleaseIngestService.NoMatchingReleaseException.class, failure -> {
-                        assertThat(failure.reasonCode()).isEqualTo("SEASON_UNKNOWN");
-                        assertThat(failure.candidates()).hasSize(2);
-                        assertThat(failure.candidates()).allSatisfy(item -> assertThat(item.matchSource()).contains("季度未知"));
-                    });
+            var realSearch = new PanSouMagnetSearch(actualClient, new ReleaseTitleTagParser(), packProperties());
+            var batch = realSearch.recommendSeries(new SeriesReleaseRecommendationRequest(
+                    null, null, null, "世界顶尖的暗杀者，转生为异世界贵族", "世界最高の暗殺者、異世界貴族に転生する", 1, "1080p"));
+            assertThat(batch.items()).hasSize(2);
+            assertThat(batch.items()).allSatisfy(item -> assertThat(item.reviewFlags()).doesNotContain("SEASON_UNKNOWN"));
         } finally {
             server.stop(0);
         }

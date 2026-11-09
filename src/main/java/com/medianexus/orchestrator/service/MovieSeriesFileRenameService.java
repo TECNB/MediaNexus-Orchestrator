@@ -28,8 +28,12 @@ public class MovieSeriesFileRenameService {
     private static final Pattern CHINESE_EPISODE_PATTERN = Pattern.compile("第\\s*(\\d{1,3})\\s*[集话話]");
     private static final Pattern BRACKET_EPISODE_PATTERN = Pattern.compile("[\\[【]\\s*(\\d{1,3})\\s*[\\]】]");
     private static final Pattern BARE_ANIME_EPISODE_PATTERN = Pattern.compile(
-            "(?i)\\s+-\\s+(\\d{1,3})(?:v\\d+)?(?=\\s*(?:\\[|【|$))"
+            "(?i)\\s+-\\s+(\\d{1,3})(?:v\\d+)?(?=\\s*(?:\\[|【|\\(|（|$))"
     );
+
+    private static final Pattern NON_FEATURE_EPISODE = Pattern.compile(
+            "(?i)(?<![a-z0-9])(?:ncop|nced|op|ed|ova|oad|sp|specials?|extras?|sample|trailer|pv|cm|menu|iv)\\d*(?![a-z])"
+                    + "|特典|花絮|预告|宣伝|映像特典|(?:\\s-\\s|s\\d{1,2}e|ep?\\s*|第\\s*|\\[)\\d{1,3}\\.\\d+(?=[ ._()\\[\\]-]|$)");
 
     private static final List<String> VIDEO_EXTENSIONS = List.of(
             "mp4", "mkv", "avi", "mov", "wmv", "flv", "m2ts", "ts", "webm", "rmvb"
@@ -198,6 +202,7 @@ public class MovieSeriesFileRenameService {
     }
 
     public Optional<Integer> episodeNumber(String sourceName, Integer selectedSeasonNumber) {
+        if (NON_FEATURE_EPISODE.matcher(mainName(sourceName)).find()) return Optional.empty();
         Optional<EpisodeMatch> sxxExx = matchSeasonEpisode(SXX_EXX_PATTERN, sourceName);
         if (sxxExx.isPresent()) {
             EpisodeMatch match = sxxExx.get();

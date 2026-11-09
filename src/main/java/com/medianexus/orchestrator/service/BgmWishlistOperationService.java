@@ -138,6 +138,8 @@ public class BgmWishlistOperationService {
                     || release.indexerId() == null && !release.downloadRef().regionMatches(true, 0, "magnet:", 0, 7)
                     || release.resolutionTags() == null) throw bad("发布来源信息不完整");
             boolean qualityMatches = release.resolutionTags().contains(operation.source().quality())
+                    || release.resolutionTags().contains("2160p")
+                    || "720p".equals(operation.source().quality()) && release.resolutionTags().contains("1080p")
                     || "2160p".equals(operation.source().quality()) && release.resolutionTags().contains("1080p");
             if (!qualityMatches) throw bad("补充来源不符合本次清晰度条件");
             Candidate candidate = new Candidate(candidateKey(release), release);
