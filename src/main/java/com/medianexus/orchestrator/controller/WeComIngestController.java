@@ -2,7 +2,8 @@ package com.medianexus.orchestrator.controller;
 
 import com.medianexus.orchestrator.common.response.ApiResponse;
 import com.medianexus.orchestrator.config.WeComProperties;
-import com.medianexus.orchestrator.dto.bgm.BgmWishlistOperationContract.Operations;
+import com.medianexus.orchestrator.dto.bgm.BgmWishlistOperationContract.*;
+import jakarta.validation.Valid;
 import com.medianexus.orchestrator.integration.wecom.WeComCallbackCipher;
 import com.medianexus.orchestrator.service.BgmWishlistOperationService;
 import com.medianexus.orchestrator.service.WeComIngestChat;
@@ -66,10 +67,50 @@ public class WeComIngestController {
                 properties.getCorpId().trim(), Instant.now());
     }
 
-    @GetMapping("/api/v1/admin/wecom-ingest/operations")
-    @Operation(summary = "分页查看当前管理员的微信操作记录")
+    private static final String RECORDS = "/api/v1/wecom-ingest/operations";
+
+    @GetMapping({RECORDS, "/api/v1/admin/wecom-ingest/operations"})
+    @Operation(summary = "分页查看当前账号的微信操作记录")
     public ApiResponse<Operations> list(@RequestParam(defaultValue = "1") int page,
                                         @RequestParam(defaultValue = "20") int pageSize) {
         return ApiResponse.success(operations.listWeCom(page, pageSize));
+    }
+
+    @GetMapping(RECORDS + "/{id}")
+    @Operation(summary = "查看本人微信操作详情")
+    public ApiResponse<com.medianexus.orchestrator.dto.bgm.BgmWishlistOperationContract.Operation> get(@PathVariable String id) {
+        return ApiResponse.success(operations.getWeCom(id));
+    }
+
+    @PostMapping(RECORDS + "/{id}/confirm")
+    @Operation(summary = "确认本人微信操作的具体发布")
+    public ApiResponse<com.medianexus.orchestrator.dto.bgm.BgmWishlistOperationContract.Operation> confirm(
+            @PathVariable String id, @Valid @RequestBody CandidateInput input) {
+        operations.requireWeComRecord(id);
+        return ApiResponse.success(operations.confirm(id, input));
+    }
+
+    @PostMapping(RECORDS + "/{id}/supply")
+    @Operation(summary = "为本人微信操作补充来源")
+    public ApiResponse<com.medianexus.orchestrator.dto.bgm.BgmWishlistOperationContract.Operation> supply(
+            @PathVariable String id, @Valid @RequestBody SupplyInput input) {
+        operations.requireWeComRecord(id);
+        return ApiResponse.success(operations.supply(id, input));
+    }
+
+    @PostMapping(RECORDS + "/{id}/search")
+    @Operation(summary = "重新搜索本人微信操作的发布")
+    public ApiResponse<com.medianexus.orchestrator.dto.bgm.BgmWishlistOperationContract.Operation> retry(
+            @PathVariable String id, @Valid @RequestBody SubjectInput input) {
+        operations.requireWeComRecord(id);
+        return ApiResponse.success(operations.retry(id, input.subjectId()));
+    }
+
+    @PostMapping(RECORDS + "/{id}/defer")
+    @Operation(summary = "暂缓本人微信操作的内容例外")
+    public ApiResponse<com.medianexus.orchestrator.dto.bgm.BgmWishlistOperationContract.Operation> defer(
+            @PathVariable String id, @Valid @RequestBody SubjectInput input) {
+        operations.requireWeComRecord(id);
+        return ApiResponse.success(operations.defer(id, input.subjectId()));
     }
 }

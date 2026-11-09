@@ -88,6 +88,15 @@ public class WeComBindings {
                 .findFirst().map(id -> new Recipient(scope, id)).orElse(null);
     }
 
+    /** 反查当前应用的绑定；通知收件人不能替代站内用户绑定。 */
+    public Long userIdForMember(String memberId) {
+        if (!WeComClient.isMemberId(memberId)) return null;
+        ensureTable();
+        Scope scope = client.scope();
+        return jdbc.queryForList("SELECT user_id FROM wecom_user_bindings WHERE corp_id = ? AND agent_id = ? AND member_id = ?",
+                Long.class, scope.corpId(), scope.agentId(), memberId).stream().findFirst().orElse(null);
+    }
+
     private void delete(Long userId, Scope scope) {
         jdbc.update("DELETE FROM wecom_user_bindings WHERE user_id = ? AND corp_id = ? AND agent_id = ?",
                 userId, scope.corpId(), scope.agentId());

@@ -42,8 +42,6 @@ medianexus:
     ingest-enabled: ${MEDIANEXUS_WECOM_INGEST_ENABLED:false}
     ingest-token: ${MEDIANEXUS_WECOM_INGEST_TOKEN:}
     ingest-aes-key: ${MEDIANEXUS_WECOM_INGEST_AES_KEY:}
-    ingest-member-id: ${MEDIANEXUS_WECOM_INGEST_MEMBER_ID:}
-    ingest-admin-id: ${MEDIANEXUS_WECOM_INGEST_ADMIN_ID:}
   datasource:
     ssh-tunnel:
       enabled: ${MEDIANEXUS_DB_SSH_TUNNEL_ENABLED:false}

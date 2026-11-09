@@ -261,9 +261,13 @@ class BgmWishlistOperationTest {
         verify(f.tasks).create(any(), eq(english), eq(f.owner));
     }
 
-    @Test void weComConfirmationKeepsTheChosen4kAndDoesNotReadAWishlist() {
+    @Test void boundUserCanConfirmOwnWeComReleaseButCannotSeeAnotherUsersRecords() {
         Fixture f = new Fixture();
-        f.owner.setRole("ADMIN");
+        f.owner.setRole("USER");
+        when(f.auth.requireCurrentUser()).thenReturn(f.owner);
+        var outsider = new User();
+        outsider.setId(2L);
+        outsider.setRole("USER");
         var selected = new Identity("SERIES", 1, 1, "作品", "Original", 2024, "SERIES");
         var english4k = new ProwlarrReleaseItemResponse("Original S01 Complete 2160p", 1L, 4, 0, 0,
                 "indexer", null, 1, "reference", List.of("2160p"), List.of(), List.of("S01"), "原始标题", "Original");
@@ -282,9 +286,15 @@ class BgmWishlistOperationTest {
         Entry waiting = f.rows.get("wecom-test").entries().get(0);
         assertEquals("WAITING_CONFIRMATION", waiting.status());
         verify(f.tasks, never()).createSeries(any(), any(), any());
-        verify(f.notifications).sendToWeComAdmin(eq(1L), anyString(), anyString(), anyString(),
+        verify(f.notifications).sendToWeComUser(eq(1L), anyString(), anyString(), anyString(),
                 eq("/automation/wecom?operation=wecom-test"));
 
+        when(f.auth.requireCurrentUser()).thenReturn(outsider);
+        assertThrows(com.medianexus.orchestrator.common.exception.BusinessException.class, () -> f.service.getWeCom("wecom-test"));
+        assertThrows(com.medianexus.orchestrator.common.exception.BusinessException.class,
+                () -> f.service.confirm("wecom-test", new CandidateInput(1L, waiting.candidates().get(0).key())));
+        when(f.auth.requireCurrentUser()).thenReturn(f.owner);
+        assertEquals("wecom-test", f.service.getWeCom("wecom-test").id());
         f.service.confirm("wecom-test", new CandidateInput(1L, waiting.candidates().get(0).key()));
         f.executor.runPending();
         verify(f.tasks).createSeries(any(), eq(english4k), eq(f.owner));

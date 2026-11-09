@@ -104,8 +104,8 @@ public class BgmWishlistOperationService {
     }
 
     public Operation confirm(String id, CandidateInput input) {
-        User actor = auth.requireAdminUser();
         Operation existing = records.get(id);
+        User actor = requireActionActor(existing);
         if (!Objects.equals(existing.actorUserId(), actor.getId()) && !"SCHEDULED".equals(existing.triggerType())) {
             throw new BusinessException(ErrorCode.FORBIDDEN, "该操作不属于当前管理员", HttpStatus.FORBIDDEN);
         }
@@ -123,7 +123,7 @@ public class BgmWishlistOperationService {
     }
 
     public Operation supply(String id, SupplyInput input) {
-        User actor = auth.requireAdminUser();
+        User actor = requireActionActor(records.get(id));
         Operation changed = records.update(id, operation -> {
             if (!Objects.equals(operation.actorUserId(), actor.getId()) && !"SCHEDULED".equals(operation.triggerType()))
                 throw new BusinessException(ErrorCode.FORBIDDEN, "该操作不属于当前管理员", HttpStatus.FORBIDDEN);
@@ -151,9 +151,8 @@ public class BgmWishlistOperationService {
     }
 
     public Operation retry(String id, long subjectId) {
-        User actor = auth.requireAdminUser();
+        requireActionActor(records.get(id));
         Operation changed = records.update(id, operation -> {
-            requireWeComActor(operation, actor);
             if (BUSY.contains(operation.status())) throw bad("本轮仍在执行");
             Entry previous = find(operation, subjectId);
             if (previous.task() != null || !Set.of("WAITING_RESOURCE", "WAITING_CONFIRMATION", "DEFERRED", "FAILED", "INTERRUPTED").contains(previous.status())) {
@@ -165,9 +164,8 @@ public class BgmWishlistOperationService {
     }
 
     public Operation defer(String id, long subjectId) {
-        User actor = auth.requireAdminUser();
+        requireActionActor(records.get(id));
         return live(records.update(id, operation -> {
-            requireWeComActor(operation, actor);
             Entry previous = find(operation, subjectId);
             if (BUSY.contains(operation.status()) || !WAITING.contains(previous.status())) throw bad("当前作品不能暂缓");
             return replace(operation, new Entry(previous.item(), "DEFERRED", previous.startedAt(), previous.searches(),
@@ -189,8 +187,20 @@ public class BgmWishlistOperationService {
         return live(operation);
     }
 
+    public Operation getWeCom(String id) {
+        return live(requireWeComRecord(id));
+    }
+
+    public Operation requireWeComRecord(String id) {
+        User actor = auth.requireCurrentUser();
+        Operation operation = records.get(id);
+        if (!fromWeCom(operation)) throw new BusinessException(ErrorCode.NOT_FOUND, "微信操作记录不存在", HttpStatus.NOT_FOUND);
+        requireWeComActor(operation, actor);
+        return operation;
+    }
+
     public Operations listWeCom(int page, int size) {
-        User actor = auth.requireAdminUser();
+        User actor = auth.requireCurrentUser();
         if (page < 1 || size < 1 || size > 50) throw bad("分页参数超出范围");
         Operations values = records.list(weComSource(actor.getId()), page, size);
         return new Operations(values.items().stream().map(this::live).toList(), values.total(), page, size);
@@ -198,12 +208,12 @@ public class BgmWishlistOperationService {
 
     static String weComSource(long actorId) { return "wecom-" + actorId; }
 
-    Operation openWeCom(String id, User admin, String title) {
-        var source = new Source(weComSource(admin.getId()), null, admin.getId(), admin.getUsername(),
+    Operation openWeCom(String id, User owner, String title) {
+        var source = new Source(weComSource(owner.getId()), null, owner.getId(), owner.getUsername(),
                 false, null, 1, "2160p", null, null, false);
         Instant at = Instant.now();
         Item item = weComItem(title, null, null, at);
-        Operation operation = new Operation(id, source, "SINGLE", "WECOM", admin.getId(), at, at,
+        Operation operation = new Operation(id, source, "SINGLE", "WECOM", owner.getId(), at, at,
                 "RESOLVING", List.of(1L), List.of(entry(item, "RESOLVING", at)), null);
         records.create(operation);
         return operation;
@@ -232,9 +242,16 @@ public class BgmWishlistOperationService {
 
     private static boolean fromWeCom(Operation operation) { return "WECOM".equals(operation.triggerType()); }
 
+    private User requireActionActor(Operation operation) {
+        if (!fromWeCom(operation)) return auth.requireAdminUser();
+        User actor = auth.requireCurrentUser();
+        requireWeComActor(operation, actor);
+        return actor;
+    }
+
     private static void requireWeComActor(Operation operation, User actor) {
         if (fromWeCom(operation) && !Objects.equals(operation.actorUserId(), actor.getId())) {
-            throw new BusinessException(ErrorCode.FORBIDDEN, "该微信请求不属于当前管理员", HttpStatus.FORBIDDEN);
+            throw new BusinessException(ErrorCode.FORBIDDEN, "该微信请求不属于当前账号", HttpStatus.FORBIDDEN);
         }
     }
 
@@ -355,7 +372,6 @@ public class BgmWishlistOperationService {
         }
         User owner = users.selectById(operation.source().ownerUserId());
         if (owner == null) throw bad("任务归属成员不存在");
-        if (fromWeCom(operation) && !"ADMIN".equalsIgnoreCase(owner.getRole())) throw bad("微信绑定账号已不是管理员");
         var availableQuota = quota.dailyContentCreateQuota(owner);
         if (!availableQuota.exempt() && availableQuota.remaining() == 0) {
             updateEntry(id, subjectId, previous -> outcome(previous, "SKIPPED", reason("QUOTA_EXHAUSTED", "任务归属成员今日创建次数已耗尽"))); return false;
@@ -455,12 +471,16 @@ public class BgmWishlistOperationService {
         long subjectId = entry.item().subjectId();
         updateEntry(operation.id(), subjectId, previous -> notice(previous, "PENDING"));
         String key = "wecom:" + operation.id() + ":" + entry.reason().code();
-        String result = notifications.sendToWeComAdmin(operation.actorUserId(), key, entry.item().title(),
+        String result = notifications.sendToWeComUser(operation.actorUserId(), key, entry.item().title(),
                 entry.reason().message(), "/automation/wecom?operation=" + operation.id());
         updateEntry(operation.id(), subjectId, previous -> notice(previous, result));
     }
 
     private Operation live(Operation operation) {
+        if (fromWeCom(operation) && Set.of("RESOLVING", "WAITING_WORK", "WAITING_SEASON").contains(operation.status())
+                && operation.updatedAt().plusSeconds(WeComIngestChat.SELECTION_SECONDS).isBefore(Instant.now())) {
+            return status(operation, "EXPIRED", reason("EXPIRED", "候选已过期，请重新发送片名。"));
+        }
         List<Entry> entries = operation.entries().stream().map(entry -> {
             if (entry.task() == null) return entry;
             Task current = tasks.currentTask(entry.task().taskType(), entry.task().taskId());

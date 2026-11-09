@@ -16,10 +16,11 @@ public class IngestExceptionNotifier {
     private final WeComProperties properties;
     private final WeComClient client;
     private final IngestExceptionNoticeMapper notices;
+    private final WeComBindings bindings;
     private volatile boolean ready;
 
-    public IngestExceptionNotifier(WeComProperties properties, WeComClient client, IngestExceptionNoticeMapper notices) {
-        this.properties = properties; this.client = client; this.notices = notices;
+    public IngestExceptionNotifier(WeComProperties properties, WeComClient client, IngestExceptionNoticeMapper notices, WeComBindings bindings) {
+        this.properties = properties; this.client = client; this.notices = notices; this.bindings = bindings;
     }
 
     /** 管理后台告警没有任务归属，继续发送给配置的运维收件人。 */
@@ -28,10 +29,15 @@ public class IngestExceptionNotifier {
         return send(new Recipient(client.scope(), member == null ? null : member.trim()), key, title, body, path);
     }
 
-    public String sendToWeComAdmin(Long adminId, String key, String title, String body, String path) {
-        if (!properties.isIngestEnabled() || !java.util.Objects.equals(adminId, properties.getIngestAdminId())
-                || !WeComClient.isMemberId(properties.getIngestMemberId())) return "DISABLED";
-        return deliver(new Recipient(client.scope(), properties.getIngestMemberId()), key, title, body, path);
+    public String sendToWeComUser(Long ownerId, String key, String title, String body, String path) {
+        if (!properties.isIngestEnabled()) return "DISABLED";
+        Recipient recipient;
+        try { recipient = bindings.recipient(ownerId); }
+        catch (RuntimeException exception) {
+            log.warn("微信自动化无法读取通知绑定 event={}", key);
+            return "UNKNOWN";
+        }
+        return recipient == null ? "DISABLED" : deliver(recipient, key, title, body, path);
     }
 
     public String send(Recipient recipient, String key, String title, String body, String path) {

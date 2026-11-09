@@ -28,7 +28,7 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
-/** 单一管理员绑定，按持久收件顺序处理；聊天只解析目录，入库由现有操作执行器承接。 */
+/** 按当前应用的站内用户绑定授权，按持久收件顺序处理；聊天只解析目录，入库由现有操作执行器承接。 */
 @Service
 public class WeComIngestChat {
     private static final Logger log = LoggerFactory.getLogger(WeComIngestChat.class);
@@ -37,9 +37,10 @@ public class WeComIngestChat {
     private static final Pattern YEAR = Pattern.compile("(.+?)\\s*(?:\\(([12][0-9]{3})\\)|\\s+([12][0-9]{3}))$");
     private static final Pattern CHAT = Pattern.compile("^(?:你好|您好|谢谢|好的|收到|测试|在吗|hello|hi)[！!。.？?\\s]*$", Pattern.CASE_INSENSITIVE);
     private static final String DIGITS = "零一二三四五六七八九";
-    private static final long SELECTION_SECONDS = 600;
+    static final long SELECTION_SECONDS = 600;
     private final WeComProperties config;
     private final UserMapper users;
+    private final WeComBindings bindings;
     private final BgmWishlistExecutionMapper mapper;
     private final BgmWishlistOperationStore records;
     private final BgmWishlistOperationService operations;
@@ -51,33 +52,31 @@ public class WeComIngestChat {
             new ArrayBlockingQueue<>(1), r -> { var thread = new Thread(r, "wecom-inbox"); thread.setDaemon(true); return thread; },
             new ThreadPoolExecutor.DiscardPolicy());
 
-    public WeComIngestChat(WeComProperties config, UserMapper users, BgmWishlistExecutionMapper mapper,
+    public WeComIngestChat(WeComProperties config, UserMapper users, WeComBindings bindings, BgmWishlistExecutionMapper mapper,
                            BgmWishlistOperationStore records, BgmWishlistOperationService operations,
                            BgmWishlistSessionLocks locks, ObjectMapper json, TmdbClient tmdb, WeComClient client) {
-        this.config = config; this.users = users; this.mapper = mapper; this.records = records;
+        this.config = config; this.users = users; this.bindings = bindings; this.mapper = mapper; this.records = records;
         this.operations = operations; this.locks = locks; this.json = json; this.tmdb = tmdb; this.client = client;
     }
 
     public boolean configured() {
-        return config.isIngestEnabled() && config.getIngestAdminId() != null && config.getIngestAdminId() > 0
-                && StringUtils.hasText(config.getIngestMemberId()) && config.getIngestMemberId().matches("[A-Za-z0-9_.-]+")
-                && StringUtils.hasText(config.getCorpId()) && StringUtils.hasText(config.getAppSecret())
+        return config.isIngestEnabled() && StringUtils.hasText(config.getCorpId()) && StringUtils.hasText(config.getAppSecret())
                 && config.getAgentId() != null && config.getAgentId() > 0
                 && StringUtils.hasText(config.getIngestToken()) && config.getIngestToken().matches("[A-Za-z0-9]{1,32}")
                 && StringUtils.hasText(config.getIngestAesKey()) && config.getIngestAesKey().matches("[A-Za-z0-9+/]{43}");
     }
 
     public void accept(String member, String messageId, String text) {
-        if (!config.getIngestMemberId().equals(member) || messageId == null || !messageId.matches("[0-9]{1,24}")
+        if (!WeComClient.isMemberId(member) || messageId == null || !messageId.matches("[0-9]{1,24}")
                 || text == null || text.length() > 512 || text.isBlank()) return;
-        User admin = admin();
-        if (admin == null) return;
+        Long userId = bindings.userIdForMember(member);
+        if (userId == null) return;
         records.ensureTable();
         String id = UUID.nameUUIDFromBytes((config.getCorpId() + ":" + config.getAgentId() + ":" + messageId)
                 .getBytes(StandardCharsets.UTF_8)).toString();
-        String source = BgmWishlistOperationService.weComSource(admin.getId());
-        mapper.insertWeComMessage("wx-msg-" + id, source, admin.getId(),
-                encode(new Message(id, admin.getId(), member, text, Instant.now())));
+        String source = BgmWishlistOperationService.weComSource(userId);
+        mapper.insertWeComMessage("wx-msg-" + id, source, userId,
+                encode(new Message(id, userId, member, text, Instant.now())));
         wake();
     }
 
@@ -98,18 +97,14 @@ public class WeComIngestChat {
         try {
             locks.withLock("wecom-ingest-inbox", InboxBusy::new, () -> {
                 records.ensureTable();
-                User admin = admin();
-                if (admin == null) return null;
                 for (String raw : mapper.pendingWeComMessages()) {
                     Message message = decode(raw, Message.class);
                     // At-most-once dispatch: never replay a number against a different set of candidates after interruption.
                     mapper.consumeWeComMessage("wx-msg-" + message.id());
-                    if (message.adminId().equals(admin.getId()) && message.member().equals(config.getIngestMemberId())
-                            && !message.receivedAt().plusSeconds(SELECTION_SECONDS).isBefore(Instant.now())) handle(message, admin);
-                }
-                Operation current = active(admin);
-                if (current != null && current.updatedAt().plusSeconds(SELECTION_SECONDS).isBefore(Instant.now())) {
-                    operations.setWeComResolution(current.id(), "EXPIRED", "候选已过期，请重新发送片名。");
+                    if (message.receivedAt().plusSeconds(SELECTION_SECONDS).isBefore(Instant.now())
+                            || !Objects.equals(message.adminId(), bindings.userIdForMember(message.member()))) continue;
+                    User owner = users.selectById(message.adminId());
+                    if (owner != null) handle(message, owner);
                 }
                 return null;
             });
@@ -117,15 +112,19 @@ public class WeComIngestChat {
         catch (RuntimeException failed) { log.warn("企业微信收件处理失败：{}", failed.getClass().getSimpleName()); }
     }
 
-    private void handle(Message message, User admin) {
+    private void handle(Message message, User owner) {
         String text = normalize(message.text());
         if (text.isBlank() || text.length() > 100 || text.contains("\n") || text.matches("(?i)^(https?://|/).*")
                 || CHAT.matcher(text).matches()) return;
-        Operation current = active(admin);
+        Operation current = active(owner);
+        if (current != null && current.updatedAt().plusSeconds(SELECTION_SECONDS).isBefore(Instant.now())) {
+            operations.setWeComResolution(current.id(), "EXPIRED", "候选已过期，请重新发送片名。");
+            current = null;
+        }
         String id = message.id();
         try {
             if (text.matches("[0-9]{1,2}")) {
-                if (current == null || current.updatedAt().plusSeconds(SELECTION_SECONDS).isBefore(Instant.now())) {
+                if (current == null) {
                     reply(message.member(), "没有有效的待选候选，请重新发送片名。"); return;
                 }
                 if ("RESOLVING".equals(current.status())) {
@@ -134,7 +133,7 @@ public class WeComIngestChat {
                 String raw = mapper.select("wx-choice-" + current.id(), "WECOM_CHOICES");
                 if (raw == null) { reply(message.member(), "候选已失效，请重新发送片名。"); return; }
                 Choices saved = decode(raw, Choices.class);
-                if (!message.member().equals(saved.member())) {
+                if (!message.member().equalsIgnoreCase(saved.member())) {
                     reply(message.member(), "候选属于之前的成员配置，请重新发送片名。"); return;
                 }
                 var choices = saved.items();
@@ -143,12 +142,12 @@ public class WeComIngestChat {
                     reply(message.member(), "请回复 1 到 " + choices.size() + "。"); return;
                 }
                 id = current.id();
-                resolve(id, admin, message.member(), choices.get(index - 1));
+                resolve(id, owner, message.member(), choices.get(index - 1));
                 return;
             }
             if (current != null) operations.setWeComResolution(current.id(), "REPLACED", "已由同一成员的新片名请求替代。");
-            operations.openWeCom(id, admin, text);
-            search(id, admin, message.member(), parse(text));
+            operations.openWeCom(id, owner, text);
+            search(id, owner, message.member(), parse(text));
         } catch (RuntimeException failed) {
             log.warn("微信目录处理失败 operationId={} type={}", id, failed.getClass().getSimpleName());
             // A failed reply must not undo a persisted selection or queued ingest.
@@ -162,7 +161,7 @@ public class WeComIngestChat {
         }
     }
 
-    private void search(String id, User admin, String member, Title input) {
+    private void search(String id, User owner, String member, Title input) {
         JsonNode result = tmdb.searchWeComTitles(input.name());
         var rows = new LinkedHashMap<String, Choice>();
         var exact = new ArrayList<Choice>();
@@ -183,9 +182,9 @@ public class WeComIngestChat {
             if (input.name().equalsIgnoreCase(normalize(title)) || input.name().equalsIgnoreCase(normalize(original))) exact.add(choice);
         }
         if (exact.size() == 1 && result.path("total_pages").asInt() <= 1) {
-            resolve(id, admin, member, exact.get(0));
+            resolve(id, owner, member, exact.get(0));
         } else if (!rows.isEmpty()) {
-            choose(id, admin, member, "WAITING_WORK", "找到候选作品，请回复编号。", exact.isEmpty()
+            choose(id, owner, member, "WAITING_WORK", "找到候选作品，请回复编号。", exact.isEmpty()
                     ? rows.values().stream().limit(5).toList() : exact.stream().limit(5).toList());
         } else {
             var bare = BARE_NUMBER.matcher(input.name());
@@ -196,7 +195,7 @@ public class WeComIngestChat {
         }
     }
 
-    private void resolve(String id, User admin, String member, Choice choice) {
+    private void resolve(String id, User owner, String member, Choice choice) {
         Integer season = choice.season();
         String category = "MOVIE";
         if ("tv".equals(choice.type())) {
@@ -215,7 +214,7 @@ public class WeComIngestChat {
                         poster(entry) == null ? choice.cover() : poster(entry), "第 " + n + " 季" + (aired == null ? "" : "（" + aired + "）")));
             }
             if (season == null && seasons.size() > 1) {
-                choose(id, admin, member, "WAITING_SEASON", "《" + choice.title() + "》有多个季度，请回复编号。"
+                choose(id, owner, member, "WAITING_SEASON", "《" + choice.title() + "》有多个季度，请回复编号。"
                         + (seasons.size() > 8 ? "其他季度可重新发送片名加季号。" : ""), seasons.stream().limit(8).toList());
                 return;
             }
@@ -234,8 +233,8 @@ public class WeComIngestChat {
         operations.enqueueWeCom(id, identity, choice.cover());
     }
 
-    private void choose(String id, User admin, String member, String state, String prompt, List<Choice> choices) {
-        mapper.saveWeComChoices("wx-choice-" + id, BgmWishlistOperationService.weComSource(admin.getId()), encode(new Choices(member, choices)));
+    private void choose(String id, User owner, String member, String state, String prompt, List<Choice> choices) {
+        mapper.saveWeComChoices("wx-choice-" + id, BgmWishlistOperationService.weComSource(owner.getId()), encode(new Choices(member, choices)));
         StringBuilder text = new StringBuilder(prompt);
         var articles = new ArrayList<Article>();
         for (int index = 0; index < choices.size(); index++) {
@@ -259,14 +258,9 @@ public class WeComIngestChat {
         catch (RuntimeException failed) { log.warn("企业微信自动化回执发送失败"); }
     }
 
-    private Operation active(User admin) {
-        String raw = mapper.activeWeComSelection(BgmWishlistOperationService.weComSource(admin.getId()));
+    private Operation active(User owner) {
+        String raw = mapper.activeWeComSelection(BgmWishlistOperationService.weComSource(owner.getId()));
         return raw == null ? null : decode(raw, Operation.class);
-    }
-
-    private User admin() {
-        User user = users.selectById(config.getIngestAdminId());
-        return user != null && "ADMIN".equalsIgnoreCase(user.getRole()) ? user : null;
     }
 
     private static String normalize(String text) {

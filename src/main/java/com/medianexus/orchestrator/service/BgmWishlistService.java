@@ -298,7 +298,11 @@ public class BgmWishlistService {
 
     Item evaluateWeComTarget(Item item) {
         var subject = new CollectedSubject(item.subjectId(), item.title(), item.originalTitle(), item.coverUrl(), item.year(), item.updatedAt());
-        return evaluate(subject, item.identity(), null, false, true);
+        Item checked = evaluate(subject, item.identity(), null, false, true);
+        // 微信记录属于发起人，不返回其他用户可能创建的任务或删除操作 ID。
+        return new Item(checked.subjectId(), checked.title(), checked.originalTitle(), checked.coverUrl(),
+                checked.year(), checked.updatedAt(), checked.identity(), checked.libraryStatus(), checked.availability(),
+                checked.eligible(), checked.reasons(), null, false, checked.releaseStatus(), null, null, false);
     }
 
     private Item evaluate(CollectedSubject subject, Identity identity, TaskLink saved, boolean candidate, boolean snapshotAvailable) {
