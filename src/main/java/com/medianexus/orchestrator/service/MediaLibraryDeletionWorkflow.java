@@ -26,6 +26,10 @@ import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.LinkedHashSet;
+import com.medianexus.orchestrator.integration.emby.EmbyCatalogItem;
+import com.medianexus.orchestrator.dto.bgm.BgmWishlistContract;
+import java.util.Arrays;
+import java.util.Objects;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -101,9 +105,53 @@ public class MediaLibraryDeletionWorkflow {
     public synchronized AdminMediaDeletionTaskResponse start(String itemId, String library, String seasonId) {
         authService.requireAdminUser();
         AdminMediaLibraryScope scope = AdminMediaLibraryScope.fromRequest(library);
-        EmbyLibrary embyLibrary = catalogService.resolveLibrary(scope);
+        return startDeletion(itemId, scope, catalogService.resolveLibrary(scope), seasonId, null);
+    }
+
+    /** 只按真实目录身份选择唯一电影或单季；没有季 ID 时绝不发起整剧删除。 */
+    synchronized AdminMediaDeletionTaskResponse startBgmDeletion(BgmWishlistTaskGateway.Target target,
+                                                                 BgmDeletionLink link) {
+        authService.requireAdminUser();
+        List<BgmDeletionTarget> matches = findBgmTargets(target);
+        if (matches.size() != 1) {
+            throw new BusinessException(ErrorCode.CONFLICT, "无法唯一确认在库目标，未创建删除任务", HttpStatus.CONFLICT);
+        }
+        BgmDeletionTarget match = matches.get(0);
+        boolean episodic = !"MOVIE".equals(target.mediaType());
+        if (episodic && !StringUtils.hasText(match.seasonId())) {
+            throw new BusinessException(ErrorCode.CONFLICT, "无法确认目标季度，未创建删除任务", HttpStatus.CONFLICT);
+        }
+        List<LibrarySelection> libraries = embyClient.listLibraries().stream()
+                .flatMap(library -> Arrays.stream(AdminMediaLibraryScope.values())
+                        .filter(scope -> episodic ? scope.episodic() : scope == AdminMediaLibraryScope.MOVIES)
+                        .filter(scope -> scope.embyName().equalsIgnoreCase(library.name()))
+                        .filter(scope -> belowLibraryRoot(match.item().path(), library))
+                        .map(scope -> new LibrarySelection(scope, library)))
+                .toList();
+        if (libraries.size() != 1) {
+            throw new BusinessException(ErrorCode.CONFLICT, "无法唯一确认所属媒体库，未创建删除任务", HttpStatus.CONFLICT);
+        }
+        LibrarySelection library = libraries.get(0);
+        return startDeletion(match.item().id(), library.scope(), library.library(), match.seasonId(), link);
+    }
+
+    List<BgmDeletionTarget> findBgmTargets(BgmWishlistTaskGateway.Target target) {
+        if ("MOVIE".equals(target.mediaType())) {
+            return embyClient.findMoviesByTmdbId(target.tmdbId()).stream()
+                    .map(movie -> new BgmDeletionTarget(movie, null)).toList();
+        }
+        return embyClient.findSeriesByTmdbId(target.tmdbId()).stream()
+                .flatMap(series -> embyClient.listSeriesSeasons(series.id()).stream()
+                        .filter(season -> target.seasonNumber().equals(season.indexNumber()))
+                        .map(season -> new BgmDeletionTarget(series, season.id())))
+                .toList();
+    }
+
+    private AdminMediaDeletionTaskResponse startDeletion(String itemId, AdminMediaLibraryScope scope,
+            EmbyLibrary embyLibrary, String seasonId, BgmDeletionLink link) {
         EmbyMediaLibraryItem item = catalogService.requireDeletableItem(itemId, scope, embyLibrary);
-        if (taskMapper.countActiveTarget(StringUtils.hasText(seasonId) ? seasonId : itemId) > 0) {
+        if (taskMapper.countActiveTarget(StringUtils.hasText(seasonId) ? seasonId : itemId) > 0
+                || (link != null && StringUtils.hasText(seasonId) && taskMapper.countActiveTarget(itemId) > 0)) {
             throw new BusinessException(ErrorCode.CONFLICT, "该媒体已有删除任务正在执行", HttpStatus.CONFLICT);
         }
 
@@ -112,8 +160,11 @@ public class MediaLibraryDeletionWorkflow {
                 : scope.episodic()
                         ? episodicPlan(embyLibrary, scope, item, seasonId)
                         : moviePlan(embyLibrary, scope, item);
+        if (link != null && !Objects.equals(link.seasonNumber(), plan.seasonNumber())) {
+            throw new BusinessException(ErrorCode.CONFLICT, "目标季度已变化，未创建删除任务", HttpStatus.CONFLICT);
+        }
         requireNoStorageOverlap(plan.sourcePaths());
-        return queue(scope.requestValue(), item.id(), item.title(), json(plan.sourcePaths()), plan);
+        return queue(scope.requestValue(), item.id(), item.title(), json(plan.sourcePaths()), plan, link);
     }
 
     public synchronized AdminMediaDeletionTaskResponse startAdultStorage(AdminAdultStorageDeletionRequest request) {
@@ -132,11 +183,11 @@ public class MediaLibraryDeletionWorkflow {
         String label = target.directory() ? STORAGE_FOLDER_LABEL : STORAGE_FILE_LABEL;
         return queue(request.library(), id, name.codePoints().limit(255)
                         .collect(StringBuilder::new, StringBuilder::appendCodePoint, StringBuilder::append).toString(),
-                json(target), new DeletionPlan(null, null, label, List.of(), List.of(), List.of()));
+                json(target), new DeletionPlan(null, null, label, List.of(), List.of(), List.of()), null);
     }
 
     private AdminMediaDeletionTaskResponse queue(
-            String library, String itemId, String title, String sourcePayload, DeletionPlan plan
+            String library, String itemId, String title, String sourcePayload, DeletionPlan plan, BgmDeletionLink link
     ) {
         MediaDeletionTask task = new MediaDeletionTask();
         task.setId(UUID.randomUUID().toString());
@@ -151,6 +202,10 @@ public class MediaLibraryDeletionWorkflow {
         task.setSourcePaths(sourcePayload);
         task.setStrmPaths(json(plan.strmPaths()));
         task.setEmbyItemIds(json(plan.embyItemIds()));
+        if (link != null) {
+            task.setBgmTargetKey(link.targetKey());
+            task.setBgmPreviousTaskId(link.previousTaskId());
+        }
         task.setCreatedAt(LocalDateTime.now());
         task.setUpdatedAt(task.getCreatedAt());
         taskMapper.insert(task);
@@ -188,6 +243,29 @@ public class MediaLibraryDeletionWorkflow {
     private BusinessException overlappingTask() {
         return conflict("该网盘目标或其上下级目录已有删除任务正在执行");
     }
+
+    BgmDeletion latestBgmDeletion(String targetKey) {
+        MediaDeletionTask task = taskMapper.findLatestBgmDeletion(targetKey);
+        return task == null ? null : new BgmDeletion(response(task), task.getBgmPreviousTaskId());
+    }
+
+    record BgmDeletion(AdminMediaDeletionTaskResponse task, String previousTaskId) {
+        boolean succeeded() { return "SUCCEEDED".equals(task.status()); }
+
+        boolean replaces(String taskId) {
+            return succeeded() && Objects.equals(previousTaskId, taskId);
+        }
+
+        BgmWishlistContract.Reason refusal() {
+            return "FAILED".equals(task.status())
+                    ? new BgmWishlistContract.Reason("DELETE_FAILED", "删除失败")
+                    : new BgmWishlistContract.Reason("DELETE_IN_PROGRESS", "正在删除");
+        }
+    }
+
+    record BgmDeletionLink(String targetKey, Integer seasonNumber, String previousTaskId) {}
+    record BgmDeletionTarget(EmbyCatalogItem item, String seasonId) {}
+    private record LibrarySelection(AdminMediaLibraryScope scope, EmbyLibrary library) {}
 
     public List<AdminMediaDeletionTaskResponse> listTasks() {
         authService.requireAdminUser();
@@ -495,6 +573,7 @@ public class MediaLibraryDeletionWorkflow {
                 // library root. It is still safe to delete when the season is
                 // within the selected library and every episode stays below it.
                 requireBelowLibraryRoot(season.path(), library);
+                requireSeparateSeasonPath(season, seasons);
             } else {
                 requireBelow(season.path(), seriesPath, "季度 STRM 路径不在剧集目录内");
             }
@@ -532,6 +611,18 @@ public class MediaLibraryDeletionWorkflow {
         }
     }
 
+    private void requireSeparateSeasonPath(EmbyDeletionItem target, List<EmbyDeletionItem> seasons) {
+        Path targetPath = Path.of(target.path()).toAbsolutePath().normalize();
+        for (EmbyDeletionItem sibling : seasons) {
+            if (target.id().equals(sibling.id())) continue;
+            if (StringUtils.hasText(sibling.path())) {
+                Path siblingPath = Path.of(sibling.path()).toAbsolutePath().normalize();
+                if (!siblingPath.startsWith(targetPath) && !targetPath.startsWith(siblingPath)) continue;
+            }
+            throw new BusinessException(ErrorCode.CONFLICT, "无法隔离目标季度文件，未创建删除任务", HttpStatus.CONFLICT);
+        }
+    }
+
     private List<String> resolveMediaSourcePaths(List<String> paths) {
         return paths.stream()
                 .map(localStrmDeletion::resolveMediaSourcePath)
@@ -544,14 +635,18 @@ public class MediaLibraryDeletionWorkflow {
         if (!StringUtils.hasText(value)) {
             throw new BusinessException(ErrorCode.CONFLICT, "Emby 未返回 STRM 路径");
         }
+        if (!belowLibraryRoot(value, library)) {
+            throw new BusinessException(ErrorCode.CONFLICT, "STRM 路径不在所选媒体库范围内");
+        }
+    }
+
+    private boolean belowLibraryRoot(String value, EmbyLibrary library) {
+        if (!StringUtils.hasText(value)) return false;
         Path path = Path.of(value).toAbsolutePath().normalize();
-        boolean allowed = library.locations().stream()
+        return library.locations().stream()
                 .filter(StringUtils::hasText)
                 .map(location -> Path.of(location).toAbsolutePath().normalize())
                 .anyMatch(root -> !path.equals(root) && path.startsWith(root));
-        if (!allowed) {
-            throw new BusinessException(ErrorCode.CONFLICT, "STRM 路径不在所选媒体库范围内");
-        }
     }
 
     private void requireBelow(String value, Path parent, String message) {
@@ -581,6 +676,7 @@ public class MediaLibraryDeletionWorkflow {
     }
 
     private String sourceDirectoryName(MediaDeletionTask task) {
+        if (task.getBgmTargetKey() != null) return null;
         return task.getSeasonNumber() == null
                 ? task.getTitle()
                 : "Season %02d".formatted(task.getSeasonNumber());

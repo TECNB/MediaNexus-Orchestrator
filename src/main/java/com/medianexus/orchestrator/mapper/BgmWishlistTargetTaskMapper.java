@@ -28,4 +28,11 @@ public interface BgmWishlistTargetTaskMapper {
             VALUES (#{key}, #{task.taskType}, #{task.taskId}, #{task.status})
             """)
     void insert(@Param("key") String key, @Param("task") ActiveTask task);
+
+    @Update("""
+            UPDATE bgm_wishlist_target_tasks
+            SET task_type = #{task.taskType}, task_id = #{task.taskId}, status = #{task.status}
+            WHERE target_key = #{key}
+            """)
+    void replace(@Param("key") String key, @Param("task") ActiveTask task);
 }

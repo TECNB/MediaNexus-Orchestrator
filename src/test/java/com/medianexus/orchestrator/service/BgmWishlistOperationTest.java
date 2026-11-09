@@ -1,5 +1,6 @@
 package com.medianexus.orchestrator.service;
 
+import com.medianexus.orchestrator.dto.admin.response.AdminMediaDeletionTaskResponse;
 import com.medianexus.orchestrator.dto.bgm.BgmWishlistContract.*;
 import com.medianexus.orchestrator.dto.bgm.BgmWishlistOperationContract.*;
 import com.medianexus.orchestrator.dto.bgm.BgmWishlistOperationContract.Operation;
@@ -127,6 +128,25 @@ class BgmWishlistOperationTest {
         verify(f.tasks, never()).create(any(), any(), any());
     }
 
+    @Test void interruptedReplacementDoesNotReportTheDeletedTaskAsNew() {
+        Fixture f = new Fixture();
+        Operation accepted = f.service.submit("source", List.of(1L));
+        Operation orphan = new Operation("orphan", accepted.source(), accepted.action(), accepted.triggerType(), accepted.actorUserId(),
+                accepted.startedAt(), accepted.updatedAt(), "RUNNING", accepted.requestedIds(), accepted.entries(), null);
+        f.rows.clear(); f.rows.put("orphan", orphan);
+        when(f.tasks.previousTask(any())).thenReturn(new BgmWishlistTaskGateway.ActiveTask("SERIES", "old-task", "SUCCEEDED"));
+        var deletion = mock(AdminMediaDeletionTaskResponse.class);
+        when(deletion.status()).thenReturn("SUCCEEDED");
+        when(f.tasks.latestDeletion(any())).thenReturn(new MediaLibraryDeletionWorkflow.BgmDeletion(deletion, "old-task"));
+
+        f.service.reconcile();
+
+        Entry entry = f.rows.get("orphan").entries().get(0);
+        assertEquals("INTERRUPTED", entry.status());
+        assertNull(entry.task());
+        verify(f.tasks, never()).create(any(), any(), any());
+    }
+
     @Test void titleRuleRemainsHanHeuristicAndManualSupplyCannotChangeTargetOrQuality() {
         assertTrue(BgmWishlistOperationService.hasChineseTitle("中文发布"));
         assertTrue(BgmWishlistOperationService.hasChineseTitle("2.5次元の誘惑"));
@@ -167,7 +187,7 @@ class BgmWishlistOperationTest {
         var previous = f.item(1L, true);
         var identity = new Identity("SERIES", 1, 1, "雾尾粉丝俱乐部", "霧尾ファンクラブ", 2026);
         var item = new Item(1L, "雾尾粉丝后援会", "霧尾ファンクラブ", null, 2026, previous.updatedAt(), identity,
-                "ABSENT", "AVAILABLE", true, List.of(), null, true, "NOT_CHECKED", null);
+                "ABSENT", "AVAILABLE", true, List.of(), null, true, "NOT_CHECKED", null, null, false);
         when(f.wishlist.evaluateForOperation("source", 1L)).thenReturn(item);
         var release = f.release("[LoliHouse] 雾尾粉丝后援会 [01-12 合集][1080p][简繁字幕]");
         org.springframework.test.util.ReflectionTestUtils.setField(f.tasks, "releases", releases);
@@ -262,7 +282,7 @@ class BgmWishlistOperationTest {
         }
         Item item(long id, boolean eligible) {
             return new Item(id,"作品"+id,"Original",null,2024,"2026-11-01T00:00:00Z", new Identity("SERIES",(int)id,1,"作品"+id,"Original",2024),
-                    eligible ? "ABSENT" : "PRESENT","AVAILABLE",eligible,eligible ? List.of() : List.of(new Reason("ALREADY_PRESENT","已在库")),null,true,"NOT_CHECKED",null);
+                    eligible ? "ABSENT" : "PRESENT","AVAILABLE",eligible,eligible ? List.of() : List.of(new Reason("ALREADY_PRESENT","已在库")),null,true,"NOT_CHECKED",null,null,false);
         }
         ProwlarrReleaseItemResponse release(String title) { return new ProwlarrReleaseItemResponse(title,1L,1,0,0,"indexer",null,1,"ref-"+title,List.of("1080p"),List.of(),List.of("S01"),"展示标题","query"); }
     }

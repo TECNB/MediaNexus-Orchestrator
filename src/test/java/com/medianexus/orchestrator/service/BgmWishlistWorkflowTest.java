@@ -13,7 +13,9 @@ import com.medianexus.orchestrator.config.BangumiProperties;
 import com.medianexus.orchestrator.config.UserQuotaProperties;
 import com.medianexus.orchestrator.dto.bgm.BgmWishlistContract.*;
 import com.medianexus.orchestrator.dto.bgm.BgmWishlistExecutionContract.*;
-import com.medianexus.orchestrator.dto.resources.response.MediaLibraryPresenceResponse;
+import com.medianexus.orchestrator.dto.admin.response.AdminMediaDeletionTaskResponse;
+import com.medianexus.orchestrator.service.MediaLibraryPresenceService.AutomationPresence;
+import com.medianexus.orchestrator.service.MediaLibraryDeletionWorkflow.BgmDeletion;
 import com.medianexus.orchestrator.dto.resources.response.ProwlarrReleaseItemResponse;
 import com.medianexus.orchestrator.dto.magnet.response.MovieMagnetIngestTaskResponse;
 import com.medianexus.orchestrator.dto.magnet.response.SeriesMagnetIngestTaskResponse;
@@ -53,8 +55,8 @@ class BgmWishlistWorkflowTest {
         assertEquals(2,refreshed.subjects().size());
         org.mockito.Mockito.verifyNoInteractions(f.tmdb,f.presence);
         assertTrue(f.wishlist.evaluateForOperation(source.id(),1L).eligible());
-        org.mockito.Mockito.verify(f.presence).checkForAutomation("movie",101,null,null);
-        org.mockito.Mockito.verify(f.presence,org.mockito.Mockito.never()).checkForAutomation("movie",102,null,null);
+        org.mockito.Mockito.verify(f.presence).checkForAutomation(argThat(target -> target.tmdbId() == 101));
+        org.mockito.Mockito.verify(f.presence,org.mockito.Mockito.never()).checkForAutomation(argThat(target -> target.tmdbId() == 102));
         f.responses.add(new IOException("upstream"));
         assertThrows(RuntimeException.class,()->f.wishlist.refreshSourceForOperation(source.id()));
         assertEquals("FAILED",f.sources.get(source.id()).refreshStatus());
@@ -347,6 +349,51 @@ class BgmWishlistWorkflowTest {
     }
 
     @Test
+    void successfulDeletionAllowsOneManualReplacementOnlyAfterTargetIsAbsent() throws Exception {
+        Fixture f = new Fixture();
+        f.collection = List.of(1L);
+        Source source = f.source(true, "INCLUDE_EXISTING", 1);
+        Item item = f.identify(source, 1, 101);
+        Target target = BgmWishlistService.target(item.identity());
+        ActiveTask old = f.gateway.create(target, f.release(), f.owner);
+        f.active.clear();
+        f.taskById.put(old.taskId(), new ActiveTask(old.taskType(), old.taskId(), "SUCCEEDED"));
+        f.presentTargets.add(101);
+        assertTrue(f.wishlist.item(source.id(), 1).canDelete());
+
+        var deletionTask = mock(AdminMediaDeletionTaskResponse.class);
+        when(f.deletions.latestBgmDeletion("MOVIE:101")).thenReturn(new BgmDeletion(deletionTask, old.taskId()));
+        when(deletionTask.status()).thenReturn("RUNNING");
+        f.presentTargets.clear();
+        assertFalse(f.wishlist.item(source.id(), 1).eligible());
+        assertEquals("DELETE_IN_PROGRESS", assertThrows(BgmWishlistTaskGateway.EligibilityRefusal.class,
+                () -> f.gateway.create(target, f.release(), f.owner)).reason().code());
+
+        when(deletionTask.status()).thenReturn("FAILED");
+        assertEquals("DELETE_FAILED", f.wishlist.item(source.id(), 1).reasons().get(0).code());
+
+        when(deletionTask.status()).thenReturn("SUCCEEDED");
+        f.presentTargets.add(101);
+        assertFalse(f.wishlist.item(source.id(), 1).eligible());
+        assertEquals("ALREADY_PRESENT", assertThrows(BgmWishlistTaskGateway.EligibilityRefusal.class,
+                () -> f.gateway.create(target, f.release(), f.owner)).reason().code());
+        f.presentTargets.clear();
+        Item absent = f.wishlist.item(source.id(), 1);
+        assertTrue(absent.eligible());
+        assertFalse(absent.automaticCandidate());
+        assertNull(absent.associatedTask());
+        assertTrue(f.execution.runScheduledIfDue(source.id(), day(7)).created().isEmpty());
+
+        Preview preview = f.execution.preview(source.id(), new PreviewInput(List.of(1L)));
+        var replacement = f.execution.execute(source.id(), new ExecuteInput(preview.id())).created().get(0).task();
+        assertNotEquals(old.taskId(), replacement.taskId());
+        f.active.clear();
+        assertEquals(replacement.taskId(), f.wishlist.item(source.id(), 1).associatedTask().taskId());
+        assertEquals("PREVIOUS_TASK", assertThrows(BgmWishlistTaskGateway.EligibilityRefusal.class,
+                () -> f.gateway.create(target, f.release(), f.owner)).reason().code());
+    }
+
+    @Test
     void finalGatewayRefusalsPreserveCurrentObservation() throws Exception {
         for (boolean scheduled : List.of(false, true)) {
             Fixture f = new Fixture();
@@ -452,6 +499,7 @@ class BgmWishlistWorkflowTest {
         final Set<Integer> noReleaseTargets = new HashSet<>();
         final Set<Integer> presentTargets = new HashSet<>();
         final Set<Integer> unknownPresence = new HashSet<>();
+        final MediaLibraryDeletionWorkflow deletions = mock(MediaLibraryDeletionWorkflow.class);
         final Map<Integer, ActiveTask> active = new HashMap<>();
         final Map<String, ActiveTask> taskById = new HashMap<>();
         final List<Integer> attempted = new ArrayList<>();
@@ -521,10 +569,12 @@ class BgmWishlistWorkflowTest {
             when(targetRows.select(anyString())).thenAnswer(call -> ledger.get(call.getArgument(0)));
             doAnswer(call -> { ledger.put(call.getArgument(0), call.getArgument(1)); return null; })
                     .when(targetRows).insert(anyString(), any());
+            doAnswer(call -> { ledger.put(call.getArgument(0), call.getArgument(1)); return null; })
+                    .when(targetRows).replace(anyString(), any());
             ProwlarrReleaseIngestService releases = mock(ProwlarrReleaseIngestService.class);
             gateway = spy(new BgmWishlistTaskGateway(mock(MovieMagnetIngestTaskMapper.class),
                     mock(SeriesMagnetIngestTaskMapper.class), mock(AnimeMagnetIngestTaskMapper.class),
-                    releases, presence, locks, targetRows));
+                    releases, presence, locks, targetRows, deletions));
 
             HttpClient http = mock(HttpClient.class);
             when(http.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class))).thenAnswer(call -> {
@@ -541,9 +591,9 @@ class BgmWishlistWorkflowTest {
             config.setBaseUrl("https://bgm.invalid"); config.setUserAgent("BgmWishlistWorkflowTest"); config.setTimeout(Duration.ofSeconds(1));
             config.setCatalogConcurrency(4);
             wishlist = new BgmWishlistService(auth, sources, new BangumiClient(config, json, http), tmdb, presence, gateway, mappings, config);
-            when(presence.checkForAutomation(anyString(), anyInt(), isNull(), nullable(Integer.class))).thenAnswer(call -> {
-                int id = call.getArgument(1);
-                return new MediaLibraryPresenceResponse(!unknownPresence.contains(id), presentTargets.contains(id), id, null, call.getArgument(3));
+            when(presence.checkForAutomation(any())).thenAnswer(call -> {
+                int id = call.<Target>getArgument(0).tmdbId();
+                return new AutomationPresence(!unknownPresence.contains(id), presentTargets.contains(id), presentTargets.contains(id));
             });
             doAnswer(call -> active.get(call.<Target>getArgument(0).tmdbId())).when(gateway).activeTask(any());
             doAnswer(call -> taskById.get(call.getArgument(1))).when(gateway).task(anyString(), anyString());
@@ -554,7 +604,9 @@ class BgmWishlistWorkflowTest {
                 User taskOwner = call.getArgument(1);
                 attempted.add(target.tmdbId()); attemptOwners.add(taskOwner.getId()); used.incrementAndGet();
                 if (failedTargets.contains(target.tmdbId())) throw new BusinessException(ErrorCode.BAD_REQUEST, "simulated failure after quota consumption");
-                ActiveTask task = new ActiveTask(target.mediaType(), "task-" + target.tmdbId(), "PENDING");
+                String taskId = "task-" + target.tmdbId();
+                if (taskById.containsKey(taskId)) taskId += "-replacement";
+                ActiveTask task = new ActiveTask(target.mediaType(), taskId, "PENDING");
                 active.put(target.tmdbId(), task); taskById.put(task.taskId(), task); submitted.add(target.tmdbId());
                 MovieMagnetIngestTaskResponse response = mock(MovieMagnetIngestTaskResponse.class);
                 when(response.id()).thenReturn(task.taskId()); when(response.status()).thenReturn(task.status());

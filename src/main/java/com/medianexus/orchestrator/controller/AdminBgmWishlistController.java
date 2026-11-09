@@ -1,6 +1,7 @@
 package com.medianexus.orchestrator.controller;
 
 import com.medianexus.orchestrator.common.response.ApiResponse;
+import com.medianexus.orchestrator.dto.admin.response.AdminMediaDeletionTaskResponse;
 import com.medianexus.orchestrator.dto.bgm.BgmWishlistContract.CatalogCandidate;
 import com.medianexus.orchestrator.dto.bgm.BgmWishlistContract.IdentityInput;
 import com.medianexus.orchestrator.dto.bgm.BgmWishlistContract.Item;
@@ -59,6 +60,19 @@ public class AdminBgmWishlistController {
     @Operation(summary = "读取上次完整清单并重新检查资格；不刷新上游收藏")
     public ApiResponse<Wishlist> items(@PathVariable("sourceId") String sourceId) {
         return ApiResponse.success(wishlist.items(sourceId));
+    }
+
+    @GetMapping("/sources/{sourceId}/items/{subjectId}")
+    @Operation(summary = "重新检查单条作品的在库状态和删除进度")
+    public ApiResponse<Item> item(@PathVariable("sourceId") String sourceId, @PathVariable("subjectId") @Positive long subjectId) {
+        return ApiResponse.success(wishlist.item(sourceId, subjectId));
+    }
+
+    @PostMapping("/sources/{sourceId}/items/{subjectId}/deletions")
+    @Operation(summary = "为已确认的电影或单个目标季度创建永久删除任务")
+    public ApiResponse<AdminMediaDeletionTaskResponse> delete(@PathVariable("sourceId") String sourceId,
+            @PathVariable("subjectId") @Positive long subjectId, @Valid @RequestBody IdentityInput expected) {
+        return ApiResponse.success(wishlist.deleteFromLibrary(sourceId, subjectId, expected));
     }
 
     @PostMapping("/sources/{sourceId}/refresh")

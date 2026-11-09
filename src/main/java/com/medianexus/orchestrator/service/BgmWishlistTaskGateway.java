@@ -3,6 +3,10 @@ package com.medianexus.orchestrator.service;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.medianexus.orchestrator.common.exception.BusinessException;
 import com.medianexus.orchestrator.common.exception.ErrorCode;
+import com.medianexus.orchestrator.dto.admin.response.AdminMediaDeletionTaskResponse;
+import com.medianexus.orchestrator.service.MediaLibraryDeletionWorkflow.BgmDeletion;
+import com.medianexus.orchestrator.service.MediaLibraryDeletionWorkflow.BgmDeletionLink;
+import org.springframework.util.StringUtils;
 import com.medianexus.orchestrator.dto.resources.request.MovieReleaseOpenListIngestRequest;
 import com.medianexus.orchestrator.dto.resources.request.MovieReleaseRecommendationRequest;
 import com.medianexus.orchestrator.dto.resources.request.SeriesReleaseOpenListIngestRequest;
@@ -36,12 +40,13 @@ public class BgmWishlistTaskGateway {
     private final MediaLibraryPresenceService presence;
     private final BgmWishlistSessionLocks locks;
     private final BgmWishlistTargetTaskMapper previousTasks;
+    private final MediaLibraryDeletionWorkflow deletions;
     private volatile boolean ledgerReady;
 
     public BgmWishlistTaskGateway(MovieMagnetIngestTaskMapper movies, SeriesMagnetIngestTaskMapper series,
                                   AnimeMagnetIngestTaskMapper anime, ProwlarrReleaseIngestService releases,
                                   MediaLibraryPresenceService presence, BgmWishlistSessionLocks locks,
-                                  BgmWishlistTargetTaskMapper previousTasks) {
+                                  BgmWishlistTargetTaskMapper previousTasks, MediaLibraryDeletionWorkflow deletions) {
         this.movies = movies;
         this.series = series;
         this.anime = anime;
@@ -49,6 +54,7 @@ public class BgmWishlistTaskGateway {
         this.presence = presence;
         this.locks = locks;
         this.previousTasks = previousTasks;
+        this.deletions = deletions;
     }
 
     public ActiveTask activeTask(Target target) {
@@ -72,23 +78,10 @@ public class BgmWishlistTaskGateway {
         return legacyTask == null ? null : new ActiveTask("ANIME", legacyTask.getId(), legacyTask.getStatus());
     }
 
-    /** 关联任务的当前状态；执行快照中的初始 PENDING 不能当作实时进度。 */
+    /** 任务中心恢复会创建新尝试，卡片需要链接到同一尝试链的当前任务。 */
     public ActiveTask task(String taskType, String taskId) {
-        return switch (taskType) {
-            case "MOVIE" -> {
-                MovieMagnetIngestTask task = movies.selectById(taskId);
-                yield task == null ? null : new ActiveTask(taskType, task.getId(), task.getStatus());
-            }
-            case "SERIES" -> {
-                SeriesMagnetIngestTask task = series.selectById(taskId);
-                yield task == null ? null : new ActiveTask(taskType, task.getId(), task.getStatus());
-            }
-            case "ANIME" -> {
-                AnimeMagnetIngestTask task = anime.selectById(taskId);
-                yield task == null ? null : new ActiveTask(taskType, task.getId(), task.getStatus());
-            }
-            default -> throw new IllegalArgumentException("不支持的入库任务类型");
-        };
+        var task = currentTask(taskType, taskId);
+        return task == null ? null : new ActiveTask(task.taskType(), task.taskId(), task.status());
     }
 
     /** 无符合条件的资源返回 null；上游故障继续抛出，不能冒充无资源。 */
@@ -134,18 +127,42 @@ public class BgmWishlistTaskGateway {
         return switch (type) {
             case "MOVIE" -> {
                 var task = movies.selectById(id);
-                yield task == null ? null : new com.medianexus.orchestrator.dto.bgm.BgmWishlistOperationContract.Task(
-                        type, id, task.getStatus(), task.getStage(), task.getErrorMessage(), null);
+                if (task == null) yield null;
+                if (StringUtils.hasText(task.getAttemptGroupId())) {
+                    var latest = movies.selectOne(new LambdaQueryWrapper<MovieMagnetIngestTask>()
+                            .eq(MovieMagnetIngestTask::getAttemptGroupId, task.getAttemptGroupId())
+                            .orderByDesc(MovieMagnetIngestTask::getUpdatedAt, MovieMagnetIngestTask::getCreatedAt)
+                            .orderByAsc(MovieMagnetIngestTask::getId).last("LIMIT 1"));
+                    if (latest != null) task = latest;
+                }
+                yield new com.medianexus.orchestrator.dto.bgm.BgmWishlistOperationContract.Task(
+                        type, task.getId(), task.getStatus(), task.getStage(), task.getErrorMessage(), null);
             }
             case "SERIES" -> {
                 var task = series.selectById(id);
-                yield task == null ? null : new com.medianexus.orchestrator.dto.bgm.BgmWishlistOperationContract.Task(
-                        type, id, task.getStatus(), task.getStage(), task.getErrorMessage(), null);
+                if (task == null) yield null;
+                if (StringUtils.hasText(task.getAttemptGroupId())) {
+                    var latest = series.selectOne(new LambdaQueryWrapper<SeriesMagnetIngestTask>()
+                            .eq(SeriesMagnetIngestTask::getAttemptGroupId, task.getAttemptGroupId())
+                            .orderByDesc(SeriesMagnetIngestTask::getUpdatedAt, SeriesMagnetIngestTask::getCreatedAt)
+                            .orderByAsc(SeriesMagnetIngestTask::getId).last("LIMIT 1"));
+                    if (latest != null) task = latest;
+                }
+                yield new com.medianexus.orchestrator.dto.bgm.BgmWishlistOperationContract.Task(
+                        type, task.getId(), task.getStatus(), task.getStage(), task.getErrorMessage(), null);
             }
             case "ANIME" -> {
                 var task = anime.selectById(id);
-                yield task == null ? null : new com.medianexus.orchestrator.dto.bgm.BgmWishlistOperationContract.Task(
-                        type, id, task.getStatus(), task.getStage(), task.getErrorMessage(), null);
+                if (task == null) yield null;
+                if (StringUtils.hasText(task.getAttemptGroupId())) {
+                    var latest = anime.selectOne(new LambdaQueryWrapper<AnimeMagnetIngestTask>()
+                            .eq(AnimeMagnetIngestTask::getAttemptGroupId, task.getAttemptGroupId())
+                            .orderByDesc(AnimeMagnetIngestTask::getUpdatedAt, AnimeMagnetIngestTask::getCreatedAt)
+                            .orderByAsc(AnimeMagnetIngestTask::getId).last("LIMIT 1"));
+                    if (latest != null) task = latest;
+                }
+                yield new com.medianexus.orchestrator.dto.bgm.BgmWishlistOperationContract.Task(
+                        type, task.getId(), task.getStatus(), task.getStage(), task.getErrorMessage(), null);
             }
             default -> throw new IllegalArgumentException("不支持的入库任务类型");
         };
@@ -156,8 +173,7 @@ public class BgmWishlistTaskGateway {
      * 因而不会把旧链路已扣额度的创建失败改成退额。所有 BGM 创建均经此边界。
      */
     public ActiveTask create(Target target, ProwlarrReleaseItemResponse release, User owner) {
-        String lockName = "bgm-target:" + target.mediaType() + ":" + target.tmdbId()
-                + (target.seasonNumber() == null ? "" : ":" + target.seasonNumber());
+        String lockName = "bgm-target:" + targetKey(target);
         try {
             return locks.withLock(lockName,
                     () -> new EligibilityRefusal(new Reason("TARGET_BUSY", "同一目录目标正在提交，请稍后刷新任务"), null, null),
@@ -168,7 +184,43 @@ public class BgmWishlistTaskGateway {
         }
     }
 
-    /** 跨来源、条目和成员保留原始 BGM 任务关联；终态也只能在任务中心恢复。 */
+    public AdminMediaDeletionTaskResponse delete(Target target) {
+        try {
+            return locks.withLock("bgm-target:" + targetKey(target),
+                    () -> conflict("目标正在提交，请稍后再试"),
+                    () -> {
+                        if (activeTask(target) != null) throw conflict("目标有处理中任务，暂不能删除");
+                        BgmDeletion deletion = latestDeletion(target);
+                        if (deletion != null && !deletion.succeeded()) throw conflict(deletion.refusal().message());
+                        ActiveTask previous = previousTask(target);
+                        return deletions.startBgmDeletion(target,
+                                new BgmDeletionLink(targetKey(target), target.seasonNumber(), previous == null ? null : previous.taskId()));
+                    });
+        } catch (BgmWishlistSessionLocks.LockUnavailableException exception) {
+            throw new BusinessException(ErrorCode.SERVICE_UNAVAILABLE, "暂时无法删除，请稍后再试", HttpStatus.SERVICE_UNAVAILABLE);
+        }
+    }
+
+    BgmDeletion latestDeletion(Target target) {
+        return deletions.latestBgmDeletion(targetKey(target));
+    }
+
+    static Reason previousTaskReason(String status) {
+        return new Reason("PREVIOUS_TASK", switch (status) {
+            case "FAILED" -> "入库失败";
+            case "INTERRUPTED" -> "入库中断";
+            case "PARTIAL_SUCCESS" -> "部分完成";
+            case "SUCCEEDED" -> "已有成功入库任务";
+            case "UNKNOWN" -> "任务状态待确认";
+            default -> "已有入库任务";
+        });
+    }
+
+    private static BusinessException conflict(String message) {
+        return new BusinessException(ErrorCode.CONFLICT, message, HttpStatus.CONFLICT);
+    }
+
+    /** 当前目标最近一次 BGM 任务；操作记录保留历次创建结果。 */
     public ActiveTask previousTask(Target target) {
         ensureLedger();
         ActiveTask saved = previousTasks.select(targetKey(target));
@@ -178,21 +230,24 @@ public class BgmWishlistTaskGateway {
     }
 
     private ActiveTask createLocked(Target target, ProwlarrReleaseItemResponse release, User owner) {
+        BgmDeletion deletion = latestDeletion(target);
+        if (deletion != null && !deletion.succeeded()) {
+            throw new EligibilityRefusal(deletion.refusal(), null, null);
+        }
         ActiveTask previous = previousTask(target);
-        if (previous != null) {
-            throw new EligibilityRefusal(new Reason("PREVIOUS_TASK", "此目录目标已有 BGM 创建记录，失败或中断请在任务中心恢复"), null, previous);
+        if (previous != null && (deletion == null || !deletion.replaces(previous.taskId()))) {
+            throw new EligibilityRefusal(previousTaskReason(previous.status()), null, previous);
         }
         ActiveTask active = activeTask(target);
         if (active != null) {
             throw new EligibilityRefusal(new Reason("ACTIVE_TASK", "同一目录目标已有处理中任务"), null, active);
         }
-        var check = presence.checkForAutomation(
-                "MOVIE".equals(target.mediaType()) ? "movie" : "series", target.tmdbId(), null, target.seasonNumber());
+        var check = presence.checkForAutomation(target);
         if (!check.checkAvailable()) {
             throw new EligibilityRefusal(new Reason("LIBRARY_UNKNOWN", "在库检查不可用，本次跳过"), "UNKNOWN", null);
         }
         if (check.exists()) {
-            throw new EligibilityRefusal(new Reason("ALREADY_PRESENT", "目标电影或季度已在库"), "PRESENT", null);
+            throw new EligibilityRefusal(new Reason("ALREADY_PRESENT", "已入库"), "PRESENT", null);
         }
         ActiveTask created;
         if ("MOVIE".equals(target.mediaType())) {
@@ -209,7 +264,11 @@ public class BgmWishlistTaskGateway {
             created = new ActiveTask("SERIES", task.id(), task.status());
         }
         try {
-            previousTasks.insert(targetKey(target), created);
+            if (previous == null) {
+                previousTasks.insert(targetKey(target), created);
+            } else {
+                previousTasks.replace(targetKey(target), created);
+            }
         } catch (RuntimeException exception) {
             // 不把任务已创建、关联写入失败冒充创建失败，也不退还旧链路额度。
             throw new CreatedTaskRecordException(created, exception);

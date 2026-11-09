@@ -258,6 +258,10 @@ public class BgmWishlistOperationService {
         if (!item.eligible()) {
             updateEntry(id, subjectId, previous -> outcome(previous, "SKIPPED", item.reasons().get(0))); return false;
         }
+        if ("SCHEDULED".equals(operation.triggerType()) && item.deletionTask() != null) {
+            updateEntry(id, subjectId, previous -> outcome(previous, "SKIPPED", reason("MANUAL_REINGEST", "删除后请手动入库")));
+            return false;
+        }
         User owner = users.selectById(operation.source().ownerUserId());
         if (owner == null) throw bad("任务归属成员不存在");
         var availableQuota = quota.dailyContentCreateQuota(owner);
@@ -306,6 +310,10 @@ public class BgmWishlistOperationService {
         if (!sameTarget(item.identity(), checked.identity())) throw bad("目录目标已变化，请重新发起");
         if (!checked.eligible()) {
             updateEntry(id, subjectId, previous -> outcome(previous, "SKIPPED", checked.reasons().get(0))); return false;
+        }
+        if ("SCHEDULED".equals(operation.triggerType()) && checked.deletionTask() != null) {
+            updateEntry(id, subjectId, previous -> outcome(previous, "SKIPPED", reason("MANUAL_REINGEST", "删除后请手动入库")));
+            return false;
         }
         BgmWishlistTaskGateway.ActiveTask task;
         try { task = tasks.create(target(checked.identity()), selected.release(), owner); }
@@ -360,9 +368,15 @@ public class BgmWishlistOperationService {
                         if (!"RUNNING".equals(value.status())) return value;
                         List<Entry> entries = value.entries().stream().map(entry -> {
                             if (!Set.of("SEARCHING", "CREATING").contains(entry.status())) return entry;
-                            var previous = entry.item().identity() == null ? null : tasks.previousTask(target(entry.item().identity()));
-                            if (previous != null) return new Entry(entry.item(), "CREATED", entry.startedAt(), entry.searches(), entry.candidates(), entry.selected(),
-                                    new Task(previous.taskType(), previous.taskId(), previous.status(), null, null, null), null, entry.notification());
+                            if (entry.item().identity() != null) {
+                                var target = target(entry.item().identity());
+                                var previous = tasks.previousTask(target);
+                                var deletion = tasks.latestDeletion(target);
+                                if (previous != null && (deletion == null || !deletion.replaces(previous.taskId()))) {
+                                    return new Entry(entry.item(), "CREATED", entry.startedAt(), entry.searches(), entry.candidates(), entry.selected(),
+                                            new Task(previous.taskType(), previous.taskId(), previous.status(), null, null, null), null, entry.notification());
+                                }
+                            }
                             return outcome(entry, "INTERRUPTED", reason("INTERRUPTED", "后台执行已中断；请先核对任务中心，再重新搜索"));
                         }).toList();
                         return new Operation(value.id(), value.source(), value.action(), value.triggerType(), value.actorUserId(), value.startedAt(),
@@ -422,7 +436,7 @@ public class BgmWishlistOperationService {
     private static Item snapshot(SourceState state, long id) {
         var subject = BgmWishlistSourceStore.requireSubject(state, id);
         return new Item(id, subject.title(), subject.originalTitle(), subject.coverUrl(), subject.year(), subject.updatedAt(), state.identities().get(id),
-                "UNKNOWN", "UNKNOWN", false, List.of(), null, state.candidateSubjectIds().contains(id), "NOT_CHECKED", null);
+                "UNKNOWN", "UNKNOWN", false, List.of(), null, state.candidateSubjectIds().contains(id), "NOT_CHECKED", null, null, false);
     }
     static boolean hasChineseTitle(String title) { return title != null && java.util.regex.Pattern.compile("[\\u3400-\\u9fff]").matcher(title).find(); }
     private static String candidateKey(ProwlarrReleaseItemResponse release) {

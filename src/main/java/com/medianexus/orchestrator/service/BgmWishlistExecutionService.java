@@ -226,6 +226,10 @@ public class BgmWishlistExecutionService {
                 skipped.add(skip(item, firstReason(item), taskLink(item)));
                 continue;
             }
+            if ("SCHEDULED".equals(run.triggerType()) && item.deletionTask() != null) {
+                skipped.add(skip(item, reason("MANUAL_REINGEST", "删除后请手动入库"), null));
+                continue;
+            }
             String key = targetKey(item.identity());
             if (createdTargets.contains(key)) {
                 skipped.add(skip(item, reason("DUPLICATE_TARGET", "本轮已创建同一电影或季度任务"), null));
@@ -365,7 +369,7 @@ public class BgmWishlistExecutionService {
     private static Item releaseStatus(Item item, String status) {
         return new Item(item.subjectId(), item.title(), item.originalTitle(), item.coverUrl(), item.year(), item.updatedAt(),
                 item.identity(), item.libraryStatus(), item.availability(), item.eligible(), item.reasons(), item.activeTask(),
-                item.automaticCandidate(), status, item.associatedTask());
+                item.automaticCandidate(), status, item.associatedTask(), item.deletionTask(), item.canDelete());
     }
 
     private static TaskLink taskLink(Item item) {
@@ -380,7 +384,7 @@ public class BgmWishlistExecutionService {
                 item.identity(), refusal.libraryStatus() == null ? item.libraryStatus() : refusal.libraryStatus(),
                 item.availability(), false, List.of(refusal.reason()),
                 "ACTIVE_TASK".equals(refusal.reason().code()) ? link : item.activeTask(),
-                !previous && item.automaticCandidate(), item.releaseStatus(), previous ? link : item.associatedTask());
+                !previous && item.automaticCandidate(), item.releaseStatus(), previous ? link : item.associatedTask(), item.deletionTask(), item.canDelete());
     }
 
     private static Reason firstReason(Item item) {

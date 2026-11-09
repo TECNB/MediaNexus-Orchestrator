@@ -1,6 +1,7 @@
 package com.medianexus.orchestrator.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.never;
@@ -12,6 +13,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.medianexus.orchestrator.dto.admin.request.AdminAdultStorageDeletionRequest;
 import com.medianexus.orchestrator.integration.clouddrive.CloudDrive2MediaStorage;
 import com.medianexus.orchestrator.integration.clouddrive.CloudDrive2MediaStorage.Entry;
+import static org.mockito.Mockito.verifyNoInteractions;
+import com.medianexus.orchestrator.integration.emby.EmbyCatalogItem;
+import com.medianexus.orchestrator.common.exception.BusinessException;
 import com.medianexus.orchestrator.integration.emby.EmbyClient;
 import com.medianexus.orchestrator.integration.emby.EmbyDeletionItem;
 import com.medianexus.orchestrator.integration.emby.EmbyLibrary;
@@ -210,6 +214,41 @@ class MediaLibraryDeletionWorkflowTest {
         ArgumentCaptor<MediaDeletionTask> taskCaptor = ArgumentCaptor.forClass(MediaDeletionTask.class);
         verify(taskMapper).insert(taskCaptor.capture());
         assertThat(taskCaptor.getValue().getSeasonNumber()).isEqualTo(1);
+    }
+
+    @Test
+    void bgmDeletionResolvesOnlyTheExactSeasonAndRefusesAmbiguity() {
+        String root = "/srv/media/STRM/Anime";
+        var library = new EmbyLibrary("anime-id", "Anime", List.of(root));
+        var series = new EmbyCatalogItem("series-1", "作品", "Series", root + "/作品", null);
+        var first = new EmbyCatalogItem("season-1", "第一季", "Season", series.path() + "/Season 01", 1);
+        var second = new EmbyCatalogItem("season-2", "第二季", "Season", series.path() + "/Season 02", 2);
+        var identity = new BgmWishlistTaskGateway.Target("SERIES", 42, 2, "作品", null, null);
+        var link = new MediaLibraryDeletionWorkflow.BgmDeletionLink("SERIES:42:2", 2, "old-task");
+        when(embyClient.findSeriesByTmdbId(42)).thenReturn(List.of(series));
+        when(embyClient.listSeriesSeasons(series.id())).thenReturn(List.of(first, second,
+                new EmbyCatalogItem("duplicate", "第二季", "Season", series.path() + "/duplicate", 2)));
+        assertThatThrownBy(() -> workflow.startBgmDeletion(identity, link))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("无法唯一确认");
+        verifyNoInteractions(taskMapper);
+
+        when(embyClient.listSeriesSeasons(series.id())).thenReturn(List.of(first, second));
+        when(embyClient.listLibraries()).thenReturn(List.of(library));
+        when(catalogService.requireDeletableItem(series.id(), AdminMediaLibraryScope.ANIME, library))
+                .thenReturn(new EmbyMediaLibraryItem(series.id(), series.name(), series.name(), "Series", null, null, null, series.path()));
+        when(embyClient.getMediaItemForDeletion(library.id(), "Series", series.id()))
+                .thenReturn(new EmbyDeletionItem(series.id(), series.name(), "Series", series.path(), null, null, List.of()));
+        when(embyClient.listSeriesSeasonsForDeletion(series.id())).thenReturn(List.of(
+                new EmbyDeletionItem(first.id(), first.name(), "Season", first.path(), 1, null, List.of()),
+                new EmbyDeletionItem(second.id(), second.name(), "Season", second.path(), 2, null, List.of())));
+
+        var response = workflow.startBgmDeletion(identity, link);
+
+        assertThat(response.seasonId()).isEqualTo(second.id());
+        var capture = ArgumentCaptor.forClass(MediaDeletionTask.class);
+        verify(taskMapper).insert(capture.capture());
+        assertThat(capture.getValue().getEmbyItemIds()).isEqualTo("[\"season-2\"]");
+        assertThat(capture.getValue().getBgmPreviousTaskId()).isEqualTo("old-task");
     }
 
     private EmbyDeletionItem deletionItem(String id, String name) {

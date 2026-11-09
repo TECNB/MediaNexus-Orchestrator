@@ -43,13 +43,6 @@ public class MediaLibraryPresenceService {
             Integer seasonNumber
     ) {
         authService.requireCurrentUser();
-        return checkForAutomation(mediaType, tmdbId, bgmId, seasonNumber);
-    }
-
-    /** 后台编排使用已确定的目录身份检查媒体，不依赖浏览器登录态。 */
-    MediaLibraryPresenceResponse checkForAutomation(
-            String mediaType, Integer tmdbId, String bgmId, Integer seasonNumber
-    ) {
         String normalizedMediaType = normalizeMediaType(mediaType);
         Integer resolvedTmdbId = resolveTmdbId(tmdbId, bgmId);
         if (resolvedTmdbId == null) {
@@ -102,6 +95,20 @@ public class MediaLibraryPresenceService {
             return new MediaLibraryPresenceResponse(false, false, resolvedTmdbId, null, seasonNumber);
         }
     }
+
+    /** BGM 以 Emby 实际状态为准，不使用普通入库的删除中放行规则。 */
+    AutomationPresence checkForAutomation(BgmWishlistTaskGateway.Target target) {
+        try {
+            var matches = deletionWorkflow.findBgmTargets(target);
+            return new AutomationPresence(true, !matches.isEmpty(), matches.size() == 1);
+        } catch (EmbyClientException exception) {
+            log.warn("BGM 在库检查不可用 tmdbId={} seasonNumber={} reason={}",
+                    target.tmdbId(), target.seasonNumber(), exception.getMessage());
+            return new AutomationPresence(false, false, false);
+        }
+    }
+
+    record AutomationPresence(boolean checkAvailable, boolean exists, boolean unique) {}
 
     public void requireMovieAbsent(Integer tmdbId) {
         rejectExisting(check("movie", tmdbId, null, null));

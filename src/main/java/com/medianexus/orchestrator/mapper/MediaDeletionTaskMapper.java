@@ -24,6 +24,8 @@ public interface MediaDeletionTaskMapper extends BaseMapper<MediaDeletionTask> {
                 source_paths LONGTEXT NOT NULL,
                 strm_paths LONGTEXT NOT NULL,
                 emby_item_ids LONGTEXT NOT NULL,
+                bgm_target_key VARCHAR(64) NULL,
+                bgm_previous_task_id VARCHAR(64) NULL,
                 error_message VARCHAR(1024) NULL,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -31,10 +33,30 @@ public interface MediaDeletionTaskMapper extends BaseMapper<MediaDeletionTask> {
                 PRIMARY KEY (id),
                 KEY idx_media_deletions_status_created (status, created_at),
                 KEY idx_media_deletions_item_created (item_id, created_at),
-                KEY idx_media_deletions_season_created (season_id, created_at)
+                KEY idx_media_deletions_season_created (season_id, created_at),
+                KEY idx_media_deletions_bgm_target (bgm_target_key, created_at)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
             """)
     void createTableIfNotExists();
+
+    @Select("""
+            SELECT COUNT(*) FROM information_schema.columns
+            WHERE table_schema = DATABASE() AND table_name = 'media_deletion_tasks' AND column_name = 'bgm_target_key'
+            """)
+    int countBgmTargetColumn();
+
+    @Update("""
+            ALTER TABLE media_deletion_tasks ADD COLUMN bgm_target_key VARCHAR(64) NULL,
+            ADD COLUMN bgm_previous_task_id VARCHAR(64) NULL,
+            ADD INDEX idx_media_deletions_bgm_target (bgm_target_key, created_at)
+            """)
+    void addBgmTargetColumns();
+
+    @Select("""
+            SELECT * FROM media_deletion_tasks WHERE bgm_target_key = #{targetKey}
+            ORDER BY created_at DESC, id DESC LIMIT 1
+            """)
+    MediaDeletionTask findLatestBgmDeletion(@Param("targetKey") String targetKey);
 
     @Select("""
             SELECT * FROM media_deletion_tasks

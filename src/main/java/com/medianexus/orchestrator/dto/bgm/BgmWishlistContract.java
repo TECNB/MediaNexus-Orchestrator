@@ -1,5 +1,6 @@
 package com.medianexus.orchestrator.dto.bgm;
 
+import com.medianexus.orchestrator.dto.admin.response.AdminMediaDeletionTaskResponse;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
@@ -56,7 +57,7 @@ public final class BgmWishlistContract {
                            String title, String originalTitle, Integer year) {
     }
 
-    @Schema(description = "独立 BGM 条目及资格；在库不表示全集完整，未查询发布不表示已有资源")
+    @Schema(description = "独立 BGM 条目、在库资格及删除进度")
     public record Item(long subjectId, String title, String originalTitle, String coverUrl, Integer year,
                        @Schema(description = "上游收藏更新时间，不是首次收藏时间") String updatedAt,
                        @Schema(description = "未确认目录时为 null", nullable = true) Identity identity,
@@ -67,7 +68,11 @@ public final class BgmWishlistContract {
                        boolean automaticCandidate,
                        @Schema(description = "本票尚未查询发布，固定 NOT_CHECKED") String releaseStatus,
                        @Schema(description = "此作品或全局目录目标曾由 BGM 创建的任务关联及当前状态；没有时为 null，失败恢复沿用任务中心", nullable = true)
-                       TaskLink associatedTask) {
+                       TaskLink associatedTask,
+                       @Schema(description = "该目录目标最近一次 BGM 删除任务；没有时为 null", nullable = true)
+                       AdminMediaDeletionTaskResponse deletionTask,
+                       @Schema(description = "在库目标唯一且无进行中的入库或待处理删除；提交时再次核对媒体库范围")
+                       boolean canDelete) {
     }
 
     @Schema(description = "稳定拒绝原因代码及可展示说明")

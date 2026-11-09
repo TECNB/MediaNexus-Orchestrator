@@ -5,6 +5,8 @@ import com.medianexus.orchestrator.config.BangumiProperties;
 import com.medianexus.orchestrator.integration.bangumi.BgmTmdbMappings;
 import com.medianexus.orchestrator.common.exception.BusinessException;
 import com.medianexus.orchestrator.common.exception.ErrorCode;
+import com.medianexus.orchestrator.dto.admin.response.AdminMediaDeletionTaskResponse;
+import com.medianexus.orchestrator.integration.emby.EmbyClientException;
 import com.medianexus.orchestrator.dto.bgm.BgmWishlistContract.CatalogCandidate;
 import com.medianexus.orchestrator.dto.bgm.BgmWishlistContract.Identity;
 import com.medianexus.orchestrator.dto.bgm.BgmWishlistContract.IdentityInput;
@@ -140,6 +142,26 @@ public class BgmWishlistService {
         }
     }
 
+    public Item item(String sourceId, long subjectId) {
+        auth.requireAdminUser();
+        return evaluateForOperation(sourceId, subjectId);
+    }
+
+    public AdminMediaDeletionTaskResponse deleteFromLibrary(String sourceId, long subjectId, IdentityInput expected) {
+        auth.requireAdminUser();
+        SourceState state = store.get(sourceId);
+        BgmWishlistSourceStore.requireSubject(state, subjectId);
+        Identity identity = state.identities().get(subjectId);
+        if (identity == null || !expected.equals(new IdentityInput(identity.mediaType(), identity.tmdbId(), identity.seasonNumber()))) {
+            throw new BusinessException(ErrorCode.CONFLICT, "目录目标已变化，请刷新后重试", HttpStatus.CONFLICT);
+        }
+        try {
+            return tasks.delete(target(identity));
+        } catch (EmbyClientException exception) {
+            throw upstream("媒体库暂不可用，未创建删除任务");
+        }
+    }
+
     public Item evaluateForOperation(String sourceId, long subjectId) {
         SourceState state = store.get(sourceId);
         CollectedSubject subject = BgmWishlistSourceStore.requireSubject(state, subjectId);
@@ -203,6 +225,10 @@ public class BgmWishlistService {
     public Item evaluate(SourceState state, CollectedSubject subject) {
         List<Reason> reasons = new ArrayList<>();
         Identity identity = state.identities().get(subject.subjectId());
+        var deletion = identity == null ? null : tasks.latestDeletion(target(identity));
+        var deletionTask = deletion == null ? null : deletion.task();
+        boolean deleting = deletionTask != null && Set.of("PENDING", "RUNNING").contains(deletionTask.status());
+        if (deletion != null && !deletion.succeeded()) reasons.add(deletion.refusal());
         TaskLink saved = state.createdTasks().get(subject.subjectId());
         TaskLink associated = null;
         if (identity != null) {
@@ -215,19 +241,28 @@ public class BgmWishlistService {
         if (saved != null) {
             if (associated == null) {
                 var current = tasks.task(saved.taskType(), saved.taskId());
-                associated = new TaskLink(saved.taskType(), saved.taskId(), current == null ? "UNKNOWN" : current.status());
+                associated = current == null ? new TaskLink(saved.taskType(), saved.taskId(), "UNKNOWN")
+                        : new TaskLink(current.taskType(), current.taskId(), current.status());
             }
-            reasons.add(new Reason("PREVIOUS_TASK", "此作品或目录目标已有 BGM 创建记录，失败或中断请在任务中心恢复"));
+            if (deletion == null || !deletion.replaces(associated.taskId())) {
+                reasons.add(BgmWishlistTaskGateway.previousTaskReason(associated.status()));
+            } else {
+                associated = null;
+            }
         }
-        if (!"SUCCESS".equals(state.refreshStatus())) {
-            reasons.add(0, new Reason("SNAPSHOT_UNAVAILABLE", "本轮没有完整有效清单，请先刷新成功"));
+        boolean automaticCandidate = saved == null && deletion == null && state.candidateSubjectIds().contains(subject.subjectId());
+        if (!"SUCCESS".equals(state.refreshStatus()) || deleting) {
+            if (!"SUCCESS".equals(state.refreshStatus())) {
+                reasons.add(0, new Reason("SNAPSHOT_UNAVAILABLE", "本轮没有完整有效清单，请先刷新成功"));
+            }
             return new Item(subject.subjectId(), subject.title(), subject.originalTitle(), subject.coverUrl(), subject.year(),
                     subject.updatedAt(), identity, "UNKNOWN", "UNKNOWN", false, List.copyOf(reasons), null,
-                    saved == null && state.candidateSubjectIds().contains(subject.subjectId()), "NOT_CHECKED", associated);
+                    automaticCandidate, "NOT_CHECKED", associated, deletionTask, false);
         }
         String library = "UNKNOWN";
         String availability = "UNKNOWN";
         TaskLink active = null;
+        boolean canDelete = false;
         if (identity == null) {
             reasons.add(new Reason("IDENTITY_UNKNOWN", "自动匹配未能确认唯一目录和目标季度，可手动纠正"));
         } else {
@@ -237,13 +272,13 @@ public class BgmWishlistService {
                 availability = "UNKNOWN";
             }
             if (!"AVAILABLE".equals(availability)) reasons.add(availabilityReason(availability));
-            var check = presence.checkForAutomation("MOVIE".equals(identity.mediaType()) ? "movie" : "series",
-                    identity.tmdbId(), null, identity.seasonNumber());
+            var check = presence.checkForAutomation(target(identity));
             if (!check.checkAvailable()) {
                 reasons.add(new Reason("LIBRARY_UNKNOWN", "在库检查不可用，本次不能入库"));
             } else if (check.exists()) {
                 library = "PRESENT";
-                reasons.add(new Reason("ALREADY_PRESENT", "电影或目标季度已在库；在库不表示全集完整"));
+                canDelete = check.unique() && (deletion == null || deletion.succeeded());
+                reasons.add(new Reason("ALREADY_PRESENT", "已入库"));
             } else {
                 library = "ABSENT";
             }
@@ -255,7 +290,7 @@ public class BgmWishlistService {
         }
         return new Item(subject.subjectId(), subject.title(), subject.originalTitle(), subject.coverUrl(), subject.year(),
                 subject.updatedAt(), identity, library, availability, reasons.isEmpty(), List.copyOf(reasons), active,
-                saved == null && state.candidateSubjectIds().contains(subject.subjectId()), "NOT_CHECKED", associated);
+                automaticCandidate, "NOT_CHECKED", associated, deletionTask, canDelete && active == null);
     }
 
     public List<CatalogCandidate> searchCatalog(String query) {

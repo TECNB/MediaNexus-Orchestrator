@@ -22,6 +22,8 @@ public class MediaDeletionTask {
     private String sourcePaths;
     private String strmPaths;
     private String embyItemIds;
+    private String bgmTargetKey;
+    private String bgmPreviousTaskId;
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private String errorMessage;
     private LocalDateTime createdAt;
@@ -53,6 +55,10 @@ public class MediaDeletionTask {
     public void setStrmPaths(String strmPaths) { this.strmPaths = strmPaths; }
     public String getEmbyItemIds() { return embyItemIds; }
     public void setEmbyItemIds(String embyItemIds) { this.embyItemIds = embyItemIds; }
+    public String getBgmTargetKey() { return bgmTargetKey; }
+    public void setBgmTargetKey(String bgmTargetKey) { this.bgmTargetKey = bgmTargetKey; }
+    public String getBgmPreviousTaskId() { return bgmPreviousTaskId; }
+    public void setBgmPreviousTaskId(String bgmPreviousTaskId) { this.bgmPreviousTaskId = bgmPreviousTaskId; }
     public String getErrorMessage() { return errorMessage; }
     public void setErrorMessage(String errorMessage) { this.errorMessage = errorMessage; }
     public LocalDateTime getCreatedAt() { return createdAt; }

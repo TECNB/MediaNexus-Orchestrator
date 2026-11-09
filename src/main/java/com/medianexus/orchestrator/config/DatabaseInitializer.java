@@ -189,6 +189,9 @@ public class DatabaseInitializer implements ApplicationRunner {
         ensureMovieMagnetTaskAttemptChainColumns();
         movieMagnetIngestTaskLogMapper.createTableIfNotExists();
         mediaDeletionTaskMapper.createTableIfNotExists();
+        if (mediaDeletionTaskMapper.countBgmTargetColumn() == 0) {
+            mediaDeletionTaskMapper.addBgmTargetColumns();
+        }
         quarkIngestTaskMapper.createTableIfNotExists();
         ensureQuarkTaskSourceTypeColumn();
         quarkIngestTaskLogMapper.createTableIfNotExists();
