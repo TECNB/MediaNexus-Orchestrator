@@ -235,7 +235,7 @@ class MediaLibraryDeletionWorkflowTest {
         when(embyClient.listSeriesSeasons(series.id())).thenReturn(List.of(first, second));
         when(embyClient.listLibraries()).thenReturn(List.of(library));
         when(catalogService.requireDeletableItem(series.id(), AdminMediaLibraryScope.ANIME, library))
-                .thenReturn(new EmbyMediaLibraryItem(series.id(), series.name(), series.name(), "Series", null, null, null, series.path()));
+                .thenReturn(new EmbyMediaLibraryItem(series.id(), series.name(), series.name(), "Series", null, null, null, null));
         when(embyClient.getMediaItemForDeletion(library.id(), "Series", series.id()))
                 .thenReturn(new EmbyDeletionItem(series.id(), series.name(), "Series", series.path(), null, null, List.of()));
         when(embyClient.listSeriesSeasonsForDeletion(series.id())).thenReturn(List.of(
