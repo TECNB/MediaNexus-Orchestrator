@@ -76,6 +76,22 @@ public interface BgmWishlistExecutionMapper {
     long countOperations(String sourceId);
 
     @Select("""
+        SELECT payload FROM bgm_wishlist_executions WHERE kind='OPERATION' AND source_id LIKE 'wecom-%'
+        ORDER BY created_at DESC,id DESC LIMIT #{limit} OFFSET #{offset}
+        """)
+    List<String> listAllWeComOperations(@Param("offset") long offset, @Param("limit") int limit);
+
+    @Select("SELECT COUNT(*) FROM bgm_wishlist_executions WHERE kind='OPERATION' AND source_id LIKE 'wecom-%'")
+    long countAllWeComOperations();
+
+    @Select("""
+        SELECT payload FROM bgm_wishlist_executions WHERE kind='OPERATION' AND source_id=#{sourceId}
+        AND JSON_EXTRACT(payload, '$.source.ownerUserId') = #{ownerId}
+        ORDER BY created_at DESC,id DESC LIMIT 10
+        """)
+    List<String> recentOwnedOperations(@Param("sourceId") String sourceId, @Param("ownerId") long ownerId);
+
+    @Select("""
         SELECT payload FROM bgm_wishlist_executions WHERE kind='OPERATION'
         AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.status')) IN ('QUEUED','RUNNING','WAITING')
         """)

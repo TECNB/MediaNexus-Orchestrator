@@ -70,16 +70,18 @@ public class WeComIngestController {
     private static final String RECORDS = "/api/v1/wecom-ingest/operations";
 
     @GetMapping({RECORDS, "/api/v1/admin/wecom-ingest/operations"})
-    @Operation(summary = "分页查看当前账号的微信操作记录")
+    @Operation(summary = "分页查看微信操作记录；仅管理员可选择查看全部")
     public ApiResponse<Operations> list(@RequestParam(defaultValue = "1") int page,
-                                        @RequestParam(defaultValue = "20") int pageSize) {
-        return ApiResponse.success(operations.listWeCom(page, pageSize));
+                                        @RequestParam(defaultValue = "20") int pageSize,
+                                        @RequestParam(defaultValue = "false") boolean all) {
+        return ApiResponse.success(operations.listWeCom(page, pageSize, all));
     }
 
     @GetMapping(RECORDS + "/{id}")
-    @Operation(summary = "查看本人微信操作详情")
-    public ApiResponse<com.medianexus.orchestrator.dto.bgm.BgmWishlistOperationContract.Operation> get(@PathVariable String id) {
-        return ApiResponse.success(operations.getWeCom(id));
+    @Operation(summary = "查看微信操作详情；跨账号仅限管理员显式选择全部时")
+    public ApiResponse<com.medianexus.orchestrator.dto.bgm.BgmWishlistOperationContract.Operation> get(@PathVariable String id,
+            @RequestParam(defaultValue = "false") boolean all) {
+        return ApiResponse.success(operations.getWeCom(id, all));
     }
 
     @PostMapping(RECORDS + "/{id}/confirm")

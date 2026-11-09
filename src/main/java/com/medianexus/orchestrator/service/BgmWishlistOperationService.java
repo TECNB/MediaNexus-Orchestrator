@@ -188,21 +188,32 @@ public class BgmWishlistOperationService {
     }
 
     public Operation getWeCom(String id) {
-        return live(requireWeComRecord(id));
+        return getWeCom(id, false);
+    }
+
+    public Operation getWeCom(String id, boolean all) {
+        if (!all) return live(requireWeComRecord(id));
+        auth.requireAdminUser();
+        return live(weComRecord(id));
     }
 
     public Operation requireWeComRecord(String id) {
         User actor = auth.requireCurrentUser();
-        Operation operation = records.get(id);
-        if (!fromWeCom(operation)) throw new BusinessException(ErrorCode.NOT_FOUND, "微信操作记录不存在", HttpStatus.NOT_FOUND);
+        Operation operation = weComRecord(id);
         requireWeComActor(operation, actor);
         return operation;
     }
 
-    public Operations listWeCom(int page, int size) {
-        User actor = auth.requireCurrentUser();
+    private Operation weComRecord(String id) {
+        Operation operation = records.get(id);
+        if (!fromWeCom(operation)) throw new BusinessException(ErrorCode.NOT_FOUND, "微信操作记录不存在", HttpStatus.NOT_FOUND);
+        return operation;
+    }
+
+    public Operations listWeCom(int page, int size, boolean all) {
+        User actor = all ? auth.requireAdminUser() : auth.requireCurrentUser();
         if (page < 1 || size < 1 || size > 50) throw bad("分页参数超出范围");
-        Operations values = records.list(weComSource(actor.getId()), page, size);
+        Operations values = all ? records.listAllWeCom(page, size) : records.list(weComSource(actor.getId()), page, size);
         return new Operations(values.items().stream().map(this::live).toList(), values.total(), page, size);
     }
 

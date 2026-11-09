@@ -46,6 +46,15 @@ public class BgmWishlistOperationStore {
         ensureTable(); return new Operations(mapper.listOperations(sourceId, (long)(page - 1) * size, size).stream()
                 .map(this::decode).toList(), mapper.countOperations(sourceId), page, size);
     }
+    public Operations listAllWeCom(int page, int size) {
+        ensureTable();
+        return new Operations(mapper.listAllWeComOperations((long) (page - 1) * size, size).stream()
+                .map(this::decode).toList(), mapper.countAllWeComOperations(), page, size);
+    }
+    List<Operation> recentOwned(String sourceId, long ownerId) {
+        ensureTable();
+        return mapper.recentOwnedOperations(sourceId, ownerId).stream().map(this::decode).toList();
+    }
     public List<Operation> open() { ensureTable(); return mapper.openOperations().stream().map(this::decode).toList(); }
     private String encode(Operation operation) {
         try { return json.writeValueAsString(operation); }

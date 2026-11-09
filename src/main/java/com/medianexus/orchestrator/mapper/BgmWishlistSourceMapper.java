@@ -23,6 +23,19 @@ public interface BgmWishlistSourceMapper {
     @Select("SELECT state_json FROM bgm_wishlist_sources ORDER BY created_at, id")
     List<String> listStates();
 
+    @Select("""
+            SELECT state_json FROM bgm_wishlist_sources
+            WHERE JSON_EXTRACT(state_json, '$.source.ownerUserId') = #{ownerId}
+            ORDER BY created_at, id
+            """)
+    List<String> listOwnedStates(@Param("ownerId") long ownerId);
+
+    @Select("""
+            SELECT DISTINCT COALESCE(JSON_UNQUOTE(JSON_EXTRACT(state_json, '$.source.provider')), 'BGM')
+            FROM bgm_wishlist_sources WHERE JSON_EXTRACT(state_json, '$.source.ownerUserId') = #{ownerId}
+            """)
+    List<String> listOwnedProviders(@Param("ownerId") long ownerId);
+
     @Select("SELECT state_json FROM bgm_wishlist_sources WHERE id = #{id}")
     String selectState(@Param("id") String id);
 

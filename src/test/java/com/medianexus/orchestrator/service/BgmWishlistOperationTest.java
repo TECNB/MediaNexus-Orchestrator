@@ -303,6 +303,35 @@ class BgmWishlistOperationTest {
         assertEquals("real-task", f.rows.get("wecom-test").entries().get(0).task().taskId());
     }
 
+    @Test void adminMustExplicitlyChooseAllWeComRecordsAndCannotActForTheOwner() {
+        Fixture f = new Fixture();
+        f.owner.setRole("ADMIN");
+        var other = new User();
+        other.setId(2L);
+        other.setRole("USER");
+        Operation own = f.service.openWeCom("my-operation", f.owner, "自己的片名");
+        Operation theirs = f.service.openWeCom("other-operation", other, "别人的片名");
+        when(f.auth.requireCurrentUser()).thenReturn(f.owner);
+        when(f.records.list("wecom-1", 1, 20)).thenReturn(new Operations(List.of(own), 1, 1, 20));
+        when(f.records.listAllWeCom(1, 20)).thenReturn(new Operations(List.of(own, theirs), 2, 1, 20));
+        assertEquals(List.of("my-operation"), f.service.listWeCom(1, 20, false).items().stream().map(Operation::id).toList());
+        verify(f.records, never()).listAllWeCom(anyInt(), anyInt());
+        assertEquals(2, f.service.listWeCom(1, 20, true).total());
+        assertEquals("other-operation", f.service.getWeCom("other-operation", true).id());
+        assertThrows(com.medianexus.orchestrator.common.exception.BusinessException.class,
+                () -> f.service.getWeCom("other-operation", false));
+        assertThrows(com.medianexus.orchestrator.common.exception.BusinessException.class,
+                () -> f.service.defer("other-operation", 1L));
+
+        when(f.auth.requireCurrentUser()).thenReturn(other);
+        when(f.auth.requireAdminUser()).thenThrow(new com.medianexus.orchestrator.common.exception.BusinessException(
+                com.medianexus.orchestrator.common.exception.ErrorCode.FORBIDDEN, "仅管理员可操作"));
+        assertThrows(com.medianexus.orchestrator.common.exception.BusinessException.class,
+                () -> f.service.listWeCom(1, 20, true));
+        assertThrows(com.medianexus.orchestrator.common.exception.BusinessException.class,
+                () -> f.service.getWeCom("my-operation", true));
+    }
+
     static class Fixture {
         final AuthService auth = mock(AuthService.class);
         final BgmWishlistService wishlist = mock(BgmWishlistService.class);

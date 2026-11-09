@@ -49,6 +49,16 @@ public class BgmWishlistSourceStore {
         return mapper.listStates().stream().map(this::decode).toList();
     }
 
+    List<SourceState> listOwned(long ownerId) {
+        ensureTable();
+        return mapper.listOwnedStates(ownerId).stream().map(this::decode).toList();
+    }
+
+    List<String> ownedProviders(long ownerId) {
+        ensureTable();
+        return mapper.listOwnedProviders(ownerId);
+    }
+
     public SourceState get(String sourceId) {
         ensureTable();
         return required(mapper.selectState(sourceId));
