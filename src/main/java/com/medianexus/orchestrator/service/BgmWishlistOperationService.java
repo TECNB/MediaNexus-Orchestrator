@@ -215,8 +215,11 @@ public class BgmWishlistOperationService {
         Operation operation = records.update(id, value -> status(value, "RUNNING", null));
         SourceState refreshed = wishlist.refreshSourceForOperation(operation.source().id());
         requireConfig(operation.source(), refreshed.source());
+        Comparator<CollectedSubject> newest = Comparator.comparing(
+                (CollectedSubject subject) -> Instant.parse(subject.updatedAt())).reversed();
+        if (operation.source().provider() == Provider.BGM) newest = newest.thenComparingLong(CollectedSubject::subjectId);
         List<Long> ids = operation.entries().isEmpty() ? refreshed.subjects().stream()
-                .sorted(Comparator.comparing((CollectedSubject subject) -> Instant.parse(subject.updatedAt())).reversed().thenComparingLong(CollectedSubject::subjectId))
+                .sorted(newest)
                 .filter(subject -> !"DAILY".equals(operation.action()) || refreshed.candidateSubjectIds().contains(subject.subjectId()))
                 .map(CollectedSubject::subjectId).toList()
                 : operation.entries().stream().filter(value -> Set.of("SEARCHING", "CREATING").contains(value.status()))
@@ -274,9 +277,11 @@ public class BgmWishlistOperationService {
         if (!"CREATING".equals(original.status())) {
             List<Candidate> candidates;
             try {
-                candidates = tasks.candidates(new BgmWishlistTaskGateway.Target(item.identity().mediaType(), item.identity().tmdbId(),
-                        item.identity().seasonNumber(), item.identity().title(), item.identity().originalTitle(),
-                        item.identity().year(), item.title()), operation.source().quality(), progress ->
+                var searchTarget = operation.source().provider() == Provider.DOUBAN ? target(item.identity())
+                        : new BgmWishlistTaskGateway.Target(item.identity().mediaType(), item.identity().tmdbId(),
+                                item.identity().seasonNumber(), item.identity().title(), item.identity().originalTitle(),
+                                item.identity().year(), item.title());
+                candidates = tasks.candidates(searchTarget, operation.source().quality(), progress ->
                     updateEntry(id, subjectId, previous -> {
                         List<Search> searches = new ArrayList<>(previous.searches());
                         Search search = new Search(progress.query(), progress.source(), progress.status(), progress.elapsedMs(), progress.resultCount());
@@ -318,7 +323,12 @@ public class BgmWishlistOperationService {
             return false;
         }
         BgmWishlistTaskGateway.ActiveTask task;
-        try { task = tasks.create(target(checked.identity()), selected.release(), owner); }
+        try {
+            var target = target(checked.identity());
+            task = operation.source().provider() == Provider.DOUBAN && "SERIES".equals(target.mediaType())
+                    ? tasks.createSeries(target, selected.release(), owner)
+                    : tasks.create(target, selected.release(), owner);
+        }
         catch (BusinessException exception) {
             if (exception.getCode().equals(ErrorCode.TOO_MANY_REQUESTS.getCode())) {
                 updateEntry(id, subjectId, previous -> outcome(previous, "SKIPPED", reason("QUOTA_EXHAUSTED", "任务归属成员今日创建次数已耗尽")));
@@ -338,8 +348,10 @@ public class BgmWishlistOperationService {
         String key = "bgm:" + operation.source().id() + ":" + subjectId + ":" + entry.reason().code()
                 + (entry.candidates().isEmpty() ? "" : ":" + entry.candidates().get(0).key());
         updateEntry(id, subjectId, previous -> notice(previous, "PENDING"));
+        String path = operation.source().provider() == Provider.DOUBAN
+                ? "/automation/douban-wishlist" : "/automation/bgm-wishlist";
         String result = notifications.sendOperationalAlert(key, (entry.candidates().isEmpty() ? "入库待补充资源｜" : "入库待确认｜") + entry.item().title(),
-                entry.reason().message() + "。请查看操作记录处理。", "/automation/bgm-wishlist?operation=" + id);
+                entry.reason().message() + "。请查看操作记录处理。", path + "?operation=" + id);
         updateEntry(id, subjectId, previous -> notice(previous, result));
     }
 

@@ -6,11 +6,12 @@ import com.medianexus.orchestrator.integration.bangumi.BgmTmdbMappings;
 import com.medianexus.orchestrator.common.exception.BusinessException;
 import com.medianexus.orchestrator.common.exception.ErrorCode;
 import com.medianexus.orchestrator.dto.admin.response.AdminMediaDeletionTaskResponse;
-import com.medianexus.orchestrator.integration.emby.EmbyClientException;
 import com.medianexus.orchestrator.dto.bgm.BgmWishlistContract.CatalogCandidate;
+import com.medianexus.orchestrator.integration.emby.EmbyClientException;
 import com.medianexus.orchestrator.dto.bgm.BgmWishlistContract.Identity;
 import com.medianexus.orchestrator.dto.bgm.BgmWishlistContract.IdentityInput;
 import com.medianexus.orchestrator.dto.bgm.BgmWishlistContract.Item;
+import com.medianexus.orchestrator.dto.bgm.BgmWishlistContract.Provider;
 import com.medianexus.orchestrator.dto.bgm.BgmWishlistContract.Reason;
 import com.medianexus.orchestrator.dto.bgm.BgmWishlistContract.Season;
 import com.medianexus.orchestrator.dto.bgm.BgmWishlistContract.Source;
@@ -19,6 +20,8 @@ import com.medianexus.orchestrator.dto.bgm.BgmWishlistContract.TaskLink;
 import com.medianexus.orchestrator.dto.bgm.BgmWishlistContract.Wishlist;
 import com.medianexus.orchestrator.integration.bangumi.BangumiClient;
 import com.medianexus.orchestrator.integration.bangumi.BangumiClient.BangumiReadException;
+import com.medianexus.orchestrator.integration.douban.DoubanWishlistClient;
+import com.medianexus.orchestrator.integration.douban.DoubanWishlistClient.WishlistReadException;
 import com.medianexus.orchestrator.integration.tmdb.TmdbClient;
 import com.medianexus.orchestrator.integration.tmdb.TmdbClientException;
 import com.medianexus.orchestrator.service.BgmWishlistSourceStore.CollectedSubject;
@@ -54,13 +57,14 @@ public class BgmWishlistService {
     private final AuthService auth;
     private final BgmWishlistSourceStore store;
     private final BangumiClient bangumi;
+    private final DoubanWishlistClient douban;
     private final TmdbClient tmdb;
     private final MediaLibraryPresenceService presence;
     private final BgmWishlistTaskGateway tasks;
 
     public BgmWishlistService(AuthService auth, BgmWishlistSourceStore store, BangumiClient bangumi,
                                TmdbClient tmdb, MediaLibraryPresenceService presence, BgmWishlistTaskGateway tasks,
-                               BgmTmdbMappings mappings, BangumiProperties properties) {
+                               BgmTmdbMappings mappings, BangumiProperties properties, DoubanWishlistClient douban) {
         this.mappings = mappings;
         this.catalogChecks = Executors.newFixedThreadPool(properties.getCatalogConcurrency(), runnable -> {
             Thread thread = new Thread(runnable, "bgm-catalog-check");
@@ -70,40 +74,62 @@ public class BgmWishlistService {
         this.auth = auth;
         this.store = store;
         this.bangumi = bangumi;
+        this.douban = douban;
         this.tmdb = tmdb;
         this.presence = presence;
         this.tasks = tasks;
     }
 
-    public List<Source> listSources() {
+    public List<Source> listSources(Provider provider) {
         auth.requireAdminUser();
-        return store.list().stream().map(SourceState::source).toList();
+        return store.list().stream().map(SourceState::source).filter(source -> source.provider() == provider).toList();
     }
 
-    public Source createSource(SourceInput input) {
+    public Source createSource(SourceInput request) {
         auth.requireAdminUser();
+        SourceInput input = normalizeSource(request);
         if (!Boolean.TRUE.equals(input.enabled())) return store.create(input).source();
         Instant started = Instant.now();
         try {
-            return store.createWithRefresh(input, bangumi.readWishlist(input.bgmUsername()), started).source();
-        } catch (BangumiReadException exception) {
+            return store.createWithRefresh(input, readWishlist(input.provider(), input.bgmUsername()), started).source();
+        } catch (BangumiReadException | WishlistReadException exception) {
             throw upstream("首次启用读取失败，未保存启用配置或建立基线");
         }
     }
 
-    public Source updateSource(String id, SourceInput input) {
+    public Source updateSource(String id, SourceInput request) {
         auth.requireAdminUser();
+        SourceInput input = normalizeSource(request);
         SourceState state = store.get(id);
         if (!Boolean.TRUE.equals(input.enabled()) || state.source().baselineInitialized()) {
             return store.update(id, input).source();
         }
         Instant started = Instant.now();
         try {
-            return store.updateWithRefresh(id, input, bangumi.readWishlist(input.bgmUsername()), started).source();
-        } catch (BangumiReadException exception) {
+            return store.updateWithRefresh(id, input, readWishlist(input.provider(), input.bgmUsername()), started).source();
+        } catch (BangumiReadException | WishlistReadException exception) {
             store.recordRefreshFailure(id, started);
             throw upstream("首次启用读取失败，来源保持关闭，未建立或推进基线");
         }
+    }
+
+    private SourceInput normalizeSource(SourceInput input) {
+        String account = input.bgmUsername();
+        if (input.provider() == Provider.DOUBAN) {
+            try {
+                account = DoubanWishlistClient.accountId(account);
+            } catch (IllegalArgumentException exception) {
+                throw bad(exception.getMessage());
+            }
+        } else if (!account.matches("[A-Za-z0-9_-]{1,64}")) {
+            throw bad("请输入有效的 BGM 用户名或 ID");
+        }
+        return new SourceInput(account, input.ownerUserId(), input.enabled(), input.scheduleTime(),
+                input.targetCount(), input.quality(), input.initialScope(), input.provider());
+    }
+
+    private List<CollectedSubject> readWishlist(Provider provider, String account) {
+        return provider == Provider.DOUBAN ? douban.readWishlist(account) : bangumi.readWishlist(account);
     }
 
     public Wishlist items(String sourceId) {
@@ -121,8 +147,8 @@ public class BgmWishlistService {
         SourceState state = store.get(sourceId);
         Instant started = Instant.now();
         try {
-            return wishlist(matchMissing(store.recordRefresh(sourceId, bangumi.readWishlist(state.source().bgmUsername()), started)));
-        } catch (BangumiReadException exception) {
+            return wishlist(matchMissing(store.recordRefresh(sourceId, readWishlist(state.source().provider(), state.source().bgmUsername()), started)));
+        } catch (BangumiReadException | WishlistReadException exception) {
             SourceState retained = store.recordRefreshFailure(sourceId, started);
             return wishlist(new SourceState(retained.source(), retained.subjects(), retained.knownSubjectIds(),
                     retained.candidateSubjectIds(), retained.identities(), retained.createdTasks(), "FAILED",
@@ -135,8 +161,8 @@ public class BgmWishlistService {
         SourceState state = store.get(sourceId);
         Instant started = Instant.now();
         try {
-            return store.recordRefresh(sourceId, bangumi.readWishlist(state.source().bgmUsername()), started);
-        } catch (BangumiReadException exception) {
+            return store.recordRefresh(sourceId, readWishlist(state.source().provider(), state.source().bgmUsername()), started);
+        } catch (BangumiReadException | WishlistReadException exception) {
             store.recordRefreshFailure(sourceId, started);
             throw upstream("完整想看清单刷新失败，本轮不能创建任务");
         }
@@ -189,28 +215,71 @@ public class BgmWishlistService {
             if (!state.identities().containsKey(subject.subjectId())) missing.add(subject.subjectId());
         });
         if (missing.isEmpty()) return state;
-        Map<Long, IdentityInput> candidates;
-        try {
-            candidates = mappings.find(missing);
-        } catch (BgmTmdbMappings.MappingUnavailableException exception) {
-            log.warn("BGM 自动映射读取失败，保留已有目录 sourceId={}", state.source().id(), exception);
-            return state;
+        List<CompletableFuture<Map.Entry<Long, Identity>>> checks;
+        if (state.source().provider() == Provider.DOUBAN) {
+            checks = state.subjects().stream().filter(subject -> missing.contains(subject.subjectId()))
+                    .map(subject -> verifyIdentity(subject.subjectId(), () -> matchDouban(subject))).toList();
+        } else {
+            Map<Long, IdentityInput> candidates;
+            try {
+                candidates = mappings.find(missing);
+            } catch (BgmTmdbMappings.MappingUnavailableException exception) {
+                log.warn("BGM 自动映射读取失败，保留已有目录 sourceId={}", state.source().id(), exception);
+                return state;
+            }
+            checks = missing.stream().filter(candidates::containsKey)
+                    .map(id -> verifyIdentity(id, () -> candidates.get(id))).toList();
         }
-        List<CompletableFuture<Map.Entry<Long, Identity>>> checks = missing.stream()
-                .filter(candidates::containsKey)
-                .map(id -> CompletableFuture.supplyAsync(() -> {
-                    try {
-                        return Map.entry(id, resolveIdentity(candidates.get(id)));
-                    } catch (TmdbClientException | BusinessException exception) {
-                        log.warn("BGM 映射目录无法核实 subjectId={}，保留待纠正", id);
-                        return null;
-                    }
-                }, catalogChecks)).toList();
         Map<Long, Identity> verified = new HashMap<>();
         checks.stream().map(CompletableFuture::join).filter(java.util.Objects::nonNull)
                 .forEach(entry -> verified.put(entry.getKey(), entry.getValue()));
         if (verified.isEmpty()) return state;
         return store.saveAutomaticIdentities(state.source().id(), verified);
+    }
+
+    private CompletableFuture<Map.Entry<Long, Identity>> verifyIdentity(
+            long subjectId, java.util.function.Supplier<IdentityInput> candidate) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                IdentityInput input = candidate.get();
+                return input == null ? null : Map.entry(subjectId, resolveIdentity(input));
+            } catch (TmdbClientException | BusinessException exception) {
+                log.warn("想看映射目录无法核实 subjectId={}，保留待纠正", subjectId);
+                return null;
+            }
+        }, catalogChecks);
+    }
+
+    private IdentityInput matchDouban(CollectedSubject subject) {
+        if (subject.year() == null) return null;
+        List<CatalogCandidate> matches = new ArrayList<>();
+        for (JsonNode item : tmdb.searchWishlistTitles(subject.title())) {
+            var candidate = switch (item.path("media_type").asText()) {
+                case "movie" -> candidate("MOVIE", item, "title", "original_title", "release_date");
+                case "tv" -> candidate("SERIES", item, "name", "original_name", "first_air_date");
+                default -> null;
+            };
+            if (candidate != null && candidate.tmdbId() > 0 && subject.year().equals(candidate.year())
+                    && (sameTitle(subject.title(), candidate) || sameTitle(subject.originalTitle(), candidate))) {
+                matches.add(candidate);
+            }
+        }
+        if (matches.size() != 1) return null;
+        CatalogCandidate match = matches.get(0);
+        if ("MOVIE".equals(match.mediaType())) return new IdentityInput("MOVIE", match.tmdbId(), null);
+        JsonNode details = tmdb.getTvDetails(match.tmdbId(), "zh-CN");
+        requireCatalog(details, match.tmdbId());
+        // A series match alone cannot select one of several seasons.
+        List<Integer> seasons = new ArrayList<>();
+        for (JsonNode season : details.path("seasons")) {
+            int number = season.path("season_number").asInt();
+            if (number > 0) seasons.add(number);
+        }
+        return seasons.size() == 1 ? new IdentityInput("SERIES", match.tmdbId(), seasons.get(0)) : null;
+    }
+
+    private static boolean sameTitle(String title, CatalogCandidate candidate) {
+        return title != null && (title.equalsIgnoreCase(candidate.title()) || title.equalsIgnoreCase(candidate.originalTitle()));
     }
 
     @PreDestroy
@@ -353,7 +422,7 @@ public class BgmWishlistService {
             originalField = "original_title";
             dateField = "release_date";
     } else {
-        if (input.seasonNumber() == null) throw bad("剧集型动漫必须选择真实目标季度");
+        if (input.seasonNumber() == null) throw bad("剧集必须选择真实目标季度");
         details = tmdb.getTvDetails(input.tmdbId(), "zh-CN");
         requireCatalog(details, input.tmdbId());
         if (findSeason(details, input.seasonNumber()) == null) throw bad("所选季度不在真实剧集目录中");

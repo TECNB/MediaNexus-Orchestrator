@@ -298,14 +298,25 @@ public class MagnetIngestService {
     SeriesMagnetIngestTaskResponse createAnimeSeasonTaskForOwner(
             SeriesMagnetIngestRequest request, ReleaseIngestMetadata metadata, User owner
     ) {
-        SeriesTaskPlan plan = buildAnimeSeasonSeriesPlan(request);
+        return insertAutomationSeriesTask(buildAnimeSeasonSeriesPlan(request), metadata, owner, ANIME_PRODUCT_TYPE);
+    }
+
+    SeriesMagnetIngestTaskResponse createSeriesTaskForOwner(
+            SeriesMagnetIngestRequest request, ReleaseIngestMetadata metadata, User owner
+    ) {
+        return insertAutomationSeriesTask(buildSeriesPlan(request), metadata, owner, SERIES_PRODUCT_TYPE);
+    }
+
+    private SeriesMagnetIngestTaskResponse insertAutomationSeriesTask(
+            SeriesTaskPlan plan, ReleaseIngestMetadata metadata, User owner, String productType
+    ) {
         SeriesMagnetIngestTask active = seriesTaskMapper.selectOne(new LambdaQueryWrapper<SeriesMagnetIngestTask>()
                 .eq(SeriesMagnetIngestTask::getMagnetHash, plan.magnetHash())
                 .in(SeriesMagnetIngestTask::getStatus, ACTIVE_STATUSES).last("LIMIT 1"));
         if (active != null) {
             throw badRequest("相同 magnet 正在处理中，请稍后再试");
         }
-        return insertSeriesTask(owner, plan, metadata, ANIME_PRODUCT_TYPE, null);
+        return insertSeriesTask(owner, plan, metadata, productType, null);
     }
 
     public MovieMagnetIngestTaskResponse createMovieRetryTask(

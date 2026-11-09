@@ -21,6 +21,7 @@ import com.medianexus.orchestrator.dto.magnet.response.MovieMagnetIngestTaskResp
 import com.medianexus.orchestrator.dto.magnet.response.SeriesMagnetIngestTaskResponse;
 import com.medianexus.orchestrator.integration.bangumi.BangumiClient;
 import com.medianexus.orchestrator.integration.bangumi.BgmTmdbMappings;
+import com.medianexus.orchestrator.integration.douban.DoubanWishlistClient;
 import com.medianexus.orchestrator.integration.tmdb.TmdbClient;
 import com.medianexus.orchestrator.mapper.*;
 import com.medianexus.orchestrator.model.User;
@@ -61,6 +62,49 @@ class BgmWishlistWorkflowTest {
         assertThrows(RuntimeException.class,()->f.wishlist.refreshSourceForOperation(source.id()));
         assertEquals("FAILED",f.sources.get(source.id()).refreshStatus());
         assertEquals(2,f.sources.get(source.id()).subjects().size());
+    }
+
+    @Test
+    void doubanMatchesOnlyUniqueMoviesAndUnambiguousSeasons() throws Exception {
+        Fixture f = new Fixture();
+        Source source = f.wishlist.createSource(new SourceInput("https://movie.douban.com/people/account/wish",
+                9L, false, null, null, null, null, Provider.DOUBAN));
+        assertEquals("account", source.bgmUsername());
+        assertTrue(f.wishlist.listSources(Provider.BGM).isEmpty());
+        assertEquals(List.of(source), f.wishlist.listSources(Provider.DOUBAN));
+        when(f.douban.readWishlist("account")).thenReturn(List.of(
+                new BgmWishlistSourceStore.CollectedSubject(1, "电影", null, null, 2020, "2026-01-03T00:00:00Z"),
+                new BgmWishlistSourceStore.CollectedSubject(2, "剧集", null, null, 2020, "2026-01-02T00:00:00Z"),
+                new BgmWishlistSourceStore.CollectedSubject(3, "多季", null, null, 2020, "2026-01-01T00:00:00Z")));
+        f.movie(101, "{\"type\":4,\"release_date\":\"2020-01-01T00:00:00Z\"}");
+        when(f.tmdb.searchWishlistTitles("电影")).thenReturn(f.json.readTree("""
+                [{"id":101,"media_type":"movie","title":"电影","release_date":"2020-01-01"}]
+                """));
+        when(f.tmdb.searchWishlistTitles("剧集")).thenReturn(f.json.readTree("""
+                [{"id":201,"media_type":"tv","name":"剧集","first_air_date":"2020-01-01"}]
+                """));
+        when(f.tmdb.searchWishlistTitles("多季")).thenReturn(f.json.readTree("""
+                [{"id":202,"media_type":"tv","name":"多季","first_air_date":"2020-01-01"}]
+                """));
+        when(f.tmdb.getTvDetails(201, "zh-CN")).thenReturn(f.json.readTree("""
+                {"id":201,"name":"剧集","first_air_date":"2020-01-01","seasons":[{"season_number":1,"episode_count":1}]}
+                """));
+        when(f.tmdb.getTvSeasonDetails(201, 1, "zh-CN")).thenReturn(f.json.readTree("""
+                {"id":301,"season_number":1,"episodes":[{"episode_number":1,"air_date":"2020-01-01"}]}
+                """));
+        when(f.tmdb.getTvDetails(202, "zh-CN")).thenReturn(f.json.readTree("""
+                {"id":202,"seasons":[{"season_number":1},{"season_number":2}]}
+                """));
+        List<Item> items = f.wishlist.refresh(source.id()).items();
+        assertEquals("MOVIE", items.get(0).identity().mediaType());
+        assertEquals(1, items.get(1).identity().seasonNumber());
+        assertNull(items.get(2).identity());
+        verifyNoInteractions(f.mappings);
+        when(f.douban.readWishlist("account")).thenThrow(DoubanWishlistClient.WishlistReadException.class);
+        Wishlist failed = f.wishlist.refresh(source.id());
+        assertEquals("FAILED", failed.refreshStatus());
+        assertEquals(List.of(1L, 2L, 3L), failed.items().stream().map(Item::subjectId).toList());
+        assertTrue(failed.items().stream().noneMatch(Item::eligible));
     }
 
     @Test
@@ -488,6 +532,7 @@ class BgmWishlistWorkflowTest {
         final UserMapper users = mock(UserMapper.class);
         final TmdbClient tmdb = mock(TmdbClient.class);
         final BgmTmdbMappings mappings = mock(BgmTmdbMappings.class);
+        final DoubanWishlistClient douban = mock(DoubanWishlistClient.class);
         final BgmWishlistTaskGateway gateway;
         final Map<String, ActiveTask> ledger = new HashMap<>();
         final MediaLibraryPresenceService presence = mock(MediaLibraryPresenceService.class);
@@ -590,7 +635,7 @@ class BgmWishlistWorkflowTest {
             BangumiProperties config = new BangumiProperties();
             config.setBaseUrl("https://bgm.invalid"); config.setUserAgent("BgmWishlistWorkflowTest"); config.setTimeout(Duration.ofSeconds(1));
             config.setCatalogConcurrency(4);
-            wishlist = new BgmWishlistService(auth, sources, new BangumiClient(config, json, http), tmdb, presence, gateway, mappings, config);
+            wishlist = new BgmWishlistService(auth, sources, new BangumiClient(config, json, http), tmdb, presence, gateway, mappings, config, douban);
             when(presence.checkForAutomation(any())).thenAnswer(call -> {
                 int id = call.<Target>getArgument(0).tmdbId();
                 return new AutomationPresence(!unknownPresence.contains(id), presentTargets.contains(id), presentTargets.contains(id));

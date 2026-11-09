@@ -16,9 +16,11 @@ public final class BgmWishlistContract {
     private BgmWishlistContract() {
     }
 
+    public enum Provider { BGM, DOUBAN }
+
     @Schema(description = "独立想看来源配置；保存不创建任务，首次启用须完整刷新并建立基线")
     public record SourceInput(
-            @NotBlank @Size(max = 64) @Pattern(regexp = "[A-Za-z0-9_-]+") String bgmUsername,
+            @NotBlank @Size(max = 256) @Schema(description = "BGM 用户名／ID，或豆瓣 ID／公开主页／想看链接") String bgmUsername,
             @NotNull @Positive Long ownerUserId,
             @Schema(description = "默认关闭；首次启用先读取完整清单，不创建任务", nullable = true) Boolean enabled,
             @Pattern(regexp = "(?:[01][0-9]|2[0-3]):[0-5][0-9]")
@@ -26,14 +28,33 @@ public final class BgmWishlistContract {
             @Min(1) @Schema(description = "每次成功创建目标，省略为 3，不是每日额度", nullable = true) Integer targetCount,
             @Pattern(regexp = "1080p|2160p") @Schema(description = "推荐清晰度，省略为 1080p", nullable = true) String quality,
             @Pattern(regexp = "NEW_ONLY|INCLUDE_EXISTING")
-            @Schema(description = "首次范围，省略为 NEW_ONLY；建立基线后不可修改", nullable = true) String initialScope
+            @Schema(description = "首次范围，省略为 NEW_ONLY；建立基线后不可修改", nullable = true) String initialScope,
+            @Schema(description = "想看来源平台，省略时为 BGM") Provider provider
     ) {
+        public SourceInput {
+            if (provider == null) provider = Provider.BGM;
+        }
+
+        public SourceInput(String bgmUsername, Long ownerUserId, Boolean enabled, String scheduleTime,
+                           Integer targetCount, String quality, String initialScope) {
+            this(bgmUsername, ownerUserId, enabled, scheduleTime, targetCount, quality, initialScope, Provider.BGM);
+        }
     }
 
     @Schema(description = "想看来源；BGM 用户、本站任务归属与当前操作人相互独立")
     public record Source(String id, String bgmUsername, Long ownerUserId, String ownerUsername,
                          boolean enabled, String scheduleTime, int targetCount, String quality,
-                         String initialScope, String timezone, boolean baselineInitialized) {
+                         String initialScope, String timezone, boolean baselineInitialized, Provider provider) {
+        public Source {
+            if (provider == null) provider = Provider.BGM;
+        }
+
+        public Source(String id, String bgmUsername, Long ownerUserId, String ownerUsername,
+                      boolean enabled, String scheduleTime, int targetCount, String quality,
+                      String initialScope, String timezone, boolean baselineInitialized) {
+            this(id, bgmUsername, ownerUserId, ownerUsername, enabled, scheduleTime, targetCount, quality,
+                    initialScope, timezone, baselineInitialized, Provider.BGM);
+        }
     }
 
     @Schema(description = "上次完整想看清单及实时资格；失败保留快照，不允许以旧清单执行")

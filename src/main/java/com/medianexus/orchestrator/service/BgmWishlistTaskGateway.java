@@ -22,6 +22,7 @@ import com.medianexus.orchestrator.model.MovieMagnetIngestTask;
 import com.medianexus.orchestrator.model.SeriesMagnetIngestTask;
 import com.medianexus.orchestrator.model.User;
 import java.util.List;
+import java.util.function.Supplier;
 import org.springframework.stereotype.Service;
 import org.springframework.http.HttpStatus;
 import org.slf4j.Logger;
@@ -173,11 +174,39 @@ public class BgmWishlistTaskGateway {
      * 因而不会把旧链路已扣额度的创建失败改成退额。所有 BGM 创建均经此边界。
      */
     public ActiveTask create(Target target, ProwlarrReleaseItemResponse release, User owner) {
+        return createWithTargetLock(target, () -> {
+            if ("MOVIE".equals(target.mediaType())) {
+                var task = releases.ingestSelectedMovieForOwner(new MovieReleaseOpenListIngestRequest(
+                        target.title(), target.originalTitle(), target.year(), release.title(), release.indexer(),
+                        release.size(), release.indexerId(), release.downloadRef(), release.resolutionTags(),
+                        release.dynamicRangeTags(), target.tmdbId()), owner);
+                return new ActiveTask("MOVIE", task.id(), task.status());
+            }
+            var task = releases.ingestSelectedAnimeForOwner(seriesRequest(target, release, "ANIME"), owner);
+            return new ActiveTask("SERIES", task.id(), task.status());
+        });
+    }
+
+    public ActiveTask createSeries(Target target, ProwlarrReleaseItemResponse release, User owner) {
+        return createWithTargetLock(target, () -> {
+            var task = releases.ingestSelectedSeriesForOwner(seriesRequest(target, release, "SERIES"), owner);
+            return new ActiveTask("SERIES", task.id(), task.status());
+        });
+    }
+
+    private SeriesReleaseOpenListIngestRequest seriesRequest(
+            Target target, ProwlarrReleaseItemResponse release, String productType) {
+        return new SeriesReleaseOpenListIngestRequest(target.title(), target.originalTitle(), target.seasonNumber(),
+                productType, release.title(), release.indexer(), release.size(), release.indexerId(), release.downloadRef(),
+                release.resolutionTags(), release.dynamicRangeTags(), target.tmdbId());
+    }
+
+    private ActiveTask createWithTargetLock(Target target, Supplier<ActiveTask> submit) {
         String lockName = "bgm-target:" + targetKey(target);
         try {
             return locks.withLock(lockName,
                     () -> new EligibilityRefusal(new Reason("TARGET_BUSY", "同一目录目标正在提交，请稍后刷新任务"), null, null),
-                    () -> createLocked(target, release, owner));
+                    () -> createLocked(target, submit));
         } catch (BgmWishlistSessionLocks.LockUnavailableException exception) {
             log.warn("BGM 目录目标提交锁不可用 target={}", targetKey(target), exception);
             throw new BusinessException(ErrorCode.SERVICE_UNAVAILABLE, "目录目标提交锁不可用，本次未继续创建", HttpStatus.SERVICE_UNAVAILABLE);
@@ -229,7 +258,7 @@ public class BgmWishlistTaskGateway {
         return current == null ? new ActiveTask(saved.taskType(), saved.taskId(), "UNKNOWN") : current;
     }
 
-    private ActiveTask createLocked(Target target, ProwlarrReleaseItemResponse release, User owner) {
+    private ActiveTask createLocked(Target target, Supplier<ActiveTask> submit) {
         BgmDeletion deletion = latestDeletion(target);
         if (deletion != null && !deletion.succeeded()) {
             throw new EligibilityRefusal(deletion.refusal(), null, null);
@@ -249,20 +278,7 @@ public class BgmWishlistTaskGateway {
         if (check.exists()) {
             throw new EligibilityRefusal(new Reason("ALREADY_PRESENT", "已入库"), "PRESENT", null);
         }
-        ActiveTask created;
-        if ("MOVIE".equals(target.mediaType())) {
-            var task = releases.ingestSelectedMovieForOwner(new MovieReleaseOpenListIngestRequest(
-                    target.title(), target.originalTitle(), target.year(), release.title(), release.indexer(),
-                    release.size(), release.indexerId(), release.downloadRef(), release.resolutionTags(),
-                    release.dynamicRangeTags(), target.tmdbId()), owner);
-            created = new ActiveTask("MOVIE", task.id(), task.status());
-        } else {
-            var task = releases.ingestSelectedAnimeForOwner(new SeriesReleaseOpenListIngestRequest(
-                    target.title(), target.originalTitle(), target.seasonNumber(), "ANIME", release.title(),
-                    release.indexer(), release.size(), release.indexerId(), release.downloadRef(),
-                    release.resolutionTags(), release.dynamicRangeTags(), target.tmdbId()), owner);
-            created = new ActiveTask("SERIES", task.id(), task.status());
-        }
+        ActiveTask created = submit.get();
         try {
             if (previous == null) {
                 previousTasks.insert(targetKey(target), created);

@@ -36,6 +36,28 @@ class BgmWishlistOperationTest {
         verify(daily.tasks, times(1)).create(any(), any(), eq(daily.owner));
     }
 
+    @Test void doubanLatestUsesRegularSeriesIngestAndPreservesSameDayOrder() {
+        Fixture f = new Fixture(Provider.DOUBAN);
+        SourceState before = f.sources.get("source");
+        List<CollectedSubject> sameDay = List.of(before.subjects().get(1), before.subjects().get(0));
+        SourceState state = new SourceState(before.source(), sameDay, before.knownSubjectIds(),
+                before.candidateSubjectIds(), before.identities(), before.createdTasks(), before.refreshStatus(),
+                before.refreshError(), before.lastAttemptAt(), before.lastSuccessAt());
+        when(f.sources.get("source")).thenReturn(state);
+        when(f.wishlist.refreshSourceForOperation("source")).thenReturn(state);
+        when(f.tasks.createSeries(any(), any(), eq(f.owner)))
+                .thenReturn(new BgmWishlistTaskGateway.ActiveTask("SERIES", "series-task", "PENDING"));
+        Operation accepted = f.service.latest("source");
+        f.executor.runPending();
+        var entries = f.rows.get(accepted.id()).entries();
+        assertEquals(List.of(2L, 1L), entries.stream().map(entry -> entry.item().subjectId()).toList());
+        assertEquals("CREATED", entries.get(1).status());
+        verify(f.tasks).createSeries(argThat(target -> target.tmdbId() == 1), any(), eq(f.owner));
+        verify(f.tasks, never()).create(any(), any(), any());
+        verify(f.notifications).sendOperationalAlert(anyString(), anyString(), anyString(),
+                eq("/automation/douban-wishlist?operation=" + accepted.id()));
+    }
+
     @Test void persistentRecordRoundTripsCandidatesAndConcurrentSearchUpdates() {
         Fixture f = new Fixture(); Operation accepted = f.service.submit("source", List.of(1L));
         var mapper = mock(com.medianexus.orchestrator.mapper.BgmWishlistExecutionMapper.class);
@@ -254,9 +276,11 @@ class BgmWishlistOperationTest {
         final Map<String, Operation> rows = new LinkedHashMap<>();
         final QueueExecutor executor = new QueueExecutor();
         final BgmWishlistOperationService service;
-        Fixture() {
+        Fixture() { this(Provider.BGM); }
+
+        Fixture(Provider provider) {
             owner.setId(1L); owner.setUsername("owner"); when(auth.requireAdminUser()).thenReturn(owner); when(users.selectById(1L)).thenReturn(owner);
-            Source source = new Source("source", "account", 1L, "owner", false, "09:00", 3, "1080p", "INCLUDE_EXISTING", "Asia/Shanghai", true);
+            Source source = new Source("source", "account", 1L, "owner", false, "09:00", 3, "1080p", "INCLUDE_EXISTING", "Asia/Shanghai", true, provider);
             List<CollectedSubject> subjects = new ArrayList<>(); Map<Long, Identity> identities = new HashMap<>();
             for (long id = 1; id <= 4; id++) { subjects.add(new CollectedSubject(id, "作品" + id, "Original", null, 2024, "2026-11-01T00:00:00Z")); identities.put(id, item(id, true).identity()); when(wishlist.evaluateForOperation("source", id)).thenReturn(item(id, true)); }
             SourceState state = new SourceState(source, subjects, Set.of(1L,2L,3L,4L), Set.of(1L,2L,3L,4L), identities, Map.of(), "SUCCESS", null, Instant.now(), Instant.now());

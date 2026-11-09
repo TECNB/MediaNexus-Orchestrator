@@ -5,6 +5,7 @@ import com.medianexus.orchestrator.dto.admin.response.AdminMediaDeletionTaskResp
 import com.medianexus.orchestrator.dto.bgm.BgmWishlistContract.CatalogCandidate;
 import com.medianexus.orchestrator.dto.bgm.BgmWishlistContract.IdentityInput;
 import com.medianexus.orchestrator.dto.bgm.BgmWishlistContract.Item;
+import com.medianexus.orchestrator.dto.bgm.BgmWishlistContract.Provider;
 import com.medianexus.orchestrator.dto.bgm.BgmWishlistContract.Season;
 import com.medianexus.orchestrator.dto.bgm.BgmWishlistContract.Source;
 import com.medianexus.orchestrator.dto.bgm.BgmWishlistContract.SourceInput;
@@ -29,7 +30,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping("/api/v1/admin/bgm-wishlist")
-@Tag(name = "BGM 想看", description = "管理员配置想看来源、读取真实清单及确认目录资格")
+@Tag(name = "想看自动化", description = "管理员配置想看来源、读取真实清单及确认目录资格")
 @Validated
 public class AdminBgmWishlistController {
     private final BgmWishlistService wishlist;
@@ -40,8 +41,8 @@ public class AdminBgmWishlistController {
 
     @GetMapping("/sources")
     @Operation(summary = "读取独立想看来源配置")
-    public ApiResponse<List<Source>> sources() {
-        return ApiResponse.success(wishlist.listSources());
+    public ApiResponse<List<Source>> sources(@RequestParam(name = "provider", defaultValue = "BGM") Provider provider) {
+        return ApiResponse.success(wishlist.listSources(provider));
     }
 
     @PostMapping("/sources")

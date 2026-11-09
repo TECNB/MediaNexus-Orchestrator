@@ -92,7 +92,7 @@ public class BgmWishlistSourceStore {
             if (state.lastAttemptAt() != null && at.isBefore(state.lastAttemptAt())) return state;
             return new SourceState(state.source(), state.subjects(), state.knownSubjectIds(),
                     state.candidateSubjectIds(), state.identities(), state.createdTasks(), "FAILED",
-                    "BGM 清单未完整读取，已保留上次有效清单；本轮不能用于新提交", at, state.lastSuccessAt());
+                    "想看清单未完整读取，已保留上次有效清单；本轮不能用于新提交", at, state.lastSuccessAt());
         });
     }
 
@@ -147,7 +147,7 @@ public class BgmWishlistSourceStore {
             subjects.forEach(subject -> known.add(subject.subjectId()));
             source = new Source(source.id(), source.bgmUsername(), source.ownerUserId(), source.ownerUsername(),
                     source.enabled(), source.scheduleTime(), source.targetCount(), source.quality(),
-                    source.initialScope(), source.timezone(), true);
+                    source.initialScope(), source.timezone(), true, source.provider());
         } else if (source.baselineInitialized()) {
             for (CollectedSubject subject : subjects) {
                 if (known.add(subject.subjectId()) && !state.createdTasks().containsKey(subject.subjectId())) {
@@ -161,8 +161,8 @@ public class BgmWishlistSourceStore {
 
     private Source updatedConfig(SourceState state, SourceInput input) {
         Source source = configured(state.source().id(), input, state.source().baselineInitialized());
-        if (!source.bgmUsername().equals(state.source().bgmUsername())) {
-            throw bad("已有来源不能更换 BGM 用户，请另建来源以保留原基线与任务记录");
+        if (source.provider() != state.source().provider() || !source.bgmUsername().equals(state.source().bgmUsername())) {
+            throw bad("已有来源不能更换平台或来源用户，请另建来源以保留原基线与任务记录");
         }
         if (source.baselineInitialized() && !source.initialScope().equals(state.source().initialScope())) {
             throw bad("首次范围已建立基线，不能重置；暂停和重开沿用原记录");
@@ -176,7 +176,7 @@ public class BgmWishlistSourceStore {
         return new Source(id, input.bgmUsername(), owner.getId(), owner.getUsername(), Boolean.TRUE.equals(input.enabled()),
                 input.scheduleTime() == null ? "09:00" : input.scheduleTime(),
                 input.targetCount() == null ? 3 : input.targetCount(), input.quality() == null ? "1080p" : input.quality(),
-                input.initialScope() == null ? "NEW_ONLY" : input.initialScope(), "Asia/Shanghai", initialized);
+                input.initialScope() == null ? "NEW_ONLY" : input.initialScope(), "Asia/Shanghai", initialized, input.provider());
     }
 
     private SourceState empty(Source source) {

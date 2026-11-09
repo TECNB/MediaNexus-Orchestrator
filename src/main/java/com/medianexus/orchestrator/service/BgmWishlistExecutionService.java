@@ -76,7 +76,7 @@ public class BgmWishlistExecutionService {
     public Preview previewLatest(String sourceId) {
         User actor = auth.requireAdminUser();
         Wishlist refreshed = successfulRefresh(sourceId);
-        return savePreview(actor, refreshed.source(), latest(refreshed.items()), "LATEST", refreshed.source().targetCount());
+        return savePreview(actor, refreshed.source(), latest(refreshed), "LATEST", refreshed.source().targetCount());
     }
 
     private Preview savePreview(User actor, Source source, List<Item> candidates, String action, int targetCount) {
@@ -95,7 +95,7 @@ public class BgmWishlistExecutionService {
                 continue;
             }
             try {
-                if (tasks.recommend(bangumiTarget(item), source.quality()) == null) {
+                if (tasks.recommend(source.provider() == Provider.DOUBAN ? target(item.identity()) : bangumiTarget(item), source.quality()) == null) {
                     skipped.add(skip(releaseStatus(item, "UNAVAILABLE"), reason("NO_RELEASE", "没有符合清晰度条件的发布资源"), null));
                     continue;
                 }
@@ -193,7 +193,7 @@ public class BgmWishlistExecutionService {
         if (!sameConfig(run.source(), refreshed.source())) {
             return finish(run, owner(run.source()), stoppedReason());
         }
-        List<Item> candidates = latest(refreshed.items()).stream().filter(Item::automaticCandidate).toList();
+        List<Item> candidates = latest(refreshed).stream().filter(Item::automaticCandidate).toList();
         return submitItems(run, candidates, run.source().targetCount());
     }
 
@@ -245,7 +245,7 @@ public class BgmWishlistExecutionService {
             Target target = target(item.identity());
             ProwlarrReleaseItemResponse release;
             try {
-                release = tasks.recommend(bangumiTarget(item), run.source().quality());
+                release = tasks.recommend(run.source().provider() == Provider.DOUBAN ? target : bangumiTarget(item), run.source().quality());
             } catch (RuntimeException exception) {
                 log.warn("BGM 执行发布查询失败 runId={} subjectId={}", run.id(), item.subjectId(), exception);
                 skipped.add(skip(releaseStatus(item, "UNKNOWN"), reason("RELEASE_CHECK_FAILED", "发布资源查询失败，本次跳过"), null));
@@ -259,7 +259,9 @@ public class BgmWishlistExecutionService {
             TaskLink link;
             Reason recordFailure = null;
             try {
-                var task = tasks.create(target, release, owner);
+                var task = run.source().provider() == Provider.DOUBAN && "SERIES".equals(target.mediaType())
+                        ? tasks.createSeries(target, release, owner)
+                        : tasks.create(target, release, owner);
                 link = new TaskLink(task.taskType(), task.taskId(), task.status());
             } catch (EligibilityRefusal refusal) {
                 Item current = refusedItem(item, refusal);
@@ -341,9 +343,10 @@ public class BgmWishlistExecutionService {
         return owner;
     }
 
-    private static List<Item> latest(List<Item> items) {
-        return items.stream().sorted(Comparator.comparing((Item item) -> Instant.parse(item.updatedAt()))
-                .reversed().thenComparingLong(Item::subjectId)).toList();
+    private static List<Item> latest(Wishlist wishlist) {
+        Comparator<Item> newest = Comparator.comparing((Item item) -> Instant.parse(item.updatedAt())).reversed();
+        if (wishlist.source().provider() == Provider.BGM) newest = newest.thenComparingLong(Item::subjectId);
+        return wishlist.items().stream().sorted(newest).toList();
     }
 
     private static boolean sameConfig(Source left, Source right) {

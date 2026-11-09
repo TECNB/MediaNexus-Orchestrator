@@ -67,6 +67,18 @@ public class TmdbClient {
         return results;
     }
 
+    /** Automatic identification needs the whole search result, not just the first page. */
+    public JsonNode searchWishlistTitles(String query) {
+        JsonNode payload = get("/search/multi",
+                "query=" + encode(query) + "&language=zh-CN&include_adult=false", "wishlist title search");
+        JsonNode results = payload.path("results");
+        int pages = payload.path("total_pages").asInt(-1);
+        if (!results.isArray() || pages < 0) {
+            throw new TmdbClientException(Reason.INVALID_RESPONSE, "TMDB wishlist search response is incomplete");
+        }
+        return pages <= 1 ? results : objectMapper.createArrayNode();
+    }
+
     public JsonNode getMovieDetails(int movieId, String language) {
         return get("/movie/" + movieId, "language=" + encode(language), "movie details");
     }

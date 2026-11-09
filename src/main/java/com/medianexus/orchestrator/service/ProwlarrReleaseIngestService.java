@@ -473,6 +473,17 @@ public class ProwlarrReleaseIngestService {
                         request.resolutionTags(), request.dynamicRangeTags()), owner);
     }
 
+    SeriesMagnetIngestTaskResponse ingestSelectedSeriesForOwner(SeriesReleaseOpenListIngestRequest request, User owner) {
+        String title = requiredText(request.title(), "剧集标题不能为空");
+        String releaseTitle = requiredText(request.releaseTitle(), "发布标题不能为空");
+        String magnet = resolveMagnet(request.indexerId(), request.downloadRef(), releaseTitle);
+        return magnetIngestService.createSeriesTaskForOwner(
+                new SeriesMagnetIngestRequest(magnet, title, trimToNull(request.originalTitle()),
+                        validateSeasonNumber(request.seasonNumber()), request.tmdbId()),
+                requestMetadata(releaseTitle, request.indexer(), request.size(), request.indexerId(),
+                        request.downloadRef(), request.resolutionTags(), request.dynamicRangeTags()), owner);
+    }
+
     public MovieMagnetIngestTaskResponse ingestSelectedMovieRetry(
             MovieMagnetIngestTask originalTask,
             OpenListReleaseRetryRequest request,
