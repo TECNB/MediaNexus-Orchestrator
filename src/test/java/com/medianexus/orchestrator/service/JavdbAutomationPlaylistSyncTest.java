@@ -52,7 +52,7 @@ class JavdbAutomationPlaylistSyncTest {
         JavdbAutomationService service = new JavdbAutomationService(
                 authService, systemSettingMapper, javdbClient, embyClient, adultIngestService,
                 adultTaskMapper, runMapper, itemMapper, ledgerMapper, logMapper,
-                membershipMapper, syncRunMapper, historyMapper, new ObjectMapper()
+                membershipMapper, syncRunMapper, historyMapper, mock(IngestExceptionNotifier.class), new ObjectMapper()
         );
 
         JavdbPlaylistMembership top = membership("top", "ABC-123", "TOP_250_2026");

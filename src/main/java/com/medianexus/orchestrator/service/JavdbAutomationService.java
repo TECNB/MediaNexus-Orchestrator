@@ -139,6 +139,7 @@ public class JavdbAutomationService {
     private final JavdbPlaylistMembershipMapper playlistMembershipMapper;
     private final JavdbPlaylistSyncRunMapper playlistSyncRunMapper;
     private final JavdbPlaylistHistoryMapper playlistHistoryMapper;
+    private final IngestExceptionNotifier exceptionNotifier;
     private final ObjectMapper objectMapper;
     private final ExecutorService executorService = Executors.newSingleThreadExecutor(runnable -> {
         Thread thread = new Thread(runnable, "javdb-automation-worker");
@@ -164,6 +165,7 @@ public class JavdbAutomationService {
             JavdbPlaylistMembershipMapper playlistMembershipMapper,
             JavdbPlaylistSyncRunMapper playlistSyncRunMapper,
             JavdbPlaylistHistoryMapper playlistHistoryMapper,
+            IngestExceptionNotifier exceptionNotifier,
             ObjectMapper objectMapper
     ) {
         this.authService = authService;
@@ -179,6 +181,7 @@ public class JavdbAutomationService {
         this.playlistMembershipMapper = playlistMembershipMapper;
         this.playlistSyncRunMapper = playlistSyncRunMapper;
         this.playlistHistoryMapper = playlistHistoryMapper;
+        this.exceptionNotifier = exceptionNotifier;
         this.objectMapper = objectMapper;
     }
 
@@ -309,10 +312,10 @@ public class JavdbAutomationService {
             javdbClient.validate(cookie);
             validationState = new ValidationState(true, LocalDateTime.now(), "JAVDB Cookie 验证成功");
         } catch (JavdbClientException exception) {
-            validationState = new ValidationState(false, LocalDateTime.now(), safeCredentialMessage(exception));
             if (exception.reason() == JavdbClientException.Reason.AUTHENTICATION) {
-                disableAfterInvalidCredential();
+                return toCredentialStatus(recordInvalidCredential(VALIDATION_KEY));
             }
+            validationState = new ValidationState(false, LocalDateTime.now(), safeCredentialMessage(exception));
         }
         saveValidation(validationState);
         return toCredentialStatus(validationState);
@@ -330,6 +333,9 @@ public class JavdbAutomationService {
             javdbClient.validateTop(cookie);
             validationState = new ValidationState(true, LocalDateTime.now(), "JAVDB Top 250 Cookie 验证成功");
         } catch (JavdbClientException exception) {
+            if (exception.reason() == JavdbClientException.Reason.AUTHENTICATION) {
+                return toCredentialStatus(TOP_COOKIE_KEY, recordInvalidCredential(TOP_VALIDATION_KEY));
+            }
             validationState = new ValidationState(false, LocalDateTime.now(), safeCredentialMessage(exception));
         }
         saveValidation(TOP_VALIDATION_KEY, validationState);
@@ -489,15 +495,9 @@ public class JavdbAutomationService {
             }
         } catch (JavdbClientException exception) {
             if (exception.reason() == JavdbClientException.Reason.AUTHENTICATION) {
-                if (exception instanceof TopCredentialException
-                        || config.isTop() && "FETCHING_RANKINGS".equals(run.getStage())) {
-                    saveValidation(TOP_VALIDATION_KEY, new ValidationState(
-                            false, LocalDateTime.now(), "JAVDB Top 250 Cookie 已失效，请更新会员凭证"));
-                } else {
-                    saveValidation(new ValidationState(
-                            false, LocalDateTime.now(), "JAVDB Cookie 已失效，请更新登录凭证"));
-                    disableAfterInvalidCredential();
-                }
+                boolean topCredential = exception instanceof TopCredentialException
+                        || config.isTop() && "FETCHING_RANKINGS".equals(run.getStage());
+                recordInvalidCredential(topCredential ? TOP_VALIDATION_KEY : VALIDATION_KEY);
             }
             markFailed(runId, safeRunMessage(exception));
         } catch (EmbyClientException exception) {
@@ -1760,6 +1760,23 @@ public class JavdbAutomationService {
         value.put("validatedAt", state.validatedAt() == null ? null : state.validatedAt().toString());
         value.put("message", truncate(state.message(), 256));
         systemSettingMapper.upsertSetting(key, writeJson(value));
+    }
+
+    private ValidationState recordInvalidCredential(String validationKey) {
+        boolean top = TOP_VALIDATION_KEY.equals(validationKey);
+        String credential = top ? "JAVDB Top 250 Cookie" : "JAVDB 常规 Cookie";
+        String message = top ? "JAVDB Top 250 Cookie 已失效，请更新会员凭证" : "JAVDB Cookie 已失效，请更新登录凭证";
+        ValidationState previous = loadValidation(validationKey);
+        ValidationState invalid = new ValidationState(false, LocalDateTime.now(), message);
+        saveValidation(validationKey, invalid);
+        if (!top) {
+            disableAfterInvalidCredential();
+        }
+        if (previous.valid() || !message.equals(previous.message())) {
+            exceptionNotifier.send(validationKey + ":" + previous.validatedAt(), credential + " 认证异常",
+                    "凭证缺失、已失效或需要重新验证。请打开自动化页面更新凭证。", "/automation");
+        }
+        return invalid;
     }
 
     private void disableAfterInvalidCredential() {
