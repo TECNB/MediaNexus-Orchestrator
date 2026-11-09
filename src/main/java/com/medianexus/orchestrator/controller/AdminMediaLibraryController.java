@@ -1,6 +1,9 @@
 package com.medianexus.orchestrator.controller;
 
 import com.medianexus.orchestrator.common.response.ApiResponse;
+import com.medianexus.orchestrator.dto.admin.request.AdminAdultStorageDeletionRequest;
+import com.medianexus.orchestrator.dto.admin.response.AdminAdultStoragePage;
+import com.medianexus.orchestrator.service.AdminAdultStorage;
 import com.medianexus.orchestrator.dto.admin.request.AdminMediaIdentifyRequest;
 import com.medianexus.orchestrator.dto.admin.request.AdminMediaDeletionRequest;
 import com.medianexus.orchestrator.dto.admin.request.AdminMediaPosterSelectRequest;
@@ -49,15 +52,18 @@ public class AdminMediaLibraryController {
     private final AdminMediaLibraryCatalogService catalogService;
     private final MediaLibraryDeletionWorkflow deletionWorkflow;
     private final MediaLibrarySyncService syncService;
+    private final AdminAdultStorage adultStorage;
 
     public AdminMediaLibraryController(
             AdminMediaLibraryCatalogService catalogService,
             MediaLibraryDeletionWorkflow deletionWorkflow,
-            MediaLibrarySyncService syncService
+            MediaLibrarySyncService syncService,
+            AdminAdultStorage adultStorage
     ) {
         this.catalogService = catalogService;
         this.deletionWorkflow = deletionWorkflow;
         this.syncService = syncService;
+        this.adultStorage = adultStorage;
     }
 
     @PostMapping("/sync")
@@ -85,7 +91,7 @@ public class AdminMediaLibraryController {
     }
 
     @GetMapping("/items")
-    @Operation(summary = "分页浏览媒体库", description = "仅返回指定虚拟媒体库中的 Movie 或 Series 作品，按入库时间倒序。")
+    @Operation(summary = "分页浏览媒体库", description = "默认按 Emby 入库时间倒序；可按网盘逻辑容量从大到小排序，未知容量排最后。")
     public ApiResponse<AdminMediaLibraryPageResponse> listItems(
             @Parameter(description = "媒体库：movies、tv、variety、anime、adult-other 或 adult-jav")
             @RequestParam @NotBlank String library,
@@ -100,9 +106,28 @@ public class AdminMediaLibraryController {
             @Parameter(description = "可选的标题关键词")
             @RequestParam(required = false) @Size(max = 200, message = "搜索关键词不能超过 200 个字符") String search,
             @Parameter(description = "是否只返回没有 Primary 封面的作品")
-            @RequestParam(name = "missing_poster", defaultValue = "false") boolean missingPoster
+            @RequestParam(name = "missing_poster", defaultValue = "false") boolean missingPoster,
+            @Parameter(description = "是否先按逻辑容量从大到小排序，再分页")
+            @RequestParam(name = "by_capacity", defaultValue = "false") boolean byCapacity
     ) {
-        return ApiResponse.success(catalogService.listItems(library, page, pageSize, search, missingPoster));
+        return ApiResponse.success(catalogService.listItems(library, page, pageSize, search, missingPoster, byCapacity));
+    }
+
+    @GetMapping("/adult-storage")
+    @Operation(summary = "浏览 Adult 网盘目录", description = "从 CD2 列出当前层文件及文件夹，包含未入库内容，已知容量从大到小排列。")
+    public ApiResponse<AdminAdultStoragePage> browseAdultStorage(
+            @RequestParam @NotBlank String library,
+            @RequestParam(required = false) @Size(max = 4096) String directory
+    ) {
+        return ApiResponse.success(adultStorage.browse(library, directory));
+    }
+
+    @PostMapping("/adult-storage/deletions")
+    @Operation(summary = "删除 Adult 网盘文件或文件夹", description = "每次选择一个目标；目录包含全部子文件。拒绝删除库根、已变化或重叠的目标。")
+    public ApiResponse<AdminMediaDeletionTaskResponse> deleteAdultStorage(
+            @Valid @RequestBody AdminAdultStorageDeletionRequest request
+    ) {
+        return ApiResponse.success(deletionWorkflow.startAdultStorage(request));
     }
 
     @GetMapping("/items/{itemId}/poster")

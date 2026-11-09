@@ -241,7 +241,8 @@ class EmbyClientTest {
                 "Movie",
                 2026,
                 "2026-07-20T12:34:56.0000000Z",
-                "tag"
+                "tag",
+                "/srv/media/STRM/Movies/original-file-name.strm"
         ));
         assertThat(queryParameters(query.get())).contains(
                 "ParentId=movies-id",

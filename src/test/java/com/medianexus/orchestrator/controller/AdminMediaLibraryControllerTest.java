@@ -13,6 +13,7 @@ import com.medianexus.orchestrator.service.MediaLibrarySyncService;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
+import com.medianexus.orchestrator.service.AdminAdultStorage;
 
 class AdminMediaLibraryControllerTest {
 
@@ -20,17 +21,17 @@ class AdminMediaLibraryControllerTest {
     private final MediaLibraryDeletionWorkflow deletionWorkflow = mock(MediaLibraryDeletionWorkflow.class);
     private final MediaLibrarySyncService syncService = mock(MediaLibrarySyncService.class);
     private final AdminMediaLibraryController controller = new AdminMediaLibraryController(
-            catalogService, deletionWorkflow, syncService
+            catalogService, deletionWorkflow, syncService, mock(AdminAdultStorage.class)
     );
 
     @Test
     void delegatesListQueryWithoutChangingItsPagingContract() {
         AdminMediaLibraryPageResponse page = new AdminMediaLibraryPageResponse(List.of(), 3, 24, 50);
-        when(catalogService.listItems("anime", 3, 24, "title", true)).thenReturn(page);
+        when(catalogService.listItems("anime", 3, 24, "title", true, false)).thenReturn(page);
 
-        var response = controller.listItems("anime", 3, 24, "title", true);
+        var response = controller.listItems("anime", 3, 24, "title", true, false);
 
-        verify(catalogService).listItems("anime", 3, 24, "title", true);
+        verify(catalogService).listItems("anime", 3, 24, "title", true, false);
         assertThat(response.data()).isSameAs(page);
     }
 

@@ -39,6 +39,14 @@ public record AdminMediaLibraryItemResponse(
         String libraryName,
 
         @Schema(description = "Emby 媒体类型：Movie、Series 或 BoxSet")
-        String type
+        String type,
+
+        @Schema(description = "已确认的源文件逻辑总字节数，统计中或无法确认时为 null", nullable = true)
+        @JsonProperty("storage_bytes")
+        Long storageBytes,
+
+        @Schema(description = "容量状态：complete、pending 或 unknown；元数据操作响应不包含容量时为 null", nullable = true)
+        @JsonProperty("capacity_status")
+        String capacityStatus
 ) {
 }

@@ -16,7 +16,9 @@ import com.medianexus.orchestrator.integration.emby.EmbyPrimaryImage;
 import com.medianexus.orchestrator.integration.emby.EmbyRemoteImageCandidate;
 import com.medianexus.orchestrator.integration.emby.EmbyRemoteSearchCandidate;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -36,6 +38,7 @@ public class AdminMediaLibraryCatalogService {
 
     private final AuthService authService;
     private final EmbyClient embyClient;
+    private final MediaCapacityIndex capacities;
 
     // Short-lived server-local cache avoids repeatedly fetching remote preview candidates.
     private final Map<String, CachedCandidates> previewCache = Collections.synchronizedMap(
@@ -47,9 +50,10 @@ public class AdminMediaLibraryCatalogService {
             }
     );
 
-    public AdminMediaLibraryCatalogService(AuthService authService, EmbyClient embyClient) {
+    public AdminMediaLibraryCatalogService(AuthService authService, EmbyClient embyClient, MediaCapacityIndex capacities) {
         this.authService = authService;
         this.embyClient = embyClient;
+        this.capacities = capacities;
     }
 
     public AdminMediaLibraryPageResponse listItems(
@@ -68,6 +72,12 @@ public class AdminMediaLibraryCatalogService {
             String search,
             boolean missingPoster
     ) {
+        return listItems(library, page, pageSize, search, missingPoster, false);
+    }
+
+    public AdminMediaLibraryPageResponse listItems(
+            String library, int page, int pageSize, String search, boolean missingPoster, boolean byCapacity
+    ) {
         authService.requireAdminUser();
         AdminMediaLibraryScope allowedLibrary = AdminMediaLibraryScope.fromRequest(library);
         try {
@@ -75,6 +85,7 @@ public class AdminMediaLibraryCatalogService {
             // ponytail: current libraries are far below 10k items; paginate upstream if that ceiling is reached.
             EmbyMediaLibraryPage result = allowedLibrary == AdminMediaLibraryScope.ADULT_OTHER
                     ? listAdultOtherItems(embyLibrary, search)
+                    : byCapacity ? listAllTopLevelItems(embyLibrary, allowedLibrary.listingItemType(), search)
                     : embyClient.listTopLevelMediaItems(
                             embyLibrary.id(),
                             allowedLibrary.listingItemType(),
@@ -84,6 +95,17 @@ public class AdminMediaLibraryCatalogService {
                     );
             List<EmbyMediaLibraryItem> items = result.items();
             int total = result.totalRecordCount();
+            if (byCapacity) {
+                List<AdminMediaLibraryItemResponse> ranked = items.stream()
+                        .filter(item -> !missingPoster || !item.hasPrimaryImage())
+                        .map(item -> responseItem(item, embyLibrary, capacities.work(allowedLibrary, embyLibrary, item)))
+                        .sorted(Comparator.comparing(AdminMediaLibraryItemResponse::storageBytes,
+                                Comparator.nullsLast(Comparator.reverseOrder())))
+                        .toList();
+                int start = Math.min((page - 1) * pageSize, ranked.size());
+                return new AdminMediaLibraryPageResponse(ranked.subList(start, Math.min(start + pageSize, ranked.size())),
+                        page, pageSize, ranked.size());
+            }
             if (missingPoster || allowedLibrary == AdminMediaLibraryScope.ADULT_OTHER) {
                 List<EmbyMediaLibraryItem> filteredItems = items.stream()
                         .filter(item -> !missingPoster || !item.hasPrimaryImage())
@@ -95,7 +117,7 @@ public class AdminMediaLibraryCatalogService {
             }
             return new AdminMediaLibraryPageResponse(
                     items.stream()
-                            .map(item -> responseItem(item, embyLibrary))
+                            .map(item -> responseItem(item, embyLibrary, capacities.work(allowedLibrary, embyLibrary, item)))
                             .toList(),
                     page,
                     pageSize,
@@ -106,14 +128,23 @@ public class AdminMediaLibraryCatalogService {
         }
     }
 
+    private EmbyMediaLibraryPage listAllTopLevelItems(EmbyLibrary library, String type, String search) {
+        int batchSize = 1000;
+        List<EmbyMediaLibraryItem> items = new ArrayList<>();
+        EmbyMediaLibraryPage batch;
+        do {
+            batch = embyClient.listTopLevelMediaItems(library.id(), type, items.size(), batchSize, search);
+            items.addAll(batch.items());
+        } while (!batch.items().isEmpty() && items.size() < batch.totalRecordCount());
+        return new EmbyMediaLibraryPage(items, items.size());
+    }
+
     private EmbyMediaLibraryPage listAdultOtherItems(EmbyLibrary library, String search) {
         List<String> collectionIds = embyClient.listCollections(library.id()).stream()
                 .map(EmbyCollection::id)
                 .toList();
         Set<String> collectionMemberIds = embyClient.listCollectionMemberIds(collectionIds);
-        EmbyMediaLibraryPage allItems = embyClient.listTopLevelMediaItems(
-                library.id(), "BoxSet,Movie", 0, 10_000, search
-        );
+        EmbyMediaLibraryPage allItems = listAllTopLevelItems(library, "BoxSet,Movie", search);
         List<EmbyMediaLibraryItem> visibleItems = allItems.items().stream()
                 .filter(item -> "BoxSet".equals(item.type()) || !collectionMemberIds.contains(item.id()))
                 .toList();
@@ -292,6 +323,12 @@ public class AdminMediaLibraryCatalogService {
             EmbyMediaLibraryItem item,
             EmbyLibrary library
     ) {
+        return responseItem(item, library, null);
+    }
+
+    private AdminMediaLibraryItemResponse responseItem(
+            EmbyMediaLibraryItem item, EmbyLibrary library, MediaCapacityIndex.Capacity capacity
+    ) {
         return new AdminMediaLibraryItemResponse(
                 item.id(),
                 item.title(),
@@ -302,7 +339,9 @@ public class AdminMediaLibraryCatalogService {
                 item.primaryImageTag(),
                 library.id(),
                 library.name(),
-                item.type()
+                item.type(),
+                capacity == null ? null : capacity.bytes(),
+                capacity == null ? null : capacity.status()
         );
     }
 

@@ -48,7 +48,7 @@ class MediaLibrarySyncServiceTest {
         QuarkDirectClient quark = mock(QuarkDirectClient.class);
         AuthService auth = mock(AuthService.class);
         MediaLibrarySyncService service = new MediaLibrarySyncService(auth,
-                new AdminMediaLibraryCatalogService(auth, emby), emby, quark,
+                new AdminMediaLibraryCatalogService(auth, emby, mock(MediaCapacityIndex.class)), emby, quark,
                 beans.getBeanProvider(CloudDrive2MediaDeletion.class), new LocalStrmDeletion(properties), properties,
                 targets.registry);
 

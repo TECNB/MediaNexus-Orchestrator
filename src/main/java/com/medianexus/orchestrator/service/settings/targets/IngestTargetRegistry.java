@@ -115,6 +115,30 @@ public class IngestTargetRegistry {
         return mappedPath(path, source, cloud);
     }
 
+    /** Snapshot the configured source mappings for a batch of read-only path lookups. */
+    public java.util.function.Function<String, String> cloudMediaPaths(String legacySource, String legacyCloud) {
+        IngestTargetState state = readState();
+        return value -> {
+            if (value == null || !value.startsWith("/")) return null;
+            String path;
+            try {
+                path = normalizePath(value);
+            } catch (BusinessException invalidPath) {
+                return null;
+            }
+            if (!state.managed()) {
+                String source = normalizePath(legacySource);
+                return !path.equals(source) && within(path, source)
+                        ? mappedPath(path, source, normalizePath(legacyCloud)) : null;
+            }
+            return state.targets().stream()
+                    .filter(target -> !path.equals(target.mediaSourcePrefix()) && within(path, target.mediaSourcePrefix()))
+                    .findFirst()
+                    .map(target -> mappedPath(path, target.mediaSourcePrefix(), target.cloudDrivePrefix()))
+                    .orElse(null);
+        };
+    }
+
     public boolean ownsMediaSourcePath(String sourcePath, String legacySource) {
         IngestTargetState state = readState();
         if (!StringUtils.hasText(sourcePath)) {

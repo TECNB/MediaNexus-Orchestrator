@@ -395,6 +395,15 @@ public class EmbyClient {
                 .orElse(null);
     }
 
+    public List<EmbyDeletionItem> listLibraryDeletionVideos(String libraryId, int offset, int limit) {
+        return deletionItems(Map.of(
+                "ParentId", libraryId, "Recursive", "true",
+                "IncludeItemTypes", "Movie,Video,Episode",
+                "GroupItemsIntoCollections", "false", "Fields", "Path,MediaSources",
+                "SortBy", "Id", "StartIndex", String.valueOf(offset), "Limit", String.valueOf(limit)
+        ));
+    }
+
     public boolean itemExists(String itemId) {
         return deletionItems(Map.of("Ids", itemId, "Limit", "1")).stream()
                 .anyMatch(item -> itemId.equals(item.id()));
@@ -827,7 +836,8 @@ public class EmbyClient {
                     text(item, "Type", "type"),
                     integerOrNull(item, "ProductionYear", "productionYear"),
                     text(item, "DateCreated", "dateCreated"),
-                    item.path("ImageTags").path("Primary").asText(null)
+                    item.path("ImageTags").path("Primary").asText(null),
+                    text(item, "Path", "path")
             ));
         }
         return new EmbyMediaLibraryPage(result, totalRecordCount.asInt());

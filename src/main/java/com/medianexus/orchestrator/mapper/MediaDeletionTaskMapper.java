@@ -51,6 +51,9 @@ public interface MediaDeletionTaskMapper extends BaseMapper<MediaDeletionTask> {
             """)
     MediaDeletionTask findNextActive();
 
+    @Select("SELECT * FROM media_deletion_tasks WHERE status IN ('PENDING', 'RUNNING')")
+    List<MediaDeletionTask> listActive();
+
     @Select("""
             SELECT COUNT(*) FROM media_deletion_tasks
             WHERE (item_id = #{itemId} OR season_id = #{itemId})

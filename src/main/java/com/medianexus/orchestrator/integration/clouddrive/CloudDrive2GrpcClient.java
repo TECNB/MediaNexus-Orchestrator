@@ -64,7 +64,8 @@ class CloudDrive2GrpcClient implements CloudDrive2FileOperations {
                         file.getName(),
                         file.getFullPathName(),
                         file.getSize(),
-                        file.getIsDirectory()
+                        file.getIsDirectory(),
+                        file.getId()
                 )));
             }
             return files;

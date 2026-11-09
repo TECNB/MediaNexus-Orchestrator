@@ -27,9 +27,11 @@ class AdminMediaLibraryCatalogServiceTest {
 
     private final AuthService authService = mock(AuthService.class);
     private final EmbyClient embyClient = mock(EmbyClient.class);
+    private final MediaCapacityIndex capacities = mock(MediaCapacityIndex.class);
     private final AdminMediaLibraryCatalogService service = new AdminMediaLibraryCatalogService(
             authService,
-            embyClient
+            embyClient,
+            capacities
     );
 
     @Test
@@ -46,7 +48,7 @@ class AdminMediaLibraryCatalogServiceTest {
                         "Movie",
                         1999,
                         "2026-07-20T12:00:00Z",
-                        "tag"
+                        "tag", "/movies/The.Matrix.1999.strm"
                 )), 25));
 
         var response = service.listItems("MOVIES", 2, 24, "matrix");
@@ -106,7 +108,7 @@ class AdminMediaLibraryCatalogServiceTest {
         ));
         when(embyClient.listCollectionMemberIds(List.of("collection-1")))
                 .thenReturn(java.util.Set.of("member-1"));
-        when(embyClient.listTopLevelMediaItems("adult-other-id", "BoxSet,Movie", 0, 10_000, null))
+        when(embyClient.listTopLevelMediaItems("adult-other-id", "BoxSet,Movie", 0, 1000, null))
                 .thenReturn(new EmbyMediaLibraryPage(List.of(new EmbyMediaLibraryItem(
                         "collection-1",
                         "Creator collection",
@@ -114,18 +116,18 @@ class AdminMediaLibraryCatalogServiceTest {
                         "BoxSet",
                         null,
                         "2026-09-16T16:12:21Z",
-                        "poster-tag"
+                        "poster-tag", null
                 ), new EmbyMediaLibraryItem(
                         "member-1", "Collection member", "member.strm", "Movie", null,
-                        "2026-09-16T16:12:20Z", null
+                        "2026-09-16T16:12:20Z", null, null
                 ), new EmbyMediaLibraryItem(
                         "standalone-1", "Standalone video", "standalone.strm", "Movie", null,
-                        "2026-09-16T16:12:19Z", null
+                        "2026-09-16T16:12:19Z", null, null
                 )), 3));
 
         var response = service.listItems("adult-other", 1, 24, null);
 
-        verify(embyClient).listTopLevelMediaItems("adult-other-id", "BoxSet,Movie", 0, 10_000, null);
+        verify(embyClient).listTopLevelMediaItems("adult-other-id", "BoxSet,Movie", 0, 1000, null);
         assertThat(response.total()).isEqualTo(2);
         assertThat(response.items()).extracting(item -> item.itemId())
                 .containsExactly("collection-1", "standalone-1");
@@ -245,9 +247,34 @@ class AdminMediaLibraryCatalogServiceTest {
         verify(embyClient, times(3)).getTopLevelMediaItem("movies-id", "Movie", "item-1");
     }
 
+    @Test
+    void ranksAllFilteredWorksBeforePagingAndKeepsUnknownLast() {
+        EmbyLibrary library = new EmbyLibrary("movies-id", "Movies", List.of("/movies"));
+        var small = mediaItem("small", "Small", null);
+        var unknown = mediaItem("unknown", "Unknown", null);
+        var large = mediaItem("large", "Large", null);
+        var excluded = mediaItem("excluded", "Has poster", "poster");
+        when(embyClient.listLibraries()).thenReturn(List.of(library));
+        when(embyClient.listTopLevelMediaItems("movies-id", "Movie", 0, 1000, "query"))
+                .thenReturn(new EmbyMediaLibraryPage(List.of(small, unknown, large, excluded), 4));
+        when(capacities.work(AdminMediaLibraryScope.MOVIES, library, small))
+                .thenReturn(MediaCapacityIndex.Capacity.measured(10));
+        when(capacities.work(AdminMediaLibraryScope.MOVIES, library, large))
+                .thenReturn(MediaCapacityIndex.Capacity.measured(30));
+        when(capacities.work(AdminMediaLibraryScope.MOVIES, library, unknown))
+                .thenReturn(new MediaCapacityIndex.Capacity(null, "unknown"));
+
+        assertThat(service.listItems("movies", 1, 1, "query", true, true).items())
+                .extracting(item -> item.itemId()).containsExactly("large");
+        assertThat(service.listItems("movies", 2, 1, "query", true, true).items())
+                .extracting(item -> item.itemId()).containsExactly("small");
+        assertThat(service.listItems("movies", 3, 1, "query", true, true).items())
+                .extracting(item -> item.itemId()).containsExactly("unknown");
+    }
+
     private EmbyMediaLibraryItem mediaItem(String id, String title, String imageTag) {
         return new EmbyMediaLibraryItem(
-                id, title, title + ".strm", "Movie", 2024, "2026-09-17T10:00:00Z", imageTag
+                id, title, title + ".strm", "Movie", 2024, "2026-09-17T10:00:00Z", imageTag, null
         );
     }
 }

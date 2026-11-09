@@ -4,6 +4,7 @@ import com.medianexus.orchestrator.config.CloudDrive2Properties;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.LinkOption;
 import java.util.Comparator;
 import java.util.List;
 import org.springframework.stereotype.Component;
@@ -41,6 +42,42 @@ public class LocalStrmDeletion {
             return content;
         } catch (IOException exception) {
             return null;
+        }
+    }
+
+    /** A scan never follows directory symlinks or leaves the configured STRM tree. */
+    List<String> strmFiles(Path directory) {
+        if (!directory.startsWith(root) || !Files.isDirectory(directory, LinkOption.NOFOLLOW_LINKS)) {
+            return List.of();
+        }
+        try {
+            if (!directory.toRealPath().startsWith(root.toRealPath())) {
+                throw new IllegalStateException("STRM 目录超出媒体库范围");
+            }
+            try (var paths = Files.walk(directory)) {
+                return paths.filter(path -> path.toString().endsWith(".strm"))
+                        .filter(path -> Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS))
+                        .map(Path::toString).toList();
+            }
+        } catch (IOException exception) {
+            throw new IllegalStateException("无法读取本地 STRM 目录", exception);
+        }
+    }
+
+    List<String> allStrmFiles() {
+        return strmFiles(root);
+    }
+
+    boolean isLocalStrm(String value) {
+        Path path = Path.of(value);
+        if (!path.isAbsolute() || !path.equals(path.normalize()) || !path.startsWith(root) || path.equals(root)
+                || !value.endsWith(".strm") || !Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
+            return false;
+        }
+        try {
+            return path.toRealPath().startsWith(root.toRealPath());
+        } catch (IOException exception) {
+            return false;
         }
     }
 
