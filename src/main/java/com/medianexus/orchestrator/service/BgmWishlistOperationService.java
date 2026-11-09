@@ -336,7 +336,7 @@ public class BgmWishlistOperationService {
         String key = "bgm:" + operation.source().id() + ":" + subjectId + ":" + entry.reason().code()
                 + (entry.candidates().isEmpty() ? "" : ":" + entry.candidates().get(0).key());
         updateEntry(id, subjectId, previous -> notice(previous, "PENDING"));
-        String result = notifications.send(key, (entry.candidates().isEmpty() ? "入库待补充资源｜" : "入库待确认｜") + entry.item().title(),
+        String result = notifications.sendOperationalAlert(key, (entry.candidates().isEmpty() ? "入库待补充资源｜" : "入库待确认｜") + entry.item().title(),
                 entry.reason().message() + "。请查看操作记录处理。", "/automation/bgm-wishlist?operation=" + id);
         updateEntry(id, subjectId, previous -> notice(previous, result));
     }

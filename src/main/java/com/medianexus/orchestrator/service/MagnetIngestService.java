@@ -1867,7 +1867,7 @@ public class MagnetIngestService {
         }
         movieTaskMapper.update(updateWrapper);
         if (failedTask != null) {
-            taskNotifier.failed("movie", taskId, failedTask.getTitle(), failedTask.getStage(), errorMessage);
+            taskNotifier.failed("movie", taskId, failedTask.getCreatedByUserId(), failedTask.getTitle(), failedTask.getStage(), errorMessage);
         }
     }
 
@@ -1900,7 +1900,7 @@ public class MagnetIngestService {
         }
         seriesTaskMapper.update(updateWrapper);
         if (failedTask != null) {
-            taskNotifier.failed("series", taskId, failedTask.getTitle(), failedTask.getStage(), errorMessage);
+            taskNotifier.failed("series", taskId, failedTask.getCreatedByUserId(), failedTask.getTitle(), failedTask.getStage(), errorMessage);
         }
     }
 

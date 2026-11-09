@@ -1773,7 +1773,7 @@ public class JavdbAutomationService {
             disableAfterInvalidCredential();
         }
         if (previous.valid() || !message.equals(previous.message())) {
-            exceptionNotifier.send(validationKey + ":" + previous.validatedAt(), credential + " 认证异常",
+            exceptionNotifier.sendOperationalAlert(validationKey + ":" + previous.validatedAt(), credential + " 认证异常",
                     "凭证缺失、已失效或需要重新验证。请打开自动化页面更新凭证。", "/automation");
         }
         return invalid;

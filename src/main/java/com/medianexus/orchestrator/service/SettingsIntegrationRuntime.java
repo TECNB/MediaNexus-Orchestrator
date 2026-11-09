@@ -67,8 +67,8 @@ public class SettingsIntegrationRuntime {
         }
         if (bean instanceof WeComProperties wecom && wecom.isEnabled()) {
             if (!StringUtils.hasText(wecom.getCorpId()) || !StringUtils.hasText(wecom.getAppSecret())
-                    || wecom.getAgentId() == null || wecom.getAgentId() <= 0 || !StringUtils.hasText(wecom.getUserId())
-                    || !StringUtils.hasText(wecom.getFrontendBaseUrl())) throw invalid("启用企业微信需要完整的应用身份、凭据、接收成员和消息跳转地址");
+                    || wecom.getAgentId() == null || wecom.getAgentId() <= 0
+                    || !StringUtils.hasText(wecom.getFrontendBaseUrl())) throw invalid("启用企业微信需要完整的应用身份、凭据和消息跳转地址");
         }
     }
 

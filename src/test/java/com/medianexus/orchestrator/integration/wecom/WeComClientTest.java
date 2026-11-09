@@ -67,14 +67,17 @@ class WeComClientTest {
     }
 
     @Test
-    void sendsSingleArticleToConfiguredMemberAndReusesToken() {
+    void sendsSingleArticleToExplicitMemberAndReusesToken() {
         WeComClient client = new WeComClient(properties, mapper);
 
-        send(client);
-        send(client);
+        properties.setUserId("legacy-recipient");
+        client.sendNews(new WeComClient.Recipient(client.scope(), "demo-member"), "片名 · 任务处理完成",
+                "入库任务已完成", "https://images.example/cover.jpg", "https://media.example/tasks/movie/task-1");
+        client.sendText(new WeComClient.Recipient(client.scope(), "another-member"), "任务失败");
 
         assertThat(tokenRequests.get()).isEqualTo(1);
         assertThat(messages).hasSize(2);
+        assertThat(messages.get(1).path("touser").asText()).isEqualTo("another-member");
         JsonNode message = messages.get(0);
         assertThat(message.path("touser").asText()).isEqualTo("demo-member");
         assertThat(message.path("agentid").asLong()).isEqualTo(1000002L);
@@ -144,7 +147,7 @@ class WeComClientTest {
     void rejectsBroadcastOrMultipleRecipientsBeforeNetwork(String member) {
         properties.setUserId(member);
 
-        assertThatThrownBy(() -> send(new WeComClient(properties, mapper))).hasMessageContaining("一个明确");
+        assertThatThrownBy(() -> send(new WeComClient(properties, mapper))).hasMessageContaining("接收成员无效");
         assertThat(tokenRequests.get()).isZero();
     }
 
@@ -174,8 +177,35 @@ class WeComClientTest {
                 .hasMessageNotContaining(properties.getAppSecret()).hasMessageNotContaining("example.invalid");
     }
 
+    @Test
+    void readsOnlyConfiguredApplicationScopeAndDeduplicatesMembers() {
+        server.createContext("/cgi-bin/agent/get", exchange -> respond(exchange, 200, """
+                {"errcode":0,"allow_userinfos":{"user":[{"userid":"direct"}]},
+                 "allow_partys":{"partyid":[2]},"allow_tags":{"tagid":[3]}}
+                """));
+        server.createContext("/cgi-bin/user/get", exchange -> respond(exchange, 200,
+                "{\"errcode\":0,\"userid\":\"direct\",\"name\":\"Direct\"}"));
+        server.createContext("/cgi-bin/user/simplelist", exchange -> respond(exchange, 200,
+                "{\"errcode\":0,\"userlist\":[{\"userid\":\"department\",\"name\":\"Department\"}]}"));
+        server.createContext("/cgi-bin/department/simplelist", exchange -> respond(exchange, 200,
+                "{\"errcode\":0,\"department_id\":[{\"id\":2},{\"id\":4}]}"));
+        server.createContext("/cgi-bin/tag/get", exchange -> respond(exchange, 200,
+                "{\"errcode\":0,\"userlist\":[{\"userid\":\"direct\",\"name\":\"Direct\"},{\"userid\":\"tag\",\"name\":\"Tag\"}]}"));
+        assertThat(new WeComClient(properties, mapper).visibleMembers().members())
+                .extracting(WeComClient.Member::id).containsExactly("department", "direct", "tag");
+        assertThat(tokenRequests.get()).isEqualTo(1);
+    }
+
+    @Test
+    void rejectsRecipientFromAnotherApplicationBeforeAnyNetworkRequest() {
+        WeComClient client = new WeComClient(properties, mapper);
+        var wrongApplication = new WeComClient.Recipient(new WeComClient.Scope("another-corp", properties.getAgentId()), "member");
+        assertThatThrownBy(() -> client.sendText(wrongApplication, "private task")).hasMessageContaining("应用已变更");
+        assertThat(tokenRequests.get()).isZero();
+    }
+
     private void send(WeComClient client) {
-        client.sendNews("片名 · 任务处理完成", "入库任务已完成", "https://images.example/cover.jpg",
+        client.sendNews(new WeComClient.Recipient(client.scope(), properties.getUserId()), "片名 · 任务处理完成", "入库任务已完成", "https://images.example/cover.jpg",
                 "https://media.example/tasks/movie/task-1");
     }
 

@@ -922,7 +922,7 @@ public class AnimeMagnetIngestTaskService {
         }
         taskMapper.update(updateWrapper);
         if (failedTask != null) {
-            taskNotifier.failed("anime", taskId, failedTask.getTitle(), failedTask.getStage(), errorMessage);
+            taskNotifier.failed("anime", taskId, failedTask.getCreatedByUserId(), failedTask.getTitle(), failedTask.getStage(), errorMessage);
         }
     }
 

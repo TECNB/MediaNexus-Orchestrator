@@ -16,6 +16,8 @@ import com.medianexus.orchestrator.config.TmdbProperties;
 import com.medianexus.orchestrator.config.WeComProperties;
 import com.medianexus.orchestrator.integration.tmdb.TmdbClient;
 import com.medianexus.orchestrator.integration.wecom.WeComClient;
+import com.medianexus.orchestrator.integration.wecom.WeComClient.Recipient;
+import com.medianexus.orchestrator.integration.wecom.WeComClient.Scope;
 import com.medianexus.orchestrator.model.AnimeMagnetIngestTask;
 import com.medianexus.orchestrator.model.MovieMagnetIngestTask;
 import com.medianexus.orchestrator.model.SeriesMagnetIngestTask;
@@ -38,38 +40,40 @@ class IngestTaskNotifierTest {
     private final TmdbProperties tmdbProperties = new TmdbProperties();
     private final TmdbClient tmdb = mock(TmdbClient.class);
     private final WeComClient wecom = mock(WeComClient.class);
+    private final WeComBindings bindings = mock(WeComBindings.class);
+    private final Recipient recipient = new Recipient(new Scope("corp", 1L), "member");
     private final IngestExceptionNotifier exceptions = mock(IngestExceptionNotifier.class);
     private final ControlledExecutor executor = new ControlledExecutor();
     private final IngestTaskNotifier notifier = new IngestTaskNotifier(
-            properties, tmdbProperties, tmdb, wecom, executor, exceptions);
+            properties, tmdbProperties, tmdb, wecom, executor, exceptions, bindings);
 
     @BeforeEach
     void configure() {
         properties.setEnabled(true);
+        when(bindings.recipient(99L)).thenReturn(recipient);
         properties.setFrontendBaseUrl("https://media.example/");
         tmdbProperties.setImageBaseUrl("https://image.tmdb.org/t/p/w500");
     }
 
     @Test
     void organizingFailureDoesNotRecommendChangingTorrent() {
-        notifier.failed("series", "series-2", "作品", "organizing", "下载文件整理失败");
+        notifier.failed("series", "series-2", 99L, "作品", "organizing", "下载文件整理失败");
         executor.runPending();
-        verify(exceptions).send(eq("task:series:series-2"), eq("入库处理失败｜作品"), contains("查看具体失败阶段"), eq("/tasks/series/series-2"));
+        verify(exceptions).send(eq(recipient), eq("task:series:series-2"), eq("入库处理失败｜作品"), contains("查看具体失败阶段"), eq("/tasks/series/series-2"));
     }
 
     @Test
     void finalDownloadTimeoutUsesTextNotificationAndActualTaskLinkWithoutLoadingImages() {
-        notifier.failed("series", "series-1", "作品", "downloading", "OpenList 离线下载超时");
+        notifier.failed("series", "series-1", 99L, "作品", "downloading", "OpenList 离线下载超时");
         verifyNoInteractions(exceptions, tmdb, wecom);
         executor.runPending();
-        verify(exceptions).send(eq("task:series:series-1"), eq("下载超时｜作品"), contains("更换种子"), eq("/tasks/series/series-1"));
+        verify(exceptions).send(eq(recipient), eq("task:series:series-1"), eq("下载超时｜作品"), contains("更换种子"), eq("/tasks/series/series-1"));
         verifyNoInteractions(tmdb, wecom);
     }
 
     @Test
     void queuesAfterCompletionWithoutRunningNetworkInTheCaller() throws Exception {
         MovieMagnetIngestTask task = movie();
-        task.setCreatedByUserId(99L);
         when(tmdb.getMovieImages(157336, tmdbProperties)).thenReturn(mapper.readTree("""
                 {"backdrops":[{"file_path":"/backdrop.jpg","iso_639_1":null}],
                  "posters":[{"file_path":"/poster.jpg"}]}
@@ -79,15 +83,30 @@ class IngestTaskNotifierTest {
         verifyNoInteractions(tmdb, wecom);
         executor.runPending();
 
-        verify(wecom).sendNews(eq("星际穿越（2014） · 任务处理完成"), contains("电影入库任务"),
+        verify(wecom).sendNews(eq(recipient), eq("星际穿越（2014） · 任务处理完成"), contains("电影入库任务"),
                 eq("https://image.tmdb.org/t/p/w500/backdrop.jpg"), eq("https://media.example/tasks/movie/movie-1"));
         assertThat(task.getStatus()).isEqualTo("SUCCEEDED");
+    }
+
+    @Test
+    void doesNotUseLegacyRecipientForUnboundOrOwnerlessTasks() {
+        properties.setUserId("legacy-admin");
+        MovieMagnetIngestTask unbound = movie();
+        unbound.setCreatedByUserId(12L);
+        notifier.movieStarted(unbound);
+        notifier.failed("movie", unbound.getId(), 12L, "作品", "downloading", "超时");
+        MovieMagnetIngestTask ownerless = movie();
+        ownerless.setCreatedByUserId(null);
+        notifier.movieCompleted(ownerless);
+        executor.runPending();
+        verifyNoInteractions(tmdb, wecom, exceptions);
     }
 
     @ParameterizedTest
     @ValueSource(strings = {"SERIES", "ANIME"})
     void sharedSeriesTasksUseTvImagesAndTheirActualDetailRoute(String productType) throws Exception {
         SeriesMagnetIngestTask task = new SeriesMagnetIngestTask();
+        task.setCreatedByUserId(99L);
         task.setId("series-1");
         task.setTitle("葬送的芙莉莲");
         task.setSeasonNumber(2);
@@ -98,7 +117,7 @@ class IngestTaskNotifierTest {
         notifier.seriesCompleted(task);
         executor.runPending();
 
-        verify(wecom).sendNews(contains("第2季 · 任务处理完成"),
+        verify(wecom).sendNews(eq(recipient), contains("第2季 · 任务处理完成"),
                 contains("ANIME".equals(productType) ? "动漫" : "剧集"),
                 eq("https://image.tmdb.org/t/p/w500/poster.jpg"), eq("https://media.example/tasks/series/series-1"));
     }
@@ -106,6 +125,7 @@ class IngestTaskNotifierTest {
     @Test
     void independentAnimeTaskUsesTvImagesButAnimeDetailRoute() throws Exception {
         AnimeMagnetIngestTask task = new AnimeMagnetIngestTask();
+        task.setCreatedByUserId(99L);
         task.setId("anime-1");
         task.setTitle("葬送的芙莉莲");
         task.setTmdbId(209867);
@@ -115,7 +135,7 @@ class IngestTaskNotifierTest {
         notifier.animeCompleted(task);
         executor.runPending();
 
-        verify(wecom).sendNews(contains("第1季"), contains("动漫"),
+        verify(wecom).sendNews(eq(recipient), contains("第1季"), contains("动漫"),
                 eq("https://image.tmdb.org/t/p/w500/cover.jpg"), eq("https://media.example/tasks/anime/anime-1"));
     }
 
@@ -148,7 +168,7 @@ class IngestTaskNotifierTest {
     void tokenOrSendFailureCannotEscapeIntoTheTaskResult() throws Exception {
         when(tmdb.getMovieImages(157336, tmdbProperties)).thenReturn(mapper.readTree("{\"backdrops\":[{\"file_path\":\"/cover.jpg\"}]}"));
         doThrow(new IllegalStateException("企业微信 API 业务错误码 60020"))
-                .when(wecom).sendNews(anyString(), anyString(), anyString(), anyString());
+                .when(wecom).sendNews(eq(recipient), anyString(), anyString(), anyString(), anyString());
         MovieMagnetIngestTask task = movie();
 
         notifier.movieCompleted(task);
@@ -175,7 +195,7 @@ class IngestTaskNotifierTest {
         executor.runPending();
 
         ArgumentCaptor<String> title = ArgumentCaptor.forClass(String.class);
-        verify(wecom).sendNews(title.capture(), anyString(), anyString(), anyString());
+        verify(wecom).sendNews(eq(recipient), title.capture(), anyString(), anyString(), anyString());
         assertThat(title.getValue()).endsWith("… · 任务处理完成");
         assertThat(title.getValue().getBytes(StandardCharsets.UTF_8).length).isLessThanOrEqualTo(128);
         assertThat(StandardCharsets.UTF_8.newEncoder().canEncode(title.getValue())).isTrue();
@@ -206,12 +226,14 @@ class IngestTaskNotifierTest {
             }
             case "anime" -> {
                 AnimeMagnetIngestTask task = new AnimeMagnetIngestTask();
+                task.setCreatedByUserId(99L);
                 task.setId("anime-1"); task.setTitle("Show"); task.setTmdbId(209867);
                 notifier.animeStarted(task);
                 route = "anime/anime-1";
             }
             default -> {
                 SeriesMagnetIngestTask task = new SeriesMagnetIngestTask();
+                task.setCreatedByUserId(99L);
                 task.setId("series-1"); task.setTitle("Show"); task.setTmdbId(209867);
                 task.setTaskProductType("shared-anime".equals(kind) ? "ANIME" : "SERIES");
                 notifier.seriesStarted(task);
@@ -220,12 +242,13 @@ class IngestTaskNotifierTest {
         }
         verifyNoInteractions(wecom);
         executor.runPending();
-        verify(wecom).sendNews(contains(" · 任务已发起"), contains("已创建并排入后台队列"),
+        verify(wecom).sendNews(eq(recipient), contains(" · 任务已发起"), contains("已创建并排入后台队列"),
                 eq("https://image.tmdb.org/t/p/w500/cover.jpg"), eq("https://media.example/tasks/" + route));
     }
 
     private MovieMagnetIngestTask movie() {
         MovieMagnetIngestTask task = new MovieMagnetIngestTask();
+        task.setCreatedByUserId(99L);
         task.setId("movie-1");
         task.setTitle("星际穿越");
         task.setYear(2014);

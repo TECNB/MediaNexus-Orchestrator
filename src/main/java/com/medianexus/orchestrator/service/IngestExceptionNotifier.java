@@ -2,6 +2,7 @@ package com.medianexus.orchestrator.service;
 
 import com.medianexus.orchestrator.config.WeComProperties;
 import com.medianexus.orchestrator.integration.wecom.WeComClient;
+import com.medianexus.orchestrator.integration.wecom.WeComClient.Recipient;
 import com.medianexus.orchestrator.mapper.IngestExceptionNoticeMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -21,7 +22,13 @@ public class IngestExceptionNotifier {
         this.properties = properties; this.client = client; this.notices = notices;
     }
 
-    public String send(String key, String title, String body, String path) {
+    /** 管理后台告警没有任务归属，继续发送给配置的运维收件人。 */
+    public String sendOperationalAlert(String key, String title, String body, String path) {
+        String member = properties.getUserId();
+        return send(new Recipient(client.scope(), member == null ? null : member.trim()), key, title, body, path);
+    }
+
+    public String send(Recipient recipient, String key, String title, String body, String path) {
         if (!properties.isEnabled()) return "DISABLED";
         try {
             ensureTable();
@@ -40,7 +47,7 @@ public class IngestExceptionNotifier {
                     || uri.getUserInfo() != null || uri.getQuery() != null || uri.getFragment() != null) {
                 throw new IllegalStateException("通知站点地址无效");
             }
-            client.sendText(title + "\n" + body + "\n" + base.replaceAll("/+$", "") + path);
+            client.sendText(recipient, title + "\n" + body + "\n" + base.replaceAll("/+$", "") + path);
         } catch (RuntimeException exception) {
             log.warn("入库异常通知发送失败 event={}", key);
             try { notices.update(key, "FAILED"); } catch (RuntimeException ignored) { /* 业务结果优先保留。 */ }

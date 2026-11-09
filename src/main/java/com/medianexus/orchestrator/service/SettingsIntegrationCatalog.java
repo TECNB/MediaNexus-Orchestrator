@@ -138,7 +138,7 @@ public final class SettingsIntegrationCatalog {
             case "corpId" -> "企业 ID";
             case "agentId" -> "应用 ID";
             case "appSecret" -> "应用 Secret";
-            case "userId" -> "通知接收成员";
+            case "userId" -> "运维告警收件人（任务通知使用用户绑定）";
             case "frontendBaseUrl" -> "消息跳转站点地址";
             case "allowedExtensions" -> "允许的字幕扩展名";
             case "maxUploadSize" -> "上传文件大小上限（字节）";

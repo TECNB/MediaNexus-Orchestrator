@@ -79,7 +79,7 @@ class BgmWishlistOperationTest {
         assertEquals("WAITING", operation.status());
         assertEquals(List.of("CREATED", "WAITING_CONFIRMATION", "WAITING_RESOURCE", "FAILED"), operation.entries().stream().map(Entry::status).toList());
         assertEquals("RELEASE_CHECK_FAILED", operation.entries().get(3).reason().code());
-        verify(f.notifications, times(2)).send(anyString(), anyString(), anyString(), anyString());
+        verify(f.notifications, times(2)).sendOperationalAlert(anyString(), anyString(), anyString(), anyString());
         verify(f.tasks, times(1)).create(any(), any(), eq(f.owner));
         assertEquals("FAILED", operation.entries().get(2).notification());
     }
@@ -277,7 +277,7 @@ class BgmWishlistOperationTest {
                 return target.tmdbId() == 3 ? List.of() : target.tmdbId() == 2 ? List.of(release("English")) : List.of(release("English"), release("中文发布"));
             });
             when(tasks.create(any(), any(), any())).thenAnswer(call -> new BgmWishlistTaskGateway.ActiveTask("SERIES", "task-" + call.<BgmWishlistTaskGateway.Target>getArgument(0).tmdbId(), "PENDING"));
-            when(notifications.send(anyString(), anyString(), anyString(), anyString())).thenReturn("FAILED");
+            when(notifications.sendOperationalAlert(anyString(), anyString(), anyString(), anyString())).thenReturn("FAILED");
             service = new BgmWishlistOperationService(auth,wishlist,sources,executions,records,locks,tasks,quota,users,notifications,executor);
         }
         Item item(long id, boolean eligible) {

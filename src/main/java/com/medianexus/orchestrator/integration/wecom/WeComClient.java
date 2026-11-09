@@ -12,6 +12,13 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
+import java.time.Duration;
+import java.util.ArrayDeque;
+import java.util.Comparator;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
 import java.time.Instant;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
@@ -26,6 +33,7 @@ public class WeComClient {
     private final HttpClient httpClient;
     private final Clock clock;
     private String accessToken;
+    private Application tokenApplication;
     private Instant tokenExpiresAt = Instant.EPOCH;
 
     @Autowired
@@ -43,56 +51,118 @@ public class WeComClient {
         this.clock = clock;
     }
 
+    public record Scope(String corpId, Long agentId) { }
+    public record Member(String id, String name) { }
+    public record Recipient(Scope scope, String memberId) { }
+    public record Directory(Scope scope, List<Member> members) { }
+    private record Application(Scope scope, String baseUrl, String secret, Duration timeout) { }
+
+    public Scope scope() {
+        String corpId = properties.getCorpId();
+        return new Scope(corpId == null ? "" : corpId.trim(), properties.getAgentId());
+    }
+
+    public Directory visibleMembers() {
+        Application app = application();
+        JsonNode agent = get(app, "/cgi-bin/agent/get", "&agentid=" + app.scope().agentId());
+        Map<String, Member> members = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+        for (JsonNode member : agent.path("allow_userinfos").path("user")) {
+            String id = member.path("userid").asText();
+            if (isMemberId(id)) addMember(members, get(app, "/cgi-bin/user/get", "&userid=" + encode(id)));
+        }
+
+        var departments = new ArrayDeque<Long>();
+        var visited = new HashSet<Long>();
+        agent.path("allow_partys").path("partyid").forEach(node -> departments.add(node.asLong()));
+        while (!departments.isEmpty()) {
+            long id = departments.remove();
+            if (id <= 0 || !visited.add(id)) continue;
+            String query = "&department_id=" + id;
+            for (JsonNode member : get(app, "/cgi-bin/user/simplelist", query).path("userlist")) addMember(members, member);
+            for (JsonNode child : get(app, "/cgi-bin/department/simplelist", "&id=" + id).path("department_id")) {
+                departments.add(child.path("id").asLong());
+            }
+        }
+        for (JsonNode tag : agent.path("allow_tags").path("tagid")) {
+            for (JsonNode member : get(app, "/cgi-bin/tag/get", "&tagid=" + tag.asLong()).path("userlist")) addMember(members, member);
+        }
+        return new Directory(app.scope(), members.values().stream()
+                .sorted(Comparator.comparing(Member::name).thenComparing(Member::id)).toList());
+    }
+
+    public Recipient verifyMember(String memberId) {
+        if (!isMemberId(memberId)) throw new IllegalArgumentException("企业微信成员 ID 无效");
+        Application app = application();
+        JsonNode member = get(app, "/cgi-bin/user/get", "&userid=" + encode(memberId));
+        String id = member.path("userid").asText();
+        if (!memberId.equalsIgnoreCase(id)) throw new IllegalStateException("企业微信未返回该成员");
+        return new Recipient(app.scope(), id);
+    }
+
+    private void addMember(Map<String, Member> members, JsonNode member) {
+        String id = member.path("userid").asText();
+        if (isMemberId(id)) members.put(id, new Member(id, member.path("name").asText(id)));
+    }
+
+    public static boolean isMemberId(String id) {
+        return StringUtils.hasText(id) && id.getBytes(StandardCharsets.UTF_8).length <= 64
+                && !id.startsWith("@") && !id.contains("|") && !id.contains("/")
+                && id.chars().noneMatch(Character::isWhitespace);
+    }
+
     /** 纯文本异常消息不依赖封面或 TMDB。 */
-    public void sendText(String content) {
-        validateConfiguration();
-        ObjectNode payload = objectMapper.createObjectNode()
-                .put("touser", properties.getUserId().trim())
-                .put("agentid", properties.getAgentId()).put("msgtype", "text");
+    public void sendText(Recipient recipient, String content) {
+        Application app = application();
+        ObjectNode payload = message(app, recipient, "text");
         payload.putObject("text").put("content", content);
-        String token = token();
-        JsonNode response = request(HttpRequest.newBuilder(uri("/cgi-bin/message/send?access_token=" + encode(token)))
-                .timeout(properties.getTimeout()).header("Content-Type", "application/json; charset=UTF-8")
+        send(app, payload);
+    }
+
+    public void sendNews(Recipient recipient, String title, String description, String imageUrl, String detailUrl) {
+        Application app = application();
+        ObjectNode payload = message(app, recipient, "news");
+        payload.putObject("news").putArray("articles").addObject()
+                .put("title", title).put("description", description).put("picurl", imageUrl).put("url", detailUrl);
+        send(app, payload);
+    }
+
+    private ObjectNode message(Application app, Recipient recipient, String type) {
+        if (!app.scope().equals(recipient.scope()) || !isMemberId(recipient.memberId())) {
+            throw new IllegalStateException("企业微信接收成员无效或所属应用已变更");
+        }
+        return objectMapper.createObjectNode().put("touser", recipient.memberId())
+                .put("agentid", app.scope().agentId()).put("msgtype", type);
+    }
+
+    private void send(Application app, ObjectNode payload) {
+        String token = token(app);
+        JsonNode response = request(HttpRequest.newBuilder(uri(app, "/cgi-bin/message/send?access_token=" + encode(token)))
+                .timeout(app.timeout()).header("Content-Type", "application/json; charset=UTF-8")
                 .POST(HttpRequest.BodyPublishers.ofString(payload.toString(), StandardCharsets.UTF_8)).build());
+        checkTokenResponse(response, token);
+    }
+
+    private JsonNode get(Application app, String path, String query) {
+        String token = token(app);
+        JsonNode response = request(HttpRequest.newBuilder(uri(app, path + "?access_token=" + encode(token) + query))
+                .timeout(app.timeout()).GET().build());
+        checkTokenResponse(response, token);
+        return response;
+    }
+
+    private void checkTokenResponse(JsonNode response, String token) {
         int code = response.path("errcode").asInt(-1);
         if (code == 40014 || code == 42001 || code == 40001) invalidateToken(token);
         requireSuccess(response);
     }
 
-    public void sendNews(String title, String description, String imageUrl, String detailUrl) {
-        validateConfiguration();
-        ObjectNode article = objectMapper.createObjectNode()
-                .put("title", title)
-                .put("description", description)
-                .put("picurl", imageUrl)
-                .put("url", detailUrl);
-        ObjectNode payload = objectMapper.createObjectNode()
-                .put("touser", properties.getUserId().trim())
-                .put("agentid", properties.getAgentId())
-                .put("msgtype", "news");
-        payload.putObject("news").putArray("articles").add(article);
-        String token = token();
-        JsonNode response = request(HttpRequest.newBuilder(uri("/cgi-bin/message/send?access_token=" + encode(token)))
-                .timeout(properties.getTimeout())
-                .header("Content-Type", "application/json; charset=UTF-8")
-                .POST(HttpRequest.BodyPublishers.ofString(payload.toString(), StandardCharsets.UTF_8))
-                .build());
-        int code = response.path("errcode").asInt(-1);
-        if (code == 40014 || code == 42001 || code == 40001) {
-            invalidateToken(token);
-        }
-        requireSuccess(response);
-    }
-
-    private synchronized String token() {
-        if (accessToken != null && clock.instant().isBefore(tokenExpiresAt)) {
+    private synchronized String token(Application app) {
+        if (accessToken != null && app.equals(tokenApplication) && clock.instant().isBefore(tokenExpiresAt)) {
             return accessToken;
         }
-        JsonNode response = request(HttpRequest.newBuilder(uri("/cgi-bin/gettoken?corpid="
-                        + encode(properties.getCorpId().trim()) + "&corpsecret=" + encode(properties.getAppSecret())))
-                .timeout(properties.getTimeout())
-                .GET()
-                .build());
+        JsonNode response = request(HttpRequest.newBuilder(uri(app, "/cgi-bin/gettoken?corpid="
+                        + encode(app.scope().corpId()) + "&corpsecret=" + encode(app.secret())))
+                .timeout(app.timeout()).GET().build());
         requireSuccess(response);
         String receivedToken = response.path("access_token").asText();
         long expiresIn = response.path("expires_in").asLong();
@@ -100,6 +170,7 @@ public class WeComClient {
             throw new IllegalStateException("企业微信 token 响应缺少有效 token 或有效期");
         }
         accessToken = receivedToken;
+        tokenApplication = app;
         tokenExpiresAt = clock.instant().plusSeconds(expiresIn - Math.min(60, expiresIn / 10));
         return accessToken;
     }
@@ -143,21 +214,19 @@ public class WeComClient {
         }
     }
 
-    private void validateConfiguration() {
-        if (!StringUtils.hasText(properties.getCorpId()) || !StringUtils.hasText(properties.getAppSecret())
-                || properties.getAgentId() == null || properties.getAgentId() <= 0
-                || !StringUtils.hasText(properties.getUserId())) {
-            throw new IllegalStateException("企业微信通知缺少企业、应用或接收成员配置");
+    private Application application() {
+        Scope scope = scope();
+        String secret = properties.getAppSecret();
+        if (!StringUtils.hasText(scope.corpId()) || !StringUtils.hasText(secret)
+                || scope.agentId() == null || scope.agentId() <= 0) {
+            throw new IllegalStateException("企业微信缺少企业、应用或凭据配置");
         }
-        String userId = properties.getUserId().trim();
-        if (userId.startsWith("@") || userId.contains("|") || userId.chars().anyMatch(Character::isWhitespace)) {
-            throw new IllegalStateException("企业微信通知仅支持一个明确的接收成员");
-        }
+        return new Application(scope, properties.getApiBaseUrl(), secret, properties.getTimeout());
     }
 
-    private URI uri(String path) {
+    private URI uri(Application app, String path) {
         try {
-            URI base = URI.create(properties.getApiBaseUrl().trim());
+            URI base = URI.create(app.baseUrl().trim());
             if (!("https".equals(base.getScheme()) || "http".equals(base.getScheme())) || base.getHost() == null
                     || base.getRawUserInfo() != null || base.getRawQuery() != null || base.getRawFragment() != null) {
                 throw new IllegalArgumentException();

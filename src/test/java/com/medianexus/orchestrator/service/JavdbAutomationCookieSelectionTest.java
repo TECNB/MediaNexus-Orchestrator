@@ -69,9 +69,9 @@ class JavdbAutomationCookieSelectionTest {
         service.updateTopCookie(new JavdbCookieUpdateRequest("expired"));
         service.updateCookie(new JavdbCookieUpdateRequest("limited"));
 
-        verify(notifier).send(eq("javdb_automation_cookie_validation:null"),
+        verify(notifier).sendOperationalAlert(eq("javdb_automation_cookie_validation:null"),
                 eq("JAVDB 常规 Cookie 认证异常"), anyString(), eq("/automation"));
-        verify(notifier).send(eq("javdb_top_cookie_validation:null"),
+        verify(notifier).sendOperationalAlert(eq("javdb_top_cookie_validation:null"),
                 eq("JAVDB Top 250 Cookie 认证异常"), anyString(), eq("/automation"));
         verifyNoMoreInteractions(notifier);
     }
