@@ -21,7 +21,7 @@ public class BgmWishlistOperationStore {
     public BgmWishlistOperationStore(BgmWishlistExecutionMapper mapper, ObjectMapper json, PlatformTransactionManager transactions) {
         this.mapper = mapper; this.json = json; this.transactions = new TransactionTemplate(transactions);
     }
-    private synchronized void ensureTable() {
+    synchronized void ensureTable() {
         if (!ready) { mapper.createTableIfNotExists(); ready = true; }
     }
     public void create(Operation operation) {

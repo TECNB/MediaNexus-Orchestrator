@@ -79,6 +79,14 @@ public class TmdbClient {
         return pages <= 1 ? results : objectMapper.createArrayNode();
     }
 
+    public JsonNode searchWeComTitles(String query) {
+        JsonNode payload = get("/search/multi", "query=" + encode(query) + "&language=zh-CN&include_adult=false", "wecom title search");
+        if (!payload.path("results").isArray() || !payload.path("total_pages").isIntegralNumber()) {
+            throw new TmdbClientException(Reason.INVALID_RESPONSE, "TMDB title search response is incomplete");
+        }
+        return payload;
+    }
+
     public JsonNode getMovieDetails(int movieId, String language) {
         return get("/movie/" + movieId, "language=" + encode(language), "movie details");
     }

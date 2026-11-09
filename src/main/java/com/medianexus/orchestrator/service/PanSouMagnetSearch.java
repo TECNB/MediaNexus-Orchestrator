@@ -130,6 +130,22 @@ public class PanSouMagnetSearch {
         return recommendation(seriesTarget(request), query -> client.searchMagnets(new PanSouSearchCommand(query, true)), NO_PROGRESS);
     }
 
+    ProwlarrReleaseRecommendationResponse recommendPreferredMovie(
+            MovieReleaseRecommendationRequest request, Consumer<ReleaseSearchProgress> progress) {
+        return recommendPreferred(movieTarget(request), progress);
+    }
+
+    ProwlarrReleaseRecommendationResponse recommendPreferredSeries(
+            SeriesReleaseRecommendationRequest request, Consumer<ReleaseSearchProgress> progress) {
+        return recommendPreferred(seriesTarget(request), progress);
+    }
+
+    private ProwlarrReleaseRecommendationResponse recommendPreferred(Target target, Consumer<ReleaseSearchProgress> progress) {
+        List<Candidate> candidates = discover(target, query -> client.searchMagnets(new PanSouSearchCommand(query, false)),
+                progress, (identity, candidate) -> qualified(identity, candidate) && candidate.tags().resolutionTags().contains(identity.quality()));
+        return selectRecommendation(target, candidates);
+    }
+
     private ProwlarrReleaseSearchResponse searchResponse(Target target, Function<String, PanSouSearchResult> search) {
         List<Candidate> candidates = discover(target, search, NO_PROGRESS);
         return new ProwlarrReleaseSearchResponse(String.join(" / ", target.titles()),
@@ -138,7 +154,10 @@ public class PanSouMagnetSearch {
 
     private ProwlarrReleaseRecommendationResponse recommendation(
             Target target, Function<String, PanSouSearchResult> search, Consumer<ReleaseSearchProgress> progress) {
-        List<Candidate> candidates = discover(target, search, progress);
+        return selectRecommendation(target, discover(target, search, progress));
+    }
+
+    private ProwlarrReleaseRecommendationResponse selectRecommendation(Target target, List<Candidate> candidates) {
         Target identity = target.bangumiTitle() == null ? target
                 : new Target(union(target.titles(), List.of(target.bangumiTitle())), target.year(), target.season(), target.quality());
         List<Candidate> qualified = candidates.stream().filter(candidate -> qualified(identity, candidate)).toList();
@@ -157,6 +176,11 @@ public class PanSouMagnetSearch {
     /** 两个目录标题同时首查；目标画质可提前返回，升级或回退等待已发起查询结束。 */
     private List<Candidate> discover(
             Target target, Function<String, PanSouSearchResult> search, Consumer<ReleaseSearchProgress> progress) {
+        return discover(target, search, progress, this::qualified);
+    }
+
+    private List<Candidate> discover(Target target, Function<String, PanSouSearchResult> search,
+            Consumer<ReleaseSearchProgress> progress, java.util.function.BiPredicate<Target, Candidate> canFinish) {
         Map<PanSouMagnetIdentity, Candidate> candidates = new LinkedHashMap<>();
         List<PanSouClientException> failures = new ArrayList<>();
         ExecutorService executor = Executors.newFixedThreadPool(2);
@@ -179,14 +203,14 @@ public class PanSouMagnetSearch {
                     return sorted(target, candidates);
                 }
             }
-            if (candidates.values().stream().anyMatch(candidate -> qualified(target, candidate))) return sorted(target, candidates);
+            if (candidates.values().stream().anyMatch(candidate -> canFinish.test(target, candidate))) return sorted(target, candidates);
             Target supplementTarget = target.bangumiTitle() == null ? target
                     : new Target(union(target.titles(), List.of(target.bangumiTitle())), target.year(),
                             target.season(), target.quality(), target.bangumiTitle());
             for (String query : supplements(supplementTarget)) {
                 progress.accept(new ReleaseSearchProgress(query, "PanSou 补搜", "RUNNING", 0, null));
                 acceptBatch(supplementTarget, candidates, failures, queryBatch(query, search), progress);
-                if (candidates.values().stream().anyMatch(candidate -> qualified(supplementTarget, candidate))) {
+                if (candidates.values().stream().anyMatch(candidate -> canFinish.test(supplementTarget, candidate))) {
                     return sorted(supplementTarget, candidates);
                 }
             }

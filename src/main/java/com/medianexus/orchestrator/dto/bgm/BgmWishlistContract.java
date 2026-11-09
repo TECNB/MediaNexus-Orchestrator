@@ -75,7 +75,11 @@ public final class BgmWishlistContract {
     @Schema(description = "已核实的电影或剧集型动漫目标身份")
     public record Identity(String mediaType, int tmdbId,
                            @Schema(description = "电影为 null；剧集型动漫为已确认目标季度", nullable = true) Integer seasonNumber,
-                           String title, String originalTitle, Integer year) {
+                           String title, String originalTitle, Integer year,
+                           @Schema(description = "微信目录判定的入库类别；原想看来源不需要此字段", nullable = true) String ingestCategory) {
+        public Identity(String mediaType, int tmdbId, Integer seasonNumber, String title, String originalTitle, Integer year) {
+            this(mediaType, tmdbId, seasonNumber, title, originalTitle, year, null);
+        }
     }
 
     @Schema(description = "独立 BGM 条目、在库资格及删除进度")

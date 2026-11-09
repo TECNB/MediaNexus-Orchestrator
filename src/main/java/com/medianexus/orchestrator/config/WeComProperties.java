@@ -24,6 +24,23 @@ public class WeComProperties {
     @DurationMin(seconds = 1)
     private Duration timeout;
 
+    private boolean ingestEnabled;
+    private String ingestToken;
+    private String ingestAesKey;
+    private String ingestMemberId;
+    private Long ingestAdminId;
+
+    public boolean isIngestEnabled() { return ingestEnabled; }
+    public void setIngestEnabled(boolean value) { ingestEnabled = value; }
+    public String getIngestToken() { return ingestToken; }
+    public void setIngestToken(String value) { ingestToken = value; }
+    public String getIngestAesKey() { return ingestAesKey; }
+    public void setIngestAesKey(String value) { ingestAesKey = value; }
+    public String getIngestMemberId() { return ingestMemberId; }
+    public void setIngestMemberId(String value) { ingestMemberId = value; }
+    public Long getIngestAdminId() { return ingestAdminId; }
+    public void setIngestAdminId(Long value) { ingestAdminId = value; }
+
     public boolean isEnabled() {
         return enabled;
     }

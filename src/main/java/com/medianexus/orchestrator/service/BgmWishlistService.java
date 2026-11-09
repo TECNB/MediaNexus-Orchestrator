@@ -292,13 +292,21 @@ public class BgmWishlistService {
      * eligible 仅为发布查询前资格，不构成资源、额度或最终任务成功保证。
      */
     public Item evaluate(SourceState state, CollectedSubject subject) {
+        return evaluate(subject, state.identities().get(subject.subjectId()), state.createdTasks().get(subject.subjectId()),
+                state.candidateSubjectIds().contains(subject.subjectId()), "SUCCESS".equals(state.refreshStatus()));
+    }
+
+    Item evaluateWeComTarget(Item item) {
+        var subject = new CollectedSubject(item.subjectId(), item.title(), item.originalTitle(), item.coverUrl(), item.year(), item.updatedAt());
+        return evaluate(subject, item.identity(), null, false, true);
+    }
+
+    private Item evaluate(CollectedSubject subject, Identity identity, TaskLink saved, boolean candidate, boolean snapshotAvailable) {
         List<Reason> reasons = new ArrayList<>();
-        Identity identity = state.identities().get(subject.subjectId());
         var deletion = identity == null ? null : tasks.latestDeletion(target(identity));
         var deletionTask = deletion == null ? null : deletion.task();
         boolean deleting = deletionTask != null && Set.of("PENDING", "RUNNING").contains(deletionTask.status());
         if (deletion != null && !deletion.succeeded()) reasons.add(deletion.refusal());
-        TaskLink saved = state.createdTasks().get(subject.subjectId());
         TaskLink associated = null;
         if (identity != null) {
             var previous = tasks.previousTask(target(identity));
@@ -319,9 +327,9 @@ public class BgmWishlistService {
                 associated = null;
             }
         }
-        boolean automaticCandidate = saved == null && deletion == null && state.candidateSubjectIds().contains(subject.subjectId());
-        if (!"SUCCESS".equals(state.refreshStatus()) || deleting) {
-            if (!"SUCCESS".equals(state.refreshStatus())) {
+        boolean automaticCandidate = saved == null && deletion == null && candidate;
+        if (!snapshotAvailable || deleting) {
+            if (!snapshotAvailable) {
                 reasons.add(0, new Reason("SNAPSHOT_UNAVAILABLE", "本轮没有完整有效清单，请先刷新成功"));
             }
             return new Item(subject.subjectId(), subject.title(), subject.originalTitle(), subject.coverUrl(), subject.year(),

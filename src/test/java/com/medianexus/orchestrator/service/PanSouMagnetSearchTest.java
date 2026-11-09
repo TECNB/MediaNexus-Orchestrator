@@ -294,6 +294,23 @@ class PanSouMagnetSearchTest {
     }
 
     @Test
+    void weComWaitsForAnotherTitleBeforeFallingBackTo1080p() {
+        var first = new CountDownLatch(1);
+        when(client.searchMagnets(any())).thenAnswer(invocation -> {
+            PanSouSearchCommand query = invocation.getArgument(0);
+            if (query.keyword().equals("Show")) {
+                first.countDown();
+                return new PanSouSearchResult(List.of(entry(magnet(1), "Show S02 Complete 1080p", "nyaa")));
+            }
+            assertThat(first.await(1, TimeUnit.SECONDS)).isTrue();
+            return new PanSouSearchResult(List.of(entry(magnet(2), "Show S02 Complete 2160p", "nyaa")));
+        });
+        var result = search.recommendPreferredSeries(new SeriesReleaseRecommendationRequest(
+                1, null, null, "Show", "原名", 2, "2160p"), ignored -> {});
+        assertThat(result.item().downloadRef()).isEqualTo(magnet(2));
+    }
+
+    @Test
     void preservesQualifiedResultAfterOtherTitleFailedAndRejectsWrongMovieVersion() {
         when(client.searchMagnets(any())).thenAnswer(invocation -> {
             PanSouSearchCommand command = invocation.getArgument(0);

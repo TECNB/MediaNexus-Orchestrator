@@ -1,6 +1,7 @@
 package com.medianexus.orchestrator.service;
 
 import com.medianexus.orchestrator.common.exception.*;
+import com.medianexus.orchestrator.dto.bgm.BgmWishlistContract.Provider;
 import com.medianexus.orchestrator.dto.bgm.BgmWishlistContract.*;
 import com.medianexus.orchestrator.dto.bgm.BgmWishlistOperationContract.*;
 import com.medianexus.orchestrator.dto.bgm.BgmWishlistOperationContract.Operation;
@@ -150,8 +151,9 @@ public class BgmWishlistOperationService {
     }
 
     public Operation retry(String id, long subjectId) {
-        auth.requireAdminUser();
+        User actor = auth.requireAdminUser();
         Operation changed = records.update(id, operation -> {
+            requireWeComActor(operation, actor);
             if (BUSY.contains(operation.status())) throw bad("本轮仍在执行");
             Entry previous = find(operation, subjectId);
             if (previous.task() != null || !Set.of("WAITING_RESOURCE", "WAITING_CONFIRMATION", "DEFERRED", "FAILED", "INTERRUPTED").contains(previous.status())) {
@@ -163,8 +165,9 @@ public class BgmWishlistOperationService {
     }
 
     public Operation defer(String id, long subjectId) {
-        auth.requireAdminUser();
+        User actor = auth.requireAdminUser();
         return live(records.update(id, operation -> {
+            requireWeComActor(operation, actor);
             Entry previous = find(operation, subjectId);
             if (BUSY.contains(operation.status()) || !WAITING.contains(previous.status())) throw bad("当前作品不能暂缓");
             return replace(operation, new Entry(previous.item(), "DEFERRED", previous.startedAt(), previous.searches(),
@@ -179,7 +182,61 @@ public class BgmWishlistOperationService {
         return new Operations(values.items().stream().map(this::live).toList(), values.total(), page, pageSize);
     }
 
-    public Operation get(String id) { auth.requireAdminUser(); return live(records.get(id)); }
+    public Operation get(String id) {
+        User actor = auth.requireAdminUser();
+        Operation operation = records.get(id);
+        requireWeComActor(operation, actor);
+        return live(operation);
+    }
+
+    public Operations listWeCom(int page, int size) {
+        User actor = auth.requireAdminUser();
+        if (page < 1 || size < 1 || size > 50) throw bad("分页参数超出范围");
+        Operations values = records.list(weComSource(actor.getId()), page, size);
+        return new Operations(values.items().stream().map(this::live).toList(), values.total(), page, size);
+    }
+
+    static String weComSource(long actorId) { return "wecom-" + actorId; }
+
+    Operation openWeCom(String id, User admin, String title) {
+        var source = new Source(weComSource(admin.getId()), null, admin.getId(), admin.getUsername(),
+                false, null, 1, "2160p", null, null, false);
+        Instant at = Instant.now();
+        Item item = weComItem(title, null, null, at);
+        Operation operation = new Operation(id, source, "SINGLE", "WECOM", admin.getId(), at, at,
+                "RESOLVING", List.of(1L), List.of(entry(item, "RESOLVING", at)), null);
+        records.create(operation);
+        return operation;
+    }
+
+    void setWeComResolution(String id, String state, String message) {
+        records.update(id, operation -> status(operation, state, message == null ? null : reason(state, message)));
+    }
+
+    void enqueueWeCom(String id, Identity identity, String cover) {
+        records.update(id, operation -> {
+            if (!Set.of("RESOLVING", "WAITING_WORK", "WAITING_SEASON").contains(operation.status())) {
+                throw bad("微信请求已结束，请重新发送片名");
+            }
+            Item item = weComItem(identity.title(), identity, cover, operation.startedAt());
+            return status(replace(operation, entry(item, "SEARCHING", Instant.now()), "QUEUED"), "QUEUED", null);
+        });
+        launch(id);
+    }
+
+    private static Item weComItem(String title, Identity identity, String cover, Instant at) {
+        return new Item(1L, title, identity == null ? null : identity.originalTitle(), cover,
+                identity == null ? null : identity.year(), at.toString(), identity, "UNKNOWN", "UNKNOWN",
+                false, List.of(), null, false, "NOT_CHECKED", null, null, false);
+    }
+
+    private static boolean fromWeCom(Operation operation) { return "WECOM".equals(operation.triggerType()); }
+
+    private static void requireWeComActor(Operation operation, User actor) {
+        if (fromWeCom(operation) && !Objects.equals(operation.actorUserId(), actor.getId())) {
+            throw new BusinessException(ErrorCode.FORBIDDEN, "该微信请求不属于当前管理员", HttpStatus.FORBIDDEN);
+        }
+    }
 
     public Operation schedule(String sourceId, ZonedDateTime time) {
         ZonedDateTime local = time.withZoneSameInstant(ZoneId.of("Asia/Shanghai"));
@@ -213,6 +270,10 @@ public class BgmWishlistOperationService {
 
     private void execute(String id) {
         Operation operation = records.update(id, value -> status(value, "RUNNING", null));
+        if (fromWeCom(operation)) {
+            executeWeCom(id);
+            return;
+        }
         SourceState refreshed = wishlist.refreshSourceForOperation(operation.source().id());
         requireConfig(operation.source(), refreshed.source());
         Comparator<CollectedSubject> newest = Comparator.comparing(
@@ -252,11 +313,36 @@ public class BgmWishlistOperationService {
         finish(id);
     }
 
+    private void executeWeCom(String id) {
+        try { process(id, 1L); }
+        catch (BgmWishlistTaskGateway.CreatedTaskRecordException exception) {
+            var task = exception.task();
+            updateEntry(id, 1L, previous -> new Entry(previous.item(), "CREATED", previous.startedAt(), previous.searches(),
+                    previous.candidates(), previous.selected(), new Task(task.taskType(), task.taskId(), task.status(), "created", null, null),
+                    reason("TASK_RECORD_FAILED", "任务已创建，关联保存失败；请在任务中心查看"), previous.notification()));
+        } catch (BgmWishlistTaskGateway.EligibilityRefusal refusal) {
+            updateEntry(id, 1L, previous -> outcome(previous, "SKIPPED", refusal.reason()));
+        } catch (BusinessException exception) {
+            updateEntry(id, 1L, previous -> outcome(previous, "SKIPPED", reason("REJECTED", exception.getMessage())));
+        } catch (RuntimeException exception) {
+            fail(id, exception);
+        }
+        Operation operation = records.get(id);
+        Entry entry = find(operation, 1L);
+        if (!"FAILED".equals(operation.status())) finish(id);
+        if (Set.of("SKIPPED", "FAILED").contains(entry.status()) && entry.reason() != null) notifyWeCom(operation, entry);
+    }
+
+    private Item verifyTarget(Operation operation, Entry entry) {
+        if (fromWeCom(operation)) return wishlist.evaluateWeComTarget(entry.item());
+        requireConfig(operation.source(), sources.get(operation.source().id()).source());
+        return wishlist.evaluateForOperation(operation.source().id(), entry.item().subjectId());
+    }
+
     private boolean process(String id, long subjectId) {
         Operation operation = records.get(id);
-        requireConfig(operation.source(), sources.get(operation.source().id()).source());
         Entry original = find(operation, subjectId);
-        Item item = wishlist.evaluateForOperation(operation.source().id(), subjectId);
+        Item item = verifyTarget(operation, original);
         if (original.item().identity() != null && !sameTarget(original.item().identity(), item.identity())) throw bad("目录目标已变化，请重新发起");
         updateEntry(id, subjectId, previous -> new Entry(item, previous.status(), previous.startedAt(), previous.searches(),
                 previous.candidates(), previous.selected(), previous.task(), previous.reason(), previous.notification()));
@@ -269,6 +355,7 @@ public class BgmWishlistOperationService {
         }
         User owner = users.selectById(operation.source().ownerUserId());
         if (owner == null) throw bad("任务归属成员不存在");
+        if (fromWeCom(operation) && !"ADMIN".equalsIgnoreCase(owner.getRole())) throw bad("微信绑定账号已不是管理员");
         var availableQuota = quota.dailyContentCreateQuota(owner);
         if (!availableQuota.exempt() && availableQuota.remaining() == 0) {
             updateEntry(id, subjectId, previous -> outcome(previous, "SKIPPED", reason("QUOTA_EXHAUSTED", "任务归属成员今日创建次数已耗尽"))); return false;
@@ -277,11 +364,7 @@ public class BgmWishlistOperationService {
         if (!"CREATING".equals(original.status())) {
             List<Candidate> candidates;
             try {
-                var searchTarget = operation.source().provider() == Provider.DOUBAN ? target(item.identity())
-                        : new BgmWishlistTaskGateway.Target(item.identity().mediaType(), item.identity().tmdbId(),
-                                item.identity().seasonNumber(), item.identity().title(), item.identity().originalTitle(),
-                                item.identity().year(), item.title());
-                candidates = tasks.candidates(searchTarget, operation.source().quality(), progress ->
+                java.util.function.Consumer<ProwlarrReleaseIngestService.ReleaseSearchProgress> onProgress = progress ->
                     updateEntry(id, subjectId, previous -> {
                         List<Search> searches = new ArrayList<>(previous.searches());
                         Search search = new Search(progress.query(), progress.source(), progress.status(), progress.elapsedMs(), progress.resultCount());
@@ -290,7 +373,14 @@ public class BgmWishlistOperationService {
                         if (queryIndex < 0) searches.add(search); else searches.set(queryIndex, search);
                         return new Entry(previous.item(), previous.status(), previous.startedAt(), List.copyOf(searches),
                                 previous.candidates(), previous.selected(), null, previous.reason(), previous.notification());
-                    })).stream().map(release -> new Candidate(candidateKey(release), release)).toList();
+                    });
+                var searchTarget = fromWeCom(operation) || operation.source().provider() == Provider.DOUBAN ? target(item.identity())
+                        : new BgmWishlistTaskGateway.Target(item.identity().mediaType(), item.identity().tmdbId(),
+                                item.identity().seasonNumber(), item.identity().title(), item.identity().originalTitle(),
+                                item.identity().year(), item.title());
+                candidates = (fromWeCom(operation) ? tasks.weComCandidates(searchTarget, onProgress)
+                        : tasks.candidates(searchTarget, operation.source().quality(), onProgress))
+                        .stream().map(release -> new Candidate(candidateKey(release), release)).toList();
             } catch (ProwlarrReleaseIngestService.NoMatchingReleaseException noMatch) {
                 updateEntry(id, subjectId, previous -> new Entry(previous.item(),
                         noMatch.candidates().isEmpty() ? "WAITING_RESOURCE" : "WAITING_CONFIRMATION",
@@ -312,8 +402,7 @@ public class BgmWishlistOperationService {
             if (selected == null) { notifyContent(id, subjectId); return false; }
         }
         // 搜索期间配置、目标或在库可能变化；最终提交必须再次核验，人工确认不绕过此边界。
-        requireConfig(operation.source(), sources.get(operation.source().id()).source());
-        Item checked = wishlist.evaluateForOperation(operation.source().id(), subjectId);
+        Item checked = verifyTarget(operation, original);
         if (!sameTarget(item.identity(), checked.identity())) throw bad("目录目标已变化，请重新发起");
         if (!checked.eligible()) {
             updateEntry(id, subjectId, previous -> outcome(previous, "SKIPPED", checked.reasons().get(0))); return false;
@@ -325,7 +414,9 @@ public class BgmWishlistOperationService {
         BgmWishlistTaskGateway.ActiveTask task;
         try {
             var target = target(checked.identity());
-            task = operation.source().provider() == Provider.DOUBAN && "SERIES".equals(target.mediaType())
+            boolean regularSeries = "SERIES".equals(target.mediaType()) && (fromWeCom(operation)
+                    ? "SERIES".equals(checked.identity().ingestCategory()) : operation.source().provider() == Provider.DOUBAN);
+            task = regularSeries
                     ? tasks.createSeries(target, selected.release(), owner)
                     : tasks.create(target, selected.release(), owner);
         }
@@ -339,12 +430,17 @@ public class BgmWishlistOperationService {
         Task link = new Task(task.taskType(), task.taskId(), task.status(), "created", null, null);
         updateEntry(id, subjectId, previous -> new Entry(checked, "CREATED", previous.startedAt(), previous.searches(),
                 previous.candidates(), previous.selected(), link, null, previous.notification()));
-        sources.recordCreated(operation.source().id(), subjectId, new TaskLink(task.taskType(), task.taskId(), task.status()));
+        if (!fromWeCom(operation)) sources.recordCreated(operation.source().id(), subjectId,
+                new TaskLink(task.taskType(), task.taskId(), task.status()));
         return true;
     }
 
     private void notifyContent(String id, long subjectId) {
         Operation operation = records.get(id); Entry entry = find(operation, subjectId);
+        if (fromWeCom(operation)) {
+            notifyWeCom(operation, entry);
+            return;
+        }
         String key = "bgm:" + operation.source().id() + ":" + subjectId + ":" + entry.reason().code()
                 + (entry.candidates().isEmpty() ? "" : ":" + entry.candidates().get(0).key());
         updateEntry(id, subjectId, previous -> notice(previous, "PENDING"));
@@ -353,6 +449,15 @@ public class BgmWishlistOperationService {
         String result = notifications.sendOperationalAlert(key, (entry.candidates().isEmpty() ? "入库待补充资源｜" : "入库待确认｜") + entry.item().title(),
                 entry.reason().message() + "。请查看操作记录处理。", path + "?operation=" + id);
         updateEntry(id, subjectId, previous -> notice(previous, result));
+    }
+
+    private void notifyWeCom(Operation operation, Entry entry) {
+        long subjectId = entry.item().subjectId();
+        updateEntry(operation.id(), subjectId, previous -> notice(previous, "PENDING"));
+        String key = "wecom:" + operation.id() + ":" + entry.reason().code();
+        String result = notifications.sendToWeComAdmin(operation.actorUserId(), key, entry.item().title(),
+                entry.reason().message(), "/automation/wecom?operation=" + operation.id());
+        updateEntry(operation.id(), subjectId, previous -> notice(previous, result));
     }
 
     private Operation live(Operation operation) {

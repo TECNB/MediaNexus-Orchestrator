@@ -301,3 +301,16 @@ Bearer <token>
 ## 验证约定
 
 本仓库默认不运行全项目构建、全量测试或全量校验。改动文档时无需启动后端；改动接口或编排逻辑时，优先做最小相关验证，并先查看 `logs/dev-run.log` 中的现有启动和错误输出。
+
+### 微信自动化（管理员）
+
+默认关闭。启用前配置现有企微自建应用的企业 ID、应用 ID、应用 Secret 和前端地址，再通过部署环境配置：
+
+- `MEDIANEXUS_WECOM_INGEST_ENABLED=true`
+- `MEDIANEXUS_WECOM_INGEST_MEMBER_ID`：允许发起操作的单一企业微信成员 ID。与现有通知接收人分别配置。
+- `MEDIANEXUS_WECOM_INGEST_ADMIN_ID`：对应的 MediaNexus 管理员用户 ID，用于授权、归属和计额。
+- `MEDIANEXUS_WECOM_INGEST_TOKEN` 与 `MEDIANEXUS_WECOM_INGEST_AES_KEY`：与企业微信应用「设置 API 接收」一致，不写入仓库或 Web 设置。
+
+企业微信后台填写外部回调 URL：`/api/v1/wecom/ingest/callback`。如果通过现有 Web 容器代理访问后端，路径是 `/java-api/api/v1/wecom/ingest/callback`。联调通过后再切换原来的临时测试回调。启用正式回调后，绑定的管理员发送符合条件的片名**会创建真实任务**；回调校验本身不会创建任务。
+
+同名作品及多季结果在微信回编号选择（十分钟有效，同一人以最新一组为准）。电影、剧集、动漫优先 4K，仅在没有合格 4K 时退到 1080p。已有合格 4K 需要人工确认时，保留它。待确认、待补源可在「自动化 → 微信自动化」处理；已创建的任务由任务中心及原通知流程承接。

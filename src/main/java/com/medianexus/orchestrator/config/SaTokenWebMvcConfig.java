@@ -39,6 +39,7 @@ public class SaTokenWebMvcConfig implements WebMvcConfigurer {
                         "/api/v1/auth/login",
                         "/api/v1/emby/webhooks/playback",
                         "/api/v1/emby/webhooks/library",
+                        "/api/v1/wecom/ingest/callback",
                         "/api/v1/health"
                 );
     }

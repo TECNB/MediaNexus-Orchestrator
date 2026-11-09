@@ -261,6 +261,38 @@ class BgmWishlistOperationTest {
         verify(f.tasks).create(any(), eq(english), eq(f.owner));
     }
 
+    @Test void weComConfirmationKeepsTheChosen4kAndDoesNotReadAWishlist() {
+        Fixture f = new Fixture();
+        f.owner.setRole("ADMIN");
+        var selected = new Identity("SERIES", 1, 1, "作品", "Original", 2024, "SERIES");
+        var english4k = new ProwlarrReleaseItemResponse("Original S01 Complete 2160p", 1L, 4, 0, 0,
+                "indexer", null, 1, "reference", List.of("2160p"), List.of(), List.of("S01"), "原始标题", "Original");
+        when(f.wishlist.evaluateWeComTarget(any())).thenAnswer(call -> {
+            Item item = call.getArgument(0);
+            return new Item(item.subjectId(), item.title(), item.originalTitle(), item.coverUrl(), item.year(), item.updatedAt(),
+                    item.identity(), "ABSENT", "AVAILABLE", true, List.of(), null, false, "NOT_CHECKED", null, null, false);
+        });
+        when(f.tasks.weComCandidates(any(), any())).thenReturn(List.of(english4k));
+        when(f.tasks.createSeries(any(), eq(english4k), eq(f.owner)))
+                .thenReturn(new BgmWishlistTaskGateway.ActiveTask("SERIES", "real-task", "PENDING"));
+        f.service.openWeCom("wecom-test", f.owner, "作品 S01");
+        f.service.enqueueWeCom("wecom-test", selected, null);
+        f.executor.runPending();
+
+        Entry waiting = f.rows.get("wecom-test").entries().get(0);
+        assertEquals("WAITING_CONFIRMATION", waiting.status());
+        verify(f.tasks, never()).createSeries(any(), any(), any());
+        verify(f.notifications).sendToWeComAdmin(eq(1L), anyString(), anyString(), anyString(),
+                eq("/automation/wecom?operation=wecom-test"));
+
+        f.service.confirm("wecom-test", new CandidateInput(1L, waiting.candidates().get(0).key()));
+        f.executor.runPending();
+        verify(f.tasks).createSeries(any(), eq(english4k), eq(f.owner));
+        verify(f.tasks, times(1)).weComCandidates(any(), any());
+        verifyNoInteractions(f.sources);
+        assertEquals("real-task", f.rows.get("wecom-test").entries().get(0).task().taskId());
+    }
+
     static class Fixture {
         final AuthService auth = mock(AuthService.class);
         final BgmWishlistService wishlist = mock(BgmWishlistService.class);

@@ -124,6 +124,16 @@ public class BgmWishlistTaskGateway {
         return title.trim();
     }
 
+    List<ProwlarrReleaseItemResponse> weComCandidates(Target target,
+            java.util.function.Consumer<ProwlarrReleaseIngestService.ReleaseSearchProgress> progress) {
+        if ("MOVIE".equals(target.mediaType())) {
+            return releases.recommendWeComMovie(new MovieReleaseRecommendationRequest(
+                    target.tmdbId(), null, target.title(), target.originalTitle(), target.year(), "2160p"), progress).items();
+        }
+        return releases.recommendWeComSeries(new SeriesReleaseRecommendationRequest(
+                null, target.tmdbId(), null, target.title(), target.originalTitle(), target.seasonNumber(), "2160p"), progress).items();
+    }
+
     public com.medianexus.orchestrator.dto.bgm.BgmWishlistOperationContract.Task currentTask(String type, String id) {
         return switch (type) {
             case "MOVIE" -> {

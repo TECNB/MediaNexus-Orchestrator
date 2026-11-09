@@ -126,6 +126,26 @@ public class WeComClient {
         send(app, payload);
     }
 
+    public record Article(String title, String description, String imageUrl, String detailUrl) {}
+
+    public void sendTextTo(String memberId, String content) {
+        sendText(new Recipient(scope(), memberId), content);
+    }
+
+    public void sendNewsTo(String memberId, List<Article> articles) {
+        Application app = application();
+        ObjectNode payload = message(app, new Recipient(app.scope(), memberId), "news");
+        var items = payload.putObject("news").putArray("articles");
+        for (Article article : articles) {
+            items.addObject().put("title", article.title()).put("description", article.description())
+                    .put("picurl", article.imageUrl()).put("url", article.detailUrl());
+        }
+        send(app, payload);
+    }
+
+    /** 只预取应用 token，不发送消息。 */
+    public void warmToken() { token(application()); }
+
     private ObjectNode message(Application app, Recipient recipient, String type) {
         if (!app.scope().equals(recipient.scope()) || !isMemberId(recipient.memberId())) {
             throw new IllegalStateException("企业微信接收成员无效或所属应用已变更");

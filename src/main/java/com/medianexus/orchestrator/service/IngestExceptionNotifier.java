@@ -28,8 +28,18 @@ public class IngestExceptionNotifier {
         return send(new Recipient(client.scope(), member == null ? null : member.trim()), key, title, body, path);
     }
 
+    public String sendToWeComAdmin(Long adminId, String key, String title, String body, String path) {
+        if (!properties.isIngestEnabled() || !java.util.Objects.equals(adminId, properties.getIngestAdminId())
+                || !WeComClient.isMemberId(properties.getIngestMemberId())) return "DISABLED";
+        return deliver(new Recipient(client.scope(), properties.getIngestMemberId()), key, title, body, path);
+    }
+
     public String send(Recipient recipient, String key, String title, String body, String path) {
         if (!properties.isEnabled()) return "DISABLED";
+        return deliver(recipient, key, title, body, path);
+    }
+
+    private String deliver(Recipient recipient, String key, String title, String body, String path) {
         try {
             ensureTable();
             if (notices.claim(key) == 0) {

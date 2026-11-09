@@ -80,4 +80,33 @@ public interface BgmWishlistExecutionMapper {
         AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.status')) IN ('QUEUED','RUNNING','WAITING')
         """)
     List<String> openOperations();
+
+    @Insert("""
+            INSERT IGNORE INTO bgm_wishlist_executions (id,kind,source_id,actor_id,payload)
+            VALUES (#{id},'WECOM_INBOX',#{sourceId},#{actorId},#{payload})
+            """)
+    int insertWeComMessage(@Param("id") String id, @Param("sourceId") String sourceId,
+                           @Param("actorId") Long actorId, @Param("payload") String payload);
+
+    @Select("""
+            SELECT payload FROM bgm_wishlist_executions WHERE kind='WECOM_INBOX' AND consumed=FALSE
+            ORDER BY created_at,id LIMIT 20
+            """)
+    List<String> pendingWeComMessages();
+
+    @Update("UPDATE bgm_wishlist_executions SET consumed=TRUE,payload='{}' WHERE kind='WECOM_INBOX' AND id=#{id}")
+    void consumeWeComMessage(@Param("id") String id);
+
+    @Select("""
+            SELECT payload FROM bgm_wishlist_executions WHERE kind='OPERATION' AND source_id=#{sourceId}
+            AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.status')) IN ('RESOLVING','WAITING_WORK','WAITING_SEASON')
+            ORDER BY created_at DESC,id DESC LIMIT 1
+            """)
+    String activeWeComSelection(@Param("sourceId") String sourceId);
+
+    @Insert("""
+            INSERT INTO bgm_wishlist_executions (id,kind,source_id,payload)
+            VALUES (#{id},'WECOM_CHOICES',#{sourceId},#{payload}) ON DUPLICATE KEY UPDATE payload=#{payload}
+            """)
+    void saveWeComChoices(@Param("id") String id, @Param("sourceId") String sourceId, @Param("payload") String payload);
 }
