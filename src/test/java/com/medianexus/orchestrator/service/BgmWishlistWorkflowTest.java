@@ -75,8 +75,11 @@ class BgmWishlistWorkflowTest {
         when(f.douban.readWishlist("account")).thenReturn(List.of(
                 new BgmWishlistSourceStore.CollectedSubject(1, "电影", null, null, 2020, "2026-01-03T00:00:00Z"),
                 new BgmWishlistSourceStore.CollectedSubject(2, "剧集", null, null, 2020, "2026-01-02T00:00:00Z"),
-                new BgmWishlistSourceStore.CollectedSubject(3, "多季", null, null, 2020, "2026-01-01T00:00:00Z")));
+                new BgmWishlistSourceStore.CollectedSubject(3, "多季", null, "https://img9.doubanio.com/legacy.jpg", 2020, "2026-01-01T00:00:00Z")));
         f.movie(101, "{\"type\":4,\"release_date\":\"2020-01-01T00:00:00Z\"}");
+        when(f.tmdb.getMovieDetails(101, "zh-CN")).thenReturn(f.json.readTree("""
+                {"id":101,"title":"电影","release_date":"2020-01-01","poster_path":"/movie.jpg"}
+                """));
         when(f.tmdb.searchWishlistTitles("电影")).thenReturn(f.json.readTree("""
                 [{"id":101,"media_type":"movie","title":"电影","release_date":"2020-01-01"}]
                 """));
@@ -87,7 +90,7 @@ class BgmWishlistWorkflowTest {
                 [{"id":202,"media_type":"tv","name":"多季","first_air_date":"2020-01-01"}]
                 """));
         when(f.tmdb.getTvDetails(201, "zh-CN")).thenReturn(f.json.readTree("""
-                {"id":201,"name":"剧集","first_air_date":"2020-01-01","seasons":[{"season_number":1,"episode_count":1}]}
+                {"id":201,"name":"剧集","first_air_date":"2020-01-01","poster_path":"/series.jpg","seasons":[{"season_number":1,"episode_count":1}]}
                 """));
         when(f.tmdb.getTvSeasonDetails(201, 1, "zh-CN")).thenReturn(f.json.readTree("""
                 {"id":301,"season_number":1,"episodes":[{"episode_number":1,"air_date":"2020-01-01"}]}
@@ -99,6 +102,9 @@ class BgmWishlistWorkflowTest {
         assertEquals("MOVIE", items.get(0).identity().mediaType());
         assertEquals(1, items.get(1).identity().seasonNumber());
         assertNull(items.get(2).identity());
+        assertEquals("https://image.tmdb.org/t/p/w500/movie.jpg", items.get(0).coverUrl());
+        assertEquals("https://image.tmdb.org/t/p/w500/series.jpg", items.get(1).coverUrl());
+        assertNull(items.get(2).coverUrl());
         verifyNoInteractions(f.mappings);
         when(f.douban.readWishlist("account")).thenThrow(DoubanWishlistClient.WishlistReadException.class);
         Wishlist failed = f.wishlist.refresh(source.id());
@@ -135,6 +141,7 @@ class BgmWishlistWorkflowTest {
         assertNotNull(byId.get(1L).identity(), "刷新必须自动确认可核实的目录，而非让所有作品等待人工选择");
         assertEquals("MOVIE", byId.get(1L).identity().mediaType());
         assertEquals(101, byId.get(1L).identity().tmdbId());
+        assertEquals("https://lain.bgm.tv/pic/cover.jpg", byId.get(1L).coverUrl());
         assertEquals(1, byId.get(2L).identity().seasonNumber());
         assertEquals(103, byId.get(3L).identity().tmdbId());
         assertNull(byId.get(4L).identity());
@@ -715,7 +722,8 @@ class BgmWishlistWorkflowTest {
             for (long id : ids) {
                 ObjectNode entry = entries.addObject().put("subject_id", id).put("subject_type", 2).put("type", 1)
                         .put("updated_at", "2026-01-" + String.format("%02d", 28 - (id % 28)) + updateSuffix);
-                entry.putObject("subject").put("id", id).put("type", 2).put("name", "same title").put("date", "2020-01-01");
+                entry.putObject("subject").put("id", id).put("type", 2).put("name", "same title").put("date", "2020-01-01")
+                        .putObject("images").put("large", "https://lain.bgm.tv/pic/cover.jpg");
             }
             return root.toString();
         }

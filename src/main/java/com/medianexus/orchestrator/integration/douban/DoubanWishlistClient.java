@@ -89,10 +89,8 @@ public class DoubanWishlistClient {
                     if (titles[0].isBlank()) throw new WishlistReadException();
                     var intro = item.selectFirst(".intro");
                     var year = YEAR.matcher(intro == null ? "" : intro.text());
-                    var image = item.selectFirst(".pic img[src]");
-                    String cover = image == null ? "" : image.absUrl("src");
                     subjects.add(new CollectedSubject(id, titles[0], titles.length > 1 ? titles[1] : null,
-                            cover.startsWith("https://") ? cover : null, year.find() ? Integer.valueOf(year.group(1)) : null,
+                            null, year.find() ? Integer.valueOf(year.group(1)) : null,
                             LocalDate.parse(date.text()).atStartOfDay(DOUBAN_DATES).toInstant().toString()));
                 }
                 if (offset + slots == expected) return List.copyOf(subjects);

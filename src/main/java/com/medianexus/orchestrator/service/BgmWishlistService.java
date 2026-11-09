@@ -293,19 +293,21 @@ public class BgmWishlistService {
      */
     public Item evaluate(SourceState state, CollectedSubject subject) {
         return evaluate(subject, state.identities().get(subject.subjectId()), state.createdTasks().get(subject.subjectId()),
-                state.candidateSubjectIds().contains(subject.subjectId()), "SUCCESS".equals(state.refreshStatus()));
+                state.candidateSubjectIds().contains(subject.subjectId()), "SUCCESS".equals(state.refreshStatus()), state.source().provider());
     }
 
     Item evaluateWeComTarget(Item item) {
         var subject = new CollectedSubject(item.subjectId(), item.title(), item.originalTitle(), item.coverUrl(), item.year(), item.updatedAt());
-        Item checked = evaluate(subject, item.identity(), null, false, true);
+        Item checked = evaluate(subject, item.identity(), null, false, true, Provider.BGM);
         // 微信记录属于发起人，不返回其他用户可能创建的任务或删除操作 ID。
         return new Item(checked.subjectId(), checked.title(), checked.originalTitle(), checked.coverUrl(),
                 checked.year(), checked.updatedAt(), checked.identity(), checked.libraryStatus(), checked.availability(),
                 checked.eligible(), checked.reasons(), null, false, checked.releaseStatus(), null, null, false);
     }
 
-    private Item evaluate(CollectedSubject subject, Identity identity, TaskLink saved, boolean candidate, boolean snapshotAvailable) {
+    private Item evaluate(CollectedSubject subject, Identity identity, TaskLink saved, boolean candidate,
+                          boolean snapshotAvailable, Provider provider) {
+        String coverUrl = provider == Provider.DOUBAN ? null : subject.coverUrl();
         List<Reason> reasons = new ArrayList<>();
         var deletion = identity == null ? null : tasks.latestDeletion(target(identity));
         var deletionTask = deletion == null ? null : deletion.task();
@@ -336,7 +338,7 @@ public class BgmWishlistService {
             if (!snapshotAvailable) {
                 reasons.add(0, new Reason("SNAPSHOT_UNAVAILABLE", "本轮没有完整有效清单，请先刷新成功"));
             }
-            return new Item(subject.subjectId(), subject.title(), subject.originalTitle(), subject.coverUrl(), subject.year(),
+            return new Item(subject.subjectId(), subject.title(), subject.originalTitle(), coverUrl, subject.year(),
                     subject.updatedAt(), identity, "UNKNOWN", "UNKNOWN", false, List.copyOf(reasons), null,
                     automaticCandidate, "NOT_CHECKED", associated, deletionTask, false);
         }
@@ -348,7 +350,13 @@ public class BgmWishlistService {
             reasons.add(new Reason("IDENTITY_UNKNOWN", "自动匹配未能确认唯一目录和目标季度，可手动纠正"));
         } else {
             try {
-                availability = "MOVIE".equals(identity.mediaType()) ? movieAvailability(identity) : seasonAvailability(identity);
+                boolean movie = "MOVIE".equals(identity.mediaType());
+                JsonNode details = movie ? tmdb.getMovieDetails(identity.tmdbId(), "zh-CN")
+                        : tmdb.getTvDetails(identity.tmdbId(), "zh-CN");
+                if (details.path("id").asInt() == identity.tmdbId()) {
+                    if (provider == Provider.DOUBAN) coverUrl = tmdbPosterUrl(details);
+                    availability = movie ? movieAvailability(identity) : seasonAvailability(identity, details);
+                }
             } catch (TmdbClientException exception) {
                 availability = "UNKNOWN";
             }
@@ -369,7 +377,7 @@ public class BgmWishlistService {
                 reasons.add(new Reason("ACTIVE_TASK", "同一电影或目标季度已有处理中任务"));
             }
         }
-        return new Item(subject.subjectId(), subject.title(), subject.originalTitle(), subject.coverUrl(), subject.year(),
+        return new Item(subject.subjectId(), subject.title(), subject.originalTitle(), coverUrl, subject.year(),
                 subject.updatedAt(), identity, library, availability, reasons.isEmpty(), List.copyOf(reasons), active,
                 automaticCandidate, "NOT_CHECKED", associated, deletionTask, canDelete && active == null);
     }
@@ -460,8 +468,6 @@ public class BgmWishlistService {
 
     /** TMDB release types 4/5/6 的已发生发行是最小证据；不推断地区影院窗口，不拦截重映。 */
     private String movieAvailability(Identity identity) {
-        JsonNode details = tmdb.getMovieDetails(identity.tmdbId(), "zh-CN");
-        if (details.path("id").asInt() != identity.tmdbId()) return "UNKNOWN";
         JsonNode countries = tmdb.getMovieReleaseDates(identity.tmdbId()).path("results");
         if (!countries.isArray()) return "UNKNOWN";
         boolean theatrical = false;
@@ -482,9 +488,7 @@ public class BgmWishlistService {
     }
 
     /** 仅使用真实目标季度的正片总数、逐集日期及下一集信息，整个系列 Ended 不能单独放行。 */
-    private String seasonAvailability(Identity identity) {
-        JsonNode series = tmdb.getTvDetails(identity.tmdbId(), "zh-CN");
-        if (series.path("id").asInt() != identity.tmdbId()) return "UNKNOWN";
+    private String seasonAvailability(Identity identity, JsonNode series) {
         JsonNode summary = findSeason(series, identity.seasonNumber());
         if (summary == null || !summary.path("episode_count").isIntegralNumber()
                 || summary.path("episode_count").asInt() <= 0) return "UNKNOWN";
@@ -529,9 +533,13 @@ public class BgmWishlistService {
     }
 
     private CatalogCandidate candidate(String type, JsonNode node, String title, String original, String releaseDate) {
-        String poster = text(node, "poster_path");
         return new CatalogCandidate(type, node.path("id").asInt(), displayTitle(node, title, original),
-                text(node, original), year(text(node, releaseDate)), poster == null ? null : "https://image.tmdb.org/t/p/w500" + poster);
+                text(node, original), year(text(node, releaseDate)), tmdbPosterUrl(node));
+    }
+
+    private String tmdbPosterUrl(JsonNode node) {
+        String poster = text(node, "poster_path");
+        return poster == null ? null : "https://image.tmdb.org/t/p/w500" + poster;
     }
 
     private JsonNode findSeason(JsonNode details, int number) {

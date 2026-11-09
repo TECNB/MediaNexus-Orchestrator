@@ -585,7 +585,8 @@ public class BgmWishlistOperationService {
     }
     private static Item snapshot(SourceState state, long id) {
         var subject = BgmWishlistSourceStore.requireSubject(state, id);
-        return new Item(id, subject.title(), subject.originalTitle(), subject.coverUrl(), subject.year(), subject.updatedAt(), state.identities().get(id),
+        String coverUrl = state.source().provider() == Provider.DOUBAN ? null : subject.coverUrl();
+        return new Item(id, subject.title(), subject.originalTitle(), coverUrl, subject.year(), subject.updatedAt(), state.identities().get(id),
                 "UNKNOWN", "UNKNOWN", false, List.of(), null, state.candidateSubjectIds().contains(id), "NOT_CHECKED", null, null, false);
     }
     static boolean hasChineseTitle(String title) { return title != null && java.util.regex.Pattern.compile("[\\u3400-\\u9fff]").matcher(title).find(); }
