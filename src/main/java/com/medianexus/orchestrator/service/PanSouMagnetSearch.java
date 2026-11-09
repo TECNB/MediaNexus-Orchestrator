@@ -338,20 +338,26 @@ public class PanSouMagnetSearch {
     }
 
     private ProwlarrReleaseItemResponse toItem(Target target, Candidate candidate) {
-        String uncertainty = target.season() == null && !scopeConfirmed(target, candidate) ? "；年份/版本待核对"
+        List<String> reviewFlags = new ArrayList<>();
+        boolean confirmed = scopeConfirmed(target, candidate);
+        if (target.season() == null && !confirmed) reviewFlags.add("VERSION_UNKNOWN");
+        if (target.season() != null && candidate.tags().seasonTags().isEmpty()) reviewFlags.add("SEASON_UNKNOWN");
+        else if (target.season() != null && !confirmed) reviewFlags.add("SEASON_PACK_UNCERTAIN");
+        boolean subtitleMarked = CHINESE_SUBTITLES.matcher(candidate.entry().note()).find();
+        if (!subtitleMarked) reviewFlags.add("SUBTITLES_UNMARKED");
+        String uncertainty = target.season() == null && !confirmed ? "；年份/版本待核对"
                 : target.season() != null && candidate.tags().seasonTags().isEmpty() ? "；季度未知，需人工核对"
-                : target.season() != null && !scopeConfirmed(target, candidate) ? "；整季/混季证据不足，需人工核对" : "";
+                : target.season() != null && !confirmed ? "；整季/混季证据不足，需人工核对" : "";
         return new ProwlarrReleaseItemResponse(candidate.entry().note(), candidate.sizeBytes(), null, null, null,
                 String.join(" / ", candidate.sources()), candidate.entry().datetime(), null, candidate.entry().url(),
                 candidate.tags().resolutionTags(), candidate.tags().dynamicRangeTags(), candidate.tags().seasonTags(),
                 "PanSou：" + String.join(" / ", candidate.sources()) + uncertainty
                         + (candidate.complete() ? "；标题含整包线索" : "；未确认整季，可能为单集")
-                        + (CHINESE_SUBTITLES.matcher(candidate.entry().note()).find()
-                                ? "；标题标注中文字幕，内容未经核验" : "；字幕语言未标明")
+                        + (subtitleMarked ? "；标题标注中文字幕，内容未经核验" : "；字幕语言未标明")
                         + (candidate.sizeBytes() == null ? "；体积未知" : "；体积为来源报告的近似种子总大小")
                         + "；做种及可下载性未知"
                         + (candidate.titles().size() > 1 ? "；同 hash 标题：" + String.join(" | ", candidate.titles()) : ""),
-                String.join(" / ", candidate.queries()));
+                String.join(" / ", candidate.queries()), List.copyOf(reviewFlags));
     }
 
     private NoMatchingReleaseException rejection(Target target, List<Candidate> candidates) {

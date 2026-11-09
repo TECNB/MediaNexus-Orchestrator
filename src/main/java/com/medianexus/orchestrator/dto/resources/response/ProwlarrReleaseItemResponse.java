@@ -41,6 +41,16 @@ public record ProwlarrReleaseItemResponse(
         String matchSource,
         @Schema(description = "命中查询内容；旧通用发布搜索没有搜索计划来源时为 null", nullable = true)
         @JsonProperty("match_query")
-        String matchQuery
+        String matchQuery,
+        @Schema(description = "需要人工核对的发布证据代码；未知时为空")
+        @JsonProperty("review_flags")
+        List<String> reviewFlags
 ) {
+    public ProwlarrReleaseItemResponse(String title, Long size, Integer seeders, Integer leechers,
+            Integer grabs, String indexer, String publishDate, Integer indexerId, String downloadRef,
+            List<String> resolutionTags, List<String> dynamicRangeTags, List<String> seasonTags,
+            String matchSource, String matchQuery) {
+        this(title, size, seeders, leechers, grabs, indexer, publishDate, indexerId, downloadRef,
+                resolutionTags, dynamicRangeTags, seasonTags, matchSource, matchQuery, List.of());
+    }
 }

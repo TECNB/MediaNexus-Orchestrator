@@ -162,6 +162,7 @@ class PanSouMagnetSearchTest {
             assertThat(item.downloadRef()).isEqualTo(magnet(6));
             assertThat(item.seeders()).isNull();
             assertThat(item.seasonTags()).containsExactly("S02");
+            assertThat(item.reviewFlags()).containsExactly("SUBTITLES_UNMARKED");
         });
         assertThat(progress).extracting(ProwlarrReleaseIngestService.ReleaseSearchProgress::status)
                 .contains("RUNNING", "SUCCEEDED");
@@ -170,6 +171,7 @@ class PanSouMagnetSearchTest {
             assertThat(item.downloadRef()).isEqualTo(magnet(3));
             assertThat(item.seasonTags()).isEmpty();
             assertThat(item.matchSource()).contains("季度未知");
+            assertThat(item.reviewFlags()).containsExactly("SEASON_UNKNOWN", "SUBTITLES_UNMARKED");
         });
     }
 
