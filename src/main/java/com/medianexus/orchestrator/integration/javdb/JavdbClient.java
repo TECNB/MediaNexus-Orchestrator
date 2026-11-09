@@ -97,10 +97,14 @@ public class JavdbClient {
     private final HttpClient httpClient;
 
     public JavdbClient() {
-        this.httpClient = HttpClient.newBuilder()
+        this(HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(20))
                 .followRedirects(HttpClient.Redirect.NORMAL)
-                .build();
+                .build());
+    }
+
+    JavdbClient(HttpClient httpClient) {
+        this.httpClient = httpClient;
     }
 
     public List<JavdbRankingMovie> ranking(String period, String cookie) {
@@ -232,6 +236,9 @@ public class JavdbClient {
                     pauseBeforeRetry(attempt);
                     continue;
                 }
+                if (isLoginResponse(response)) {
+                    throw new JavdbClientException(JavdbClientException.Reason.AUTHENTICATION, "JAVDB 登录状态已失效");
+                }
                 if (response.statusCode() == 429) {
                     if (attempt >= MAX_TRANSIENT_RETRIES) {
                         throw new JavdbClientException(JavdbClientException.Reason.UPSTREAM,
@@ -275,6 +282,27 @@ public class JavdbClient {
             Thread.currentThread().interrupt();
             throw new JavdbClientException(JavdbClientException.Reason.UPSTREAM, "JAVDB 请求被中断", exception);
         }
+    }
+
+    private static boolean isLoginResponse(HttpResponse<?> response) {
+        if (isLoginPage(response.uri())) {
+            return true;
+        }
+        if (response.statusCode() < 300 || response.statusCode() >= 400) {
+            return false;
+        }
+        return response.headers().firstValue("Location").map(location -> {
+            try {
+                return isLoginPage(response.uri().resolve(location));
+            } catch (IllegalArgumentException malformedLocation) {
+                return false;
+            }
+        }).orElse(false);
+    }
+
+    private static boolean isLoginPage(URI uri) {
+        return "javdb.com".equalsIgnoreCase(uri.getHost())
+                && ("/login".equals(uri.getPath()) || "/login/".equals(uri.getPath()));
     }
 
     private void pauseBeforeRetry(int attempt) throws InterruptedException {

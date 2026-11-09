@@ -1,14 +1,48 @@
 package com.medianexus.orchestrator.integration.javdb;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpHeaders;
+import java.net.http.HttpResponse;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
 
 class JavdbClientTest {
 
     private final JavdbClient client = new JavdbClient();
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void classifiesLoginRedirectLoopAsCredentialFailure() throws Exception {
+        HttpClient http = mock(HttpClient.class);
+        HttpResponse<String> response = mock(HttpResponse.class);
+        when(http.<String>send(any(), any())).thenReturn(response);
+        when(response.uri()).thenReturn(URI.create("https://javdb.com/login"));
+        when(response.statusCode()).thenReturn(302);
+
+        assertThatThrownBy(() -> new JavdbClient(http).ranking("daily", "test-cookie"))
+                .isInstanceOfSatisfying(JavdbClientException.class,
+                        failure -> assertThat(failure.reason()).isEqualTo(JavdbClientException.Reason.AUTHENTICATION));
+
+        when(response.uri()).thenReturn(URI.create("https://javdb.com/rankings/movies"));
+        when(response.headers()).thenReturn(
+                HttpHeaders.of(Map.of("Location", List.of("/login?redirect=ranking")), (k, v) -> true),
+                HttpHeaders.of(Map.of("Location", List.of("/maintenance")), (k, v) -> true));
+        assertThatThrownBy(() -> new JavdbClient(http).ranking("daily", "test-cookie"))
+                .isInstanceOfSatisfying(JavdbClientException.class,
+                        failure -> assertThat(failure.reason()).isEqualTo(JavdbClientException.Reason.AUTHENTICATION));
+        assertThatThrownBy(() -> new JavdbClient(http).ranking("daily", "test-cookie"))
+                .isInstanceOfSatisfying(JavdbClientException.class,
+                        failure -> assertThat(failure.reason()).isEqualTo(JavdbClientException.Reason.UPSTREAM));
+    }
 
     @Test
     void parsesRankingCardsWithStableRanksAndMagnetBadges() {
