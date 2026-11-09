@@ -93,12 +93,30 @@ public class CloudDrive2LibraryOrganizer implements LibraryOrganizer {
             progressObserver.record("CD2 移动源路径已消失", "count=" + plan.moves().size());
         }
 
-        if (!plan.deletions().isEmpty()) {
-            progressObserver.record("正在通过 CD2 删除辅助内容", "count=" + plan.deletions().size());
-            fileOperations.delete(plan.deletions().stream()
-                    .map(operation -> toCloudDrivePath(operation.path()))
-                    .toList());
-            progressObserver.record("CD2 辅助内容删除请求完成", "count=" + plan.deletions().size());
+        Map<String, Set<String>> deletionsByParent = namesByParent(plan.deletions().stream()
+                .map(operation -> operation.path()).collect(LinkedHashSet::new, Set::add, Set::addAll));
+        for (Map.Entry<String, Set<String>> entry : deletionsByParent.entrySet()) {
+            Set<String> deletionPaths = entry.getValue().stream().map(name -> join(entry.getKey(), name))
+                    .collect(LinkedHashSet::new, Set::add, Set::addAll);
+            String batchDetail = "directory=" + entry.getKey() + ", count=" + deletionPaths.size();
+            progressObserver.record("正在通过 CD2 删除辅助内容", batchDetail);
+            try {
+                fileOperations.delete(deletionPaths.stream().map(this::toCloudDrivePath).toList());
+            } catch (CloudDrive2ClientException exception) {
+                if (exception.getStatusCode() != Status.Code.DEADLINE_EXCEEDED) {
+                    throw exception;
+                }
+                // RPC 超时不代表服务端未执行；只读确认全部路径消失，禁止重发删除请求。
+                progressObserver.record("CD2 删除请求超时，正在确认辅助内容是否已消失", batchDetail);
+                try {
+                    awaitPathsAbsent(deletionPaths, "CD2 删除超时后仍有辅助内容可见");
+                } catch (CloudDrive2ClientException verificationFailure) {
+                    exception.addSuppressed(verificationFailure);
+                    throw exception;
+                }
+                progressObserver.record("CD2 删除超时后已确认辅助内容全部消失", batchDetail);
+            }
+            progressObserver.record("CD2 辅助内容删除请求完成", batchDetail);
         }
 
         cleanupEmptySourceDirectories(plan);

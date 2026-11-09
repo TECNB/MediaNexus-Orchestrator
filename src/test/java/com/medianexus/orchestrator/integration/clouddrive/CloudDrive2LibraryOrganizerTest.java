@@ -372,6 +372,145 @@ class CloudDrive2LibraryOrganizerTest {
     }
 
     @Test
+    void boundsAuxiliaryDeleteRequestsToEachParentDirectory() {
+        FakeFileOperations files = new FakeFileOperations();
+        String target = "/pikpak/Media/Movie/Liz";
+        String cloudTarget = "/WebDAV/Media/Movie/Liz";
+        files.addDirectory(cloudTarget, "CLIPINF");
+        files.addDirectory(cloudTarget, "PLAYLIST");
+        files.addFile(cloudTarget, "Liz.m2ts", 20_000_000_000L);
+        files.addFile(cloudTarget + "/CLIPINF", "00000.clpi", 100L);
+        files.addFile(cloudTarget + "/CLIPINF", "00001.clpi", 100L);
+        files.addFile(cloudTarget + "/PLAYLIST", "00000.mpls", 100L);
+        LibraryOrganizationPlan plan = new LibraryOrganizationPlan(target, List.of(), List.of(), List.of(
+                new DeleteOperation(target + "/CLIPINF/00000.clpi"),
+                new DeleteOperation(target + "/PLAYLIST/00000.mpls"),
+                new DeleteOperation(target + "/CLIPINF/00001.clpi")), Set.of("Liz.m2ts"), Set.of());
+
+        new CloudDrive2LibraryOrganizer(files, properties(), IngestTargetFixtures.legacy())
+                .organize(plan, (message, detail) -> { });
+
+        assertThat(files.deleteCalls.get(0)).containsExactly(
+                cloudTarget + "/CLIPINF/00000.clpi", cloudTarget + "/CLIPINF/00001.clpi");
+        assertThat(files.deleteCalls.get(1)).containsExactly(cloudTarget + "/PLAYLIST/00000.mpls");
+        assertThat(files.children(cloudTarget)).extracting(CloudDrive2FileEntry::name).containsExactly("Liz.m2ts");
+    }
+
+    @Test
+    void confirmsAll57AuxiliaryPathsAfterDeleteDeadlineWithoutRepeatingDeletion() {
+        FakeFileOperations files = new FakeFileOperations();
+        LibraryOrganizationPlan plan = bdmvPlan(files);
+        files.deleteFailure = new CloudDrive2ClientException("delete deadline", Status.Code.DEADLINE_EXCEEDED, null);
+        List<String> progress = new ArrayList<>();
+
+        new CloudDrive2LibraryOrganizer(files, properties(), IngestTargetFixtures.legacy())
+                .organize(plan, (message, detail) -> progress.add(message));
+
+        assertThat(files.deleteCalls.get(0)).hasSize(57);
+        assertThat(files.renameCalls).hasSize(1);
+        assertThat(files.moveCalls).hasSize(1);
+        assertThat(files.cachedListedPaths).doesNotContain("/WebDAV/Media/Movie/Liz/BDMV/CLIPINF");
+        assertThat(files.forcedListedPaths.stream()
+                .filter(path -> path.equals("/WebDAV/Media/Movie/Liz/BDMV/CLIPINF")).count()).isGreaterThan(1);
+        assertThat(files.deleteCalls.stream().skip(1)).allSatisfy(paths ->
+                assertThat(paths).noneMatch(path -> path.endsWith(".clpi")));
+        assertThat(files.children("/WebDAV/Media/Movie/Liz"))
+                .extracting(CloudDrive2FileEntry::name).containsExactly("Liz.m2ts");
+        assertThat(progress).containsSubsequence("CD2 移动源路径已消失", "CD2 删除请求超时，正在确认辅助内容是否已消失",
+                "CD2 删除超时后已确认辅助内容全部消失", "CD2 整理结果已完整可见");
+    }
+
+    @Test
+    void preservesDeleteDeadlineWhenOneOf57AuxiliaryPathsRemains() {
+        FakeFileOperations files = new FakeFileOperations();
+        LibraryOrganizationPlan plan = bdmvPlan(files);
+        files.deletesBeforeFailure = 56;
+        files.deleteFailure = new CloudDrive2ClientException("delete deadline", Status.Code.DEADLINE_EXCEEDED, null);
+        CloudDrive2Properties config = properties();
+        config.setVisibilityTimeout(Duration.ofMillis(3));
+
+        assertThatThrownBy(() -> new CloudDrive2LibraryOrganizer(files, config, IngestTargetFixtures.legacy())
+                .organize(plan, (message, detail) -> { }))
+                .isSameAs(files.deleteFailure)
+                .satisfies(failure -> assertThat(failure.getSuppressed()).singleElement()
+                        .satisfies(suppressed -> assertThat(suppressed).hasMessageContaining("aux-56.clpi")));
+        assertThat(files.deleteCalls).hasSize(1);
+    }
+
+    @Test
+    void preservesDeleteDeadlineWhenNoneOf57AuxiliaryPathsWereDeleted() {
+        FakeFileOperations files = new FakeFileOperations();
+        LibraryOrganizationPlan plan = bdmvPlan(files);
+        files.deletesBeforeFailure = 0;
+        files.deleteFailure = new CloudDrive2ClientException("delete deadline", Status.Code.DEADLINE_EXCEEDED, null);
+        CloudDrive2Properties config = properties();
+        config.setVisibilityTimeout(Duration.ofMillis(3));
+
+        assertThatThrownBy(() -> new CloudDrive2LibraryOrganizer(files, config, IngestTargetFixtures.legacy())
+                .organize(plan, (message, detail) -> { })).isSameAs(files.deleteFailure);
+        assertThat(files.deleteCalls).hasSize(1);
+    }
+
+    @Test
+    void doesNotReconcileAnExplicitDeleteRejection() {
+        FakeFileOperations files = new FakeFileOperations();
+        LibraryOrganizationPlan plan = bdmvPlan(files);
+        files.deleteFailure = new CloudDrive2ClientException("delete rejected");
+
+        assertThatThrownBy(() -> new CloudDrive2LibraryOrganizer(files, properties(), IngestTargetFixtures.legacy())
+                .organize(plan, (message, detail) -> { })).isSameAs(files.deleteFailure);
+        assertThat(files.deleteCalls).hasSize(1);
+        assertThat(files.events.get(files.events.size() - 1)).startsWith("delete:");
+    }
+
+    @Test
+    void preservesDeleteDeadlineWhenForcedVerificationFails() {
+        FakeFileOperations files = new FakeFileOperations();
+        LibraryOrganizationPlan plan = bdmvPlan(files);
+        files.deleteFailure = new CloudDrive2ClientException("delete deadline", Status.Code.DEADLINE_EXCEEDED, null);
+        files.listFailureAfterDelete = new CloudDrive2ClientException("list unavailable", Status.Code.UNAVAILABLE, null);
+
+        assertThatThrownBy(() -> new CloudDrive2LibraryOrganizer(files, properties(), IngestTargetFixtures.legacy())
+                .organize(plan, (message, detail) -> { }))
+                .isSameAs(files.deleteFailure)
+                .satisfies(failure -> assertThat(failure.getSuppressed()).containsExactly(files.listFailureAfterDelete));
+        assertThat(files.deleteCalls).hasSize(1);
+    }
+
+    @Test
+    void stillRequiresTheMainFeatureAfterConfirmingDeletionFollowingDeadline() {
+        FakeFileOperations files = new FakeFileOperations();
+        LibraryOrganizationPlan plan = bdmvPlan(files);
+        files.deleteFailure = new CloudDrive2ClientException("delete deadline", Status.Code.DEADLINE_EXCEEDED, null);
+        files.hideNameFromCachedListings("/WebDAV/Media/Movie/Liz", "Liz.m2ts");
+        files.hideNameFromForcedListings("/WebDAV/Media/Movie/Liz", "Liz.m2ts");
+        CloudDrive2Properties config = properties();
+        config.setVisibilityTimeout(Duration.ofMillis(3));
+
+        assertThatThrownBy(() -> new CloudDrive2LibraryOrganizer(files, config, IngestTargetFixtures.legacy())
+                .organize(plan, (message, detail) -> { })).hasMessageContaining("CD2 目标文件完整性校验超时");
+    }
+
+    private LibraryOrganizationPlan bdmvPlan(FakeFileOperations files) {
+        String target = "/pikpak/Media/Movie/Liz";
+        String cloudTarget = "/WebDAV/Media/Movie/Liz";
+        files.addDirectory(cloudTarget, "BDMV");
+        files.addDirectory(cloudTarget + "/BDMV", "STREAM");
+        files.addDirectory(cloudTarget + "/BDMV", "CLIPINF");
+        files.addFile(cloudTarget + "/BDMV/STREAM", "00000.m2ts", 20_000_000_000L);
+        List<DeleteOperation> deletions = new ArrayList<>();
+        for (int index = 0; index < 57; index++) {
+            String name = "aux-" + index + ".clpi";
+            files.addFile(cloudTarget + "/BDMV/CLIPINF", name, 100L);
+            deletions.add(new DeleteOperation(target + "/BDMV/CLIPINF/" + name));
+        }
+        return new LibraryOrganizationPlan(target,
+                List.of(new RenameOperation(target + "/BDMV/STREAM/00000.m2ts", "Liz.m2ts")),
+                List.of(new MoveOperation(target + "/BDMV/STREAM/Liz.m2ts", target)),
+                deletions, Set.of("Liz.m2ts"), Set.of());
+    }
+
+    @Test
     void selectsCloudDrivePerProductAndKeepsIndependentOpenListFallback() {
         CloudDrive2Properties properties = properties();
         properties.setOrganizationEnabled(true);
@@ -448,6 +587,10 @@ class CloudDrive2LibraryOrganizerTest {
         private final List<String> cachedListedPaths = new ArrayList<>();
         private final List<String> forcedListedPaths = new ArrayList<>();
         private final List<String> events = new ArrayList<>();
+        private final List<List<String>> deleteCalls = new ArrayList<>();
+        private CloudDrive2ClientException deleteFailure;
+        private CloudDrive2ClientException listFailureAfterDelete;
+        private int deletesBeforeFailure = Integer.MAX_VALUE;
         private final Map<String, Set<String>> hiddenNamesFromCachedListings = new LinkedHashMap<>();
         private final Map<String, Set<String>> hiddenNamesFromForcedListings = new LinkedHashMap<>();
         private int listCalls;
@@ -459,6 +602,9 @@ class CloudDrive2LibraryOrganizerTest {
             listedPaths.add(path);
             (forceRefresh ? forcedListedPaths : cachedListedPaths).add(path);
             events.add("list:" + path);
+            if (!deleteCalls.isEmpty() && listFailureAfterDelete != null) {
+                throw listFailureAfterDelete;
+            }
             int notFoundCalls = notFoundCallsRemaining.getOrDefault(path, 0);
             if (notFoundCalls > 0) {
                 notFoundCallsRemaining.put(path, notFoundCalls - 1);
@@ -514,13 +660,19 @@ class CloudDrive2LibraryOrganizerTest {
 
         @Override
         public void delete(List<String> paths) {
-            for (String path : paths) {
+            deleteCalls.add(List.copyOf(paths));
+            List<String> appliedPaths = deleteFailure != null && deleteCalls.size() == 1
+                    ? paths.subList(0, Math.min(deletesBeforeFailure, paths.size())) : paths;
+            for (String path : appliedPaths) {
                 events.add("delete:" + path);
                 LinkedHashMap<String, CloudDrive2FileEntry> parentEntries = entries.get(parent(path));
                 if (parentEntries != null) {
                     parentEntries.remove(name(path));
                 }
                 entries.remove(path);
+            }
+            if (deleteFailure != null && deleteCalls.size() == 1) {
+                throw deleteFailure;
             }
         }
 
