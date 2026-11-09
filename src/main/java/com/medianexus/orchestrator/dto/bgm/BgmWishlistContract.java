@@ -87,7 +87,7 @@ public final class BgmWishlistContract {
                        @Schema(description = "上游收藏更新时间，不是首次收藏时间") String updatedAt,
                        @Schema(description = "未确认目录时为 null", nullable = true) Identity identity,
                        @Schema(description = "在库状态：UNKNOWN、ABSENT、PRESENT") String libraryStatus,
-                       @Schema(description = "放送或发行状态：UNKNOWN、NOT_YET_AIRED、AIRING、THEATRICAL、AVAILABLE") String availability,
+                       @Schema(description = "放送或发行状态：UNKNOWN、NOT_YET_AIRED、AIRING、THEATRICAL、AVAILABLE；THEATRICAL 仅提示缺少已发生的非院线发行记录") String availability,
                        boolean eligible, List<Reason> reasons,
                        @Schema(description = "同目标处理中任务；没有时为 null", nullable = true) TaskLink activeTask,
                        boolean automaticCandidate,

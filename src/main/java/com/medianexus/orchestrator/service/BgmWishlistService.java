@@ -360,7 +360,7 @@ public class BgmWishlistService {
             } catch (TmdbClientException exception) {
                 availability = "UNKNOWN";
             }
-            if (!"AVAILABLE".equals(availability)) reasons.add(availabilityReason(availability));
+            if (!Set.of("AVAILABLE", "THEATRICAL").contains(availability)) reasons.add(availabilityReason(availability));
             var check = presence.checkForAutomation(target(identity));
             if (!check.checkAvailable()) {
                 reasons.add(new Reason("LIBRARY_UNKNOWN", "在库检查不可用，本次不能入库"));
@@ -466,7 +466,7 @@ public class BgmWishlistService {
                 identity.title(), identity.originalTitle(), identity.year());
     }
 
-    /** TMDB release types 4/5/6 的已发生发行是最小证据；不推断地区影院窗口，不拦截重映。 */
+    /** 已有院线发行记录可继续入库检查；数字、实体或电视发行记录缺失仅提示。 */
     private String movieAvailability(Identity identity) {
         JsonNode countries = tmdb.getMovieReleaseDates(identity.tmdbId()).path("results");
         if (!countries.isArray()) return "UNKNOWN";
@@ -527,7 +527,6 @@ public class BgmWishlistService {
         return switch (availability) {
             case "NOT_YET_AIRED" -> new Reason("NOT_YET_AIRED", "目标作品尚未开播或发行，本次跳过");
             case "AIRING" -> new Reason("AIRING", "目标季度仍在放送，本次不建立追更任务");
-            case "THEATRICAL" -> new Reason("THEATRICAL", "仅核实到影院发行，尚无已发生的数字、实体或电视发行证据");
             default -> new Reason("AVAILABILITY_UNKNOWN", "放送或发行状态无法确认，本次不能入库");
         };
     }

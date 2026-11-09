@@ -499,8 +499,12 @@ class BgmWishlistWorkflowTest {
                 {"id":301,"season_number":1,"episodes":[{"episode_number":1,"air_date":"2020-01-01"},{"episode_number":2,"air_date":"2099-01-01"}]}
                 """));
         assertEquals("AIRING", f.wishlist.correctIdentity(source.id(), 2, new IdentityInput("SERIES", 201, 1)).availability());
-        f.movie(103, "{\"type\":3,\"release_date\":\"2020-01-01T00:00:00Z\"}");
-        assertEquals("THEATRICAL", f.identify(source, 3, 103).availability());
+        f.movie(103, "{\"type\":3,\"release_date\":\"1995-01-01T00:00:00Z\"}");
+        Item theatrical = f.identify(source, 3, 103);
+        assertEquals("THEATRICAL", theatrical.availability());
+        assertTrue(theatrical.eligible());
+        assertTrue(theatrical.reasons().isEmpty());
+        f.movie(104, "{\"type\":3,\"release_date\":\"1995-01-01T00:00:00Z\"}");
         f.presentTargets.add(104);
         assertEquals("ALREADY_PRESENT", f.identify(source, 4, 104).reasons().get(0).code());
         f.active.put(105, new ActiveTask("MOVIE", "existing", "DOWNLOADING"));
@@ -514,8 +518,8 @@ class BgmWishlistWorkflowTest {
         f.movie(109, "{\"type\":4,\"release_date\":\"2099-01-01T00:00:00Z\"}");
         assertEquals("NOT_YET_AIRED", f.identify(source, 9, 109).availability());
         Preview preview = f.execution.preview(source.id(), new PreviewInput(range(9)));
-        assertEquals(List.of(7L), preview.items().stream().map(Item::subjectId).toList());
-        assertEquals(Set.of("IDENTITY_UNKNOWN", "AIRING", "THEATRICAL", "ALREADY_PRESENT", "ACTIVE_TASK", "LIBRARY_UNKNOWN", "NO_RELEASE", "NOT_YET_AIRED"),
+        assertEquals(List.of(3L, 7L), preview.items().stream().map(Item::subjectId).toList());
+        assertEquals(Set.of("IDENTITY_UNKNOWN", "AIRING", "ALREADY_PRESENT", "ACTIVE_TASK", "LIBRARY_UNKNOWN", "NO_RELEASE", "NOT_YET_AIRED"),
                 new HashSet<>(preview.skipped().stream().map(outcome -> outcome.reason().code()).toList()));
         assertTrue(f.submitted.isEmpty());
     }
