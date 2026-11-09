@@ -21,6 +21,10 @@ class MovieSeriesFileRenameServiceTest {
         assertThat(result.episodeNumber()).isEqualTo(1);
         assertThat(renameService.episodeNumber("[LoliHouse] Hell Mode - 01.mkv", 1)).contains(1);
         assertThat(renameService.episodeNumber("[LoliHouse] Hell Mode - 01v2 [WebRip 1080p].mkv", 1)).contains(1);
+        assertThat(renameService.episodeNumber("[Sakurato] Show [01v2][1080P].mp4", 1)).contains(1);
+        assertThat(renameService.episodeNumber("Show 【13V3】 [1080p].mkv", 1)).contains(13);
+        assertThat(renameService.episodeNumber("Show [01v2-13v2][1080p].mkv", 1)).isEmpty();
+        assertThat(renameService.episodeNumber("Show [02.5v2][1080p].mkv", 1)).isEmpty();
     }
 
     @Test

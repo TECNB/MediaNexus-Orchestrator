@@ -312,6 +312,35 @@ class MagnetIngestServiceTest {
                 );
     }
 
+    @Test
+    void animeSeriesOrganizeRecognizesSakuratoVersionedBracketEpisodes() {
+        OpenListClient openListClient = mock(OpenListClient.class);
+        stubPathHelpers(openListClient);
+        String seasonPath = "/anime/想吃掉我的非人少女/Season 1";
+        String releaseName = "[Sakurato][202509] Watashi o Tabetai, Hitodenashi [01-13 Fin][1080P][简体内嵌]";
+        String releasePath = seasonPath + "/" + releaseName;
+        when(openListClient.listFiles(seasonPath)).thenReturn(List.of(
+                new OpenListFileInfo(releaseName, 0L, true, seasonPath)));
+        List<OpenListFileInfo> files = new ArrayList<>();
+        for (int episode = 1; episode <= 13; episode++) {
+            files.add(new OpenListFileInfo(
+                    "[Sakurato] Watashi o Tabetai, Hitodenashi [%02dv2][AVC-8bit 1080P AAC][CHS].mp4".formatted(episode),
+                    652_507_402L, false, releasePath));
+        }
+        files.add(new OpenListFileInfo("[Sakurato] Poster.jpg", 1_051_820L, false, releasePath));
+        when(openListClient.listFiles(releasePath)).thenReturn(files);
+        SeriesMagnetIngestTask task = animeSeriesTask();
+        task.setTitle("想吃掉我的非人少女");
+        task.setSeasonNumber(1);
+        task.setSavePath(seasonPath);
+        task.setTempPath(seasonPath);
+        RecordingLibraryOrganizer organizer = new RecordingLibraryOrganizer();
+        Object result = ReflectionTestUtils.invokeMethod(service(openListClient, organizer), "organizeSeriesFiles", task);
+        assertThat(ReflectionTestUtils.getField(result, "videoCount")).isEqualTo(13);
+        assertThat(organizer.plan.expectedTargetNames()).hasSize(13)
+                .contains("想吃掉我的非人少女 - S01E01 1080p AVC.mp4", "想吃掉我的非人少女 - S01E13 1080p AVC.mp4");
+    }
+
     private MagnetIngestService service(OpenListClient openListClient) {
         return service(openListClient, new OpenListLibraryOrganizer(openListClient));
     }

@@ -26,7 +26,7 @@ public class MovieSeriesFileRenameService {
     private static final Pattern X_EPISODE_PATTERN = Pattern.compile("(?i)(?:^|[^a-z0-9])(\\d{1,2})x(\\d{1,3})(?:[^a-z0-9]|$)");
     private static final Pattern EPISODE_PREFIX_PATTERN = Pattern.compile("(?i)(?:^|[^a-z0-9])(?:ep|e)\\s*(\\d{1,3})(?:[^a-z0-9]|$)");
     private static final Pattern CHINESE_EPISODE_PATTERN = Pattern.compile("第\\s*(\\d{1,3})\\s*[集话話]");
-    private static final Pattern BRACKET_EPISODE_PATTERN = Pattern.compile("[\\[【]\\s*(\\d{1,3})\\s*[\\]】]");
+    private static final Pattern BRACKET_EPISODE_PATTERN = Pattern.compile("(?i)[\\[【]\\s*(\\d{1,3})(?:v\\d+)?\\s*[\\]】]");
     private static final Pattern BARE_ANIME_EPISODE_PATTERN = Pattern.compile(
             "(?i)\\s+-\\s+(\\d{1,3})(?:v\\d+)?(?=\\s*(?:\\[|【|\\(|（|$))"
     );
