@@ -29,8 +29,8 @@ class MediaNexus:
     def __init__(self, base_url, token=''):
         url = parse.urlsplit(base_url)
         if (url.scheme not in ('http', 'https') or not url.netloc or url.username
-                or url.password or url.query or url.fragment or url.path not in ('', '/')):
-            raise ValueError('--backend 必须是服务根地址，例如 https://media.example.com')
+                or url.password or url.query or url.fragment or url.path.rstrip('/') not in ('', '/java-api')):
+            raise ValueError('--backend 应为服务根地址或 /java-api 前缀，例如 https://media.example.com/java-api')
         if url.scheme == 'http' and url.hostname not in ('localhost', '127.0.0.1', '::1'):
             raise ValueError('远程后端必须使用 HTTPS，避免泄露登录凭据。')
         self.base_url, self.token = base_url.rstrip('/'), token

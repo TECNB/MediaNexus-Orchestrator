@@ -5,8 +5,8 @@
 ## 1. 设置后端并登录
 
 ```bash
-# 直接使用 Java 后端服务根地址；不要填前端地址或 /java-api。
-export MEDIANEXUS_URL='https://你的后端域名'
+# 直接填 Java 后端服务根地址；通过网页 Nginx 访问时带 /java-api 前缀。
+export MEDIANEXUS_URL='https://你的媒体域名/java-api'
 ```
 
 没有 Token 时，命令会询问账号和密码，密码不回显也不保存。已有 Token 可以通过 `MEDIANEXUS_TOKEN` 环境变量提供，不放命令参数或配置文件。远程地址要求 HTTPS；本机 `http://127.0.0.1:端口` 可用于开发或安全隧道。脚本拒绝携带认证信息的重定向。
