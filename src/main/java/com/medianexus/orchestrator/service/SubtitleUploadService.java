@@ -28,6 +28,11 @@ import com.medianexus.orchestrator.service.SubtitleArchiveExtractor.StagedSubtit
 import com.medianexus.orchestrator.service.SubtitleFilenamePlanner.PlannedSubtitleFile;
 import com.medianexus.orchestrator.service.SubtitleFilenamePlanner.SubtitleFilenamePlan;
 import com.medianexus.orchestrator.service.settings.targets.IngestTargetRegistry;
+import com.medianexus.orchestrator.dto.subtitle.SubtitleCommitRequest;
+import com.medianexus.orchestrator.dto.subtitle.response.SubtitlePreparationResponse;
+import com.medianexus.orchestrator.dto.subtitle.response.SubtitleUploadCheckResponse;
+import java.time.Instant;
+import java.util.Objects;
 import java.time.LocalDateTime;
 import java.time.Year;
 import java.util.ArrayList;
@@ -79,6 +84,260 @@ public class SubtitleUploadService {
     private final ObjectMapper objectMapper;
     private final AutoSymlinkRefreshService autoSymlinkRefreshService;
     private final ExecutorService executorService;
+
+    // 预览和待执行的确认上传共用本地资源额度；不持久化预览，不创建远端 staging。
+    private final Map<String, Preparation> preparations = new HashMap<>();
+    private int preparationSlots;
+    private long preparationBytes;
+    private static final long PREPARATION_BYTE_LIMIT = 1024L * 1024 * 1024;
+
+    @org.springframework.scheduling.annotation.Scheduled(fixedDelay = 60000)
+    public synchronized void expirePreparations() {
+        var iterator = preparations.values().iterator();
+        while (iterator.hasNext()) {
+            Preparation preparation = iterator.next();
+            if (!preparation.expiresAt().isAfter(Instant.now())) {
+                iterator.remove();
+                releasePreparation(preparation);
+            }
+        }
+    }
+
+    private synchronized void releasePreparation(Preparation preparation) {
+        archiveExtractor.deleteQuietly(preparation.extracted().workDir());
+        preparationSlots--;
+        preparationBytes -= preparation.bytes();
+    }
+
+    @jakarta.annotation.PreDestroy
+    public synchronized void closePreparations() {
+        preparations.values().forEach(this::releasePreparation);
+        preparations.clear();
+    }
+
+    public synchronized SubtitlePreparationResponse prepare(
+            MultipartFile file, String mediaType, String title, String originalTitle, Integer year,
+            Integer seasonNumber, String targetId, String language
+    ) {
+        User user = authService.requireCurrentUser();
+        String fallback = filenamePlanner.validateLanguage(language);
+        expirePreparations();
+        if (preparationSlots >= 8) throw conflict("同时临时字幕包过多，请稍后重试");
+        List<SubtitleLocation> locations = findMediaLocations(mediaType, title, originalTitle, year, seasonNumber);
+        SubtitleLocation selected;
+        if (StringUtils.hasText(targetId)) {
+            selected = locations.stream().filter(location -> location.targetId().equals(targetId)).findFirst()
+                    .orElseThrow(() -> notFound("所选目标中未找到媒体目录"));
+        } else {
+            if (locations.isEmpty()) throw notFound("未找到媒体目录");
+            if (locations.size() > 1) throw conflict("媒体存在于多个下载目标，请选择目标");
+            selected = locations.get(0);
+        }
+        ExtractedSubtitlePackage extracted = archiveExtractor.extract(file);
+        try {
+            long bytes;
+            try (var paths = java.nio.file.Files.walk(extracted.workDir())) {
+                bytes = paths.filter(java.nio.file.Files::isRegularFile).mapToLong(path -> {
+                    try { return java.nio.file.Files.size(path); }
+                    catch (java.io.IOException exception) { throw new java.io.UncheckedIOException(exception); }
+                }).sum();
+            }
+            if (bytes > PREPARATION_BYTE_LIMIT - preparationBytes) throw conflict("临时字幕包总大小超过 1 GiB 限制");
+            List<OpenListFileInfo> targetFiles = openListClient.listFiles(selected.mediaPlan().targetPath(), true);
+            List<SubtitlePreparationResponse.File> files = previewFiles(selected.mediaPlan(), extracted, targetFiles, fallback);
+            String id = UUID.randomUUID().toString();
+            Instant expiresAt = Instant.now().plusSeconds(1800);
+            Preparation preparation = new Preparation(user.getId(), expiresAt, selected, extracted,
+                    List.copyOf(targetFiles), files, bytes);
+            preparations.put(id, preparation);
+            preparationSlots++;
+            preparationBytes += bytes;
+            return new SubtitlePreparationResponse(id, expiresAt, selected.targetId(), selected.mediaPlan().targetPath(),
+                    files, extracted.ignoredEntries(), List.of("字幕来源与时间轴未经外站验证；上传完成不表示 AS 或 Emby 已完成"));
+        } catch (java.io.IOException exception) {
+            archiveExtractor.deleteQuietly(extracted.workDir());
+            throw internalError("无法检查本地字幕临时文件");
+        } catch (RuntimeException exception) {
+            archiveExtractor.deleteQuietly(extracted.workDir());
+            throw exception;
+        }
+    }
+
+    private List<SubtitlePreparationResponse.File> previewFiles(MediaSubtitlePlan media, ExtractedSubtitlePackage extracted,
+            List<OpenListFileInfo> targetFiles, String fallback) {
+        List<OpenListFileInfo> videos = targetFiles.stream().filter(this::isTargetVideo).toList();
+        List<SubtitlePreparationResponse.File> files = new ArrayList<>();
+        for (int index = 0; index < extracted.entries().size(); index++) {
+            ExtractedSubtitleEntry entry = extracted.entries().get(index);
+            var language = filenamePlanner.language(entry, fallback);
+            Integer episode = "SERIES".equals(media.mediaType()) ? subtitleEpisode(entry.originalName(), media.seasonNumber()) : null;
+            List<OpenListFileInfo> candidates = "SERIES".equals(media.mediaType())
+                    ? videos.stream().filter(video -> episode != null
+                    && renameService.episodeNumber(video.name(), media.seasonNumber()).filter(episode::equals).isPresent()).toList()
+                    : videos;
+            String videoName = candidates.size() == 1 ? candidates.get(0).name() : null;
+            String finalName = videoName == null ? null : filenamePlanner.finalName(videoName, language.language(), entry.extension());
+            String status = candidates.isEmpty() ? "UNMATCHED" : candidates.size() > 1 ? "AMBIGUOUS" : "READY";
+            if (finalName != null && targetFiles.stream().anyMatch(remote -> remote.name().equalsIgnoreCase(finalName))) status = "CONFLICT";
+            List<String> warnings = new ArrayList<>();
+            if ("unknown".equals(language.language())) warnings.add("未确认简繁语言；确认时可手动选择，unknown 将使用 .und 命名");
+            if (videoName == null) warnings.add("请指定目标目录中的实际 video_name；00 不自动匹配特别篇");
+            files.add(new SubtitlePreparationResponse.File(Integer.toString(index), entry.originalPath(), entry.originalName(),
+                    entry.extension(), language.language(), language.source(), episode, videoName, finalName,
+                    entry.size(), entry.sha256(), status, "CONFLICT".equals(status) ? "REMOTE_EXISTS" : null, List.copyOf(warnings)));
+        }
+        Map<String, Long> counts = files.stream().filter(file -> file.finalName() != null)
+                .collect(java.util.stream.Collectors.groupingBy(file -> file.finalName().toLowerCase(Locale.ROOT), java.util.stream.Collectors.counting()));
+        return files.stream().map(file -> file.finalName() != null && file.conflictReason() == null
+                && counts.get(file.finalName().toLowerCase(Locale.ROOT)) > 1
+                ? new SubtitlePreparationResponse.File(file.id(), file.originalPath(), file.originalName(), file.extension(),
+                file.language(), file.languageSource(), file.episodeNumber(), file.videoName(), file.finalName(), file.size(),
+                file.sha256(), "CONFLICT", "DUPLICATE_CANDIDATE", List.of("多个字幕规划为同一目标文件名；请选择一项或修改语言")) : file).toList();
+    }
+
+    private boolean isTargetVideo(OpenListFileInfo file) {
+        return !Boolean.TRUE.equals(file.isDir()) && renameService.isVideo(file.name())
+                && file.name().indexOf('/') < 0 && file.name().indexOf('\\') < 0
+                && file.name().chars().noneMatch(Character::isISOControl);
+    }
+
+    private Integer subtitleEpisode(String name, Integer season) {
+        String stem = mainName(name).replaceFirst("(?i)(?:[._ -](?:chs|cht|zh-cn|zh-tw|简体|繁体|简中|繁中))+$", "");
+        if (stem.matches("\\d{1,3}")) {
+            int number = Integer.parseInt(stem);
+            return number > 0 ? number : null;
+        }
+        return renameService.episodeNumber(name, season).orElse(null);
+    }
+
+    /** 同一预览只消费一次；名称和大小快照用于发现变化，确认接口不允许覆盖已有字幕。 */
+    public synchronized SubtitleUploadResponse commit(String id, SubtitleCommitRequest request) {
+        User user = authService.requireCurrentUser();
+        expirePreparations();
+        Preparation preparation = preparations.get(id);
+        if (preparation == null || !Objects.equals(preparation.owner(), user.getId())) throw notFound("字幕预览不存在或已过期");
+        if (request == null || request.files() == null || request.files().isEmpty()) throw badRequest("请至少选择一个字幕文件");
+        if (request.overwrite()) throw conflict("预览确认不允许覆盖已有字幕，请先选择其他版本或另行处理现有文件");
+        List<OpenListFileInfo> current = openListClient.listFiles(preparation.location().mediaPlan().targetPath(), true);
+        if (!videoSnapshot(preparation.targetFiles()).equals(videoSnapshot(current))) throw conflict("目标视频已变化，请重新预览");
+        Set<String> selectedIds = new HashSet<>();
+        List<PlannedSubtitleFile> planned = new ArrayList<>();
+        for (SubtitleCommitRequest.Selection selection : request.files()) {
+            if (selection == null || !selectedIds.add(selection.id())) throw badRequest("字幕选择 ID 不可重复或为空");
+            SubtitlePreparationResponse.File preview = preparation.files().stream().filter(file -> file.id().equals(selection.id()))
+                    .findFirst().orElseThrow(() -> badRequest("字幕选择 ID 无效"));
+            String language = selection.language() == null ? preview.language() : filenamePlanner.validateLanguage(selection.language());
+            String videoName = selection.videoName() == null ? preview.videoName() : selection.videoName();
+            if (videoName == null || current.stream().noneMatch(video -> isTargetVideo(video) && video.name().equals(videoName))) {
+                throw badRequest("video_name 必须是目标目录中的实际视频文件名");
+            }
+            String finalName = filenamePlanner.finalName(videoName, language, preview.extension());
+            if (!nameSnapshot(preparation.targetFiles(), finalName).equals(nameSnapshot(current, finalName))) {
+                throw conflict("目标字幕冲突已变化，请重新预览");
+            }
+            if (current.stream().anyMatch(remote -> remote.name().equalsIgnoreCase(finalName) && Boolean.TRUE.equals(remote.isDir()))) {
+                throw conflict("目标文件名已被目录占用");
+            }
+            planned.add(new PlannedSubtitleFile(preparation.extracted().entries().get(Integer.parseInt(preview.id())), finalName));
+        }
+        filenamePlanner.validateNoDuplicateFinalNames(planned);
+        ensureNoRemoteConflict(current, planned, request.overwrite());
+        preparations.remove(id);
+        String uploadId = UUID.randomUUID().toString();
+        SubtitleUpload upload = null;
+        try {
+            upload = createUpload(uploadId, user, preparation.location().mediaPlan(), preparation.extracted().sourceFileName(), request.overwrite());
+            updateSource(uploadId, preparation.extracted());
+            List<ManifestFile> manifest = manifestFiles(planned);
+            updatePlan(uploadId, "已确认 " + planned.size() + " 个字幕", manifest);
+            upload.setSelectedVideoName("已确认 " + planned.size() + " 个字幕");
+            upload.setSourceSize(preparation.extracted().sourceSize());
+            upload.setSourceSha256(preparation.extracted().sourceSha256());
+            upload.setFileCount(manifest.size());
+            upload.setFileManifest(serializeManifest(manifest));
+            writeLog(uploadId, "INFO", "created", "已确认字幕选择，等待后台上传", preparation.location().mediaPlan().targetPath());
+            SubtitleUploadResponse response = toResponse(upload);
+            executorService.submit(() -> processConfirmed(uploadId, preparation, List.copyOf(planned), request.overwrite(), current));
+            return response;
+        } catch (RuntimeException exception) {
+            releasePreparation(preparation);
+            if (upload != null) markFailed(uploadId, "字幕后台任务提交失败");
+            throw exception;
+        }
+    }
+
+    private List<String> videoSnapshot(List<OpenListFileInfo> files) {
+        return files.stream().filter(this::isTargetVideo).map(file -> file.name() + "\0" + file.size()).sorted().toList();
+    }
+
+    private List<String> nameSnapshot(List<OpenListFileInfo> files, String name) {
+        return files.stream().filter(file -> file.name().equalsIgnoreCase(name))
+                .map(file -> file.name() + "\0" + file.size() + "\0" + file.isDir()).sorted().toList();
+    }
+
+    private void processConfirmed(String uploadId, Preparation preparation, List<PlannedSubtitleFile> files,
+            boolean overwrite, List<OpenListFileInfo> confirmedTarget) {
+        String path = preparation.location().mediaPlan().targetPath();
+        List<String> createdNames = new ArrayList<>();
+        try {
+            List<OpenListFileInfo> current = openListClient.listFiles(path, true);
+            if (!videoSnapshot(confirmedTarget).equals(videoSnapshot(current))) throw conflict("目标视频已变化，请重新预览");
+            for (PlannedSubtitleFile file : files) {
+                if (!nameSnapshot(confirmedTarget, file.finalName()).equals(nameSnapshot(current, file.finalName()))) {
+                    throw conflict("目标字幕已变化，请重新预览");
+                }
+            }
+            ensureNoRemoteConflict(current, files, overwrite);
+            markStage(uploadId, "PROCESSING", "uploading");
+            for (PlannedSubtitleFile file : files) {
+                openListClient.uploadFile(file.entry().localPath(), openListClient.joinPath(path, file.finalName()), overwrite);
+                // 覆盖的已有文件不可用 remove 回滚，否则会删除用户原有字幕。
+                if (nameSnapshot(current, file.finalName()).isEmpty()) createdNames.add(file.finalName());
+                writeLog(uploadId, "INFO", "uploading", "字幕文件上传完成", file.finalName());
+            }
+            refreshAutoSymlink(uploadId, preparation.location().mediaPlan());
+            writeLog(uploadId, "INFO", "waiting_for_as", "源字幕已写入；AS 提交结果见刷新日志，输出目录与 Emby 状态未验证", path);
+            markSucceeded(uploadId, files.size());
+        } catch (RuntimeException exception) {
+            cleanupUploadedFiles(uploadId, path, createdNames);
+            markFailed(uploadId, safeMessage(exception));
+            writeLog(uploadId, "ERROR", "failed", "字幕上传失败；已覆盖的文件无法恢复旧内容", safeMessage(exception));
+            log.warn("Confirmed subtitle upload failed uploadId={}", uploadId, exception);
+        } finally {
+            releasePreparation(preparation);
+        }
+    }
+
+    public SubtitleUploadCheckResponse checkUpload(String id) {
+        SubtitleUpload upload = getAccessibleUpload(id, authService.requireCurrentUser());
+        var output = new SubtitleUploadCheckResponse.Location("UNAVAILABLE", List.of(),
+                "未启用可靠的 AS 输出目录本地读取检查；未验证 AS 文件落位或 Emby 索引，AS 提交结果请查看批次刷新日志");
+        List<ManifestFile> manifest = deserializeManifest(upload.getFileManifest());
+        if (manifest.isEmpty()) {
+            String status = "PROCESSING".equals(upload.getStatus()) ? "PENDING" : "UNAVAILABLE";
+            return new SubtitleUploadCheckResponse(status,
+                    new SubtitleUploadCheckResponse.Location(status, List.of(), "上传批次暂无可校验文件清单"), output);
+        }
+        try {
+            List<OpenListFileInfo> remote = openListClient.listFiles(upload.getTargetPath(), true);
+            List<SubtitleUploadCheckResponse.File> files = manifest.stream().map(file -> {
+                OpenListFileInfo actual = remote.stream().filter(entry -> !Boolean.TRUE.equals(entry.isDir())
+                        && entry.name().equals(file.finalName())).findFirst().orElse(null);
+                Long size = actual == null ? null : actual.size();
+                return new SubtitleUploadCheckResponse.File(file.finalName(), file.size(), size, actual != null,
+                        size != null && file.size() != null && size.equals(file.size()));
+            }).toList();
+            String status = files.stream().allMatch(SubtitleUploadCheckResponse.File::matchesSize) ? "COMPLETE" : "PENDING";
+            return new SubtitleUploadCheckResponse(status, new SubtitleUploadCheckResponse.Location(status, files,
+                    "COMPLETE".equals(status) ? "源目录字幕名称与大小全部匹配；AS 输出与 Emby 未验证" : "源目录字幕尚未全部匹配；未知大小不算匹配"), output);
+        } catch (RuntimeException exception) {
+            return new SubtitleUploadCheckResponse("UNAVAILABLE", new SubtitleUploadCheckResponse.Location("UNAVAILABLE", List.of(),
+                    "无法读取 OpenList 源目录，请稍后重试"), output);
+        }
+    }
+
+    private record Preparation(Long owner, Instant expiresAt, SubtitleLocation location, ExtractedSubtitlePackage extracted,
+            List<OpenListFileInfo> targetFiles, List<SubtitlePreparationResponse.File> files, long bytes) { }
 
     @Autowired
     public SubtitleUploadService(
@@ -251,7 +510,7 @@ public class SubtitleUploadService {
                 String remotePath = openListClient.joinPath(mediaPlan.targetPath(), plannedFile.finalName());
                 writeLog(uploadId, "INFO", "uploading", "正在上传字幕文件", remotePath);
                 openListClient.uploadFile(plannedFile.entry().localPath(), remotePath, overwrite);
-                uploadedNames.add(plannedFile.finalName());
+                if (nameSnapshot(targetFiles, plannedFile.finalName()).isEmpty()) uploadedNames.add(plannedFile.finalName());
                 writeLog(uploadId, "INFO", "uploading", "字幕文件上传完成", plannedFile.finalName());
             }
 
@@ -260,6 +519,7 @@ public class SubtitleUploadService {
             writeLog(uploadId, "INFO", "waiting_for_as", "字幕已写入目标目录，等待 AS 后续迁移", mediaPlan.targetPath());
             markSucceeded(uploadId, manifest.size());
         } catch (BusinessException exception) {
+            cleanupUploadedFiles(uploadId, mediaPlan.targetPath(), uploadedNames);
             markFailed(uploadId, exception.getMessage());
             writeLog(uploadId, "ERROR", "failed", "字幕上传失败", exception.getMessage());
         } catch (OpenListClientException exception) {
@@ -472,19 +732,15 @@ public class SubtitleUploadService {
                 writeLog(uploadId, "WARN", "target_checking", "无法识别目标视频集数，暂不参与自动匹配", videoFile.name());
                 continue;
             }
-            OpenListFileInfo existing = videosByEpisode.get(episodeNumber.get());
-            if (existing == null || fileSize(videoFile) > fileSize(existing)) {
-                videosByEpisode.put(episodeNumber.get(), videoFile);
+            if (videosByEpisode.putIfAbsent(episodeNumber.get(), videoFile) != null) {
+                throw conflict("同集存在多个视频，请使用字幕预览显式选择 video_name");
             }
         }
 
         List<SeriesSubtitleMatch> subtitleMatches = new ArrayList<>();
         Set<String> matchedVideoNames = new HashSet<>();
         for (ExtractedSubtitleEntry subtitleEntry : subtitleEntries) {
-            Optional<Integer> episodeNumber = renameService.episodeNumber(
-                    subtitleEntry.originalName(),
-                    mediaPlan.seasonNumber()
-            );
+            Optional<Integer> episodeNumber = Optional.ofNullable(subtitleEpisode(subtitleEntry.originalName(), mediaPlan.seasonNumber()));
             OpenListFileInfo matchedVideo;
             if (episodeNumber.isPresent()) {
                 matchedVideo = videosByEpisode.get(episodeNumber.get());
@@ -502,6 +758,7 @@ public class SubtitleUploadService {
                             + " 集视频: " + subtitleEntry.originalPath());
                 }
             } else if (!hasSeriesEpisodeMarker(subtitleEntry.originalName())
+                    && !mainName(subtitleEntry.originalName()).matches("(?i)0{1,3}(?:[._ -](?:chs|cht|zh-cn|zh-tw|简体|繁体|简中|繁中))*")
                     && subtitleEntries.size() == 1
                     && videoFiles.size() == 1) {
                 matchedVideo = videoFiles.get(0);
@@ -559,11 +816,11 @@ public class SubtitleUploadService {
             boolean overwrite
     ) {
         Set<String> remoteNames = targetFiles.stream()
-                .map(OpenListFileInfo::name)
+                .map(file -> file.name().toLowerCase(Locale.ROOT))
                 .collect(HashSet::new, HashSet::add, HashSet::addAll);
         List<String> conflicts = plannedFiles.stream()
                 .map(PlannedSubtitleFile::finalName)
-                .filter(remoteNames::contains)
+                .filter(name -> remoteNames.contains(name.toLowerCase(Locale.ROOT)))
                 .toList();
         if (!conflicts.isEmpty() && !overwrite) {
             throw conflict("目标目录已存在同名字幕: " + String.join(", ", conflicts));

@@ -23,6 +23,8 @@
         <sa-token.version>1.45.0</sa-token.version>
         <knife4j.version>4.5.0</knife4j.version>
         <commons-compress.version>1.26.2</commons-compress.version>
+        <!-- commons-compress 1.26.2 的 TAR 读写需要 ArrayFill（Boot 默认版本过旧）。 -->
+        <commons-lang3.version>3.14.0</commons-lang3.version>
         <grpc.version>1.74.0</grpc.version>
         <protobuf.version>3.25.8</protobuf.version>
     </properties>

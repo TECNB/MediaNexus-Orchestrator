@@ -1,6 +1,10 @@
 package com.medianexus.orchestrator.controller;
 
 import com.medianexus.orchestrator.common.response.ApiResponse;
+import com.medianexus.orchestrator.dto.subtitle.SubtitleCommitRequest;
+import com.medianexus.orchestrator.dto.subtitle.response.SubtitlePreparationResponse;
+import com.medianexus.orchestrator.dto.subtitle.response.SubtitleUploadCheckResponse;
+import org.springframework.web.bind.annotation.RequestBody;
 import com.medianexus.orchestrator.dto.subtitle.response.SubtitleUploadListResponse;
 import com.medianexus.orchestrator.dto.subtitle.response.SubtitleLocationsResponse;
 import com.medianexus.orchestrator.dto.subtitle.response.SubtitleUploadLogListResponse;
@@ -43,6 +47,35 @@ public class SubtitleUploadController {
             @RequestParam(value = "season_number", required = false) Integer seasonNumber
     ) {
         return ApiResponse.success(subtitleUploadService.locations(mediaType, title, originalTitle, year, seasonNumber));
+    }
+
+    @PostMapping(value = "/preparations", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @Operation(summary = "预览字幕导入", description = "需要登录；仅在本地解析单字幕或 ZIP/RAR/7z，30 分钟有效；不会创建上传批次或远端写入。")
+    public ApiResponse<SubtitlePreparationResponse> prepare(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam("media_type") String mediaType,
+            @RequestParam("title") String title,
+            @RequestParam(value = "original_title", required = false) String originalTitle,
+            @RequestParam(value = "year", required = false) Integer year,
+            @RequestParam(value = "season_number", required = false) Integer seasonNumber,
+            @RequestParam(value = "target_id", required = false) String targetId,
+            @Parameter(description = "chs、cht 或 unknown；仅对未识别语言文件使用的兜底")
+            @RequestParam(value = "language", defaultValue = "unknown") String language
+    ) {
+        return ApiResponse.success(subtitleUploadService.prepare(file, mediaType, title, originalTitle,
+                year, seasonNumber, targetId, language));
+    }
+
+    @PostMapping("/preparations/{id}/commit")
+    @Operation(summary = "确认字幕导入", description = "仅预览所有者可确认；ID 只能消费一次，重新检查视频与冲突，变化时返回 409。")
+    public ApiResponse<SubtitleUploadResponse> commit(@PathVariable String id, @RequestBody SubtitleCommitRequest request) {
+        return ApiResponse.success(subtitleUploadService.commit(id, request));
+    }
+
+    @GetMapping("/uploads/{id}/check")
+    @Operation(summary = "检查字幕落位", description = "鉴权同上传批次；主动刷新源目录后逐文件检查名称和大小，COMPLETE 不表示 AS 或 Emby 已完成。")
+    public ApiResponse<SubtitleUploadCheckResponse> check(@PathVariable String id) {
+        return ApiResponse.success(subtitleUploadService.checkUpload(id));
     }
 
     @PostMapping(value = "/uploads", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)

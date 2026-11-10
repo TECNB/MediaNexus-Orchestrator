@@ -133,7 +133,7 @@ medianexus:
     visibility-timeout: ${MEDIANEXUS_CLOUDDRIVE2_VISIBILITY_TIMEOUT:120s}
     visibility-poll-interval: ${MEDIANEXUS_CLOUDDRIVE2_VISIBILITY_POLL_INTERVAL:1s}
   subtitle-upload:
-    allowed-extensions: ${MEDIANEXUS_SUBTITLE_UPLOAD_ALLOWED_EXTENSIONS:.ass,.srt,.sup}
+    allowed-extensions: ${MEDIANEXUS_SUBTITLE_UPLOAD_ALLOWED_EXTENSIONS:.ass,.ssa,.srt,.sup,.vtt}
     max-upload-size: ${MEDIANEXUS_SUBTITLE_UPLOAD_MAX_UPLOAD_SIZE:50MB}
     max-entry-count: ${MEDIANEXUS_SUBTITLE_UPLOAD_MAX_ENTRY_COUNT:100}
     max-text-subtitle-size: ${MEDIANEXUS_SUBTITLE_UPLOAD_MAX_TEXT_SUBTITLE_SIZE:10MB}

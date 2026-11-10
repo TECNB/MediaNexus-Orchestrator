@@ -25,7 +25,7 @@ public class SubtitleUploadProperties {
     }
 
     @NotEmpty
-    private List<String> allowedExtensions = new ArrayList<>(List.of(".ass", ".srt", ".sup"));
+    private List<String> allowedExtensions = new ArrayList<>(List.of(".ass", ".ssa", ".srt", ".sup", ".vtt"));
 
     @NotNull
     private DataSize maxUploadSize = DataSize.ofMegabytes(50);
