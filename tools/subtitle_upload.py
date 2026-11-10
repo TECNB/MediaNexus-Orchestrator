@@ -269,6 +269,16 @@ def install(args):
         raise ValueError('剧集上传必须传 --season；不会默认猜季度。')
     query = parse.urlencode({k: v for k, v in fields.items() if v is not None and k not in ('target_id', 'language')})
     locations = api.call('GET', '/api/v1/subtitles/locations?' + query)['items']
+    if not locations and not args.original_title:
+        endpoint = '/api/v1/resources/' + ('movies' if args.media_type == 'movie' else 'series') + '/search?'
+        catalog = api.call('GET', endpoint + parse.urlencode({'term': title}))['items']
+        matches = [item for item in catalog if item.get('title') == title
+                   and (args.year is None or item.get('year') == args.year)]
+        if len(matches) == 1 and matches[0].get('original_title'):
+            fields['original_title'] = matches[0]['original_title']
+            print('按唯一目录结果补全原名：' + fields['original_title'])
+            query = parse.urlencode({k: v for k, v in fields.items() if v is not None and k not in ('target_id', 'language')})
+            locations = api.call('GET', '/api/v1/subtitles/locations?' + query)['items']
     if not locations:
         raise ValueError('后端未找到库内媒体目录，未下载或上传。请核对标题、原名、年份和季数。')
     if args.target_id:
