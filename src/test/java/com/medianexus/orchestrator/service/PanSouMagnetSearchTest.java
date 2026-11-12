@@ -435,6 +435,50 @@ class PanSouMagnetSearchTest {
                     null, null, null, "世界顶尖的暗杀者，转生为异世界贵族", "世界最高の暗殺者、異世界貴族に転生する", 1, "1080p"));
             assertThat(batch.items()).hasSize(2);
             assertThat(batch.items()).allSatisfy(item -> assertThat(item.reviewFlags()).doesNotContain("SEASON_UNKNOWN"));
+            String[][] titles = {
+                    {"傲慢与偏见-Pride and Prejudice (2005) [1080p][1.8G]",
+                            "傲慢与偏见-Pride.And.Prejudice.2005.sdr.bluray.movie.1080p.av1.5.1.opus-Rosy[4.0G]",
+                            "傲慢与偏见-Pride.And.Prejudice.2005.1080p.BluRay.x264-FLHD[8.7G]"},
+                    {"切尔诺贝利-Chernobyl.2019.S01.COMPLETE.1080p.AMZN.WEBRip.x265-PGW[1.8G]",
+                            "切尔诺贝利-Chernobyl.S01.INTERNAL.1080p.BluRay.X264-REWARD[rartv][47.7G]",
+                            "切尔诺贝利-Chernobyl (2019) Season 1 - HEVC 1080p 7RIP[1.22G]"},
+                    {"死亡诗社.Dead.Poets.Society.1989.1080p.BluRay.x264-RARBG.2.46GB",
+                            "死亡诗社.Dead.Poets.Society.1989.1080p.BluRay.x264.17.32GB"}
+            };
+            Long[] expectedSizes = {8_700_000_000L, 47_700_000_000L, 17_320_000_000L};
+            for (int work = 0; work < titles.length; work++) {
+                raw.clear();
+                merged.clear();
+                for (int index = 0; index < titles[work].length; index++) {
+                    raw.add(java.util.Map.of("title", titles[work][index], "content", "评分：8.7",
+                            "links", List.of(java.util.Map.of("type", "magnet", "url", magnet(index + 1)))));
+                    merged.add(java.util.Map.of("url", magnet(index + 1), "note", titles[work][index], "source", "plugin:clxiong"));
+                }
+                response.set(mapper.writeValueAsString(java.util.Map.of("data", java.util.Map.of("results", raw,
+                        "merged_by_type", java.util.Map.of("magnet", merged)))));
+                if (work == 1) {
+                    var request = new SeriesReleaseRecommendationRequest(null, null, null, "切尔诺贝利", null, 1, "2160p");
+                    assertThat(realSearch.recommendSeries(request).item().size()).isEqualTo(expectedSizes[work]);
+                    assertThat(realSearch.recommendPreferredSeries(request, ignored -> {}).item().size()).isEqualTo(expectedSizes[work]);
+                } else {
+                    var request = new MovieReleaseRecommendationRequest(null, null,
+                            work == 0 ? "傲慢与偏见" : "死亡诗社", null, work == 0 ? 2005 : 1989, "2160p");
+                    assertThat(realSearch.recommendMovie(request).item().size()).isEqualTo(expectedSizes[work]);
+                    assertThat(realSearch.recommendPreferredMovie(request, ignored -> {}).item().size()).isEqualTo(expectedSizes[work]);
+                }
+                java.util.Collections.reverse(raw);
+                java.util.Collections.reverse(merged);
+                response.set(mapper.writeValueAsString(java.util.Map.of("data", java.util.Map.of("results", raw,
+                        "merged_by_type", java.util.Map.of("magnet", merged)))));
+                if (work == 1) {
+                    assertThat(realSearch.recommendSeries(new SeriesReleaseRecommendationRequest(
+                            null, null, null, "切尔诺贝利", null, 1, "2160p")).item().size()).isEqualTo(expectedSizes[work]);
+                } else {
+                    assertThat(realSearch.recommendMovie(new MovieReleaseRecommendationRequest(null, null,
+                            work == 0 ? "傲慢与偏见" : "死亡诗社", null, work == 0 ? 2005 : 1989, "2160p"))
+                            .item().size()).isEqualTo(expectedSizes[work]);
+                }
+            }
         } finally {
             server.stop(0);
         }

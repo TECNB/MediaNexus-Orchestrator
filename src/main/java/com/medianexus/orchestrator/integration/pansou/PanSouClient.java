@@ -45,6 +45,9 @@ public class PanSouClient implements AutoCloseable {
     private static final Pattern CONTENT_SIZE_VALUE = Pattern.compile(
             "\\s*([0-9]+(?:\\.[0-9]+)?)\\s*(KiB|MiB|GiB|TiB|KB|MB|GB|TB|B)"
                     + "(?=$|[\\s|,，;；)）\\]】。])", Pattern.CASE_INSENSITIVE);
+    private static final Pattern TITLE_SIZE_SUFFIX = Pattern.compile(
+            "(?:\\[|【|(?<![0-9.+-])[\\s_]|(?<=[\\p{L}\\]】])\\.|[\\p{L}][0-9]+\\.)\\s*([0-9]+(?:\\.[0-9]+)?)\\s*"
+                    + "(KiB|MiB|GiB|TiB|KB|MB|GB|TB|G|T)(?:\\]|】)?\\s*$", Pattern.CASE_INSENSITIVE);
     private static final Pattern CONTENT_MAGNET_URL = Pattern.compile(
             "magnet:\\?[^\\s<>\\\"'|)）\\]】,，;；。]+", Pattern.CASE_INSENSITIVE);
 
@@ -247,7 +250,28 @@ public class PanSouClient implements AutoCloseable {
                 continue;
             }
             Long size = contentSizeBytes(content);
+            if (size == null && CONTENT_SIZE_LABEL.matcher(content).find()) {
+                // 正文明确报告了不可用容量，不能被同 hash 的其他标题重新补成已知。
+                sizes.put(identity, null);
+                conflicts.add(identity);
+                continue;
+            }
             if (size == null) {
+                size = titleSizeBytes(firstText(message, "title", "note"));
+                for (JsonNode link : links) {
+                    if (PanSouMagnetIdentity.fromUrl(text(link, "url")).filter(identity::equals).isEmpty()) {
+                        continue;
+                    }
+                    Long linkSize = titleSizeBytes(firstText(link, "work_title", "note", "title"));
+                    if (size != null && linkSize != null && !size.equals(linkSize)) {
+                        conflicts.add(identity);
+                        sizes.put(identity, null);
+                        break;
+                    }
+                    if (size == null) size = linkSize;
+                }
+            }
+            if (size == null || conflicts.contains(identity)) {
                 continue;
             }
             Long previous = sizes.putIfAbsent(identity, size);
@@ -260,6 +284,11 @@ public class PanSouClient implements AutoCloseable {
         return sizes;
     }
 
+    private Long titleSizeBytes(String title) {
+        Matcher size = TITLE_SIZE_SUFFIX.matcher(title);
+        return size.find() ? sizeBytes(size.group(1), size.group(2)) : null;
+    }
+
     private Long contentSizeBytes(String content) {
         Matcher labels = CONTENT_SIZE_LABEL.matcher(content);
         Long sizeBytes = null;
@@ -268,26 +297,30 @@ public class PanSouClient implements AutoCloseable {
             if (!size.lookingAt()) {
                 return null;
             }
-            String unit = size.group(2).toUpperCase(Locale.ROOT);
-            int exponent = switch (unit.charAt(0)) {
-                case 'K' -> 1;
-                case 'M' -> 2;
-                case 'G' -> 3;
-                case 'T' -> 4;
-                default -> 0;
-            };
-            BigDecimal bytes = new BigDecimal(size.group(1)).multiply(
-                    BigDecimal.valueOf(unit.contains("I") ? 1024 : 1000).pow(exponent));
-            if (bytes.compareTo(BigDecimal.valueOf(Long.MAX_VALUE)) > 0) {
-                return null;
-            }
-            long parsed = bytes.setScale(0, RoundingMode.HALF_UP).longValueExact();
-            if (sizeBytes != null && sizeBytes != parsed) {
+            Long parsed = sizeBytes(size.group(1), size.group(2));
+            if (parsed == null) return null;
+            if (sizeBytes != null && !sizeBytes.equals(parsed)) {
                 return null;
             }
             sizeBytes = parsed;
         }
         return sizeBytes;
+    }
+
+    private Long sizeBytes(String number, String unit) {
+        String normalizedUnit = unit.toUpperCase(Locale.ROOT);
+        int exponent = switch (normalizedUnit.charAt(0)) {
+            case 'K' -> 1;
+            case 'M' -> 2;
+            case 'G' -> 3;
+            case 'T' -> 4;
+            default -> 0;
+        };
+        // G/GB 等标题缩写沿用十进制近似值，显式 GiB 等单位使用二进制。
+        BigDecimal bytes = new BigDecimal(number).multiply(
+                BigDecimal.valueOf(normalizedUnit.contains("I") ? 1024 : 1000).pow(exponent));
+        return bytes.compareTo(BigDecimal.valueOf(Long.MAX_VALUE)) > 0 ? null
+                : bytes.setScale(0, RoundingMode.HALF_UP).longValueExact();
     }
 
     public List<PanSouLinkCheckResult> checkLinks(List<PanSouLinkCheckRequest> requests) {

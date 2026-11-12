@@ -131,6 +131,95 @@ class PanSouClientTest {
     }
 
     @Test
+    void magnetSearchReadsSingleTorrentTitleSizes() throws IOException {
+        String[] titles = {
+                "傲慢与偏见-Pride and Prejudice (2005) [1080p][1.8G]",
+                "傲慢与偏见-Pride.And.Prejudice.2005.1080p.BluRay.x264-FLHD[8.7G]",
+                "切尔诺贝利-Chernobyl.S01.INTERNAL.1080p.BluRay.X264-REWARD[rartv][47.7G]",
+                "死亡诗社.Dead.Poets.Society.1989.1080p.BluRay.x264-RARBG.2.46GB",
+                "Show 1080p [1 GiB]"
+        };
+        Long[] bytes = {1_800_000_000L, 8_700_000_000L, 47_700_000_000L, 2_460_000_000L, 1_073_741_824L};
+        for (int index = 0; index < titles.length; index++) {
+            String magnet = "magnet:?xt=urn:btih:" + "01".repeat(20);
+            magnetResponse.set(objectMapper.writeValueAsString(java.util.Map.of("data", java.util.Map.of(
+                    "results", List.of(java.util.Map.of("title", titles[index], "content", "评分：8.7 年份：2005",
+                            "links", List.of(java.util.Map.of("type", "magnet", "url", magnet)))),
+                    "merged_by_type", java.util.Map.of("magnet", List.of(java.util.Map.of("url", magnet, "note", titles[index])))))));
+            assertThat(client.searchMagnets(new PanSouSearchCommand("Show", false)).entries())
+                    .extracting(PanSouSearchEntry::sizeBytes).as(titles[index]).containsExactly(bytes[index]);
+        }
+    }
+
+    @Test
+    void titleSizesPreserveAmbiguityConflictsAndUnknownValues() throws IOException {
+        String magnet = "magnet:?xt=urn:btih:" + "01".repeat(20);
+        String other = "magnet:?xt=urn:btih:" + "02".repeat(20);
+        for (String title : List.of("Show 1080p", "Show AAC 5.1", "Show MP3 320K", "Show [-1G]",
+                "Show [.87G]", "Show [ .87G]", "Show .87G", "Show [1.2.3GB]", "Show [999999999999999999999 TB]")) {
+            setMagnetResponse(magnet, List.of(java.util.Map.of("title", title,
+                    "links", List.of(java.util.Map.of("type", "magnet", "url", magnet)))));
+            assertThat(client.searchMagnets(new PanSouSearchCommand("Show", false)).entries())
+                    .extracting(PanSouSearchEntry::sizeBytes).as(title).containsExactly((Long) null);
+        }
+        for (String content : List.of("大小: -1 GiB", "Size: 2 GiB; Size: 3 GiB", "其他磁力 " + other)) {
+            setMagnetResponse(magnet, List.of(java.util.Map.of("title", "Show [8.7G]", "content", content,
+                    "links", List.of(java.util.Map.of("type", "magnet", "url", magnet)))));
+            assertThat(client.searchMagnets(new PanSouSearchCommand("Show", false)).entries())
+                    .extracting(PanSouSearchEntry::sizeBytes).as(content).containsExactly((Long) null);
+        }
+        setMagnetResponse(magnet, List.of(java.util.Map.of("title", "Show [8.7G]", "links", List.of(
+                java.util.Map.of("type", "magnet", "url", magnet), java.util.Map.of("type", "magnet", "url", other)))));
+        assertThat(client.searchMagnets(new PanSouSearchCommand("Show", false)).entries())
+                .extracting(PanSouSearchEntry::sizeBytes).containsExactly((Long) null);
+        for (boolean reverse : List.of(false, true)) {
+            var raw = new java.util.ArrayList<>(List.of(
+                    java.util.Map.of("title", "Show [8.7G]", "links", List.of(java.util.Map.of("type", "magnet", "url", magnet))),
+                    java.util.Map.of("title", "Show [1.8G]", "links", List.of(java.util.Map.of("type", "magnet", "url", magnet))),
+                    java.util.Map.of("content", "大小: 8.7 GB", "links", List.of(java.util.Map.of("type", "magnet", "url", magnet)))));
+            if (reverse) java.util.Collections.reverse(raw);
+            setMagnetResponse(magnet, raw);
+            assertThat(client.searchMagnets(new PanSouSearchCommand("Show", false)).entries()).singleElement().satisfies(entry -> {
+                assertThat(entry.sizeBytes()).isNull();
+                assertThat(entry.sizeConflict()).isTrue();
+            });
+        }
+        for (String content : List.of("Size: -1 GiB", "Size: 2 GB; Size: 3 GB")) {
+            for (boolean reverse : List.of(false, true)) {
+                var raw = new java.util.ArrayList<>(List.of(
+                        java.util.Map.of("content", content, "links", List.of(java.util.Map.of("type", "magnet", "url", magnet))),
+                        java.util.Map.of("title", "Show [8.7G]", "links", List.of(java.util.Map.of("type", "magnet", "url", magnet)))));
+                if (reverse) java.util.Collections.reverse(raw);
+                setMagnetResponse(magnet, raw);
+                assertThat(client.searchMagnets(new PanSouSearchCommand("Show", false)).entries()).singleElement().satisfies(entry -> {
+                    assertThat(entry.sizeBytes()).isNull();
+                    assertThat(entry.sizeConflict()).isTrue();
+                });
+            }
+        }
+        setMagnetResponse(magnet, List.of(java.util.Map.of("title", "Show [8.7G]", "content", "Size: 1 GiB",
+                "links", List.of(java.util.Map.of("type", "magnet", "url", magnet)))));
+        assertThat(client.searchMagnets(new PanSouSearchCommand("Show", false)).entries())
+                .extracting(PanSouSearchEntry::sizeBytes).containsExactly(1_073_741_824L);
+        setMagnetResponse(magnet, List.of(java.util.Map.of("title", "Show", "links", List.of(
+                java.util.Map.of("type", "magnet", "url", magnet, "work_title", "Show [8.7G]")))));
+        assertThat(client.searchMagnets(new PanSouSearchCommand("Show", false)).entries())
+                .extracting(PanSouSearchEntry::sizeBytes).containsExactly(8_700_000_000L);
+        setMagnetResponse(magnet, List.of(java.util.Map.of("title", "Show [1.8G]", "links", List.of(
+                java.util.Map.of("type", "magnet", "url", magnet, "work_title", "Show [8.7G]")))));
+        assertThat(client.searchMagnets(new PanSouSearchCommand("Show", false)).entries()).singleElement().satisfies(entry -> {
+            assertThat(entry.sizeBytes()).isNull();
+            assertThat(entry.sizeConflict()).isTrue();
+        });
+    }
+
+    private void setMagnetResponse(String magnet, Object raw) throws IOException {
+        magnetResponse.set(objectMapper.writeValueAsString(java.util.Map.of("data", java.util.Map.of(
+                "results", raw, "merged_by_type", java.util.Map.of("magnet", List.of(
+                        java.util.Map.of("url", magnet, "note", "Show [8.7G]")))))));
+    }
+
+    @Test
     void magnetSearchRejectsNonEmptyListOfOnlyInvalidLinks() {
         magnetResponse.set("""
                 {"merged_by_type":{"magnet":[
