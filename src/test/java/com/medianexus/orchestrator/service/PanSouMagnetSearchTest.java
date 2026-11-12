@@ -412,7 +412,9 @@ class PanSouMagnetSearchTest {
             assertThat(payloads).allSatisfy(payload -> {
                 assertThat(payload.path("cloud_types")).extracting(JsonNode::asText).containsExactly("magnet");
                 assertThat(payload.path("res").asText()).isEqualTo("all");
-                assertThat(payload.path("plugins")).extracting(JsonNode::asText).containsExactly("nyaa", "clxiong");
+                assertThat(payload.path("src").asText("all")).isEqualTo("all");
+                assertThat(payload.has("plugins")).isFalse();
+                assertThat(payload.has("channels")).isFalse();
             });
             assertThat(payloads.get(1).path("refresh").asBoolean()).isTrue();
             response.set("{\"code\":200,\"message\":\"success\",\"data\":{\"total\":0}}");

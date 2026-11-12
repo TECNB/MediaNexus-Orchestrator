@@ -1,6 +1,7 @@
 package com.medianexus.orchestrator.integration.pansou;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -14,6 +15,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -23,6 +25,7 @@ class PanSouClientTest {
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final AtomicInteger loginCount = new AtomicInteger();
     private final List<JsonNode> searchPayloads = new CopyOnWriteArrayList<>();
+    private final AtomicReference<String> magnetResponse = new AtomicReference<>();
     private HttpServer server;
     private PanSouClient client;
 
@@ -35,6 +38,10 @@ class PanSouClientTest {
         });
         server.createContext("/api/search", exchange -> {
             searchPayloads.add(readJson(exchange));
+            if (magnetResponse.get() != null) {
+                respond(exchange, 200, magnetResponse.get());
+                return;
+            }
             respond(exchange, 200, """
                     {"data":{"results":[
                       {"title":"测试资源","channel":"tg:test","datetime":"2026-08-23","links":[
@@ -87,6 +94,94 @@ class PanSouClientTest {
             assertThat(payload.path("src").asText()).isEqualTo("all");
             assertThat(payload.path("refresh").asBoolean()).isFalse();
         });
+    }
+
+    @Test
+    void magnetSearchUsesDefaultSourcesWithoutOverridingPluginsOrChannels() {
+        magnetResponse.set("{\"merged_by_type\":{\"magnet\":[]}}");
+
+        assertThat(client.searchMagnets(new PanSouSearchCommand("Show", false)).entries()).isEmpty();
+
+        assertThat(searchPayloads).singleElement().satisfies(payload -> {
+            assertThat(payload.path("cloud_types")).extracting(JsonNode::asText).containsExactly("magnet");
+            assertThat(payload.path("res").asText()).isEqualTo("all");
+            assertThat(payload.path("src").asText("all")).isEqualTo("all");
+            assertThat(payload.has("plugins")).isFalse();
+            assertThat(payload.has("channels")).isFalse();
+        });
+    }
+
+    @Test
+    void magnetSearchSkipsInvalidLinksAndRetainsValidCandidateSize() {
+        String validMagnet = "magnet:?xt=urn:btih:" + "01".repeat(20);
+        magnetResponse.set("""
+                {"data":{"merged_by_type":{"magnet":[
+                  {"url":"magnet:?xt=urn:btih:broken"},
+                  {"url":"%s","note":"Show Batch 1080p","source":"tg:test"},
+                  {"url":"https://example.test/not-a-magnet"}
+                ]},"results":[{"content":"大小: 1 GiB","links":[{"type":"magnet","url":"%s"}]}]}}
+                """.formatted(validMagnet, validMagnet));
+
+        assertThat(client.searchMagnets(new PanSouSearchCommand("Show", false)).entries())
+                .singleElement().satisfies(entry -> {
+                    assertThat(entry.url()).isEqualTo(validMagnet);
+                    assertThat(entry.source()).isEqualTo("tg:test");
+                    assertThat(entry.sizeBytes()).isEqualTo(1_073_741_824L);
+                });
+    }
+
+    @Test
+    void magnetSearchRejectsNonEmptyListOfOnlyInvalidLinks() {
+        magnetResponse.set("""
+                {"merged_by_type":{"magnet":[
+                  {"url":"magnet:?xt=urn:btih:broken"},
+                  {"url":"https://example.test/not-a-magnet"}
+                ]}}
+                """);
+
+        assertThatThrownBy(() -> client.searchMagnets(new PanSouSearchCommand("Show", false)))
+                .isInstanceOfSatisfying(PanSouClientException.class,
+                        failure -> assertThat(failure.getReason()).isEqualTo(PanSouClientException.Reason.INVALID_RESPONSE));
+    }
+
+    @Test
+    void magnetSearchAcceptsEmptyResultsButRejectsMalformedStructure() {
+        for (String empty : List.of("{\"merged_by_type\":{\"magnet\":[]}}",
+                "{\"data\":{\"merged_by_type\":{}}}", "{\"data\":{\"total\":0}}")) {
+            magnetResponse.set(empty);
+            assertThat(client.searchMagnets(new PanSouSearchCommand("Show", false)).entries()).isEmpty();
+        }
+        String validMagnet = "magnet:?xt=urn:btih:" + "01".repeat(20);
+        for (String malformed : List.of("{\"merged_by_type\":{\"magnet\":{}}}",
+                "{\"data\":null}", "{\"merged_by_type\":{\"magnet\":[null,{\"url\":\"" + validMagnet + "\"}]}}",
+                "{\"merged_by_type\":{\"magnet\":[{\"type\":\"quark\",\"url\":\"" + validMagnet + "\"}]}}")) {
+            magnetResponse.set(malformed);
+            assertThatThrownBy(() -> client.searchMagnets(new PanSouSearchCommand("Show", false)))
+                    .isInstanceOfSatisfying(PanSouClientException.class,
+                            failure -> assertThat(failure.getReason()).isEqualTo(PanSouClientException.Reason.INVALID_RESPONSE));
+        }
+    }
+
+    @Test
+    void magnetSearchAcceptsOtherCloudRawHitsWithoutMagnetClassification() {
+        magnetResponse.set("""
+                {"data":{"total":1,"results":[{"links":[{"type":"quark","url":"https://pan.quark.cn/s/abc"}]}]}}
+                """);
+        assertThat(client.searchMagnets(new PanSouSearchCommand("Show", false)).entries()).isEmpty();
+
+        magnetResponse.set("""
+                {"data":{"total":1,"results":[{"links":[{"type":"magnet","url":"magnet:?xt=urn:btih:broken"}]}]}}
+                """);
+        assertThatThrownBy(() -> client.searchMagnets(new PanSouSearchCommand("Show", false)))
+                .isInstanceOfSatisfying(PanSouClientException.class,
+                        failure -> assertThat(failure.getReason()).isEqualTo(PanSouClientException.Reason.INVALID_RESPONSE));
+        for (String raw : List.of("[null]", "[{\"links\":\"broken\"}]", "[{\"links\":[null]}]",
+                "[{\"links\":[{\"url\":\"https://pan.quark.cn/s/abc\"}]}]")) {
+            magnetResponse.set("{\"data\":{\"total\":1,\"results\":" + raw + "}}");
+            assertThatThrownBy(() -> client.searchMagnets(new PanSouSearchCommand("Show", false)))
+                    .isInstanceOfSatisfying(PanSouClientException.class,
+                            failure -> assertThat(failure.getReason()).isEqualTo(PanSouClientException.Reason.INVALID_RESPONSE));
+        }
     }
 
     private JsonNode readJson(HttpExchange exchange) throws IOException {
