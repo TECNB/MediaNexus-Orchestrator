@@ -36,6 +36,129 @@ import org.springframework.test.util.ReflectionTestUtils;
 class MagnetIngestServiceTest {
 
     @Test
+    void animeUnknownRootVideoCannotBypassSafetyThroughDirectorySelection() {
+        OpenListClient client = mock(OpenListClient.class);
+        stubPathHelpers(client);
+        SeriesMagnetIngestTask task = animeSeriesTask();
+        when(client.listFiles(task.getTempPath())).thenReturn(List.of(
+                new OpenListFileInfo("unrecognized.mp4", 900_000_000L, false, task.getTempPath()),
+                new OpenListFileInfo("release", null, true, task.getTempPath())));
+        when(client.listFiles(task.getTempPath() + "/release")).thenReturn(List.of(
+                new OpenListFileInfo("Show S02E01.mp4", 900_000_000L, false, task.getTempPath() + "/release")));
+        RecordingLibraryOrganizer organizer = new RecordingLibraryOrganizer();
+
+        assertThatThrownBy(() -> ReflectionTestUtils.invokeMethod(service(client, organizer), "organizeSeriesFiles", task))
+                .hasMessageContaining("无法识别集数").hasMessageContaining("保留源文件");
+        assertThat(organizer.plan).isNull();
+    }
+
+    @Test
+    void seriesUnknownVideoStopsBeforeAnyOrganization() {
+        OpenListClient client = mock(OpenListClient.class);
+        stubPathHelpers(client);
+        SeriesMagnetIngestTask task = animeSeriesTask();
+        task.setTaskProductType("SERIES");
+        when(client.findFiles(task.getTempPath())).thenReturn(List.of(
+                new OpenListFileInfo("unrecognized.mp4", 900_000_000L, false, task.getTempPath())));
+        RecordingLibraryOrganizer organizer = new RecordingLibraryOrganizer();
+
+        assertThatThrownBy(() -> ReflectionTestUtils.invokeMethod(service(client, organizer), "organizeSeriesFiles", task))
+                .hasMessageContaining("无法识别集数").hasMessageContaining("保留源文件");
+        assertThat(organizer.plan).isNull();
+        verify(client, never()).remove(anyString(), org.mockito.ArgumentMatchers.anyList());
+    }
+
+    @Test
+    void seriesDuplicateVideoTargetsStopBeforeAnyOrganization() {
+        OpenListClient client = mock(OpenListClient.class);
+        stubPathHelpers(client);
+        SeriesMagnetIngestTask task = animeSeriesTask();
+        task.setTaskProductType("SERIES");
+        when(client.findFiles(task.getTempPath())).thenReturn(List.of(
+                new OpenListFileInfo("Show S02E01.mp4", 900_000_000L, false, task.getTempPath() + "/1080P.HBR"),
+                new OpenListFileInfo("Show S02E01.mp4", 1_800_000_000L, false, task.getTempPath() + "/4K")));
+        RecordingLibraryOrganizer organizer = new RecordingLibraryOrganizer();
+
+        assertThatThrownBy(() -> ReflectionTestUtils.invokeMethod(service(client, organizer), "organizeSeriesFiles", task))
+                .hasMessageContaining("目标文件名冲突").hasMessageContaining("保留源文件");
+        assertThat(organizer.plan).isNull();
+    }
+
+    @Test
+    void seriesTitleSuffixEpisodesProduceTwelveUniqueTargetsWithoutVideoDeletion() {
+        OpenListClient client = mock(OpenListClient.class);
+        stubPathHelpers(client);
+        SeriesMagnetIngestTask task = animeSeriesTask();
+        task.setTaskProductType("SERIES");
+        task.setTitle("隐秘的角落");
+        task.setOriginalTitle("The Bad Kids");
+        task.setSeasonNumber(1);
+        List<OpenListFileInfo> files = new ArrayList<>();
+        for (int episode = 1; episode <= 12; episode++) {
+            files.add(new OpenListFileInfo("隐秘的角落%02d.mp4".formatted(episode), 900_000_000L, false,
+                    task.getTempPath() + "/1080P.HBR"));
+        }
+        when(client.findFiles(task.getTempPath())).thenReturn(files);
+        RecordingLibraryOrganizer organizer = new RecordingLibraryOrganizer();
+
+        ReflectionTestUtils.invokeMethod(service(client, organizer), "organizeSeriesFiles", task);
+
+        assertThat(organizer.plan.expectedTargetNames()).hasSize(12)
+                .contains("The Bad Kids - S01E01.mp4", "The Bad Kids - S01E12.mp4");
+        assertThat(organizer.plan.deletions()).isEmpty();
+    }
+
+    @Test
+    void seriesExistingDestinationStopsWithoutDeletingIncomingVideo() {
+        OpenListClient client = mock(OpenListClient.class);
+        stubPathHelpers(client);
+        SeriesMagnetIngestTask task = animeSeriesTask();
+        task.setTaskProductType("SERIES");
+        when(client.findFiles(task.getTempPath())).thenReturn(List.of(
+                new OpenListFileInfo("Show S02E01.mp4", 900_000_000L, false, task.getTempPath() + "/release")));
+        when(client.listFiles(task.getSavePath())).thenReturn(List.of(
+                new OpenListFileInfo("Show - S02E01.mp4", 900_000_000L, false, task.getSavePath())));
+        RecordingLibraryOrganizer organizer = new RecordingLibraryOrganizer();
+
+        assertThatThrownBy(() -> ReflectionTestUtils.invokeMethod(service(client, organizer), "organizeSeriesFiles", task))
+                .hasMessageContaining("目标文件名冲突");
+        assertThat(organizer.plan).isNull();
+    }
+
+    @Test
+    void seriesWithoutFeatureVideoDoesNotExecuteAuxiliaryDeletion() {
+        OpenListClient client = mock(OpenListClient.class);
+        stubPathHelpers(client);
+        SeriesMagnetIngestTask task = animeSeriesTask();
+        task.setTaskProductType("SERIES");
+        when(client.findFiles(task.getTempPath())).thenReturn(List.of(
+                new OpenListFileInfo("Show NCOP.mp4", 90_000_000L, false, task.getTempPath())));
+        RecordingLibraryOrganizer organizer = new RecordingLibraryOrganizer();
+
+        assertThatThrownBy(() -> ReflectionTestUtils.invokeMethod(service(client, organizer), "organizeSeriesFiles", task))
+                .hasMessageContaining("没有识别到可入库的视频文件").hasMessageContaining("保留源文件");
+        assertThat(organizer.plan).isNull();
+    }
+
+    @Test
+    void seriesAlreadyOrganizedVideoCanBeProcessedWithoutDeletion() {
+        OpenListClient client = mock(OpenListClient.class);
+        stubPathHelpers(client);
+        SeriesMagnetIngestTask task = animeSeriesTask();
+        task.setTaskProductType("SERIES");
+        var existing = new OpenListFileInfo("Show - S02E01.mp4", 900_000_000L, false, task.getSavePath());
+        when(client.findFiles(task.getTempPath())).thenReturn(List.of(existing));
+        when(client.listFiles(task.getSavePath())).thenReturn(List.of(existing));
+        RecordingLibraryOrganizer organizer = new RecordingLibraryOrganizer();
+
+        ReflectionTestUtils.invokeMethod(service(client, organizer), "organizeSeriesFiles", task);
+
+        assertThat(organizer.plan.expectedTargetNames()).containsExactly("Show - S02E01.mp4");
+        assertThat(organizer.plan.renames()).isEmpty();
+        assertThat(organizer.plan.deletions()).isEmpty();
+    }
+
+    @Test
     void recentMovieAndSeriesQueriesFilterManualSourcesBeforeLimit() {
         initTableInfo(MovieMagnetIngestTask.class);
         initTableInfo(SeriesMagnetIngestTask.class);

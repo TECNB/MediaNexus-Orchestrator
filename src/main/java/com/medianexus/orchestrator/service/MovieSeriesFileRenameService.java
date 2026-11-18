@@ -78,10 +78,15 @@ public class MovieSeriesFileRenameService {
     }
 
     public Optional<RenameResult> seriesVideo(String sourceName, String title, Integer seasonNumber) {
+        return seriesVideo(sourceName, title, seasonNumber, title);
+    }
+
+    public Optional<RenameResult> seriesVideo(String sourceName, String title, Integer seasonNumber, String knownTitle) {
         if (!isVideo(sourceName)) {
             return Optional.empty();
         }
-        Optional<Integer> episode = episodeNumber(sourceName, seasonNumber);
+        Optional<Integer> episode = seriesEpisodeNumber(sourceName, title, seasonNumber)
+                .or(() -> seriesEpisodeNumber(sourceName, knownTitle, seasonNumber));
         if (episode.isEmpty()) {
             return Optional.empty();
         }
@@ -96,10 +101,17 @@ public class MovieSeriesFileRenameService {
             Integer seasonNumber,
             String matchedQuality
     ) {
+        return seriesSubtitle(sourceName, title, seasonNumber, matchedQuality, title);
+    }
+
+    public Optional<RenameResult> seriesSubtitle(
+            String sourceName, String title, Integer seasonNumber, String matchedQuality, String knownTitle
+    ) {
         if (!isSubtitle(sourceName)) {
             return Optional.empty();
         }
-        Optional<Integer> episode = episodeNumber(sourceName, seasonNumber);
+        Optional<Integer> episode = seriesEpisodeNumber(sourceName, title, seasonNumber)
+                .or(() -> seriesEpisodeNumber(sourceName, knownTitle, seasonNumber));
         if (episode.isEmpty()) {
             return Optional.empty();
         }
@@ -114,6 +126,10 @@ public class MovieSeriesFileRenameService {
 
     public boolean isSubtitle(String name) {
         return SUBTITLE_EXTENSIONS.contains(extension(name).toLowerCase(Locale.ROOT));
+    }
+
+    public boolean isNonFeatureVideo(String sourceName) {
+        return isVideo(sourceName) && NON_FEATURE_EPISODE.matcher(mainName(sourceName)).find();
     }
 
     public String qualityFull(String name) {
@@ -199,6 +215,25 @@ public class MovieSeriesFileRenameService {
             case "hlg" -> "HLG";
             default -> token;
         };
+    }
+
+    private Optional<Integer> seriesEpisodeNumber(String sourceName, String title, Integer seasonNumber) {
+        if (NON_FEATURE_EPISODE.matcher(mainName(sourceName)).find()) {
+            return Optional.empty();
+        }
+        Optional<Integer> detected = episodeNumber(sourceName, seasonNumber);
+        if (detected.isPresent()) {
+            return detected;
+        }
+        Matcher suffix = Pattern.compile("^" + Pattern.quote(title) + "(\\d{1,3})$")
+                .matcher(mainName(sourceName));
+        if (suffix.matches()) {
+            int episode = Integer.parseInt(suffix.group(1));
+            if (episode > 0) {
+                return Optional.of(episode);
+            }
+        }
+        return Optional.empty();
     }
 
     public Optional<Integer> episodeNumber(String sourceName, Integer selectedSeasonNumber) {

@@ -1146,14 +1146,25 @@ public class MagnetIngestService {
             Optional<MovieSeriesFileRenameService.RenameResult> rename = renameService.seriesVideo(
                     file.name(),
                     seriesFileTitle(task),
-                    task.getSeasonNumber()
+                    task.getSeasonNumber(), task.getTitle()
             );
             if (rename.isEmpty()) {
-                skipped++;
-                skipFile(taskLogWriter, plan, file, "跳过无法识别集数的视频");
-                continue;
+                if (renameService.isNonFeatureVideo(file.name())) {
+                    skipped++;
+                    skipFile(taskLogWriter, plan, file, "跳过已识别的辅助视频");
+                    continue;
+                }
+                throw new OpenListClientException("无法识别集数，已停止整理并保留源文件: "
+                        + file.path() + "/" + file.name());
             }
             MovieSeriesFileRenameService.RenameResult result = rename.get();
+            boolean alreadyAtTarget = openListClient.normalizePath(file.path())
+                    .equals(openListClient.normalizePath(task.getSavePath())) && file.name().equals(result.fileName());
+            if (plan.plannedTargetNames().contains(result.fileName())
+                    || (targetNames.contains(result.fileName()) && !alreadyAtTarget)) {
+                throw new OpenListClientException("视频目标文件名冲突，已停止整理并保留源文件: "
+                        + file.path() + "/" + file.name() + " ==> " + result.fileName());
+            }
             if (planFile(taskLogWriter, task.getSavePath(), targetNames, plan, file, result.fileName())) {
                 organized++;
                 videoCount++;
@@ -1162,6 +1173,9 @@ public class MagnetIngestService {
             } else {
                 skipped++;
             }
+        }
+        if (videoCount < 1) {
+            throw new OpenListClientException("没有识别到可入库的视频文件，已停止整理并保留源文件");
         }
 
         for (OpenListFileInfo file : files) {
@@ -1178,7 +1192,7 @@ public class MagnetIngestService {
                     file.name(),
                     seriesFileTitle(task),
                     task.getSeasonNumber(),
-                    sourceQuality
+                    sourceQuality, task.getTitle()
             );
             if (detected.isEmpty()) {
                 skipped++;
@@ -1198,7 +1212,7 @@ public class MagnetIngestService {
                     file.name(),
                     seriesFileTitle(task),
                     task.getSeasonNumber(),
-                    matchedQuality
+                    matchedQuality, task.getTitle()
             ).orElseThrow();
             if (planFile(taskLogWriter, task.getSavePath(), targetNames, plan, file, result.fileName())) {
                 organized++;
@@ -1243,7 +1257,8 @@ public class MagnetIngestService {
         Set<String> skippedDirectoryPaths = new LinkedHashSet<>();
 
         if (hasRecognizableAnimeSeriesVideo(rootFiles, task)) {
-            addAnimeDirectoriesToDelete(taskLogWriter, contentToDeleteByDir, skippedDirectoryPaths, rootPath, rootDirectories);
+            addAnimeDirectoriesToDelete(taskLogWriter, contentToDeleteByDir, skippedDirectoryPaths, rootPath,
+                    rootDirectories.stream().filter(directory -> isKnownAnimeAuxiliaryDirectory(directory.name())).toList());
             return new AnimeSeriesOrganizeSelection(rootFiles, contentToDeleteByDir, skippedDirectoryPaths);
         }
 
@@ -1259,8 +1274,7 @@ public class MagnetIngestService {
         );
 
         List<OpenListFileInfo> selectedFiles = new ArrayList<>();
-        List<String> rootLooseFiles = rootFiles.stream().map(OpenListFileInfo::name).toList();
-        List<OpenListFileInfo> rootDirectoriesWithoutMedia = new ArrayList<>();
+        selectedFiles.addAll(rootFiles);
         for (OpenListFileInfo directory : rootDirectories) {
             if (isKnownAnimeAuxiliaryDirectory(directory.name())) {
                 continue;
@@ -1271,22 +1285,11 @@ public class MagnetIngestService {
             List<OpenListFileInfo> directories = directDirectories(children);
             if (hasRecognizableAnimeSeriesVideo(files, task)) {
                 selectedFiles.addAll(files);
-                addAnimeDirectoriesToDelete(taskLogWriter, contentToDeleteByDir, skippedDirectoryPaths, directoryPath, directories);
-            } else {
-                rootDirectoriesWithoutMedia.add(directory);
+                addAnimeDirectoriesToDelete(taskLogWriter, contentToDeleteByDir, skippedDirectoryPaths, directoryPath,
+                        directories.stream().filter(child -> isKnownAnimeAuxiliaryDirectory(child.name())).toList());
             }
         }
 
-        if (!selectedFiles.isEmpty()) {
-            addAnimeContentToDelete(contentToDeleteByDir, rootPath, rootLooseFiles);
-            addAnimeDirectoriesToDelete(
-                    taskLogWriter,
-                    contentToDeleteByDir,
-                    skippedDirectoryPaths,
-                    rootPath,
-                    rootDirectoriesWithoutMedia
-            );
-        }
         return new AnimeSeriesOrganizeSelection(selectedFiles, contentToDeleteByDir, skippedDirectoryPaths);
     }
 
@@ -1307,7 +1310,7 @@ public class MagnetIngestService {
                 && renameService.seriesVideo(
                         file.name(),
                         seriesFileTitle(task),
-                        task.getSeasonNumber()
+                        task.getSeasonNumber(), task.getTitle()
                 ).isPresent());
     }
 

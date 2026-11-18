@@ -9,6 +9,22 @@ class MovieSeriesFileRenameServiceTest {
     private final MovieSeriesFileRenameService renameService = new MovieSeriesFileRenameService();
 
     @Test
+    void recognizesEpisodeSuffixOnlyAfterTheKnownSeriesTitle() {
+        for (int episode = 1; episode <= 12; episode++) {
+            var result = renameService.seriesVideo("隐秘的角落%02d.mp4".formatted(episode), "隐秘的角落", 1).orElseThrow();
+            assertThat(result.episodeNumber()).isEqualTo(episode);
+        }
+        assertThat(renameService.seriesSubtitle("隐秘的角落01.srt", "隐秘的角落", 1, "1080p")).isPresent();
+        assertThat(renameService.seriesVideo("其他剧01.mp4", "隐秘的角落", 1)).isEmpty();
+        assertThat(renameService.seriesVideo("隐秘的角落2020.mp4", "隐秘的角落", 1)).isEmpty();
+        assertThat(renameService.seriesVideo("隐秘的角落1080p.mp4", "隐秘的角落", 1)).isEmpty();
+        assertThat(renameService.seriesVideo("隐秘的角落00.mp4", "隐秘的角落", 1)).isEmpty();
+        assertThat(renameService.seriesVideo("隐秘的角落SP01.mp4", "隐秘的角落", 1)).isEmpty();
+        assertThat(renameService.seriesVideo("隐秘的角落01.mp4", "The Bad Kids", 1, "隐秘的角落")
+                .orElseThrow().fileName()).isEqualTo("The Bad Kids - S01E01.mp4");
+    }
+
+    @Test
     void recognizesBareAnimeEpisodeAfterTitleSeparator() {
         String sourceName = "[LoliHouse] Hell Mode - 01 [WebRip 1080p HEVC-10bit AAC SRTx2].mkv";
 
