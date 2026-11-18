@@ -181,11 +181,17 @@ public class DatabaseInitializer implements ApplicationRunner {
         ensureAnimeMagnetTaskBgmIdOptional();
         ensureAnimeMagnetTaskOwnerColumn();
         ensureAnimeMagnetTaskReleaseMetadataColumns();
+        if (animeMagnetIngestTaskMapper.countNarrowReleaseGuidColumn() > 0) {
+            animeMagnetIngestTaskMapper.widenReleaseGuidColumn();
+        }
         ensureAnimeMagnetTaskAttemptChainColumns();
         animeMagnetIngestTaskLogMapper.createTableIfNotExists();
         movieMagnetIngestTaskMapper.createTableIfNotExists();
         ensureMovieMagnetTaskCatalogIdentityColumns();
         ensureMovieMagnetTaskTagColumns();
+        if (movieMagnetIngestTaskMapper.countNarrowReleaseGuidColumn() > 0) {
+            movieMagnetIngestTaskMapper.widenReleaseGuidColumn();
+        }
         ensureMovieMagnetTaskAttemptChainColumns();
         movieMagnetIngestTaskLogMapper.createTableIfNotExists();
         mediaDeletionTaskMapper.createTableIfNotExists();
@@ -201,6 +207,9 @@ public class DatabaseInitializer implements ApplicationRunner {
         seriesMagnetIngestTaskMapper.createTableIfNotExists();
         ensureSeriesMagnetTaskCatalogIdentityColumns();
         ensureSeriesMagnetTaskTagColumns();
+        if (seriesMagnetIngestTaskMapper.countNarrowReleaseGuidColumn() > 0) {
+            seriesMagnetIngestTaskMapper.widenReleaseGuidColumn();
+        }
         ensureSeriesMagnetTaskAttemptChainColumns();
         seriesMagnetIngestTaskLogMapper.createTableIfNotExists();
         adultMagnetIngestTaskMapper.createTableIfNotExists();

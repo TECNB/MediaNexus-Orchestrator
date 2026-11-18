@@ -26,7 +26,7 @@ public interface SeriesMagnetIngestTaskMapper extends BaseMapper<SeriesMagnetIng
                 release_indexer VARCHAR(255) NULL,
                 release_size BIGINT NULL,
                 release_indexer_id INT NULL,
-                release_guid VARCHAR(1024) NULL,
+                release_guid TEXT NULL,
                 resolution_tags VARCHAR(255) NULL,
                 quality_tag VARCHAR(32) NULL,
                 dynamic_range_tags VARCHAR(255) NULL,
@@ -132,10 +132,26 @@ public interface SeriesMagnetIngestTaskMapper extends BaseMapper<SeriesMagnetIng
             ADD COLUMN release_indexer VARCHAR(255) NULL AFTER release_title,
             ADD COLUMN release_size BIGINT NULL AFTER release_indexer,
             ADD COLUMN release_indexer_id INT NULL AFTER release_size,
-            ADD COLUMN release_guid VARCHAR(1024) NULL AFTER release_indexer_id,
+            ADD COLUMN release_guid TEXT NULL AFTER release_indexer_id,
             ADD COLUMN resolution_tags VARCHAR(255) NULL AFTER release_guid
             """)
     void addReleaseMetadataColumns();
+
+    @Select("""
+            SELECT COUNT(*)
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'series_magnet_ingest_tasks'
+              AND COLUMN_NAME = 'release_guid'
+              AND DATA_TYPE IN ('char', 'varchar', 'tinytext')
+            """)
+    Integer countNarrowReleaseGuidColumn();
+
+    @Update("""
+            ALTER TABLE series_magnet_ingest_tasks
+            MODIFY COLUMN release_guid TEXT NULL
+            """)
+    void widenReleaseGuidColumn();
 
     @Select("""
             SELECT COUNT(*)
