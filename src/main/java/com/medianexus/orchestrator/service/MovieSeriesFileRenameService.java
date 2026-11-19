@@ -22,6 +22,9 @@ public class MovieSeriesFileRenameService {
     private static final Pattern INVALID_NAME_CHARS = Pattern.compile("[\\\\/:*?\"<>|]+");
     private static final Pattern MULTIPLE_SPACE_PATTERN = Pattern.compile("\\s+");
     private static final Pattern QUALITY_SPLIT_PATTERN = Pattern.compile("[._\\-\\[\\](){}]+");
+    private static final Pattern QUALITY_RESOLUTION_PATTERN = Pattern.compile(
+            "(?i)(?<![a-z0-9])(?:web|hd)?(2160p|1080p|720p|480p|4k|uhd)(?![a-z0-9])");
+    private static final String PREVIEW_LABEL = "(?:(?:尝鲜|嘗鮮|抢先|搶先)版?\\s*)*";
     private static final Pattern SXX_EXX_PATTERN = Pattern.compile("(?i)(?:^|[^a-z0-9])s(\\d{1,2})\\s*e(\\d{1,3})(?:[^a-z0-9]|$)");
     private static final Pattern X_EPISODE_PATTERN = Pattern.compile("(?i)(?:^|[^a-z0-9])(\\d{1,2})x(\\d{1,3})(?:[^a-z0-9]|$)");
     private static final Pattern EPISODE_PREFIX_PATTERN = Pattern.compile("(?i)(?:^|[^a-z0-9])(?:ep|e)\\s*(\\d{1,3})(?:[^a-z0-9]|$)");
@@ -33,7 +36,7 @@ public class MovieSeriesFileRenameService {
 
     private static final Pattern NON_FEATURE_EPISODE = Pattern.compile(
             "(?i)(?<![a-z0-9])(?:ncop|nced|op|ed|ova|oad|sp|specials?|extras?|sample|trailer|pv|cm|menu|iv)\\d*(?![a-z])"
-                    + "|特典|花絮|预告|宣伝|映像特典|(?:\\s-\\s|s\\d{1,2}e|ep?\\s*|第\\s*|\\[)\\d{1,3}\\.\\d+(?=[ ._()\\[\\]-]|$)");
+                    + "|特典|花絮|预告|宣伝|映像特典|(?:\\s-\\s|s\\d{1,2}e|ep?\\s*|第\\s*|\\[)\\d{1,3}\\.\\d+(?!\\d|\\.\\d)(?:v\\d+)?(?=[ ._()\\[\\]-]|$)");
 
     private static final List<String> VIDEO_EXTENSIONS = List.of(
             "mp4", "mkv", "avi", "mov", "wmv", "flv", "m2ts", "ts", "webm", "rmvb"
@@ -139,10 +142,17 @@ public class MovieSeriesFileRenameService {
                 .map(String::trim)
                 .filter(StringUtils::hasText)
                 .toList();
-        appendFirst(values, normalizedName, tokens, List.of("2160p", "1080p", "720p", "480p", "4k", "uhd"));
+        Matcher resolution = QUALITY_RESOLUTION_PATTERN.matcher(mainName(name));
+        if (resolution.find()) {
+            values.add(formatQualityToken(resolution.group(1).toLowerCase(Locale.ROOT)));
+        }
         appendFirstByText(values, normalizedName, List.of("remux", "bluray", "bdrip", "web-dl", "webdl", "webrip", "hdtv", "dvdrip"));
         appendFirst(values, normalizedName, tokens, List.of("hevc", "x265", "h265", "h.265", "avc", "x264", "h264", "h.264", "av1"));
         appendFirst(values, normalizedName, tokens, List.of("hdr10+", "hdr10", "hdr", "dv", "dovi", "hlg"));
+        String version = ReleaseVersion.marker(mainName(name));
+        if (StringUtils.hasText(version)) {
+            values.add(version);
+        }
         return sanitizeFileName(String.join(" ", values));
     }
 
@@ -225,7 +235,10 @@ public class MovieSeriesFileRenameService {
         if (detected.isPresent()) {
             return detected;
         }
-        Matcher suffix = Pattern.compile("^" + Pattern.quote(title) + "(\\d{1,3})$")
+        // 只剥离括号来源装饰；标题自身的数字必须原样精确匹配，不能把 63-gatsu 洗成 3-gatsu。
+        Matcher suffix = Pattern.compile("(?i)^(?:[\\[【][^\\]】]*[\\]】]\\s*)*" + PREVIEW_LABEL
+                        + Pattern.quote(title) + PREVIEW_LABEL + "(\\d{1,3})(?:end)?"
+                        + "(?:\\s*\\[(?:2160p|1080p|720p|480p|4k|uhd)(?:[^\\]]*)\\])?$")
                 .matcher(mainName(sourceName));
         if (suffix.matches()) {
             int episode = Integer.parseInt(suffix.group(1));

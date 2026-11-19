@@ -129,6 +129,8 @@ public class MagnetIngestService {
     private final MediaLibraryPresenceService mediaLibraryPresenceService;
     private final IngestTaskNotifier taskNotifier;
     private final ExecutorService executorService;
+    @Autowired
+    private ReleaseSubmissionSafety submissionSafety;
 
     @Autowired
     public MagnetIngestService(
@@ -254,7 +256,7 @@ public class MagnetIngestService {
     }
 
     public MovieMagnetIngestTaskResponse createMovieTask(MovieMagnetIngestRequest request) {
-        return createMovieTask(request, ReleaseIngestMetadata.manual());
+        return createMovieTask(request, ReleaseIngestMetadata.manual().withUnverifiedRisk(request != null && request.acceptUnverifiedRisk()));
     }
 
     public MovieMagnetIngestTaskResponse createMovieTask(
@@ -285,6 +287,13 @@ public class MagnetIngestService {
     MovieMagnetIngestTaskResponse createMovieTaskForOwner(
             MovieMagnetIngestRequest request, ReleaseIngestMetadata metadata, User owner
     ) {
+        return createConfirmedMovieTaskForOwner(request, metadata.withUnverifiedRisk(false), owner);
+    }
+
+    /** 人工确认许可来自已校验归属的操作；仍完整经过重复检查与共同安全受理。 */
+    MovieMagnetIngestTaskResponse createConfirmedMovieTaskForOwner(
+            MovieMagnetIngestRequest request, ReleaseIngestMetadata metadata, User owner
+    ) {
         MovieTaskPlan plan = buildMoviePlan(request);
         MovieMagnetIngestTask active = movieTaskMapper.selectOne(new LambdaQueryWrapper<MovieMagnetIngestTask>()
                 .eq(MovieMagnetIngestTask::getMagnetHash, plan.magnetHash())
@@ -298,16 +307,28 @@ public class MagnetIngestService {
     SeriesMagnetIngestTaskResponse createAnimeSeasonTaskForOwner(
             SeriesMagnetIngestRequest request, ReleaseIngestMetadata metadata, User owner
     ) {
-        return insertAutomationSeriesTask(buildAnimeSeasonSeriesPlan(request), metadata, owner, ANIME_PRODUCT_TYPE);
+        return createConfirmedAnimeSeasonTaskForOwner(request, metadata.withUnverifiedRisk(false), owner);
     }
 
     SeriesMagnetIngestTaskResponse createSeriesTaskForOwner(
             SeriesMagnetIngestRequest request, ReleaseIngestMetadata metadata, User owner
     ) {
-        return insertAutomationSeriesTask(buildSeriesPlan(request), metadata, owner, SERIES_PRODUCT_TYPE);
+        return createConfirmedSeriesTaskForOwner(request, metadata.withUnverifiedRisk(false), owner);
     }
 
-    private SeriesMagnetIngestTaskResponse insertAutomationSeriesTask(
+    SeriesMagnetIngestTaskResponse createConfirmedAnimeSeasonTaskForOwner(
+            SeriesMagnetIngestRequest request, ReleaseIngestMetadata metadata, User owner
+    ) {
+        return insertOwnerSeriesTask(buildAnimeSeasonSeriesPlan(request), metadata, owner, ANIME_PRODUCT_TYPE);
+    }
+
+    SeriesMagnetIngestTaskResponse createConfirmedSeriesTaskForOwner(
+            SeriesMagnetIngestRequest request, ReleaseIngestMetadata metadata, User owner
+    ) {
+        return insertOwnerSeriesTask(buildSeriesPlan(request), metadata, owner, SERIES_PRODUCT_TYPE);
+    }
+
+    private SeriesMagnetIngestTaskResponse insertOwnerSeriesTask(
             SeriesTaskPlan plan, ReleaseIngestMetadata metadata, User owner, String productType
     ) {
         SeriesMagnetIngestTask active = seriesTaskMapper.selectOne(new LambdaQueryWrapper<SeriesMagnetIngestTask>()
@@ -364,6 +385,8 @@ public class MagnetIngestService {
             ReleaseIngestMetadata releaseMetadata,
             TaskRetryReference retryReference
     ) {
+        String safetyRecord = submissionSafety.check(plan.magnet(),
+                ReleaseTarget.of(plan.title(), plan.originalTitle(), null, plan.year(), null, null), releaseMetadata);
         userActionQuotaService.consumeDailyContentCreate(user, UserActionType.MAGNET_INGEST_CREATE);
         String taskId = UUID.randomUUID().toString();
         LocalDateTime now = LocalDateTime.now();
@@ -395,6 +418,7 @@ public class MagnetIngestService {
         MovieMagnetIngestTaskResponse response = toMovieResponse(task);
         try {
             writeMovieLog(taskId, "INFO", "created", "已创建电影磁力任务", "savePath=" + plan.savePath());
+            writeMovieLog(taskId, "INFO", "submission_safety", "提交前安全检查通过", safetyRecord);
             log.info(
                     "Created movie magnet ingest task taskId={} userId={} magnetHash={} savePath={}",
                     taskId,
@@ -412,7 +436,7 @@ public class MagnetIngestService {
     }
 
     public SeriesMagnetIngestTaskResponse createSeriesTask(SeriesMagnetIngestRequest request) {
-        return createSeriesTask(request, ReleaseIngestMetadata.manual());
+        return createSeriesTask(request, ReleaseIngestMetadata.manual().withUnverifiedRisk(request != null && request.acceptUnverifiedRisk()));
     }
 
     public SeriesMagnetIngestTaskResponse createSeriesTask(
@@ -520,6 +544,8 @@ public class MagnetIngestService {
             String persistedProductType,
             TaskRetryReference retryReference
     ) {
+        String safetyRecord = submissionSafety.check(plan.magnet(),
+                ReleaseTarget.of(plan.title(), plan.originalTitle(), null, null, plan.seasonNumber(), null), releaseMetadata);
         userActionQuotaService.consumeDailyContentCreate(user, UserActionType.MAGNET_INGEST_CREATE);
         String taskId = UUID.randomUUID().toString();
         LocalDateTime now = LocalDateTime.now();
@@ -554,6 +580,7 @@ public class MagnetIngestService {
         SeriesMagnetIngestTaskResponse response = toSeriesResponse(task);
         try {
             writeSeriesLog(taskId, "INFO", "created", "已创建磁力任务", "savePath=" + plan.savePath());
+            writeSeriesLog(taskId, "INFO", "submission_safety", "提交前安全检查通过", safetyRecord);
             log.info(
                     "Created {} magnet ingest task taskId={} userId={} magnetHash={} savePath={}",
                     persistedProductType,

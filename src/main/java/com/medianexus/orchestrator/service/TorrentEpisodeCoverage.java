@@ -61,6 +61,12 @@ public class TorrentEpisodeCoverage implements AutoCloseable {
     private final TmdbClient tmdbClient;
     private final MovieSeriesFileRenameService renameService;
     private final HttpClient httpClient;
+    private com.medianexus.orchestrator.integration.guangya.GuangyaClient guangya;
+
+    @Autowired
+    public void useSharedFileTables(com.medianexus.orchestrator.integration.guangya.GuangyaClient guangya) {
+        this.guangya = guangya;
+    }
     private final Cache<PanSouMagnetIdentity, String> sources = CacheBuilder.newBuilder()
             .maximumSize(10000).expireAfterWrite(1, TimeUnit.HOURS).build();
     private final Cache<CoverageKey, ReleaseEpisodeCoverageResponse> verified = CacheBuilder.newBuilder()
@@ -113,7 +119,7 @@ public class TorrentEpisodeCoverage implements AutoCloseable {
         if (failures.getIfPresent(key) != null) return UNVERIFIED;
         if (pending.contains(key)) return CHECKING;
         String sourceId = sources.getIfPresent(identity);
-        if (sourceId == null) return UNVERIFIED;
+        if (sourceId == null && (guangya == null || guangya.cached(downloadRef).isEmpty())) return UNVERIFIED;
         pending.add(key);
         try {
             workers.execute(() -> verify(key, sourceId));
@@ -127,7 +133,11 @@ public class TorrentEpisodeCoverage implements AutoCloseable {
     private void verify(CoverageKey key, String sourceId) {
         try {
             int expected = expectedCount(key.season());
-            List<TorrentFile> files = readTorrent(fetchTorrent(sourceId), key.identity());
+            var shared = guangya == null ? java.util.Optional.<com.medianexus.orchestrator.integration.guangya.TorrentFileTable>empty()
+                    : guangya.cached("magnet:?xt=urn:btih:" + key.identity().btih());
+            List<TorrentFile> files = shared.isPresent() ? shared.get().files().stream()
+                    .map(file -> new TorrentFile(file.path(), file.sizeBytes())).toList()
+                    : readTorrent(fetchTorrent(sourceId), key.identity());
             ReleaseEpisodeCoverageResponse coverage = countEpisodes(files, key.season().seasonNumber(), expected);
             if ("VERIFIED".equals(coverage.status())) verified.put(key, coverage);
             else failures.put(key, UNVERIFIED);

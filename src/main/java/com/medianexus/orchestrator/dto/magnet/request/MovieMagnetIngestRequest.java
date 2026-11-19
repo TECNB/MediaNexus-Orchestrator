@@ -21,8 +21,15 @@ public record MovieMagnetIngestRequest(
         @Schema(description = "TMDB 电影 id；来自目录搜索结果", requiredMode = Schema.RequiredMode.NOT_REQUIRED, nullable = true)
         @JsonProperty("tmdb_id")
         @Positive(message = "TMDB id 必须大于 0")
-        Integer tmdbId
+        Integer tmdbId,
+        @Schema(description = "显式接受未取得文件表的风险；默认 false，不能绕过已知冲突或整理不安全")
+        @JsonProperty("accept_unverified_risk")
+        boolean acceptUnverifiedRisk
 ) {
+
+    public MovieMagnetIngestRequest(String magnet, String title, String originalTitle, Integer year, Integer tmdbId) {
+        this(magnet, title, originalTitle, year, tmdbId, false);
+    }
 
     public MovieMagnetIngestRequest(String magnet, String title, String originalTitle, Integer year) {
         this(magnet, title, originalTitle, year, null);

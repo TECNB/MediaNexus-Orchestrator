@@ -47,6 +47,22 @@ class TorrentEpisodeCoverageTest {
     private static final String INFO = "d4:name15:Show.S01E01.mkv6:lengthi100ee";
 
     @Test
+    void reusesSharedGuangyaTableWithoutAnotherResolveOrNyaaDownload() throws Exception {
+        var guangya = mock(com.medianexus.orchestrator.integration.guangya.GuangyaClient.class);
+        var table = new com.medianexus.orchestrator.integration.guangya.TorrentFileTable(identity(INFO), "Show",
+                List.of(new com.medianexus.orchestrator.integration.guangya.TorrentFileTable.Entry("Show/Show.S01E01.mkv", 100)), 100);
+        when(guangya.cached(magnet(INFO))).thenReturn(java.util.Optional.of(table));
+        when(tmdb.getTvSeasonDetails(1, 1, "zh-CN")).thenReturn(mapper.readTree("{\"season_number\":1,\"episodes\":[{\"episode_number\":1},{\"episode_number\":2}]}"));
+        try (var coverage = coverage()) {
+            coverage.useSharedFileTables(guangya);
+            assertThat(coverage.check(magnet(INFO), 1, 1).status()).isEqualTo("CHECKING");
+            await().atMost(Duration.ofSeconds(2)).untilAsserted(() -> assertThat(coverage.check(magnet(INFO), 1, 1))
+                    .isEqualTo(new ReleaseEpisodeCoverageResponse("VERIFIED", 1, 2)));
+            verifyNoInteractions(http);
+            org.mockito.Mockito.verify(guangya, org.mockito.Mockito.never()).resolve(any(), any());
+        }
+    }
+    @Test
     void hashesExactInfoBytesAndParsesMultiAndSingleFileMetadata() throws Exception {
         // 故意保留非排序字典，确保哈希针对原字节而非 Map 重编码。
         assertThat(TorrentEpisodeCoverage.readTorrent(torrent(INFO), identity(INFO)))

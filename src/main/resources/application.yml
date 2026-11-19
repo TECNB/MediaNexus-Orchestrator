@@ -142,6 +142,15 @@ medianexus:
     max-compression-ratio: ${MEDIANEXUS_SUBTITLE_UPLOAD_MAX_COMPRESSION_RATIO:100}
   magnet-search:
     engine: ${MEDIANEXUS_MAGNET_SEARCH_ENGINE:PANSOU}
+  guangya:
+    # 登录凭据仅在管理员热设置中加密保存；不提供 access/refresh/device 环境明文入口。
+    api-base-url: ${MEDIANEXUS_GUANGYA_API_BASE_URL:https://api.guangyapan.com}
+    auth-base-url: ${MEDIANEXUS_GUANGYA_AUTH_BASE_URL:https://account.guangyapan.com}
+    max-response-bytes: ${MEDIANEXUS_GUANGYA_MAX_RESPONSE_BYTES:5242880}
+    max-depth: ${MEDIANEXUS_GUANGYA_MAX_DEPTH:32}
+    max-nodes: ${MEDIANEXUS_GUANGYA_MAX_NODES:20000}
+    cache-max-entries: ${MEDIANEXUS_GUANGYA_CACHE_MAX_ENTRIES:256}
+    cache-ttl: ${MEDIANEXUS_GUANGYA_CACHE_TTL:6h}
   prowlarr:
     disabled: ${MEDIANEXUS_PROWLARR_DISABLED:false}
     base-url: ${MEDIANEXUS_PROWLARR_BASE_URL:}

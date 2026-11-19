@@ -27,6 +27,13 @@ public record OpenListReleaseRetryRequest(
         List<String> resolutionTags,
         @Schema(description = "发布标题解析出的动态范围标签；没有命中时为空列表或 null", nullable = true)
         @JsonProperty("dynamic_range_tags")
-        List<String> dynamicRangeTags
+        List<String> dynamicRangeTags,
+        @Schema(description = "显式接受未核验风险；默认 false，已知冲突及整理不安全不可绕过")
+        @JsonProperty("accept_unverified_risk")
+        boolean acceptUnverifiedRisk
 ) {
+    public OpenListReleaseRetryRequest(String releaseTitle, String indexer, Long size, Integer indexerId,
+            String downloadRef, List<String> resolutionTags, List<String> dynamicRangeTags) {
+        this(releaseTitle, indexer, size, indexerId, downloadRef, resolutionTags, dynamicRangeTags, false);
+    }
 }

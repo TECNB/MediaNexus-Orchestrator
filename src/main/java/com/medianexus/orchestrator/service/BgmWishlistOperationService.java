@@ -115,8 +115,10 @@ public class BgmWishlistOperationService {
             if (!"WAITING_CONFIRMATION".equals(selected.status())) throw bad("该作品当前不需要确认");
             Candidate candidate = selected.candidates().stream().filter(value -> value.key().equals(input.candidateKey()))
                     .findFirst().orElseThrow(() -> bad("候选发布已变化，请查看当前记录"));
+            requireConfirmable(candidate.release(), input.acceptUnverifiedRisk());
             return replace(operation, new Entry(selected.item(), "CREATING", selected.startedAt(), selected.searches(),
-                    selected.candidates(), candidate, null, null, selected.notification()), "QUEUED");
+                    selected.candidates(), new Candidate(candidate.key(), candidate.release(), input.acceptUnverifiedRisk()),
+                    null, null, selected.notification()), "QUEUED");
         });
         launch(id);
         return live(changed);
@@ -143,7 +145,8 @@ public class BgmWishlistOperationService {
                     || "720p".equals(operation.source().quality()) && release.resolutionTags().contains("1080p")
                     || "2160p".equals(operation.source().quality()) && release.resolutionTags().contains("1080p");
             if (!qualityMatches) throw bad("补充来源不符合本次清晰度条件");
-            Candidate candidate = new Candidate(candidateKey(release), release);
+            requireConfirmable(release, input.acceptUnverifiedRisk());
+            Candidate candidate = new Candidate(candidateKey(release), release, input.acceptUnverifiedRisk());
             return replace(operation, new Entry(previous.item(), "CREATING", Instant.now(), previous.searches(),
                     List.of(candidate), candidate, null, null, previous.notification()), "QUEUED");
         });
@@ -410,7 +413,8 @@ public class BgmWishlistOperationService {
                         .stream().map(release -> new Candidate(candidateKey(release), release)).toList();
             } catch (ProwlarrReleaseIngestService.NoMatchingReleaseException noMatch) {
                 updateEntry(id, subjectId, previous -> new Entry(previous.item(),
-                        noMatch.candidates().isEmpty() ? "WAITING_RESOURCE" : "WAITING_CONFIRMATION",
+                        "NO_RELEASE".equals(noMatch.reasonCode()) && noMatch.candidates().isEmpty()
+                                ? "WAITING_RESOURCE" : "WAITING_CONFIRMATION",
                         previous.startedAt(), previous.searches(), noMatch.candidates().stream()
                                 .map(release -> new Candidate(candidateKey(release), release)).toList(),
                         null, null, reason(noMatch.reasonCode(), noMatch.getMessage() + "，尚未创建任务"), null));
@@ -420,12 +424,13 @@ public class BgmWishlistOperationService {
                 updateEntry(id, subjectId, previous -> outcome(previous, "FAILED", reason("RELEASE_CHECK_FAILED", "发布搜索失败，无法判断是否有合适资源；请重新搜索")));
                 return false;
             }
-            selected = candidates.stream().filter(value -> hasChineseTitle(value.release().title())).findFirst().orElse(null);
+            selected = candidates.stream().filter(value -> automaticallyRecommendable(value.release())
+                    && hasChineseTitle(value.release().title())).findFirst().orElse(null);
             Candidate choice = selected;
             updateEntry(id, subjectId, previous -> new Entry(previous.item(), choice != null ? "CREATING" : candidates.isEmpty() ? "WAITING_RESOURCE" : "WAITING_CONFIRMATION",
                     previous.startedAt(), previous.searches(), candidates, choice, null,
-                    choice != null ? null : reason(candidates.isEmpty() ? "NO_RELEASE" : "NON_CHINESE", candidates.isEmpty()
-                            ? "未找到可推荐的发布资源，尚未创建任务" : "发布标题未检测到中文，字幕未经验证；尚未下载"), null));
+                    choice != null ? null : reason(candidates.isEmpty() ? "NO_RELEASE" : "REVIEW_REQUIRED", candidates.isEmpty()
+                            ? "未找到可推荐的发布资源，尚未创建任务" : "发布需核对中文标题或文件表证据，尚未创建任务"), null));
             if (selected == null) { notifyContent(id, subjectId); return false; }
         }
         // 搜索期间配置、目标或在库可能变化；最终提交必须再次核验，人工确认不绕过此边界。
@@ -443,9 +448,13 @@ public class BgmWishlistOperationService {
             var target = target(checked.identity());
             boolean regularSeries = "SERIES".equals(target.mediaType()) && (fromWeCom(operation)
                     ? "SERIES".equals(checked.identity().ingestCategory()) : operation.source().provider() == Provider.DOUBAN);
-            task = regularSeries
-                    ? tasks.createSeries(target, selected.release(), owner)
-                    : tasks.create(target, selected.release(), owner);
+            if ("CREATING".equals(original.status())) {
+                task = regularSeries ? tasks.createConfirmedSeries(target, selected, owner)
+                        : tasks.createConfirmed(target, selected, owner);
+            } else {
+                task = regularSeries ? tasks.createSeries(target, selected.release(), owner)
+                        : tasks.create(target, selected.release(), owner);
+            }
         }
         catch (BusinessException exception) {
             if (exception.getCode().equals(ErrorCode.TOO_MANY_REQUESTS.getCode())) {
@@ -589,6 +598,20 @@ public class BgmWishlistOperationService {
         return new Item(id, subject.title(), subject.originalTitle(), coverUrl, subject.year(), subject.updatedAt(), state.identities().get(id),
                 "UNKNOWN", "UNKNOWN", false, List.of(), null, state.candidateSubjectIds().contains(id), "NOT_CHECKED", null, null, false);
     }
+    private static boolean automaticallyRecommendable(ProwlarrReleaseItemResponse release) {
+        return release.evidence() == null ? release.indexerId() != null
+                : "RECOMMENDABLE".equals(release.evidence().status());
+    }
+
+    private static void requireConfirmable(ProwlarrReleaseItemResponse release, boolean acceptUnverifiedRisk) {
+        if (release.evidence() != null && (release.evidence().camera()
+                || Set.of("NEEDS_PROCESSING", "UNSUITABLE").contains(release.evidence().status()))) {
+            throw bad("该发布存在已知冲突或尚不支持安全整理，不能通过人工确认绕过");
+        }
+        // 无比较证据的旧 Prowlarr 发布保留既有契约；直接磁力缺证据必须明确接受风险。
+        if (!automaticallyRecommendable(release) && !acceptUnverifiedRisk) throw bad("未取得可推荐的文件表证据，请明确接受未核验风险");
+    }
+
     static boolean hasChineseTitle(String title) { return title != null && java.util.regex.Pattern.compile("[\\u3400-\\u9fff]").matcher(title).find(); }
     private static String candidateKey(ProwlarrReleaseItemResponse release) {
         try {

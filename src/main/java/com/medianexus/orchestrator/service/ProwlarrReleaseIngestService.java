@@ -129,6 +129,7 @@ public class ProwlarrReleaseIngestService {
 
     public ProwlarrReleaseRecommendationResponse recommendMovieRelease(MovieReleaseRecommendationRequest request) {
         authService.requireCurrentUser();
+        if (settings.usesPanSouForMagnetSearch()) return panSou.previewMovie(request);
         return recommendMovieReleaseForAutomation(request);
     }
 
@@ -245,6 +246,7 @@ public class ProwlarrReleaseIngestService {
 
     public ProwlarrReleaseRecommendationResponse recommendSeriesRelease(SeriesReleaseRecommendationRequest request) {
         authService.requireCurrentUser();
+        if (settings.usesPanSouForMagnetSearch()) return panSou.previewSeries(request);
         return recommendSeriesReleaseForAutomation(request);
     }
 
@@ -427,7 +429,7 @@ public class ProwlarrReleaseIngestService {
                         request.downloadRef(),
                         request.resolutionTags(),
                         request.dynamicRangeTags()
-                )
+                ).withUnverifiedRisk(request.acceptUnverifiedRisk())
         );
     }
 
@@ -453,7 +455,7 @@ public class ProwlarrReleaseIngestService {
                 request.downloadRef(),
                 request.resolutionTags(),
                 request.dynamicRangeTags()
-        );
+        ).withUnverifiedRisk(request.acceptUnverifiedRisk());
         if (requiresAnimeSeriesTask(request.taskProductType())) {
             return magnetIngestService.createAnimeSeasonSeriesTask(ingestRequest, releaseMetadata);
         }
@@ -496,6 +498,44 @@ public class ProwlarrReleaseIngestService {
                         request.downloadRef(), request.resolutionTags(), request.dynamicRangeTags()), owner);
     }
 
+    /** 仅供已校验归属的人工确认操作；保留显式许可，不向自动 ForOwner 入口传播。 */
+    MovieMagnetIngestTaskResponse ingestConfirmedMovieForOwner(MovieReleaseOpenListIngestRequest request, User owner) {
+        String title = requiredText(request.title(), "电影标题不能为空");
+        String releaseTitle = requiredText(request.releaseTitle(), "发布标题不能为空");
+        String magnet = resolveMagnet(request.indexerId(), request.downloadRef(), releaseTitle);
+        return magnetIngestService.createConfirmedMovieTaskForOwner(
+                new MovieMagnetIngestRequest(magnet, title, trimToNull(request.originalTitle()),
+                        validateYear(request.year()), request.tmdbId()),
+                requestMetadata(releaseTitle, request.indexer(), request.size(), request.indexerId(),
+                        request.downloadRef(), request.resolutionTags(), request.dynamicRangeTags())
+                        .withUnverifiedRisk(request.acceptUnverifiedRisk()), owner);
+    }
+
+    SeriesMagnetIngestTaskResponse ingestConfirmedAnimeForOwner(SeriesReleaseOpenListIngestRequest request, User owner) {
+        String title = requiredText(request.title(), "动漫标题不能为空");
+        String releaseTitle = requiredText(request.releaseTitle(), "发布标题不能为空");
+        String magnet = resolveMagnet(request.indexerId(), request.downloadRef(), releaseTitle);
+        return magnetIngestService.createConfirmedAnimeSeasonTaskForOwner(
+                new SeriesMagnetIngestRequest(magnet, title, trimToNull(request.originalTitle()),
+                        validateSeasonNumber(request.seasonNumber()), request.tmdbId()),
+                requestMetadata(releaseTitle, request.indexer(), request.size(), request.indexerId(),
+                        request.downloadRef(), request.resolutionTags(), request.dynamicRangeTags())
+                        .withUnverifiedRisk(request.acceptUnverifiedRisk()), owner);
+    }
+
+    SeriesMagnetIngestTaskResponse ingestConfirmedSeriesForOwner(SeriesReleaseOpenListIngestRequest request, User owner) {
+        String title = requiredText(request.title(), "剧集标题不能为空");
+        String releaseTitle = requiredText(request.releaseTitle(), "发布标题不能为空");
+        String magnet = resolveMagnet(request.indexerId(), request.downloadRef(), releaseTitle);
+        return magnetIngestService.createConfirmedSeriesTaskForOwner(
+                new SeriesMagnetIngestRequest(magnet, title, trimToNull(request.originalTitle()),
+                        validateSeasonNumber(request.seasonNumber()), request.tmdbId()),
+                requestMetadata(releaseTitle, request.indexer(), request.size(), request.indexerId(),
+                        request.downloadRef(), request.resolutionTags(), request.dynamicRangeTags())
+                        .withUnverifiedRisk(request.acceptUnverifiedRisk()), owner);
+    }
+
+
     public MovieMagnetIngestTaskResponse ingestSelectedMovieRetry(
             MovieMagnetIngestTask originalTask,
             OpenListReleaseRetryRequest request,
@@ -515,7 +555,7 @@ public class ProwlarrReleaseIngestService {
                         request.downloadRef(),
                         request.resolutionTags(),
                         request.dynamicRangeTags()
-                ),
+                ).withUnverifiedRisk(request.acceptUnverifiedRisk()),
                 retryReference
         );
     }
@@ -539,7 +579,7 @@ public class ProwlarrReleaseIngestService {
                         request.downloadRef(),
                         request.resolutionTags(),
                         request.dynamicRangeTags()
-                ),
+                ).withUnverifiedRisk(request.acceptUnverifiedRisk()),
                 retryReference
         );
     }

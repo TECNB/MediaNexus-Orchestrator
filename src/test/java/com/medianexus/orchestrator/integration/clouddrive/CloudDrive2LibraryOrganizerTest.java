@@ -216,6 +216,66 @@ class CloudDrive2LibraryOrganizerTest {
     }
 
     @Test
+    void organizesAllTwelveMixedPreviewFilesWithTheirVersionsIntact() {
+        FakeFileOperations files = new FakeFileOperations();
+        LibraryOrganizationPlan plan = mixedPreviewPlan(files);
+
+        new CloudDrive2LibraryOrganizer(files, properties(), IngestTargetFixtures.legacy())
+                .organize(plan, (message, detail) -> { });
+
+        assertThat(files.renameCalls).singleElement().satisfies(batch -> assertThat(batch).hasSize(12));
+        assertThat(files.moveCalls).singleElement().satisfies(batch -> assertThat(batch.sourcePaths()).hasSize(12));
+        assertThat(files.children("/WebDAV/Media/Series/隐秘的角落/Season 1"))
+                .extracting(CloudDrive2FileEntry::name).hasSize(12)
+                .contains("隐秘的角落 - S01E01 1080p.mp4", "隐秘的角落 - S01E07 尝鲜版.mp4",
+                        "隐秘的角落 - S01E12 尝鲜版.mp4");
+        assertThat(files.deleteCalls).allSatisfy(batch -> assertThat(batch).noneMatch(path -> path.endsWith(".mp4")));
+    }
+
+    @Test
+    void doesNotReportSuccessWhenOnlyTheSixNormalEpisodesAreVisible() {
+        FakeFileOperations files = new FakeFileOperations();
+        LibraryOrganizationPlan plan = mixedPreviewPlan(files);
+        String target = "/WebDAV/Media/Series/隐秘的角落/Season 1";
+        for (int episode = 7; episode <= 12; episode++) {
+            String name = "隐秘的角落 - S01E%02d 尝鲜版.mp4".formatted(episode);
+            files.hideNameFromCachedListings(target, name);
+            files.hideNameFromForcedListings(target, name);
+        }
+        CloudDrive2Properties config = properties();
+        config.setVisibilityTimeout(Duration.ofMillis(3));
+        List<String> progress = new ArrayList<>();
+
+        assertThatThrownBy(() -> new CloudDrive2LibraryOrganizer(files, config, IngestTargetFixtures.legacy())
+                .organize(plan, (message, detail) -> progress.add(message)))
+                .hasMessageContaining("CD2 目标文件完整性校验超时");
+        assertThat(progress).doesNotContain("CD2 整理结果已完整可见");
+    }
+
+    private LibraryOrganizationPlan mixedPreviewPlan(FakeFileOperations files) {
+        String target = "/pikpak/Media/Series/隐秘的角落/Season 1";
+        String cloudTarget = "/WebDAV/Media/Series/隐秘的角落/Season 1";
+        String release = target + "/Release";
+        files.addDirectory(cloudTarget, "Release");
+        List<RenameOperation> renames = new ArrayList<>();
+        List<MoveOperation> moves = new ArrayList<>();
+        Set<String> targets = new LinkedHashSet<>();
+        var naming = new com.medianexus.orchestrator.service.MovieSeriesFileRenameService();
+        for (int episode = 1; episode <= 12; episode++) {
+            String suffix = episode <= 6 ? "第" + episode + "集-蓝光1080P"
+                    : "尝鲜版%02d%s".formatted(episode, episode == 12 ? "End" : "");
+            String source = "【大陆剧网www.daluju123.com】隐秘的角落" + suffix + ".mp4";
+            String renamed = naming.seriesVideo(source, "隐秘的角落", 1).orElseThrow().fileName();
+            files.addFile(cloudTarget + "/Release", source, 200_000_000L);
+            renames.add(new RenameOperation(release + "/" + source, renamed));
+            moves.add(new MoveOperation(release + "/" + renamed, target));
+            targets.add(renamed);
+        }
+        assertThat(targets).hasSize(12);
+        return new LibraryOrganizationPlan(target, renames, moves, List.of(), targets, Set.of());
+    }
+
+    @Test
     void sendsSeparateMoveRequestsForSourcesFromDifferentParentDirectories() {
         FakeFileOperations fileOperations = new FakeFileOperations();
         fileOperations.rejectMixedSourceParents();

@@ -44,8 +44,23 @@ public record ProwlarrReleaseItemResponse(
         String matchQuery,
         @Schema(description = "需要人工核对的发布证据代码；未知时为空")
         @JsonProperty("review_flags")
-        List<String> reviewFlags
+        List<String> reviewFlags,
+        @Schema(description = "文件表与安全整理证据；未开启比较的来源为 null", nullable = true)
+        ReleaseFileEvidence evidence
 ) {
+    public ProwlarrReleaseItemResponse(String title, Long size, Integer seeders, Integer leechers,
+            Integer grabs, String indexer, String publishDate, Integer indexerId, String downloadRef,
+            List<String> resolutionTags, List<String> dynamicRangeTags, List<String> seasonTags,
+            String matchSource, String matchQuery, List<String> reviewFlags) {
+        this(title, size, seeders, leechers, grabs, indexer, publishDate, indexerId, downloadRef,
+                resolutionTags, dynamicRangeTags, seasonTags, matchSource, matchQuery, reviewFlags, null);
+    }
+
+    public ProwlarrReleaseItemResponse withEvidence(ReleaseFileEvidence evidence, List<String> resolutions) {
+        return new ProwlarrReleaseItemResponse(title, size, seeders, leechers, grabs, indexer, publishDate,
+                indexerId, downloadRef, resolutions, dynamicRangeTags, seasonTags, matchSource, matchQuery,
+                reviewFlags, evidence);
+    }
     public ProwlarrReleaseItemResponse(String title, Long size, Integer seeders, Integer leechers,
             Integer grabs, String indexer, String publishDate, Integer indexerId, String downloadRef,
             List<String> resolutionTags, List<String> dynamicRangeTags, List<String> seasonTags,

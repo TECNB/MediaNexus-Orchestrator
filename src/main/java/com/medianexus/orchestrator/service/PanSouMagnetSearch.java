@@ -1,516 +1,390 @@
 package com.medianexus.orchestrator.service;
 
-import com.medianexus.orchestrator.config.PanSouProperties;
-import com.medianexus.orchestrator.dto.resources.request.MovieReleaseRecommendationRequest;
-import com.medianexus.orchestrator.dto.resources.request.MovieReleaseSearchRequest;
-import com.medianexus.orchestrator.dto.resources.request.SeriesReleaseRecommendationRequest;
-import com.medianexus.orchestrator.dto.resources.request.SeriesReleaseSearchRequest;
-import com.medianexus.orchestrator.dto.resources.response.ProwlarrReleaseItemResponse;
-import com.medianexus.orchestrator.dto.resources.response.ProwlarrReleaseRecommendationResponse;
-import com.medianexus.orchestrator.dto.resources.response.ProwlarrReleaseSearchResponse;
-import com.medianexus.orchestrator.integration.pansou.PanSouClient;
-import com.medianexus.orchestrator.integration.pansou.PanSouClientException;
-import com.medianexus.orchestrator.integration.pansou.PanSouMagnetIdentity;
-import com.medianexus.orchestrator.integration.pansou.PanSouSearchCommand;
-import com.medianexus.orchestrator.integration.pansou.PanSouSearchEntry;
-import com.medianexus.orchestrator.integration.pansou.PanSouSearchResult;
+import com.google.common.cache.Cache;
+import com.google.common.cache.CacheBuilder;
+import com.medianexus.orchestrator.dto.resources.request.*;
+import com.medianexus.orchestrator.dto.resources.response.*;
+import com.medianexus.orchestrator.integration.guangya.*;
+import com.medianexus.orchestrator.integration.pansou.*;
 import com.medianexus.orchestrator.service.ProwlarrReleaseIngestService.NoMatchingReleaseException;
 import com.medianexus.orchestrator.service.ProwlarrReleaseIngestService.ReleaseSearchProgress;
-import com.medianexus.orchestrator.service.ReleaseTitleTagParser.ReleaseTitleTags;
-import java.text.Normalizer;
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorCompletionService;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
+import jakarta.annotation.PreDestroy;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.*;
+import java.util.concurrent.*;
 import java.util.function.Consumer;
-import java.util.function.Function;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.springframework.stereotype.Service;
-import org.springframework.util.StringUtils;
 
-/**
- * 独立的盘搜磁力发现与挑选。目录身份由已校验的请求提供，认证、引擎路由和提交由调用方负责。
- * 标题证据只能说明候选相关性，不能验证文件列表、做种或可下载性；未知指标保持 null。
- */
+/** 发现、补证和全队列比较的同一快照；标题启发式只用于调度，不是文件表准入或整包硬门槛。 */
 @Service
-public class PanSouMagnetSearch {
-
-    private static final Pattern EXPLICIT_SEASON = Pattern.compile(
-            "(?i)(?<![a-z0-9])s(?:eason)?[ ._-]*\\d{1,2}(?!\\d)(?:[ ._-]*[-~–—][ ._-]*s?(?:eason)?[ ._-]*\\d{1,2}(?!\\d))?"
-                    + "|(?<!\\d)\\d{1,2}(?:st|nd|rd|th)[ ._-]*season(?![a-z0-9])"
-                    + "|第\\s*[0-9一二三四五六七八九十两]+\\s*[季期]");
-    private static final Pattern PACK = Pattern.compile(
-            "(?i)(?<![a-z])(?:batch|complete|fin|all)(?![a-z])|全集|合集|完结|完結|全\\s*\\d{1,3}\\s*[集話话]");
-    private static final Pattern EPISODE_RANGE = Pattern.compile(
-            "(?i)(?<![a-z0-9])(?:e(?:p)?)?(\\d{1,3})\\s*[-~–—]\\s*(?:e(?:p)?)?(\\d{1,3})(?![0-9])");
-    private static final Pattern SINGLE_EPISODE = Pattern.compile(
-            "(?i)(?<![a-z])(?:s\\d{1,2})?e(?:p)?[ ._-]*\\d{1,3}(?!\\d)|第\\s*\\d+\\s*[集話话]"
-                    + "|(?:^|[\\s\\[\\]_-])\\d{1,3}\\s*(?:[集話话]|v[1-9])"
-                    + "|[\\[【]\\s*\\d{1,3}\\s*[\\]】]|\\s-\\s*\\d{1,3}(?=\\s|$|[\\[【])|(?<![a-z0-9])\\d{1,2}x\\d{1,3}(?!\\d)");
-    private static final Pattern NON_FEATURE = Pattern.compile(
-            "(?i)(?<![a-z])(?:ost|soundtrack|ncop|nced|trailer|op|ed|pv|ova|oad|sp|epub|novel|manga)(?![a-z])"
-                    + "|主题曲|主題歌|片头曲|片尾曲|预告|預告|截图|特典|花絮|小説|小说|漫畫|漫画|コミック|ラノベ|巻|MP3|320K");
-    private static final Pattern YEAR = Pattern.compile("(?<![0-9])(?:18|19|20)\\d{2}(?![0-9])");
-    private static final Pattern DATE = Pattern.compile("(?<!\\d)(?:19|20)\\d{2}[-./]\\d{1,2}[-./]\\d{1,2}(?!\\d)");
-    private static final Pattern CHINESE_SUBTITLES = Pattern.compile("(?i)简繁|簡繁|简体|簡體|繁体|繁體|中文字幕|中字|(?<![a-z])(?:chs|cht|sc|tc)(?![a-z])");
-    private static final Pattern PACK_SOURCE = Pattern.compile("(?i)(?<![a-z])(?:bd|bdrip|bluray|web-dl|webrip)(?![a-z])");
+public class PanSouMagnetSearch implements AutoCloseable {
     private static final Consumer<ReleaseSearchProgress> NO_PROGRESS = progress -> {};
-
+    private static final Pattern SUBTITLES = Pattern.compile("(?i)简繁|簡繁|简体|簡體|繁体|繁體|中文字幕|中字|(?<![a-z])(?:chs|cht|sc|tc)(?![a-z])");
+    private static final Pattern PACK = Pattern.compile("(?i)全集|合集|完结|完結|complete|batch|01\\s*[-~]\\s*\\d+");
     private final PanSouClient client;
-    private final ReleaseTitleTagParser tagParser;
-    private final PanSouProperties properties;
+    private final ReleaseTitleTagParser tags;
+    private final GuangyaClient guangya;
+    private final ReleaseFileAssessment assessment;
+    private final AuthService auth;
+    private ReleaseSubmissionSafety submissionSafety;
 
-    public PanSouMagnetSearch(PanSouClient client, ReleaseTitleTagParser tagParser,
-            PanSouProperties properties) {
-        this.client = client;
-        this.tagParser = tagParser;
-        this.properties = properties;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void shareSubmissionEvidence(ReleaseSubmissionSafety submissionSafety) { this.submissionSafety = submissionSafety; }
+    private final Cache<String, Comparison> comparisons = CacheBuilder.newBuilder().maximumSize(200).expireAfterAccess(1, TimeUnit.HOURS).build();
+    private final ExecutorService rounds = new ThreadPoolExecutor(2, 2, 0, TimeUnit.MILLISECONDS,
+            new ArrayBlockingQueue<>(32), runnable -> {
+                Thread thread = new Thread(runnable, "release-comparison"); thread.setDaemon(true); return thread;
+            }, new ThreadPoolExecutor.AbortPolicy());
+
+    public PanSouMagnetSearch(PanSouClient client, ReleaseTitleTagParser tags, GuangyaClient guangya,
+            ReleaseFileAssessment assessment, AuthService auth) {
+        this.client = client; this.tags = tags; this.guangya = guangya; this.assessment = assessment; this.auth = auth;
     }
 
-    public ProwlarrReleaseSearchResponse searchMovie(MovieReleaseSearchRequest request) {
-        return searchResponse(withBangumiTitle(movieTarget(request), request.bangumiTitle()), query -> client.searchMagnets(new PanSouSearchCommand(query, false)));
+    public ProwlarrReleaseSearchResponse searchMovie(MovieReleaseSearchRequest request) { return start(movie(request), false).view(); }
+    public ProwlarrReleaseSearchResponse refreshMovie(MovieReleaseSearchRequest request) { return start(movie(request), true).view(); }
+    public ProwlarrReleaseSearchResponse searchSeries(SeriesReleaseSearchRequest request) { return start(series(request), false).view(); }
+    public ProwlarrReleaseSearchResponse refreshSeries(SeriesReleaseSearchRequest request) { return start(series(request), true).view(); }
+    public ProwlarrReleaseRecommendationResponse recommendMovie(MovieReleaseRecommendationRequest request) { return recommendMovie(request, NO_PROGRESS); }
+    public ProwlarrReleaseRecommendationResponse recommendMovie(MovieReleaseRecommendationRequest request, Consumer<ReleaseSearchProgress> progress) {
+        return recommend(ReleaseTarget.of(request.title(), request.originalTitle(), null, request.year(), null, request.quality()), false, progress);
     }
-
-    public ProwlarrReleaseSearchResponse refreshMovie(MovieReleaseSearchRequest request) {
-        return searchResponse(withBangumiTitle(movieTarget(request), request.bangumiTitle()), query -> client.searchMagnets(new PanSouSearchCommand(query, true)));
+    ProwlarrReleaseRecommendationResponse recommendMovie(MovieReleaseRecommendationRequest request, String alias, Consumer<ReleaseSearchProgress> progress) {
+        return recommend(ReleaseTarget.of(request.title(), request.originalTitle(), alias, request.year(), null, request.quality()), false, progress);
     }
-
-    public ProwlarrReleaseRecommendationResponse recommendMovie(MovieReleaseRecommendationRequest request) {
-        return recommendMovie(request, NO_PROGRESS);
-    }
-
-    public ProwlarrReleaseRecommendationResponse recommendMovie(
-            MovieReleaseRecommendationRequest request, Consumer<ReleaseSearchProgress> progress) {
-        return recommendation(movieTarget(request), query -> client.searchMagnets(new PanSouSearchCommand(query, false)), progress);
-    }
-
-    ProwlarrReleaseRecommendationResponse recommendMovie(MovieReleaseRecommendationRequest request,
-            String bangumiTitle, Consumer<ReleaseSearchProgress> progress) {
-        return recommendation(withBangumiTitle(movieTarget(request), bangumiTitle),
-                query -> client.searchMagnets(new PanSouSearchCommand(query, false)), progress);
-    }
-
     public ProwlarrReleaseRecommendationResponse refreshRecommendMovie(MovieReleaseRecommendationRequest request) {
-        return recommendation(movieTarget(request), query -> client.searchMagnets(new PanSouSearchCommand(query, true)), NO_PROGRESS);
+        return previewFresh(ReleaseTarget.of(request.title(), request.originalTitle(), null, request.year(), null, request.quality()));
     }
-
-    public ProwlarrReleaseSearchResponse searchSeries(SeriesReleaseSearchRequest request) {
-        return searchResponse(withBangumiTitle(seriesTarget(request), request.bangumiTitle()), query -> client.searchMagnets(new PanSouSearchCommand(query, false)));
+    public ProwlarrReleaseRecommendationResponse recommendSeries(SeriesReleaseRecommendationRequest request) { return recommendSeries(request, NO_PROGRESS); }
+    public ProwlarrReleaseRecommendationResponse recommendSeries(SeriesReleaseRecommendationRequest request, Consumer<ReleaseSearchProgress> progress) {
+        return recommend(ReleaseTarget.of(request.title(), request.originalTitle(), null, null, request.seasonNumber(), request.quality()), false, progress);
     }
-
-    public ProwlarrReleaseSearchResponse refreshSeries(SeriesReleaseSearchRequest request) {
-        return searchResponse(withBangumiTitle(seriesTarget(request), request.bangumiTitle()), query -> client.searchMagnets(new PanSouSearchCommand(query, true)));
+    ProwlarrReleaseRecommendationResponse recommendSeries(SeriesReleaseRecommendationRequest request, String alias, Consumer<ReleaseSearchProgress> progress) {
+        return recommend(ReleaseTarget.of(request.title(), request.originalTitle(), alias, null, request.seasonNumber(), request.quality()), false, progress);
     }
-
-    public ProwlarrReleaseRecommendationResponse recommendSeries(SeriesReleaseRecommendationRequest request) {
-        return recommendSeries(request, NO_PROGRESS);
-    }
-
-    public ProwlarrReleaseRecommendationResponse recommendSeries(
-            SeriesReleaseRecommendationRequest request, Consumer<ReleaseSearchProgress> progress) {
-        return recommendation(seriesTarget(request), query -> client.searchMagnets(new PanSouSearchCommand(query, false)), progress);
-    }
-
-    ProwlarrReleaseRecommendationResponse recommendSeries(SeriesReleaseRecommendationRequest request,
-            String bangumiTitle, Consumer<ReleaseSearchProgress> progress) {
-        return recommendation(withBangumiTitle(seriesTarget(request), bangumiTitle),
-                query -> client.searchMagnets(new PanSouSearchCommand(query, false)), progress);
-    }
-
     public ProwlarrReleaseRecommendationResponse refreshRecommendSeries(SeriesReleaseRecommendationRequest request) {
-        return recommendation(seriesTarget(request), query -> client.searchMagnets(new PanSouSearchCommand(query, true)), NO_PROGRESS);
+        return previewFresh(ReleaseTarget.of(request.title(), request.originalTitle(), null, null, request.seasonNumber(), request.quality()));
+    }
+    public ProwlarrReleaseRecommendationResponse previewMovie(MovieReleaseRecommendationRequest request) {
+        return preview(ReleaseTarget.of(request.title(), request.originalTitle(), null, request.year(), null, request.quality()));
+    }
+    public ProwlarrReleaseRecommendationResponse previewSeries(SeriesReleaseRecommendationRequest request) {
+        return preview(ReleaseTarget.of(request.title(), request.originalTitle(), null, null, request.seasonNumber(), request.quality()));
+    }
+    private ProwlarrReleaseRecommendationResponse preview(ReleaseTarget target) {
+        return previewRound(new Comparison(target, false, auth.requireCurrentUser().getId()));
+    }
+    private ProwlarrReleaseRecommendationResponse previewFresh(ReleaseTarget target) {
+        return previewRound(new Comparison(target, true, auth.requireCurrentUser().getId()));
+    }
+    private ProwlarrReleaseRecommendationResponse previewRound(Comparison comparison) {
+        ReleaseTarget target = comparison.target;
+        comparisons.put(comparison.id, comparison);
+        runRound(comparison);
+        var view = comparison.view();
+        var selected = view.items().stream().filter(this::recommendable).findFirst().orElse(null);
+        return new ProwlarrReleaseRecommendationResponse(view.query(), target.quality(), selected == null ? null
+                : selected.resolutionTags().stream().filter(target.qualities()::contains).findFirst().orElse(null), selected,
+                view.items(), view.comparison());
+    }
+    ProwlarrReleaseRecommendationResponse recommendPreferredMovie(MovieReleaseRecommendationRequest request, Consumer<ReleaseSearchProgress> progress) { return recommendMovie(request, progress); }
+    ProwlarrReleaseRecommendationResponse recommendPreferredSeries(SeriesReleaseRecommendationRequest request, Consumer<ReleaseSearchProgress> progress) { return recommendSeries(request, progress); }
+
+    public ProwlarrReleaseSearchResponse comparison(String id) { return owned(id).view(); }
+    public ProwlarrReleaseSearchResponse continueComparison(String id) {
+        Comparison comparison = owned(id);
+        synchronized (comparison) {
+            if (!"RUNNING".equals(comparison.status) && !"COMPLETE".equals(comparison.status)) {
+                comparison.message = "正在继续比较，复用已查文件表与证据";
+                comparison.status = "RUNNING";
+                comparison.deadline = Instant.now().plusSeconds(45);
+                comparison.queries.removeAll(comparison.failedQueries);
+                comparison.searchFailed = false;
+                enqueue(comparison);
+            }
+        }
+        return comparison.view();
     }
 
-    ProwlarrReleaseRecommendationResponse recommendPreferredMovie(
-            MovieReleaseRecommendationRequest request, Consumer<ReleaseSearchProgress> progress) {
-        return recommendPreferred(movieTarget(request), progress);
+    private Comparison owned(String id) {
+        Long user = auth.requireCurrentUser().getId();
+        Comparison comparison = comparisons.getIfPresent(id);
+        if (comparison == null || !Objects.equals(user, comparison.owner)) throw new NoMatchingReleaseException("COMPARISON_EXPIRED", "比较快照不存在或已过期，请重新搜索");
+        return comparison;
     }
 
-    ProwlarrReleaseRecommendationResponse recommendPreferredSeries(
-            SeriesReleaseRecommendationRequest request, Consumer<ReleaseSearchProgress> progress) {
-        return recommendPreferred(seriesTarget(request), progress);
+    private Comparison start(ReleaseTarget target, boolean refresh) {
+        Comparison comparison = new Comparison(target, refresh, auth.requireCurrentUser().getId());
+        comparisons.put(comparison.id, comparison);
+        enqueue(comparison);
+        return comparison;
     }
 
-    private ProwlarrReleaseRecommendationResponse recommendPreferred(Target target, Consumer<ReleaseSearchProgress> progress) {
-        List<Candidate> candidates = discover(target, query -> client.searchMagnets(new PanSouSearchCommand(query, false)),
-                progress, (identity, candidate) -> qualified(identity, candidate) && candidate.tags().resolutionTags().contains(identity.quality()));
-        return selectRecommendation(target, candidates);
+    private void enqueue(Comparison comparison) {
+        try { comparison.round = rounds.submit(() -> runRound(comparison)); }
+        catch (RejectedExecutionException exception) { pause(comparison, "比较队列繁忙；请稍后明确继续，尚未执行新解析"); }
     }
 
-    private ProwlarrReleaseSearchResponse searchResponse(Target target, Function<String, PanSouSearchResult> search) {
-        List<Candidate> candidates = discover(target, search, NO_PROGRESS);
-        return new ProwlarrReleaseSearchResponse(String.join(" / ", target.titles()),
-                candidates.stream().map(candidate -> toItem(target, candidate)).toList());
+    private ProwlarrReleaseRecommendationResponse recommend(ReleaseTarget target, boolean refresh, Consumer<ReleaseSearchProgress> progress) {
+        Comparison comparison = new Comparison(target, refresh, null);
+        comparisons.put(comparison.id, comparison);
+        comparison.progress = progress;
+        runRound(comparison);
+        var view = comparison.view();
+        List<ProwlarrReleaseItemResponse> usable = view.items().stream().filter(this::recommendable).toList();
+        if (!"COMPLETE".equals(view.comparison().status())) {
+            throw new NoMatchingReleaseException("EVIDENCE_BUDGET_EXHAUSTED",
+                    view.comparison().message() + "；比较快照=" + comparison.id + "，已查=" + view.comparison().checked() + "，待查=" + view.comparison().pending(), view.items());
+        }
+        if (usable.isEmpty()) throw new NoMatchingReleaseException(view.items().isEmpty() ? "NO_RELEASE" : "EVIDENCE_UNVERIFIED",
+                view.items().isEmpty() ? "本轮搜索未发现相关磁力" : "本轮已评估候选没有可安全自动提交项；可人工查看证据", view.items());
+        var selected = usable.get(0);
+        return new ProwlarrReleaseRecommendationResponse(view.query(), target.quality(), selected.resolutionTags().stream()
+                .filter(target.qualities()::contains).findFirst().orElse(null), selected, usable, view.comparison());
     }
 
-    private ProwlarrReleaseRecommendationResponse recommendation(
-            Target target, Function<String, PanSouSearchResult> search, Consumer<ReleaseSearchProgress> progress) {
-        return selectRecommendation(target, discover(target, search, progress));
-    }
-
-    private ProwlarrReleaseRecommendationResponse selectRecommendation(Target target, List<Candidate> candidates) {
-        Target identity = target.bangumiTitle() == null ? target
-                : new Target(union(target.titles(), List.of(target.bangumiTitle())), target.year(), target.season(), target.quality());
-        List<Candidate> qualified = candidates.stream().filter(candidate -> qualified(identity, candidate)).toList();
-        if (qualified.isEmpty()) throw rejection(identity, candidates);
-        String selectedQuality = qualityPreference(target.quality()).stream()
-                .filter(quality -> qualified.stream().anyMatch(candidate -> candidate.tags().resolutionTags().contains(quality)))
-                .findFirst().orElseThrow();
-        String selected = selectedQuality;
-        List<ProwlarrReleaseItemResponse> items = qualified.stream()
-                .filter(candidate -> candidate.tags().resolutionTags().contains(selected))
-                .map(candidate -> toItem(target, candidate)).toList();
-        return new ProwlarrReleaseRecommendationResponse(items.get(0).matchQuery(), target.quality(), selected,
-                items.get(0), items);
-    }
-
-    /** 两个目录标题同时首查；目标画质可提前返回，升级或回退等待已发起查询结束。 */
-    private List<Candidate> discover(
-            Target target, Function<String, PanSouSearchResult> search, Consumer<ReleaseSearchProgress> progress) {
-        return discover(target, search, progress, this::qualified);
-    }
-
-    private List<Candidate> discover(Target target, Function<String, PanSouSearchResult> search,
-            Consumer<ReleaseSearchProgress> progress, java.util.function.BiPredicate<Target, Candidate> canFinish) {
-        Map<PanSouMagnetIdentity, Candidate> candidates = new LinkedHashMap<>();
-        List<PanSouClientException> failures = new ArrayList<>();
-        ExecutorService executor = Executors.newFixedThreadPool(2);
-        ExecutorCompletionService<QueryBatch> completion = new ExecutorCompletionService<>(executor);
-        List<Future<QueryBatch>> pending = new ArrayList<>();
+    private void runRound(Comparison comparison) {
+        Instant deadline = comparison.deadline;
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        List<Future<?>> futures = new ArrayList<>();
+        ResolveBudget budget = null;
         try {
-            for (String title : target.titles()) {
-                progress.accept(new ReleaseSearchProgress(title, "PanSou 目录标题", "RUNNING", 0, null));
-                pending.add(completion.submit(() -> queryBatch(title, search)));
-            }
-            for (int remaining = pending.size(); remaining > 0; remaining--) {
-                QueryBatch batch = completion.take().get();
-                acceptBatch(target, candidates, failures, batch, progress);
-                if (candidates.values().stream().anyMatch(candidate -> qualified(target, candidate)
-                        && (target.quality() == null || candidate.tags().resolutionTags().contains(target.quality())))) {
-                    Future<QueryBatch> completed;
-                    while ((completed = completion.poll()) != null) {
-                        acceptBatch(target, candidates, failures, completed.get(), progress);
-                    }
-                    return sorted(target, candidates);
+            remaining(deadline);
+            synchronized (comparison) { comparison.resolveRequests = 0; }
+            LinkedHashSet<String> initial = new LinkedHashSet<>(comparison.failedQueries);
+            comparison.failedQueries.clear();
+            comparison.target.titles().stream().limit(2).filter(query -> !comparison.queries.contains(query)).forEach(initial::add);
+            searchQueries(comparison, List.copyOf(initial), deadline, pool, futures);
+            budget = new ResolveBudget(deadline, Instant.now().plusSeconds(30));
+            while (true) {
+                evaluateQueue(comparison, budget, deadline, pool, futures);
+                synchronized (comparison) {
+                    if (!"RUNNING".equals(comparison.status)) return;
+                    if (comparison.candidates.values().stream().anyMatch(candidate -> recommendable(candidate.item))) break;
                 }
+                List<String> supplement = queries(comparison.target).stream().filter(query -> !comparison.queries.contains(query)).limit(4 - comparison.queries.size()).toList();
+                if (supplement.isEmpty()) break;
+                searchQueries(comparison, supplement, deadline, pool, futures);
             }
-            if (candidates.values().stream().anyMatch(candidate -> canFinish.test(target, candidate))) return sorted(target, candidates);
-            Target supplementTarget = target.bangumiTitle() == null ? target
-                    : new Target(union(target.titles(), List.of(target.bangumiTitle())), target.year(),
-                            target.season(), target.quality(), target.bangumiTitle());
-            for (String query : supplements(supplementTarget)) {
-                progress.accept(new ReleaseSearchProgress(query, "PanSou 补搜", "RUNNING", 0, null));
-                acceptBatch(supplementTarget, candidates, failures, queryBatch(query, search), progress);
-                if (candidates.values().stream().anyMatch(candidate -> canFinish.test(supplementTarget, candidate))) {
-                    return sorted(supplementTarget, candidates);
-                }
+            if (comparison.searchFailed) {
+                synchronized (comparison) { comparison.status = "BLOCKED"; comparison.message = "部分搜索词未取得结果；已查证据保留，不能声称本轮无资源或完成全比较"; }
+                return;
             }
-            // 尚有失败的来源时，证据不足不能被宣称为确定无匹配。
-            if (!failures.isEmpty()) throw failures.get(0);
-            return sorted(supplementTarget, candidates);
+            synchronized (comparison) {
+                comparison.status = "COMPLETE";
+                comparison.message = "本轮已发现候选全部评估完成；不代表穷举互联网或媒体质量实测";
+            }
+        } catch (TimeoutException exception) {
+            pause(comparison, "总流程或解析时间预算用尽；保留当前推荐，请明确继续比较");
+        } catch (GuangyaException exception) {
+            if (exception.reason() == GuangyaException.Reason.BUDGET_EXHAUSTED) pause(comparison, exception.getMessage());
+            else synchronized (comparison) { comparison.status = "BLOCKED"; comparison.message = exception.getMessage(); }
         } catch (InterruptedException exception) {
-            Thread.currentThread().interrupt();
-            throw new PanSouClientException(PanSouClientException.Reason.UPSTREAM, "PanSou 搜索被中断", exception);
+            Thread.currentThread().interrupt(); pause(comparison, "比较已中断，已查证据保留");
         } catch (ExecutionException exception) {
-            if (exception.getCause() instanceof RuntimeException runtime) throw runtime;
-            throw new PanSouClientException(PanSouClientException.Reason.UPSTREAM, "PanSou 搜索失败", exception.getCause());
+            synchronized (comparison) { comparison.status = "BLOCKED"; comparison.message = "搜索或解析暂不可用，已查证据保留"; }
+        } catch (RuntimeException exception) {
+            synchronized (comparison) { comparison.status = "BLOCKED"; comparison.message = "比较暂不可用，请检查上游或认证配置；已查证据保留"; }
         } finally {
-            pending.forEach(future -> future.cancel(true));
-            executor.shutdownNow();
+            futures.forEach(future -> future.cancel(true)); pool.shutdownNow();
+            synchronized (comparison) { if (budget != null) comparison.resolveRequests = budget.resolveRequests(); }
         }
     }
 
-    private QueryBatch queryBatch(String query, Function<String, PanSouSearchResult> search) {
-        long started = System.nanoTime();
+    private void searchQueries(Comparison comparison, List<String> queries, Instant deadline, ExecutorService pool, List<Future<?>> futures)
+            throws InterruptedException, ExecutionException, TimeoutException {
+        CompletionService<SearchBatch> completion = new ExecutorCompletionService<>(pool);
+        int count = 0;
+        Map<Future<SearchBatch>, String> queryFutures = new HashMap<>();
+        for (String query : queries) {
+            synchronized (comparison) {
+                if (comparison.queries.size() >= 4 || !comparison.queries.add(query)) continue;
+            }
+            comparison.progress.accept(new ReleaseSearchProgress(query, "PanSou", "RUNNING", 0, null));
+            Future<SearchBatch> submitted = completion.submit(() -> new SearchBatch(query,
+                    client.searchMagnets(new PanSouSearchCommand(query, comparison.refresh)).entries()));
+            futures.add(submitted);
+            queryFutures.put(submitted, query);
+            count++;
+        }
+        for (int i = 0; i < count; i++) {
+            Future<SearchBatch> future = completion.poll(remaining(deadline), TimeUnit.NANOSECONDS);
+            if (future == null) throw new TimeoutException();
+            SearchBatch batch;
+            try { batch = future.get(); }
+            catch (ExecutionException exception) {
+                synchronized (comparison) { comparison.searchFailed = true; comparison.failedQueries.add(queryFutures.get(future)); }
+                continue;
+            }
+            synchronized (comparison) {
+                for (var entry : batch.entries) {
+                    var identity = PanSouMagnetIdentity.fromUrl(entry.url()).orElse(null);
+                    if (identity == null) continue;
+                    comparison.discovered.computeIfAbsent(identity, ignored -> new ArrayList<>()).add(entry);
+                    if (!comparison.target.possiblyRelated(entry.note()) && !comparison.candidates.containsKey(identity)) continue;
+                    var candidate = comparison.candidates.get(identity);
+                    if (candidate == null) {
+                        candidate = new Discovered(entry, batch.query, tags);
+                        comparison.candidates.put(identity, candidate);
+                        for (var previous : comparison.discovered.get(identity)) candidate.merge(previous, batch.query, tags);
+                    } else candidate.merge(entry, batch.query, tags);
+                    if (submissionSafety != null) submissionSafety.rememberSourceTitles(candidate.item.downloadRef(), List.copyOf(candidate.titles));
+                    for (String title : candidate.titles) {
+                        String conflict = comparison.target.conflict(title);
+                        if (conflict != null) candidate.item = candidate.item.withEvidence(new ReleaseFileEvidence("UNSUITABLE", conflict, null, null, null, false, false), candidate.item.resolutionTags());
+                    }
+                }
+            }
+            comparison.progress.accept(new ReleaseSearchProgress(batch.query, "PanSou", "SUCCEEDED", 0, batch.entries.size()));
+        }
+    }
+
+    private void evaluateQueue(Comparison comparison, ResolveBudget budget, Instant deadline, ExecutorService pool, List<Future<?>> futures)
+            throws InterruptedException, ExecutionException, TimeoutException {
+        List<Discovered> queue;
+        synchronized (comparison) {
+            queue = schedule(comparison);
+        }
+        for (int i = 0; i < queue.size(); i += 2) {
+            budget.remaining();
+            List<Future<Checked>> batch = new ArrayList<>();
+            for (Discovered candidate : queue.subList(i, Math.min(i + 2, queue.size()))) {
+                Future<Checked> future = pool.submit(() -> evaluate(comparison.target, candidate, budget));
+                batch.add(future); futures.add(future);
+            }
+            for (Future<Checked> future : batch) {
+                Checked checked = future.get(Math.min(remaining(deadline), budget.remaining().toNanos()), TimeUnit.NANOSECONDS);
+                synchronized (comparison) {
+                    checked.candidate.item = checked.item;
+                    comparison.resolveRequests = budget.resolveRequests();
+                    if (checked.failure == null) comparison.checkedFailures.add(checked.candidate);
+                    if (checked.failure != null) {
+                        switch (checked.failure.reason()) {
+                            case BUDGET_EXHAUSTED -> { pause(comparison, checked.failure.getMessage()); return; }
+                            case AUTHENTICATION, ACCOUNT_BLOCKED, NOT_CONFIGURED, PERSISTENCE_FAILED -> {
+                                comparison.status = "BLOCKED"; comparison.message = checked.failure.getMessage(); return;
+                            }
+                            case INVALID_RESPONSE -> { comparison.checkedFailures.add(checked.candidate); }
+                            default -> comparison.checkedFailures.add(checked.candidate);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private Checked evaluate(ReleaseTarget target, Discovered candidate, ResolveBudget budget) {
         try {
-            return new QueryBatch(query, search.apply(query).entries(), null, (System.nanoTime() - started) / 1_000_000);
-        } catch (PanSouClientException exception) {
-            return new QueryBatch(query, List.of(), exception, (System.nanoTime() - started) / 1_000_000);
+            var assessment = this.assessment.assess(target, List.copyOf(candidate.titles), guangya.resolve(candidate.item.downloadRef(), budget));
+            return new Checked(candidate, candidate.item.withEvidence(assessment.evidence(), assessment.resolutions()), null);
+        } catch (GuangyaException exception) {
+            if (exception.reason() == GuangyaException.Reason.INVALID_RESPONSE && submissionSafety != null)
+                submissionSafety.rememberInvalidFileTable(candidate.item.downloadRef());
+            ReleaseFileEvidence evidence = exception.reason() == GuangyaException.Reason.INVALID_RESPONSE
+                    ? new ReleaseFileEvidence("UNSUITABLE", "文件表安全校验失败，禁止提交；需重新核实上游响应", null, null, null, false, false)
+                    : ReleaseFileEvidence.unverified(exception.getMessage());
+            return new Checked(candidate, candidate.item.withEvidence(evidence, candidate.item.resolutionTags()), exception);
         }
     }
 
-    private void acceptBatch(Target target, Map<PanSouMagnetIdentity, Candidate> candidates,
-            List<PanSouClientException> failures, QueryBatch batch, Consumer<ReleaseSearchProgress> progress) {
-        progress.accept(new ReleaseSearchProgress(batch.query(), "PanSou", batch.failure() == null ? "SUCCEEDED" : "FAILED",
-                batch.elapsedMs(), batch.failure() == null ? batch.entries().size() : null));
-        if (batch.failure() != null) {
-            failures.add(batch.failure());
-            return;
+    /** 三层轮转，标题合格项不能消耗全部解析名额；各层内部保留原发现顺序。 */
+    private List<Discovered> schedule(Comparison comparison) {
+        List<List<Discovered>> layers = List.of(new ArrayList<>(), new ArrayList<>(), new ArrayList<>());
+        for (var candidate : comparison.candidates.values()) {
+            if (!"UNVERIFIED".equals(candidate.item.evidence().status()) || comparison.checkedFailures.contains(candidate)) continue;
+            int layer = tags.parse(candidate.item.title()).seasonTags().size() > 1 ? 2
+                    : PACK.matcher(candidate.item.title()).find() && !candidate.item.resolutionTags().isEmpty() ? 0 : 1;
+            layers.get(layer).add(candidate);
         }
-        for (PanSouSearchEntry entry : batch.entries()) {
-            PanSouMagnetIdentity identity = PanSouMagnetIdentity.fromUrl(entry.url()).orElseThrow(() ->
-                    new PanSouClientException(PanSouClientException.Reason.INVALID_RESPONSE, "PanSou 返回无效 BTIH"));
-            Candidate candidate = candidate(entry, batch.query());
-            candidates.merge(identity, candidate, (first, next) -> merge(target, first, next));
+        List<Discovered> queue = new ArrayList<>();
+        for (int i = 0; layers.stream().anyMatch(layer -> !layer.isEmpty()); i++) {
+            var layer = layers.get(i % 3);
+            if (!layer.isEmpty()) queue.add(layer.remove(0));
         }
+        return queue;
     }
 
-    private Candidate candidate(PanSouSearchEntry entry, String query) {
-        String title = entry.note() == null ? "" : Normalizer.normalize(entry.note(), Normalizer.Form.NFKC);
-        LinkedHashSet<String> seasons = new LinkedHashSet<>();
-        Matcher seasonMatcher = EXPLICIT_SEASON.matcher(title);
-        while (seasonMatcher.find()) seasons.addAll(tagParser.parse(seasonMatcher.group()).seasonTags());
-        ReleaseTitleTags parsed = tagParser.parse(title);
-        boolean range = false;
-        String episodeEvidence = DATE.matcher(title).replaceAll(" ");
-        Matcher ranges = EPISODE_RANGE.matcher(episodeEvidence);
-        while (ranges.find()) {
-            int start = Integer.parseInt(ranges.group(1));
-            int end = Integer.parseInt(ranges.group(2));
-            if (start == 1 && end > start && end < 200) range = true;
-        }
-        boolean complete = (range || PACK.matcher(title).find())
-                && !SINGLE_EPISODE.matcher(EPISODE_RANGE.matcher(episodeEvidence).replaceAll(" ")).find();
-        return new Candidate(entry, new ReleaseTitleTags(parsed.resolutionTags(), parsed.dynamicRangeTags(), List.copyOf(seasons)),
-                complete, List.of(query), List.of(source(entry)), List.of(title), entry.sizeBytes(), entry.sizeConflict());
+    private long remaining(Instant deadline) throws TimeoutException {
+        long nanos = Duration.between(Instant.now(), deadline).toNanos();
+        if (nanos <= 0) throw new TimeoutException();
+        return nanos;
     }
-
-    private Candidate merge(Target target, Candidate previous, Candidate next) {
-        Candidate preferred = related(target, next) && (!related(target, previous)
-                || evidenceRank(target, next) < evidenceRank(target, previous)) ? next : previous;
-        boolean conflict = previous.sizeConflict() || next.sizeConflict()
-                || previous.sizeBytes() != null && next.sizeBytes() != null && !previous.sizeBytes().equals(next.sizeBytes());
-        Long size = conflict ? null : previous.sizeBytes() != null ? previous.sizeBytes() : next.sizeBytes();
-        return new Candidate(preferred.entry(), preferred.tags(), preferred.complete(),
-                union(previous.queries(), next.queries()), union(previous.sources(), next.sources()),
-                union(previous.titles(), next.titles()), size, conflict);
-    }
-
-    private List<String> union(List<String> first, List<String> second) {
-        LinkedHashSet<String> combined = new LinkedHashSet<>(first);
-        combined.addAll(second);
-        return List.copyOf(combined);
-    }
-
-    private List<Candidate> sorted(Target target, Map<PanSouMagnetIdentity, Candidate> candidates) {
-        return candidates.values().stream().filter(candidate -> related(target, candidate))
-                .sorted(Comparator.comparingInt((Candidate candidate) -> evidenceRank(target, candidate))
-                        .thenComparingInt(candidate -> CHINESE_SUBTITLES.matcher(candidate.entry().note()).find() ? 0 : 1)
-                        .thenComparingInt(candidate -> candidate.entry().note().matches(".*[\\u3400-\\u9fff].*") ? 0 : 1)
-                        .thenComparingInt(candidate -> dynamicPriority(candidate.tags()))
-                        .thenComparing(Candidate::sizeBytes, Comparator.nullsLast(Comparator.reverseOrder()))).toList();
-    }
-
-    private int evidenceRank(Target target, Candidate candidate) {
-        if (qualified(target, candidate)) return qualityPreference(target.quality()).indexOf(candidate.tags().resolutionTags().stream()
-                .filter(qualityPreference(target.quality())::contains).findFirst().orElse(""));
-        if (scopeConfirmed(target, candidate)) return 2;
-        if (candidate.complete() && (target.quality() == null || candidate.tags().resolutionTags().contains(target.quality()))) return 3;
-        return 4;
-    }
-
-    private boolean qualified(Target target, Candidate candidate) {
-        return related(target, candidate) && scopeConfirmed(target, candidate) && (target.quality() == null
-                || candidate.tags().resolutionTags().stream().anyMatch(qualityPreference(target.quality())::contains));
-    }
-
-    private boolean scopeConfirmed(Target target, Candidate candidate) {
-        if (target.season() == null) return target.year() != null && releaseYears(target, candidate.entry().note()).contains(target.year().toString());
-        List<String> seasons = candidate.tags().seasonTags();
-        boolean seasonMatches = seasons.equals(List.of(seasonTag(target.season())))
-                || target.season() == 1 && seasons.isEmpty();
-        if (!seasonMatches || singleEpisode(candidate.entry().note())) return false;
-        return candidate.complete() || capacitySuggestsPack(candidate);
-    }
-
-    private List<String> qualityPreference(String quality) {
-        if ("720p".equals(quality)) return List.of("720p", "1080p", "2160p");
-        if ("2160p".equals(quality)) return List.of("2160p", "1080p");
-        return List.of("1080p", "2160p");
-    }
-
-    private boolean singleEpisode(String title) {
-        String evidence = DATE.matcher(title).replaceAll(" ");
-        return SINGLE_EPISODE.matcher(EPISODE_RANGE.matcher(evidence).replaceAll(" ")).find();
-    }
-
-    /** 容量仅为整包启发式；不代表文件集数已核验，也不等待文件列表。 */
-    private boolean capacitySuggestsPack(Candidate candidate) {
-        if (candidate.sizeBytes() == null || candidate.sizeConflict()
-                || !PACK_SOURCE.matcher(candidate.entry().note()).find()) return false;
-        for (String quality : candidate.tags().resolutionTags()) {
-            Long minimum = switch (quality) {
-                case "2160p" -> properties.getSeasonPack2160MinBytes();
-                case "1080p" -> properties.getSeasonPack1080MinBytes();
-                default -> properties.getSeasonPack720MinBytes();
-            };
-            if (minimum != null && candidate.sizeBytes() >= minimum) return true;
-        }
-        return false;
-    }
-
-    private boolean related(Target target, Candidate candidate) {
-        String title = candidate.entry().note();
-        if (!StringUtils.hasText(title) || NON_FEATURE.matcher(title).find()
-                || target.titles().stream().noneMatch(alias -> matchesTitle(title, alias))) return false;
-        if (target.year() != null) {
-            List<String> years = releaseYears(target, title);
-            return years.isEmpty() || years.equals(List.of(target.year().toString()));
-        }
-        List<String> seasons = candidate.tags().seasonTags();
-        return target.season() == null || seasons.isEmpty() || seasons.contains(seasonTag(target.season()));
-    }
-
-    private boolean matchesTitle(String release, String alias) {
-        String normalizedAlias = comparable(alias);
-        if (normalizedAlias.isBlank()) return false;
-        String normalizedRelease = comparable(release);
-        // 数字、感叹号及小数点保留语义，避免将续作或不同版本当同一作品。
-        Matcher match = Pattern.compile("(?<![\\p{L}\\p{N}])" + Pattern.quote(normalizedAlias) + "(?![\\p{L}\\p{N}!])")
-                .matcher(normalizedRelease);
-        while (match.find()) {
-            String suffix = normalizedRelease.substring(match.end()).stripLeading();
-            boolean startsWithEpisodeRange = EPISODE_RANGE.matcher(release).results()
-                    .anyMatch(range -> suffix.startsWith(comparable(range.group())));
-            if ((!suffix.matches("^[0-9]{1,3}(?:\\s|$).*") || startsWithEpisodeRange)
-                    && !suffix.startsWith("续集")) return true;
-        }
-        return false;
-    }
-
-    private String comparable(String title) {
-        return Normalizer.normalize(title, Normalizer.Form.NFKC).toLowerCase(Locale.ROOT)
-                .replaceAll("(?<=[a-z0-9])×(?=[a-z0-9])", " x ")
-                .replaceAll("(?<![0-9])\\.|\\.(?![0-9])", " ")
-                .replaceAll("[^\\p{L}\\p{N}!.+#]+", " ").replaceAll("\\s+", " ").trim();
-    }
-
-    private List<String> releaseYears(Target target, String title) {
-        String evidence = comparable(title);
-        for (String alias : target.titles()) evidence = evidence.replace(comparable(alias), " ");
-        return years(evidence);
-    }
-
-    private List<String> years(String title) {
-        LinkedHashSet<String> years = new LinkedHashSet<>();
-        Matcher matcher = YEAR.matcher(title == null ? "" : title);
-        while (matcher.find()) years.add(matcher.group());
-        return List.copyOf(years);
-    }
-
-    private ProwlarrReleaseItemResponse toItem(Target target, Candidate candidate) {
-        List<String> reviewFlags = new ArrayList<>();
-        boolean confirmed = scopeConfirmed(target, candidate);
-        if (target.season() == null && !confirmed) reviewFlags.add("VERSION_UNKNOWN");
-        if (target.season() != null && !confirmed && candidate.tags().seasonTags().isEmpty()) reviewFlags.add("SEASON_UNKNOWN");
-        else if (target.season() != null && !confirmed) reviewFlags.add("SEASON_PACK_UNCERTAIN");
-        boolean subtitleMarked = CHINESE_SUBTITLES.matcher(candidate.entry().note()).find();
-        if (!subtitleMarked) reviewFlags.add("SUBTITLES_UNMARKED");
-        String uncertainty = target.season() == null && !confirmed ? "；年份/版本待核对"
-                : target.season() != null && !confirmed && candidate.tags().seasonTags().isEmpty() ? "；季度未知，需人工核对"
-                : target.season() != null && !confirmed ? "；整季/混季证据不足，需人工核对" : "";
-        return new ProwlarrReleaseItemResponse(candidate.entry().note(), candidate.sizeBytes(), null, null, null,
-                String.join(" / ", candidate.sources()), candidate.entry().datetime(), null, candidate.entry().url(),
-                candidate.tags().resolutionTags(), candidate.tags().dynamicRangeTags(), candidate.tags().seasonTags(),
-                "PanSou：" + String.join(" / ", candidate.sources()) + uncertainty
-                        + (candidate.complete() ? "；标题含整包线索" : capacitySuggestsPack(candidate) && !singleEpisode(candidate.entry().note())
-                                ? "；容量符合整包特征，集数未核验" : "；未确认整季，可能为单集")
-                        + (subtitleMarked ? "；标题标注中文字幕，内容未经核验" : "；字幕语言未标明")
-                        + (candidate.sizeBytes() == null ? "；体积未知" : "；体积为来源报告的近似种子总大小")
-                        + "；做种及可下载性未知"
-                        + (candidate.titles().size() > 1 ? "；同 hash 标题：" + String.join(" | ", candidate.titles()) : ""),
-                String.join(" / ", candidate.queries()), List.copyOf(reviewFlags));
-    }
-
-    private NoMatchingReleaseException rejection(Target target, List<Candidate> candidates) {
-        if (candidates.isEmpty()) return new NoMatchingReleaseException("NO_RELEASE", "盘搜未找到作品与版本匹配的磁力");
-        if (target.season() != null && candidates.stream().noneMatch(candidate -> scopeConfirmed(target, candidate))) {
-            return new NoMatchingReleaseException("SEASON_UNKNOWN", "季度或整季证据不足，请人工核对候选",
-                    candidates.stream().map(candidate -> toItem(target, candidate)).toList());
-        }
-        if (target.year() != null && candidates.stream().noneMatch(candidate -> scopeConfirmed(target, candidate))) {
-            return new NoMatchingReleaseException("VERSION_UNKNOWN", "作品年份/版本证据不足，请人工核对候选",
-                    candidates.stream().map(candidate -> toItem(target, candidate)).toList());
-        }
-        return new NoMatchingReleaseException(candidates.stream().allMatch(candidate -> candidate.tags().resolutionTags().isEmpty())
-                ? "RESOLUTION_UNKNOWN" : "RESOLUTION_NOT_FOUND", "盘搜候选没有符合要求的清晰度证据",
-                candidates.stream().map(candidate -> toItem(target, candidate)).toList());
-    }
-
-    private List<String> supplements(Target target) {
-        LinkedHashSet<String> queries = new LinkedHashSet<>();
-        if (target.bangumiTitle() != null) queries.add(target.bangumiTitle());
+    private void pause(Comparison comparison, String message) { synchronized (comparison) { comparison.status = "PAUSED"; comparison.message = message; } }
+    private boolean recommendable(ProwlarrReleaseItemResponse item) { return item.evidence() != null && "RECOMMENDABLE".equals(item.evidence().status()); }
+    private List<String> queries(ReleaseTarget target) {
+        LinkedHashSet<String> queries = new LinkedHashSet<>(target.titles());
         for (String title : target.titles()) {
-            String variant = title.replace('×', 'x').replaceAll("[：:;；/\\[\\]【】()（）・]", " ")
-                    .replaceAll("\\s+", " ").trim();
-            if (!variant.equals(title)) queries.add(variant);
-            String[] parts = title.split("[：:]");
-            if (parts.length > 1 && parts[parts.length - 1].trim().length() >= 4) queries.add(parts[parts.length - 1].trim());
+            String variant = title.replace('×', 'x').replaceAll("[：:;；/\\[\\]【】()（）・]", " ").replaceAll("\\s+", " ").trim();
+            queries.add(variant);
         }
-        if (target.season() != null) {
-            String title = target.titles().get(target.titles().size() - 1);
-            queries.add(title + " " + seasonTag(target.season()));
-        } else if (target.year() != null) {
-            queries.add(target.titles().get(0) + " " + target.year());
-        }
-        queries.removeIf(query -> target.titles().contains(query) && !query.equals(target.bangumiTitle()));
-        return queries.stream().limit(2).toList();
+        queries.add(target.titles().get(0) + (target.season() == null ? " " + target.year() : " S%02d".formatted(target.season())));
+        return queries.stream().limit(4).toList();
     }
+    private ReleaseTarget movie(MovieReleaseSearchRequest request) { return ReleaseTarget.of(request.title(), request.originalTitle(), request.bangumiTitle(), request.year(), null, request.quality()); }
+    private ReleaseTarget series(SeriesReleaseSearchRequest request) { return ReleaseTarget.of(request.title(), request.originalTitle(), request.bangumiTitle(), null, request.seasonNumber(), request.quality()); }
 
-    private String source(PanSouSearchEntry entry) {
-        return StringUtils.hasText(entry.source()) ? entry.source() : "来源未提供";
-    }
+    @PreDestroy @Override public void close() { rounds.shutdownNow(); }
 
-    private int dynamicPriority(ReleaseTitleTags tags) {
-        if (tags.dynamicRangeTags().contains("dolby_vision")) return 2;
-        return tags.dynamicRangeTags().stream().anyMatch(tag -> !"sdr".equals(tag)) ? 1 : 0;
-    }
-
-    private String seasonTag(int season) {
-        return String.format(Locale.ROOT, "S%02d", season);
-    }
-
-    private Target movieTarget(MovieReleaseSearchRequest request) {
-        return new Target(titles(request.title(), request.originalTitle()), request.year(), null, quality(request.quality()));
-    }
-
-    private Target movieTarget(MovieReleaseRecommendationRequest request) {
-        return new Target(titles(request.title(), request.originalTitle()), request.year(), null, quality(request.quality()));
-    }
-
-    private Target seriesTarget(SeriesReleaseSearchRequest request) {
-        return new Target(titles(request.title(), request.originalTitle()), null, request.seasonNumber(), quality(request.quality()));
-    }
-
-    private Target seriesTarget(SeriesReleaseRecommendationRequest request) {
-        return new Target(titles(request.title(), request.originalTitle()), null, request.seasonNumber(), quality(request.quality()));
-    }
-
-    private List<String> titles(String title, String originalTitle) {
-        LinkedHashSet<String> titles = new LinkedHashSet<>();
-        titles.add(title.trim());
-        if (StringUtils.hasText(originalTitle)) titles.add(originalTitle.trim());
-        return List.copyOf(titles);
-    }
-
-    private String quality(String quality) {
-        if (!StringUtils.hasText(quality)) return null;
-        String normalized = quality.trim().toLowerCase(Locale.ROOT);
-        if (!List.of("2160p", "1080p", "720p").contains(normalized)) throw new IllegalArgumentException("不支持的分辨率标签");
-        return normalized;
-    }
-
-    private Target withBangumiTitle(Target target, String title) {
-        String alias = StringUtils.hasText(title) && title.matches(".*[\\u3400-\\u9fff].*") ? title.trim() : null;
-        if (alias != null && target.titles().stream().anyMatch(value -> comparable(value).equals(comparable(title)))) alias = null;
-        return new Target(target.titles(), target.year(), target.season(), target.quality(), alias);
-    }
-
-    private record Target(List<String> titles, Integer year, Integer season, String quality, String bangumiTitle) {
-        Target(List<String> titles, Integer year, Integer season, String quality) {
-            this(titles, year, season, quality, null);
+    private final class Comparison {
+        final String id = UUID.randomUUID().toString();
+        final String snapshotAt = Instant.now().toString();
+        final ReleaseTarget target;
+        final boolean refresh;
+        final Long owner;
+        final Set<String> queries = new LinkedHashSet<>();
+        final Set<String> failedQueries = new LinkedHashSet<>();
+        final Map<PanSouMagnetIdentity, Discovered> candidates = new LinkedHashMap<>();
+        Instant deadline = Instant.now().plusSeconds(45);
+        final Map<PanSouMagnetIdentity, List<PanSouSearchEntry>> discovered = new LinkedHashMap<>();
+        boolean searchFailed;
+        final Set<Discovered> checkedFailures = new HashSet<>();
+        String status = "RUNNING";
+        String message = "正在发现候选并按文件表渐进比较";
+        int resolveRequests;
+        Future<?> round;
+        Consumer<ReleaseSearchProgress> progress = NO_PROGRESS;
+        Comparison(ReleaseTarget target, boolean refresh, Long owner) { this.target = target; this.refresh = refresh; this.owner = owner; }
+        synchronized ProwlarrReleaseSearchResponse view() {
+            List<ProwlarrReleaseItemResponse> items = candidates.values().stream().map(candidate -> candidate.item).sorted(
+                    Comparator.comparingInt((ProwlarrReleaseItemResponse item) -> switch (item.evidence().status()) {
+                        case "RECOMMENDABLE" -> 0; case "NEEDS_PROCESSING" -> 1; case "UNVERIFIED" -> 2; default -> 3;
+                    }).thenComparingInt(item -> item.evidence().preview() ? 1 : 0)
+                    .thenComparingInt(item -> item.resolutionTags().stream().filter(target.qualities()::contains).mapToInt(target.qualities()::indexOf).min().orElse(99))
+                    .thenComparingInt(item -> SUBTITLES.matcher(item.title()).find() ? 0 : 1)
+                    .thenComparingInt(item -> item.title().matches(".*[\\u3400-\\u9fff].*") ? 0 : 1)
+                    .thenComparingInt(item -> item.dynamicRangeTags().contains("dolby_vision") ? 2 : item.dynamicRangeTags().stream().anyMatch(tag -> !tag.equals("sdr")) ? 1 : 0)
+                    .thenComparing(item -> item.evidence().targetBytes(), Comparator.nullsLast(Comparator.reverseOrder()))).toList();
+            int pending = (int) candidates.values().stream().filter(candidate -> "UNVERIFIED".equals(candidate.item.evidence().status()) && !checkedFailures.contains(candidate)).count();
+            String ref = items.stream().filter(PanSouMagnetSearch.this::recommendable).map(ProwlarrReleaseItemResponse::downloadRef).findFirst().orElse(null);
+            return new ProwlarrReleaseSearchResponse(String.join(" / ", target.titles()), items, new ReleaseComparisonProgress(id, status,
+                    snapshotAt, candidates.size() - pending, pending, resolveRequests, queries.size(), message, ref));
         }
     }
-    private record Candidate(PanSouSearchEntry entry, ReleaseTitleTags tags, boolean complete,
-            List<String> queries, List<String> sources, List<String> titles, Long sizeBytes, boolean sizeConflict) {}
-    private record QueryBatch(String query, List<PanSouSearchEntry> entries, PanSouClientException failure, long elapsedMs) {}
+    private static final class Discovered {
+        final Set<String> titles = new LinkedHashSet<>();
+        final Set<String> sources = new LinkedHashSet<>();
+        final Set<String> queries = new LinkedHashSet<>();
+        ProwlarrReleaseItemResponse item;
+        boolean sizeConflict;
+        Discovered(PanSouSearchEntry entry, String query, ReleaseTitleTagParser parser) {
+            var tags = parser.parse(entry.note());
+            titles.add(entry.note()); sources.add(entry.source() == null ? "来源未提供" : entry.source()); queries.add(query);
+            sizeConflict = entry.sizeConflict();
+            item = new ProwlarrReleaseItemResponse(entry.note(), entry.sizeBytes(), null, null, null, String.join(" / ", sources),
+                    entry.datetime(), null, entry.url(), tags.resolutionTags(), tags.dynamicRangeTags(), tags.seasonTags(),
+                    "PanSou；来源报告体积/画质/字幕为声明；做种与可下载性未知", query, List.of(), ReleaseFileEvidence.unverified("排队等待文件表补证"));
+        }
+        void merge(PanSouSearchEntry entry, String query, ReleaseTitleTagParser parser) {
+            titles.add(entry.note()); sources.add(entry.source() == null ? "来源未提供" : entry.source()); queries.add(query);
+            sizeConflict |= entry.sizeConflict() || item.size() != null && entry.sizeBytes() != null && !item.size().equals(entry.sizeBytes());
+            Long size = sizeConflict ? null : item.size() == null ? entry.sizeBytes() : item.size();
+            item = new ProwlarrReleaseItemResponse(item.title(), size, null, null, null, String.join(" / ", sources), item.publishDate(),
+                    null, item.downloadRef(), item.resolutionTags(), item.dynamicRangeTags(), item.seasonTags(),
+                    "同 hash 来源标题：" + String.join(" | ", titles) + (sizeConflict ? "；来源体积冲突" : ""), String.join(" / ", queries), item.reviewFlags(), item.evidence());
+        }
+    }
+    private record SearchBatch(String query, List<PanSouSearchEntry> entries) {}
+    private record Checked(Discovered candidate, ProwlarrReleaseItemResponse item, GuangyaException failure) {}
 }

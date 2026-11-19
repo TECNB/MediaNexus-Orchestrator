@@ -109,6 +109,38 @@ class MagnetIngestServiceTest {
     }
 
     @Test
+    void realMixedPreviewPackPlansAllTwelveEpisodesAndPreservesEveryVersion() {
+        OpenListClient client = mock(OpenListClient.class);
+        stubPathHelpers(client);
+        SeriesMagnetIngestTask task = animeSeriesTask();
+        task.setTaskProductType("SERIES");
+        task.setTitle("隐秘的角落");
+        task.setOriginalTitle("隐秘的角落");
+        task.setSeasonNumber(1);
+        List<OpenListFileInfo> files = new ArrayList<>();
+        List<String> expectedNames = new ArrayList<>();
+        for (int episode = 1; episode <= 12; episode++) {
+            String suffix = episode <= 6 ? "第" + episode + "集-蓝光1080P"
+                    : "尝鲜版%02d%s".formatted(episode, episode == 12 ? "End" : "");
+            files.add(new OpenListFileInfo("【大陆剧网www.daluju123.com】隐秘的角落" + suffix + ".mp4",
+                    200_000_000L, false, task.getTempPath() + "/Release"));
+            expectedNames.add("隐秘的角落 - S01E%02d%s.mp4".formatted(episode,
+                    episode <= 6 ? " 1080p" : " 尝鲜版"));
+        }
+        when(client.findFiles(task.getTempPath())).thenReturn(files);
+        RecordingLibraryOrganizer organizer = new RecordingLibraryOrganizer();
+
+        Object result = ReflectionTestUtils.invokeMethod(service(client, organizer), "organizeSeriesFiles", task);
+
+        assertThat(ReflectionTestUtils.getField(result, "videoCount")).isEqualTo(12);
+        assertThat(ReflectionTestUtils.getField(result, "organizedCount")).isEqualTo(12);
+        assertThat(organizer.plan.expectedTargetNames()).containsExactlyInAnyOrderElementsOf(expectedNames);
+        assertThat(organizer.plan.renames()).hasSize(12);
+        assertThat(organizer.plan.moves()).hasSize(12);
+        assertThat(organizer.plan.deletions()).isEmpty();
+    }
+
+    @Test
     void seriesExistingDestinationStopsWithoutDeletingIncomingVideo() {
         OpenListClient client = mock(OpenListClient.class);
         stubPathHelpers(client);

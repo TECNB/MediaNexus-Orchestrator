@@ -1017,7 +1017,7 @@ class OpenListIngestTaskCenterServiceTest {
         OpenListManualMagnetRetryResponse response = service.replaceManualMagnet(
                 "series",
                 "series-anime-1",
-                new OpenListManualMagnetRetryRequest("magnet:?xt=urn:btih:newhash")
+                new OpenListManualMagnetRetryRequest("magnet:?xt=urn:btih:newhash", true)
         );
 
         assertThat(response.detailPath()).isEqualTo("/tasks/series/series-anime-2");
@@ -1026,6 +1026,7 @@ class OpenListIngestTaskCenterServiceTest {
         assertThat(movieSeriesRetryRecorder.lastSeriesTask.getSeasonNumber()).isEqualTo(1);
         assertThat(movieSeriesRetryRecorder.lastSeriesMagnet).isEqualTo("magnet:?xt=urn:btih:newhash");
         assertThat(movieSeriesRetryRecorder.lastSeriesRetryReference.attemptGroupId()).isEqualTo("LEGACY:SERIES:series-anime-1");
+        assertThat(movieSeriesRetryRecorder.lastMetadata.acceptUnverifiedRisk()).isTrue();
     }
 
     @Test
@@ -1290,16 +1291,18 @@ class OpenListIngestTaskCenterServiceTest {
         OpenListManualMagnetRetryResponse response = service.replaceManualMagnet(
                 "movie",
                 "movie-1",
-                new OpenListManualMagnetRetryRequest("magnet:?xt=urn:btih:newhash")
+                new OpenListManualMagnetRetryRequest("magnet:?xt=urn:btih:newhash", true)
         );
 
         assertThat(response.detailPath()).isEqualTo("/tasks/movie/movie-2");
         assertThat(movieSeriesRetryRecorder.lastMovieMagnet).isEqualTo("magnet:?xt=urn:btih:newhash");
+        assertThat(movieSeriesRetryRecorder.lastMetadata.acceptUnverifiedRisk()).isTrue();
 
         OpenListManualMagnetRetryResponse reused = service.reuseOriginalManualMagnet("movie", "movie-1");
 
         assertThat(reused.detailPath()).isEqualTo("/tasks/movie/movie-2");
         assertThat(movieSeriesRetryRecorder.lastMovieMagnet).isEqualTo("magnet:?xt=urn:btih:oldhash");
+        assertThat(movieSeriesRetryRecorder.lastMetadata.acceptUnverifiedRisk()).isFalse();
     }
 
     @Test

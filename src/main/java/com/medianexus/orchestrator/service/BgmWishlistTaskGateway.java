@@ -7,6 +7,7 @@ import com.medianexus.orchestrator.dto.admin.response.AdminMediaDeletionTaskResp
 import com.medianexus.orchestrator.service.MediaLibraryDeletionWorkflow.BgmDeletion;
 import com.medianexus.orchestrator.service.MediaLibraryDeletionWorkflow.BgmDeletionLink;
 import org.springframework.util.StringUtils;
+import com.medianexus.orchestrator.dto.bgm.BgmWishlistOperationContract.Candidate;
 import com.medianexus.orchestrator.dto.resources.request.MovieReleaseOpenListIngestRequest;
 import com.medianexus.orchestrator.dto.resources.request.MovieReleaseRecommendationRequest;
 import com.medianexus.orchestrator.dto.resources.request.SeriesReleaseOpenListIngestRequest;
@@ -96,7 +97,8 @@ public class BgmWishlistTaskGateway {
             return releases.recommendSeriesReleaseForAutomation(new SeriesReleaseRecommendationRequest(
                     null, target.tmdbId(), null, target.title(), target.originalTitle(), target.seasonNumber(), quality)).item();
         } catch (ProwlarrReleaseIngestService.NoMatchingReleaseException noMatch) {
-            return null;
+            if ("NO_RELEASE".equals(noMatch.reasonCode())) return null;
+            throw noMatch;
         }
     }
 
@@ -200,6 +202,36 @@ public class BgmWishlistTaskGateway {
     public ActiveTask createSeries(Target target, ProwlarrReleaseItemResponse release, User owner) {
         return createWithTargetLock(target, () -> {
             var task = releases.ingestSelectedSeriesForOwner(seriesRequest(target, release, "SERIES"), owner);
+            return new ActiveTask("SERIES", task.id(), task.status());
+        });
+    }
+
+    /** 人工授权只取自当前操作持久化的所选候选，不从发布证据推断。 */
+    public ActiveTask createConfirmed(Target target, Candidate candidate, User owner) {
+        return createWithTargetLock(target, () -> {
+            var release = candidate.release();
+            if ("MOVIE".equals(target.mediaType())) {
+                var task = releases.ingestConfirmedMovieForOwner(new MovieReleaseOpenListIngestRequest(
+                        target.title(), target.originalTitle(), target.year(), release.title(), release.indexer(),
+                        release.size(), release.indexerId(), release.downloadRef(), release.resolutionTags(),
+                        release.dynamicRangeTags(), target.tmdbId(), candidate.acceptUnverifiedRisk()), owner);
+                return new ActiveTask("MOVIE", task.id(), task.status());
+            }
+            var task = releases.ingestConfirmedAnimeForOwner(new SeriesReleaseOpenListIngestRequest(
+                    target.title(), target.originalTitle(), target.seasonNumber(), "ANIME", release.title(),
+                    release.indexer(), release.size(), release.indexerId(), release.downloadRef(),
+                    release.resolutionTags(), release.dynamicRangeTags(), target.tmdbId(), candidate.acceptUnverifiedRisk()), owner);
+            return new ActiveTask("SERIES", task.id(), task.status());
+        });
+    }
+
+    public ActiveTask createConfirmedSeries(Target target, Candidate candidate, User owner) {
+        return createWithTargetLock(target, () -> {
+            var release = candidate.release();
+            var task = releases.ingestConfirmedSeriesForOwner(new SeriesReleaseOpenListIngestRequest(
+                    target.title(), target.originalTitle(), target.seasonNumber(), "SERIES", release.title(),
+                    release.indexer(), release.size(), release.indexerId(), release.downloadRef(),
+                    release.resolutionTags(), release.dynamicRangeTags(), target.tmdbId(), candidate.acceptUnverifiedRisk()), owner);
             return new ActiveTask("SERIES", task.id(), task.status());
         });
     }

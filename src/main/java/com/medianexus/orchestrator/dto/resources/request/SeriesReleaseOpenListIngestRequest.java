@@ -1,6 +1,7 @@
 package com.medianexus.orchestrator.dto.resources.request;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Positive;
 import java.util.List;
@@ -28,8 +29,18 @@ public record SeriesReleaseOpenListIngestRequest(
         List<String> dynamicRangeTags,
         @JsonProperty("tmdb_id")
         @Positive(message = "TMDB id 必须大于 0")
-        Integer tmdbId
+        Integer tmdbId,
+        @Schema(description = "显式接受未核验风险；默认 false，已知冲突及整理不安全不可绕过")
+        @JsonProperty("accept_unverified_risk")
+        boolean acceptUnverifiedRisk
 ) {
+
+    public SeriesReleaseOpenListIngestRequest(String title, String originalTitle, Integer seasonNumber,
+            String taskProductType, String releaseTitle, String indexer, Long size, Integer indexerId,
+            String downloadRef, List<String> resolutionTags, List<String> dynamicRangeTags, Integer tmdbId) {
+        this(title, originalTitle, seasonNumber, taskProductType, releaseTitle, indexer, size, indexerId,
+                downloadRef, resolutionTags, dynamicRangeTags, tmdbId, false);
+    }
 
     public SeriesReleaseOpenListIngestRequest(
             String title,

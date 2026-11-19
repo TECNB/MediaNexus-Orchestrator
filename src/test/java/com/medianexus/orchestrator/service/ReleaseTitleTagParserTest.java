@@ -54,4 +54,15 @@ class ReleaseTitleTagParserTest {
         assertThat(parser.parse("Show 2024-01-12 1080p").seasonTags()).isEmpty();
         assertThat(parser.parse("Show S02 Complete 1080p").seasonTags()).containsExactly("S02");
     }
+
+    @Test
+    void recognizesAttachedWebAndHdResolutionButNotArbitraryWords() {
+        for (String text : java.util.List.of("隐秘的角落 全集 WEB1080P", "隐秘的角落 EP01-12 HD1080P",
+                "Show web1080p", "Show ＷＥＢ１０８０Ｐ")) {
+            assertThat(parser.parse(text).resolutionTags()).as(text).containsExactly("1080p");
+        }
+        for (String text : java.util.List.of("Show FOO1080P", "Show MYWEB1080P", "Show HD1080Pfoo")) {
+            assertThat(parser.parse(text).resolutionTags()).as(text).isEmpty();
+        }
+    }
 }

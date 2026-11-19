@@ -312,8 +312,8 @@ public class OpenListIngestTaskCenterService {
         User user = authService.requireCurrentUser();
         String normalizedTaskType = normalizeTaskType(taskType);
         return switch (normalizedTaskType) {
-            case MOVIE_TASK_TYPE -> retryMovieWithSelectedMagnet(getAccessibleMovieTask(taskId, user), request.magnet());
-            case SERIES_TASK_TYPE -> retrySeriesWithSelectedMagnet(getAccessibleSeriesTask(taskId, user), request.magnet());
+            case MOVIE_TASK_TYPE -> retryMovieWithSelectedMagnet(getAccessibleMovieTask(taskId, user), request);
+            case SERIES_TASK_TYPE -> retrySeriesWithSelectedMagnet(getAccessibleSeriesTask(taskId, user), request);
             case ANIME_TASK_TYPE -> retryAnimeWithSelectedMagnet(getAccessibleAnimeTask(taskId, user), request.magnet());
             default -> throw manualMagnetRetryNotSupportedException();
         };
@@ -380,12 +380,13 @@ public class OpenListIngestTaskCenterService {
 
     private OpenListManualMagnetRetryResponse retryMovieWithSelectedMagnet(
             MovieMagnetIngestTask originalTask,
-            String replacementMagnet
+            OpenListManualMagnetRetryRequest request
     ) {
         ensureMagnetReplacementAllowed(originalTask.getStatus(), sourceType(originalTask.getSourceType()));
         MovieMagnetIngestTaskResponse response = magnetIngestService.createMovieRetryTask(
                 originalTask,
-                StringUtils.hasText(replacementMagnet) ? replacementMagnet : originalTask.getMagnet(),
+                request.magnet(),
+                ReleaseIngestMetadata.manual().withUnverifiedRisk(request.acceptUnverifiedRisk()),
                 retryReference(MOVIE_TASK_TYPE, originalTask.getId(), originalTask.getAttemptGroupId())
         );
         return retryResponse(MOVIE_TASK_TYPE, response.id());
@@ -403,12 +404,13 @@ public class OpenListIngestTaskCenterService {
 
     private OpenListManualMagnetRetryResponse retrySeriesWithSelectedMagnet(
             SeriesMagnetIngestTask originalTask,
-            String replacementMagnet
+            OpenListManualMagnetRetryRequest request
     ) {
         ensureMagnetReplacementAllowed(originalTask.getStatus(), sourceType(originalTask.getSourceType()));
         SeriesMagnetIngestTaskResponse response = magnetIngestService.createSeriesRetryTask(
                 originalTask,
-                StringUtils.hasText(replacementMagnet) ? replacementMagnet : originalTask.getMagnet(),
+                request.magnet(),
+                ReleaseIngestMetadata.manual().withUnverifiedRisk(request.acceptUnverifiedRisk()),
                 retryReference(SERIES_TASK_TYPE, originalTask.getId(), originalTask.getAttemptGroupId())
         );
         return retryResponse(SERIES_TASK_TYPE, response.id());

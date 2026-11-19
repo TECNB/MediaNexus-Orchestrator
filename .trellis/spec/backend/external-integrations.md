@@ -63,3 +63,45 @@
   that reads the password from the child process environment, but the helper
   file must not contain the raw password and logs must never print passwords or
   raw credential values.
+
+## Scenario: Guangya read-only evidence and candidate comparison
+
+### 1. Scope / Trigger
+- Movie/series magnet discovery and all shared task acceptance paths. Guangya is metadata-only; downloading remains OpenList/PikPak/CD2.
+
+### 2. Signatures
+- `GuangyaClient.resolve(String magnet, ResolveBudget budget)` returns a validated `TorrentFileTable`; `cached(String)` does not spend HTTP budget.
+- `GET /api/v1/resources/releases/comparisons/{id}` reads an owner-isolated snapshot; `POST .../{id}/continue` explicitly starts another bounded round.
+- Existing search/recommendation responses include nullable `comparison`; each candidate includes nullable `evidence`.
+
+### 3. Contracts
+- Only `resolve_res` and the verified refresh-token grant are called. No create_task, restore, transfers or directory operations.
+- Credentials are HOT administrator settings `guangya.accessToken/refreshToken/deviceId`, encrypted via SettingsCipher. No environment token binding. Rotation uses the existing settings transaction/CAS.
+- One round includes search in 45s, at most four search terms (concurrency two), resolution in at most 30s, at most 20 new resolve HTTP attempts (retries count), concurrency two, request timeout eight seconds, one shared authentication refresh. Cache and in-flight same-hash requests are reused.
+- Comparison states: RUNNING, COMPLETE, PAUSED, BLOCKED. Evidence states: RECOMMENDABLE, NEEDS_PROCESSING, UNSUITABLE, UNVERIFIED. Unknown counts and sizes remain null.
+- Automatic recommendation requires COMPLETE and executable evidence. Manual selection may precede completion; unknown evidence requires explicit `accept_unverified_risk`. This permission cannot override known identity/path/target conflicts or unsupported execution.
+- Filename resolution/subtitle/version tags remain declarations, not media inspection. Normal versions precede accepted preview versions, then existing allowed resolution/subtitle priorities; target bytes are the final size comparison, separate from whole-package bytes.
+- Snapshot and evidence caches are bounded and process-local; restart/expiry requires another search. Failed searches retry only on explicit continuation. Ordinary request timeouts are not automatically retried.
+
+### 4. Validation & Error Matrix
+| Condition | Outcome |
+| --- | --- |
+| Invalid hash, unsafe/duplicate paths, inconsistent leaf count/size, structure limits | No success cache; reject submission even with risk permission |
+| Auth/quota/persistence failure | BLOCKED, retain evidence; never call it dead/zero episodes |
+| Budget exhausted with pending queue | PAUSED; current recommendation only, no automatic submission |
+| Mixed seasons, unmapped absolute numbering, unknown video or duplicate main version | NEEDS_PROCESSING; never relax unknown-video deletion safety |
+| Missing credentials or unavailable metadata | UNVERIFIED; administrator setup or explicit human risk acceptance |
+
+### 5. Good / Base / Bad Cases
+- Good: a small Chernobyl pack with explicit S01E01–E05 is assessed by filenames rather than a title-size threshold.
+- Base: 01–06 normal + 07–12 preview remains one executable backup package; preserve version markers in all output names.
+- Bad: accepting an El Camino film as Breaking Bad S1, treating `.ts` as a camera release, or inferring an absolute-number offset from file count.
+
+### 6. Tests Required
+- Mock HTTP only-read routes, path/hash/size/count bounds, same-hash sharing, budget accounting, refresh merging/recovery and encrypted CAS persistence.
+- Full discovered-queue comparison, layer-fair scheduling, paused continuation, failed-search recovery, raw/selected/retry safety parity, nullable UI states and cancellation.
+- Preserve unknown/conflicting/zero-feature deletion regressions and all twelve mixed-version CD2 targets.
+
+### 7. Wrong vs Correct
+- Wrong: return the first title-qualified item and call unresolved metadata `0/12`.
+- Correct: display discovered candidates immediately, compare the entire current queue, preserve unknown counts, and pause without automatic task creation when budget remains insufficient.

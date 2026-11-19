@@ -17,6 +17,12 @@ public record ProwlarrReleaseRecommendationResponse(
         @Schema(description = "首选推荐发布资源")
         ProwlarrReleaseItemResponse item,
         @Schema(description = "可供用户确认选择的推荐发布资源列表")
-        List<ProwlarrReleaseItemResponse> items
+        List<ProwlarrReleaseItemResponse> items,
+        @Schema(description = "比较进度；暂停时仅为当前推荐，不能自动提交", nullable = true)
+        ReleaseComparisonProgress comparison
 ) {
+    public ProwlarrReleaseRecommendationResponse(String query, String requestedQuality, String selectedQuality,
+            ProwlarrReleaseItemResponse item, List<ProwlarrReleaseItemResponse> items) {
+        this(query, requestedQuality, selectedQuality, item, items, null);
+    }
 }

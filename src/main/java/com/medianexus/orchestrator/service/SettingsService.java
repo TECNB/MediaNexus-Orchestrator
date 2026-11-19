@@ -66,6 +66,8 @@ public class SettingsService {
         register("subtitle-upload", "字幕限制", subtitles, List.of("allowedExtensions", "maxUploadSize",
                 "maxEntryCount", "maxTextSubtitleSize", "maxSupSize", "maxTotalExtractedSize", "maxCompressionRatio"), Set.of());
         register("quota", "每日创建额度", quota, List.of("dailyContentCreateLimit"), Set.of());
+        register("guangya", "光鸭只读解析", new GuangyaCredentials.Values(),
+                List.of("accessToken", "refreshToken", "deviceId"), Set.of("accessToken", "refreshToken", "deviceId"));
     }
 
     /** 表初始化与启动校验完成后接管消费者，避免启动阶段访问尚未创建的配置表。 */
@@ -169,6 +171,8 @@ public class SettingsService {
         }
         if (definition.restart && update == null) return integrations.resources(id);
         validate(definition, candidate);
+        if (id.equals("guangya")) return new SettingsConnectionProbe(json).check(id,
+                snapshot(definition, candidate, GuangyaCredentials.Values.class), update == null ? "EFFECTIVE" : "CANDIDATE");
         if (id.equals("tmdb")) { return probeTmdb(snapshot(definition, candidate, TmdbProperties.class), update == null ? "EFFECTIVE" : "CANDIDATE"); }
         if (definition.restart) return integrations.probe(id, snapshot(definition, candidate, definition.type), "CANDIDATE");
         return new Probe("OK", "配置校验通过；无需外部连接", Instant.now().toString(), update == null ? "EFFECTIVE" : "CANDIDATE", List.of());
@@ -201,6 +205,31 @@ public class SettingsService {
             limits.setMaxUploadSize(DataSize.ofBytes(effectiveUploadLimit(limits.getMaxUploadSize().toBytes())));
         }
         return snapshot;
+    }
+
+    /** 从同一已提交文档读取完整凭据，不通过脱敏视图或多次读取拼接版本。 */
+    public GuangyaCredentials.Snapshot guangyaCredentials() {
+        return guangyaSnapshot(load("guangya"));
+    }
+
+    /** 与管理员保存共用行锁/CAS，旧刷新不能覆盖更新的账号或另一轮换。 */
+    public void rotateGuangyaCredentials(GuangyaCredentials.Snapshot expected, GuangyaCredentials.Snapshot replacement) {
+        Definition definition = definition("guangya");
+        Document document = load("guangya");
+        if (!guangyaSnapshot(document).equals(expected)) throw conflict();
+        if (!replacement.configured() || replacement.version() != expected.version() + 1
+                || !Objects.equals(replacement.deviceId(), expected.deviceId())) throw invalid("光鸭轮换凭据契约无效");
+        Map<String, SecretInput> secrets = Map.of(
+                "accessToken", new SecretInput("REPLACE", replacement.accessToken()),
+                "refreshToken", new SecretInput("REPLACE", replacement.refreshToken()),
+                "deviceId", new SecretInput("REPLACE", replacement.deviceId()));
+        Document candidate = candidate(definition, document, new Update(expected.version(), Map.of(), secrets));
+        persist(definition, document, candidate);
+    }
+
+    private GuangyaCredentials.Snapshot guangyaSnapshot(Document document) {
+        GuangyaCredentials.Values values = snapshot(definition("guangya"), document, GuangyaCredentials.Values.class);
+        return new GuangyaCredentials.Snapshot(document.version, values.getAccessToken(), values.getRefreshToken(), values.getDeviceId());
     }
 
     private void requireApplied(Group group) {
@@ -370,6 +399,10 @@ public class SettingsService {
         if (!validator.validate(bean).isEmpty()) { throw invalid("配置字段不满足必填或范围约束"); }
         if (definition.restart) integrations.validate(definition.id, bean);
         Map<String, Object> values = resolved(definition, document);
+        if (definition.id.equals("guangya") && values.values().stream().anyMatch(Objects::nonNull)) {
+            var credentials = guangyaSnapshot(document);
+            if (!credentials.configured()) throw invalid("光鸭必须同时配置 accessToken、refreshToken 和稳定 deviceId");
+        }
         if (definition.id.equals("tmdb")) {
             validateUrl((String) values.get("baseUrl")); validateUrl((String) values.get("imageBaseUrl"));
         } else if (definition.id.equals("subtitle-upload")) {

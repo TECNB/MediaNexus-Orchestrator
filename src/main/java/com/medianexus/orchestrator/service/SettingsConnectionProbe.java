@@ -44,6 +44,7 @@ public class SettingsConnectionProbe {
                 case "emby" -> emby((EmbyProperties) candidate, source);
                 case "prowlarr" -> prowlarr((ProwlarrProperties) candidate, source);
                 case "pansou" -> pansou((PanSouProperties) candidate, source);
+                case "guangya" -> guangya((GuangyaCredentials.Values) candidate, source);
                 case "qas" -> quark((QasProperties) candidate, source);
                 case "smartstrm" -> result("UNSUPPORTED", "回调仅显示配置状态；连接检查不会调用整理回调", source, List.of());
                 case "wecom" -> wecom((WeComProperties) candidate, source);
@@ -114,6 +115,11 @@ public class SettingsConnectionProbe {
         JsonNode response = request(p.getBaseUrl(), "/api/auth/login", p.getTimeout(), Map.of(), body);
         if (!StringUtils.hasText(response.path("token").asText())) throw new ProbeFailure("UNAUTHORIZED", "PanSou 未返回有效认证令牌");
         return result("OK", "PanSou 认证通过；未执行搜索或链接操作", source, List.of());
+    }
+
+    private Probe guangya(GuangyaCredentials.Values p, String source) {
+        configured(p.getAccessToken(), p.getRefreshToken(), p.getDeviceId());
+        return result("UNSUPPORTED", "凭据已完整加密配置；没有已核实的独立只读认证探针。不会为检查触发刷新或提交磁力，认证将在只读解析时核验", source, List.of());
     }
 
     private Probe quark(QasProperties p, String source) {

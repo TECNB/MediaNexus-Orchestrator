@@ -64,6 +64,9 @@ public final class SettingsIntegrationCatalog {
             case "apiBaseUrl" -> "接口地址";
             case "apiKey" -> "API 密钥";
             case "apiToken" -> "API Token";
+            case "accessToken" -> "光鸭 Access Token";
+            case "refreshToken" -> "光鸭 Refresh Token";
+            case "deviceId" -> "光鸭稳定设备 ID";
             case "authorization" -> "管理认证 Token";
             case "cookie" -> "登录 Cookie";
             case "timeout" -> "请求超时";

@@ -75,7 +75,7 @@ class ProwlarrReleaseIngestServiceTest {
                 "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567", List.of("1080p"),
                 List.of(), List.of("S01"), "展示标题", "葬送的芙莉莲");
         org.mockito.Mockito.when(settings.usesPanSouForMagnetSearch()).thenReturn(true);
-        org.mockito.Mockito.when(panSou.recommendSeries(request)).thenReturn(
+        org.mockito.Mockito.when(panSou.previewSeries(request)).thenReturn(
                 new ProwlarrReleaseRecommendationResponse("葬送的芙莉莲", "1080p", "1080p", selected, List.of(selected)));
         assertThat(service.recommendSeriesRelease(request).item()).isEqualTo(selected);
         assertThat(prowlarrClient.calls()).isEmpty();

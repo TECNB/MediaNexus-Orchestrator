@@ -18,6 +18,106 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 class BgmWishlistOperationTest {
+    @Test void riskContractBindsSnakeCaseAndDefaultsLegacyConstructorsToFalse() throws Exception {
+        var json = new com.fasterxml.jackson.databind.ObjectMapper();
+        CandidateInput confirmed = json.readValue("""
+                {"subjectId":2,"candidateKey":"candidate","accept_unverified_risk":true}
+                """, CandidateInput.class);
+        assertTrue(json.valueToTree(confirmed).path("accept_unverified_risk").asBoolean());
+        assertFalse(json.valueToTree(new CandidateInput(2L, "candidate")).path("accept_unverified_risk").asBoolean());
+        Fixture f = new Fixture();
+        var supply = json.valueToTree(new SupplyInput(3L, new IdentityInput("SERIES", 3, 1), f.release("中文")));
+        ((com.fasterxml.jackson.databind.node.ObjectNode) supply).put("accept_unverified_risk", true);
+        assertTrue(json.valueToTree(json.treeToValue(supply, SupplyInput.class)).path("accept_unverified_risk").asBoolean());
+        assertFalse(json.valueToTree(new SupplyInput(3L, new IdentityInput("SERIES", 3, 1), f.release("中文")))
+                .path("accept_unverified_risk").asBoolean());
+        var candidate = json.valueToTree(new Candidate("candidate", f.release("中文")));
+        ((com.fasterxml.jackson.databind.node.ObjectNode) candidate).put("accept_unverified_risk", true);
+        assertTrue(json.valueToTree(json.treeToValue(candidate, Candidate.class)).path("accept_unverified_risk").asBoolean());
+        assertFalse(json.valueToTree(new Candidate("candidate", f.release("中文"))).path("accept_unverified_risk").asBoolean());
+    }
+
+    @Test void confirmationRiskIsBoundToSelectedCandidateAndClearedByResearch() {
+        Fixture f = new Fixture();
+        Operation accepted = f.service.submit("source", List.of(2L)); f.executor.runPending();
+        Entry pending = f.rows.get(accepted.id()).entries().get(0);
+        Candidate candidate = pending.candidates().get(0);
+        f.service.confirm(accepted.id(), new CandidateInput(2L, candidate.key(), true));
+        Entry confirming = f.rows.get(accepted.id()).entries().get(0);
+        assertTrue(confirming.selected().acceptUnverifiedRisk());
+        assertEquals(candidate.key(), confirming.selected().key());
+        assertFalse(confirming.candidates().get(0).acceptUnverifiedRisk());
+        when(f.wishlist.evaluateForOperation("source", 2L)).thenReturn(f.item(2L, false));
+        f.executor.runPending();
+        // A new search must not reuse authorization from the previous attempt.
+        f.rows.put(accepted.id(), new Operation(accepted.id(), accepted.source(), accepted.action(), accepted.triggerType(),
+                accepted.actorUserId(), accepted.startedAt(), accepted.updatedAt(), "WAITING", accepted.requestedIds(),
+                List.of(new Entry(pending.item(), "WAITING_CONFIRMATION", pending.startedAt(), pending.searches(),
+                        pending.candidates(), confirming.selected(), null, null, null)), null));
+        f.service.retry(accepted.id(), 2L);
+        assertNull(f.rows.get(accepted.id()).entries().get(0).selected());
+    }
+
+    @Test void supplyRiskComesOnlyFromExplicitInputNotClientEvidence() throws Exception {
+        Fixture f = new Fixture();
+        Operation accepted = f.service.submit("source", List.of(3L)); f.executor.runPending();
+        var json = new com.fasterxml.jackson.databind.ObjectMapper();
+        var node = json.valueToTree(f.release("中文"));
+        ((com.fasterxml.jackson.databind.node.ObjectNode) node).set("evidence", json.readTree("""
+                {"status":"RECOMMENDABLE","reason":"client claims verified","preview":false,"camera":false}
+                """));
+        var claimedVerified = json.treeToValue(node, ProwlarrReleaseItemResponse.class);
+        f.service.supply(accepted.id(), new SupplyInput(3L, new IdentityInput("SERIES", 3, 1), claimedVerified));
+        assertFalse(f.rows.get(accepted.id()).entries().get(0).selected().acceptUnverifiedRisk());
+        Fixture acknowledged = new Fixture();
+        Operation other = acknowledged.service.submit("source", List.of(3L)); acknowledged.executor.runPending();
+        acknowledged.service.supply(other.id(), new SupplyInput(3L, new IdentityInput("SERIES", 3, 1), claimedVerified, true));
+        assertTrue(acknowledged.rows.get(other.id()).entries().get(0).selected().acceptUnverifiedRisk());
+    }
+
+    @Test void exhaustedComparisonAlwaysWaitsForConfirmationEvenWithNoCandidates() {
+        for (var candidates : List.of(List.<ProwlarrReleaseItemResponse>of(), List.of(new Fixture().release("中文发布")))) {
+            Fixture f = new Fixture();
+            doThrow(new ProwlarrReleaseIngestService.NoMatchingReleaseException(
+                    "EVIDENCE_BUDGET_EXHAUSTED", "比较预算已耗尽", candidates))
+                    .when(f.tasks).candidates(any(), anyString(), any());
+            Operation accepted = f.service.submit("source", List.of(1L)); f.executor.runPending();
+            Entry entry = f.rows.get(accepted.id()).entries().get(0);
+            assertEquals("WAITING_CONFIRMATION", entry.status());
+            assertEquals(candidates, entry.candidates().stream().map(Candidate::release).toList());
+            assertNull(entry.selected());
+            assertEquals("EVIDENCE_BUDGET_EXHAUSTED", entry.reason().code());
+            verify(f.tasks, never()).create(any(), any(), any());
+        }
+    }
+
+    @Test void evidenceRestrictsAutomaticSelectionAndManualConfirmation() {
+        for (String status : List.of("UNVERIFIED", "NEEDS_PROCESSING", "UNSUITABLE", "RECOMMENDABLE")) {
+            Fixture f = new Fixture();
+            var release = f.release("中文发布").withEvidence(new com.medianexus.orchestrator.dto.resources.response.ReleaseFileEvidence(
+                    status, "文件表判断", null, null, null, false, false), List.of("1080p"));
+            doReturn(List.of(release)).when(f.tasks).candidates(any(), anyString(), any());
+            Operation accepted = f.service.submit("source", List.of(1L)); f.executor.runPending();
+            Entry entry = f.rows.get(accepted.id()).entries().get(0);
+            if ("RECOMMENDABLE".equals(status)) {
+                assertEquals("CREATED", entry.status());
+                assertFalse(entry.selected().acceptUnverifiedRisk());
+            } else {
+                assertEquals("WAITING_CONFIRMATION", entry.status());
+                assertThrows(RuntimeException.class, () -> f.service.confirm(accepted.id(), new CandidateInput(1L, entry.candidates().get(0).key())));
+                if ("UNVERIFIED".equals(status)) {
+                    f.service.confirm(accepted.id(), new CandidateInput(1L, entry.candidates().get(0).key(), true));
+                    f.executor.runPending();
+                    verify(f.tasks).createConfirmed(any(), argThat(candidate -> candidate.acceptUnverifiedRisk()), eq(f.owner));
+                } else assertThrows(RuntimeException.class, () -> f.service.confirm(accepted.id(), new CandidateInput(1L, entry.candidates().get(0).key(), true)));
+            }
+            if (!"RECOMMENDABLE".equals(status) && !"UNVERIFIED".equals(status)) {
+                assertThrows(RuntimeException.class, () -> f.service.supply(accepted.id(),
+                        new SupplyInput(1L, new IdentityInput("SERIES", 1, 1), release, true)));
+            }
+        }
+    }
+
     @Test void overlappingBatchIsExplicitConflictAndScheduledWorkUsesSameAutomaticRules() {
         Fixture f = new Fixture(); f.service.submit("source", List.of(1L));
         assertThrows(RuntimeException.class, () -> f.service.submit("source", List.of(1L, 2L)));
@@ -71,7 +171,7 @@ class BgmWishlistOperationTest {
         BgmWishlistOperationStore store = new BgmWishlistOperationStore(mapper,new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules(),transactions);
         store.create(accepted); assertEquals(accepted, store.get(accepted.id()));
         Entry previous = accepted.entries().get(0);
-        Candidate candidate = new Candidate("key",f.release("中文"));
+        Candidate candidate = new Candidate("key",f.release("中文"), true);
         Entry withCandidate = new Entry(previous.item(),"CREATING",previous.startedAt(),List.of(new Search("query","展示标题","SUCCEEDED",52,82)),List.of(candidate),candidate,null,null,null);
         store.update(accepted.id(), operation -> new Operation(operation.id(),operation.source(),operation.action(),operation.triggerType(),operation.actorUserId(),operation.startedAt(),operation.updatedAt(),operation.status(),operation.requestedIds(),List.of(withCandidate),null));
         assertEquals(withCandidate,store.get(accepted.id()).entries().get(0));
@@ -200,7 +300,7 @@ class BgmWishlistOperationTest {
         f.service.confirm(accepted.id(), new CandidateInput(1L, entry.candidates().get(0).key()));
         f.executor.runPending();
         verifyNoInteractions(releases);
-        verify(f.tasks).create(any(), eq(release), eq(f.owner));
+        verify(f.tasks).createConfirmed(any(), argThat(candidate -> candidate.release().equals(release)), eq(f.owner));
     }
 
     @Test void passesBangumiChineseTitleToRealGatewayAndKeepsFallbackForConfirmation() {
@@ -238,11 +338,38 @@ class BgmWishlistOperationTest {
         verify(f.tasks, never()).create(any(), any(), any());
     }
 
+    @Test void persistedConfirmationReachesRealGatewaySelectedRequestAndPausedRecommendationCanBeChosen() {
+        for (String evidenceStatus : List.of("UNVERIFIED", "RECOMMENDABLE")) {
+            Fixture f = new Fixture();
+            var gateway = new BgmWishlistTaskGatewayTest.Fixture();
+            var realGateway = spy(gateway.gateway);
+            org.springframework.test.util.ReflectionTestUtils.setField(f.service, "tasks", realGateway);
+            var release = f.release("中文发布").withEvidence(new com.medianexus.orchestrator.dto.resources.response.ReleaseFileEvidence(
+                    evidenceStatus, "当前证据", null, null, null, false, false), List.of("1080p"));
+            doThrow(new ProwlarrReleaseIngestService.NoMatchingReleaseException(
+                    "EVIDENCE_BUDGET_EXHAUSTED", "比较已暂停", List.of(release)))
+                    .when(realGateway).candidates(any(), anyString(), any());
+            Operation accepted = f.service.submit("source", List.of(1L)); f.executor.runPending();
+            Entry pending = f.rows.get(accepted.id()).entries().get(0);
+            boolean risk = "UNVERIFIED".equals(evidenceStatus);
+            if (risk) assertThrows(RuntimeException.class,
+                    () -> f.service.confirm(accepted.id(), new CandidateInput(1L, pending.candidates().get(0).key())));
+            f.service.confirm(accepted.id(), new CandidateInput(1L, pending.candidates().get(0).key(), risk));
+            assertEquals(risk, f.rows.get(accepted.id()).entries().get(0).selected().acceptUnverifiedRisk());
+            f.executor.runPending();
+            verify(gateway.releases).ingestConfirmedAnimeForOwner(argThat(request -> request.acceptUnverifiedRisk() == risk
+                    && request.downloadRef().equals(release.downloadRef())), eq(f.owner));
+            assertEquals("CREATED", f.rows.get(accepted.id()).entries().get(0).status());
+        }
+    }
+
     @Test void createsQualifiedPanSouWithoutSeedersAndConfirmsSavedCandidateWithoutNewSearch() {
         Fixture f = new Fixture();
         var chinese = new ProwlarrReleaseItemResponse("中文作品 S01 Complete 1080p", null, null, null, null,
                 "Nyaa", null, null, "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567",
-                List.of("1080p"), List.of(), List.of("S01"), "展示标题", "中文作品");
+                List.of("1080p"), List.of(), List.of("S01"), "展示标题", "中文作品")
+                .withEvidence(new com.medianexus.orchestrator.dto.resources.response.ReleaseFileEvidence(
+                        "RECOMMENDABLE", "目标文件可安全整理", null, null, 12, false, false), List.of("1080p"));
         var english = new ProwlarrReleaseItemResponse("English S01 Complete 1080p", null, null, null, null,
                 "Nyaa", null, null, "magnet:?xt=urn:btih:abcdef0123456789abcdef0123456789abcdef01",
                 List.of("1080p"), List.of(), List.of("S01"), "原始标题", "English");
@@ -255,10 +382,11 @@ class BgmWishlistOperationTest {
         Entry pending = f.rows.get(accepted.id()).entries().get(1);
         assertEquals("WAITING_CONFIRMATION", pending.status());
         clearInvocations(f.tasks);
-        f.service.confirm(accepted.id(), new CandidateInput(2L, pending.candidates().get(0).key()));
+        assertThrows(RuntimeException.class, () -> f.service.confirm(accepted.id(), new CandidateInput(2L, pending.candidates().get(0).key())));
+        f.service.confirm(accepted.id(), new CandidateInput(2L, pending.candidates().get(0).key(), true));
         f.executor.runPending();
         verify(f.tasks, never()).candidates(any(), anyString(), any());
-        verify(f.tasks).create(any(), eq(english), eq(f.owner));
+        verify(f.tasks).createConfirmed(any(), argThat(candidate -> candidate.release().equals(english)), eq(f.owner));
     }
 
     @Test void boundUserCanConfirmOwnWeComReleaseButCannotSeeAnotherUsersRecords() {
@@ -277,7 +405,7 @@ class BgmWishlistOperationTest {
                     item.identity(), "ABSENT", "AVAILABLE", true, List.of(), null, false, "NOT_CHECKED", null, null, false);
         });
         when(f.tasks.weComCandidates(any(), any())).thenReturn(List.of(english4k));
-        when(f.tasks.createSeries(any(), eq(english4k), eq(f.owner)))
+        when(f.tasks.createConfirmedSeries(any(), any(), eq(f.owner)))
                 .thenReturn(new BgmWishlistTaskGateway.ActiveTask("SERIES", "real-task", "PENDING"));
         f.service.openWeCom("wecom-test", f.owner, "作品 S01");
         f.service.enqueueWeCom("wecom-test", selected, null);
@@ -297,7 +425,7 @@ class BgmWishlistOperationTest {
         assertEquals("wecom-test", f.service.getWeCom("wecom-test").id());
         f.service.confirm("wecom-test", new CandidateInput(1L, waiting.candidates().get(0).key()));
         f.executor.runPending();
-        verify(f.tasks).createSeries(any(), eq(english4k), eq(f.owner));
+        verify(f.tasks).createConfirmedSeries(any(), argThat(candidate -> candidate.release().equals(english4k)), eq(f.owner));
         verify(f.tasks, times(1)).weComCandidates(any(), any());
         verifyNoInteractions(f.sources);
         assertEquals("real-task", f.rows.get("wecom-test").entries().get(0).task().taskId());
@@ -372,6 +500,7 @@ class BgmWishlistOperationTest {
                 return target.tmdbId() == 3 ? List.of() : target.tmdbId() == 2 ? List.of(release("English")) : List.of(release("English"), release("中文发布"));
             });
             when(tasks.create(any(), any(), any())).thenAnswer(call -> new BgmWishlistTaskGateway.ActiveTask("SERIES", "task-" + call.<BgmWishlistTaskGateway.Target>getArgument(0).tmdbId(), "PENDING"));
+            when(tasks.createConfirmed(any(), any(), any())).thenAnswer(call -> new BgmWishlistTaskGateway.ActiveTask("SERIES", "task-" + call.<BgmWishlistTaskGateway.Target>getArgument(0).tmdbId(), "PENDING"));
             when(notifications.sendOperationalAlert(anyString(), anyString(), anyString(), anyString())).thenReturn("FAILED");
             service = new BgmWishlistOperationService(auth,wishlist,sources,executions,records,locks,tasks,quota,users,notifications,executor);
         }

@@ -17,7 +17,7 @@ import org.springframework.stereotype.Service;
 public class ReleaseTitleTagParser {
 
     private static final Pattern RESOLUTION_PATTERN = Pattern.compile(
-            "(?i)(?<![a-z0-9])(?<resolution>2160p|4k|uhd|1080p|1080i|fhd|720p"
+            "(?i)(?<![a-z0-9])(?:web|hd)?(?<resolution>2160p|4k|uhd|1080p|1080i|fhd|720p"
                     + "|(?:3840|4096)\\s*[x×*]\\s*2160p?|(?:1920|1440|2048)\\s*[x×*]\\s*1080p?"
                     + "|(?:1280|960)\\s*[x×*]\\s*720p?)(?![a-z0-9])"
     );

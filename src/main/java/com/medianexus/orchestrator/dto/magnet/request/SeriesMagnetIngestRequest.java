@@ -22,8 +22,15 @@ public record SeriesMagnetIngestRequest(
         @Schema(description = "TMDB 剧集 id；来自目录搜索结果", requiredMode = Schema.RequiredMode.NOT_REQUIRED, nullable = true)
         @JsonProperty("tmdb_id")
         @Positive(message = "TMDB id 必须大于 0")
-        Integer tmdbId
+        Integer tmdbId,
+        @Schema(description = "显式接受未取得文件表的风险；默认 false，不能绕过已知冲突或整理不安全")
+        @JsonProperty("accept_unverified_risk")
+        boolean acceptUnverifiedRisk
 ) {
+
+    public SeriesMagnetIngestRequest(String magnet, String title, String originalTitle, Integer seasonNumber, Integer tmdbId) {
+        this(magnet, title, originalTitle, seasonNumber, tmdbId, false);
+    }
 
     public SeriesMagnetIngestRequest(String magnet, String title, String originalTitle, Integer seasonNumber) {
         this(magnet, title, originalTitle, seasonNumber, null);
