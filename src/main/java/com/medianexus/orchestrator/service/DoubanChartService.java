@@ -383,6 +383,15 @@ public class DoubanChartService {
                     catch (Busy ignored) { /* 另一实例仍执行，不干扰其状态。 */ }
                 }
             }
+            executor.execute(() -> {
+                for (ChartId chart : ChartId.values()) {
+                    try {
+                        if ("NEVER".equals(store.board(chart).refreshStatus())) refreshBoard(chart);
+                    } catch (RuntimeException exception) {
+                        log.warn("豆瓣榜单首次采集未完成 chart={}", chart, exception);
+                    }
+                }
+            });
         } catch (RuntimeException exception) { log.warn("豆瓣榜单持久状态恢复不可用，未重放任务", exception); }
     }
     @PreDestroy public void close() { executor.shutdown(); }

@@ -158,6 +158,30 @@ class DoubanChartServiceTest {
         verify(f.tasks, never()).createChartMovie(any(), any(), any());
     }
 
+    @Test void startupCollectsUninitializedBoardsWithoutStartingIngestAndPreservesSuccessfulBoards() throws Exception {
+        when(f.client.fetch(any())).thenAnswer(call -> {
+            ChartId chart = call.getArgument(0);
+            return List.of(f.subject(chart.ordinal() + 10, chart.mediaType()));
+        });
+        f.service.recover();
+        f.awaitBoardRefreshes();
+        for (ChartId chart : ChartId.values()) {
+            Board board = f.service.board(chart);
+            assertEquals(1, board.candidates().size());
+            assertFalse(board.autoEnabled());
+            verify(f.client, times(1)).fetch(chart);
+            assertEquals(0, f.service.operations(chart, 1, 10).total());
+        }
+        f.service.recover();
+        // 后台队列屏障：确认第二次启动检查已结束，再断言没有重复采集。
+        f.refresh(ChartId.movie_hot_gaia);
+        verify(f.client, times(2)).fetch(ChartId.movie_hot_gaia);
+        for (ChartId chart : List.of(ChartId.tv_hot, ChartId.movie_weekly_best, ChartId.movie_top250)) {
+            verify(f.client, times(1)).fetch(chart);
+        }
+        verifyNoInteractions(f.tasks);
+    }
+
     @Test void dailyRefreshRunsWithAutomationOffAndOnlyEnabledBoardCreatesWithPersistentAdmin() throws Exception {
         CountDownLatch refreshed = new CountDownLatch(4);
         when(f.client.fetch(any())).thenAnswer(call -> { refreshed.countDown(); ChartId chart = call.getArgument(0);
