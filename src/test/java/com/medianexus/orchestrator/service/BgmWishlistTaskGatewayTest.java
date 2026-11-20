@@ -59,6 +59,25 @@ class BgmWishlistTaskGatewayTest {
         verify(f.releases).ingestSelectedSeriesForOwner(argThat(request -> !request.acceptUnverifiedRisk()), eq(f.owner));
     }
 
+    @Test void chartLedgerFailureLeavesSharedUnknownBarrierForWishlistAndWeChat() {
+        Fixture f=new Fixture();
+        var ledger=mock(BgmWishlistTargetTaskMapper.class);
+        var rows=new java.util.HashMap<String,BgmWishlistTaskGateway.ActiveTask>();
+        when(ledger.select(anyString())).thenAnswer(call -> rows.get(call.getArgument(0)));
+        doAnswer(call -> { rows.put(call.getArgument(0),call.getArgument(1)); return null; }).when(ledger).insert(anyString(),any());
+        doThrow(new IllegalStateException("ledger unavailable")).when(ledger).replace(anyString(),any());
+        var locks=mock(BgmWishlistSessionLocks.class);
+        when(locks.withLock(anyString(),any(),any())).thenAnswer(call -> call.<Supplier<?>>getArgument(2).get());
+        var presence=mock(MediaLibraryPresenceService.class);
+        when(presence.checkForAutomation(any())).thenReturn(new MediaLibraryPresenceService.AutomationPresence(true,false,true));
+        var gateway=new BgmWishlistTaskGateway(mock(MovieMagnetIngestTaskMapper.class),mock(SeriesMagnetIngestTaskMapper.class),
+                mock(AnimeMagnetIngestTaskMapper.class),f.releases,presence,locks,ledger,mock(MediaLibraryDeletionWorkflow.class));
+        assertThrows(BgmWishlistTaskGateway.CreatedTaskRecordException.class,()->gateway.createChartMovie(f.target("MOVIE"),f.release,f.owner));
+        assertEquals("UNKNOWN",gateway.previousTask(f.target("MOVIE")).status());
+        assertThrows(BgmWishlistTaskGateway.EligibilityRefusal.class,()->gateway.create(f.target("MOVIE"),f.release,f.owner));
+        verify(f.releases,times(1)).ingestSelectedMovieForOwner(any(),eq(f.owner));
+    }
+
     static class Fixture {
         final ProwlarrReleaseIngestService releases = mock(ProwlarrReleaseIngestService.class);
         final User owner = new User();

@@ -206,6 +206,32 @@ public class BgmWishlistTaskGateway {
         });
     }
 
+    /** 榜单副作用前先写共用未知占位；崩溃或结果账本写入失败时，其他自动入口也不得重放。 */
+    public ActiveTask createChartMovie(Target target, ProwlarrReleaseItemResponse release, User owner) {
+        return createWithTargetLock(target, () -> {
+            reserveChartTarget(target);
+            var task = releases.ingestSelectedMovieForOwner(new MovieReleaseOpenListIngestRequest(
+                    target.title(), target.originalTitle(), target.year(), release.title(), release.indexer(),
+                    release.size(), release.indexerId(), release.downloadRef(), release.resolutionTags(),
+                    release.dynamicRangeTags(), target.tmdbId()), owner);
+            return new ActiveTask("MOVIE", task.id(), task.status());
+        });
+    }
+
+    public ActiveTask createChartSeries(Target target, ProwlarrReleaseItemResponse release, User owner) {
+        return createWithTargetLock(target, () -> {
+            reserveChartTarget(target);
+            var task = releases.ingestSelectedSeriesForOwner(seriesRequest(target, release, "SERIES"), owner);
+            return new ActiveTask("SERIES", task.id(), task.status());
+        });
+    }
+
+    private void reserveChartTarget(Target target) {
+        ActiveTask pending = new ActiveTask(target.mediaType(), "chart-uncertain-" + java.util.UUID.randomUUID(), "UNKNOWN");
+        if (previousTasks.select(targetKey(target)) == null) previousTasks.insert(targetKey(target), pending);
+        else previousTasks.replace(targetKey(target), pending);
+    }
+
     /** 人工授权只取自当前操作持久化的所选候选，不从发布证据推断。 */
     public ActiveTask createConfirmed(Target target, Candidate candidate, User owner) {
         return createWithTargetLock(target, () -> {
@@ -322,7 +348,7 @@ public class BgmWishlistTaskGateway {
         }
         ActiveTask created = submit.get();
         try {
-            if (previous == null) {
+            if (previousTasks.select(targetKey(target)) == null) {
                 previousTasks.insert(targetKey(target), created);
             } else {
                 previousTasks.replace(targetKey(target), created);

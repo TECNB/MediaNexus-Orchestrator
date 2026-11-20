@@ -48,7 +48,7 @@ public class ReleaseFileAssessment {
             String name = file.path().substring(file.path().lastIndexOf('/') + 1);
             if (!rename.isVideo(name) || file.sizeBytes() == 0) continue;
             String relative = file.path().startsWith(table.rootName() + "/") ? file.path().substring(table.rootName().length() + 1) : file.path();
-            if (AUXILIARY_DIRECTORY.matcher(relative).find() || rename.isNonFeatureVideo(name)) continue;
+            if (isAuxiliaryVideo(relative)) continue;
             if (target.conflict(name) != null) return assessment("UNSUITABLE", "包内正片存在明确作品/年份冲突", table, null, null, false, false, List.of());
             Set<Integer> localSeasons = seasons(relative);
             Set<Integer> fileSeasons = localSeasons.isEmpty() ? rootSeasons : localSeasons;
@@ -91,6 +91,12 @@ public class ReleaseFileAssessment {
         }
         return assessment("RECOMMENDABLE", "文件表目标范围可由现有整理执行；画质/版本/字幕为名称声明，非媒体检测"
                 + (preview ? "；含允许的尝鲜/抢先版本" : ""), table, bytes, main.size(), preview, false, List.copyOf(resolutions));
+    }
+
+    /** 共享正片边界，全集覆盖核验不能把花絮、特典或 sample 当作正片。 */
+    public boolean isAuxiliaryVideo(String relativePath) {
+        String name = relativePath.substring(relativePath.lastIndexOf('/') + 1);
+        return AUXILIARY_DIRECTORY.matcher(relativePath).find() || rename.isNonFeatureVideo(name);
     }
 
     private Assessment assessment(String status, String reason, TorrentFileTable table, Long bytes, Integer files,

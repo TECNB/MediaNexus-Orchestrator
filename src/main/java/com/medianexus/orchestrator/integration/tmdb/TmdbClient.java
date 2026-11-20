@@ -87,6 +87,45 @@ public class TmdbClient {
         return payload;
     }
 
+    /** 公共榜单按类型查完整有限分页；预算不足不返回部分结果冒充唯一匹配。 */
+    public JsonNode searchChartTitles(String query, String mediaType) {
+        String route = switch (mediaType) {
+            case "MOVIE" -> "/search/movie";
+            case "SERIES" -> "/search/tv";
+            default -> throw new IllegalArgumentException("不支持的目录类型");
+        };
+        var all = objectMapper.createArrayNode();
+        var ids = new java.util.HashSet<Integer>();
+        Integer totalPages = null;
+        Integer totalResults = null;
+        for (int page = 1; page <= 5; page++) {
+            JsonNode payload = get(route, "query=" + encode(query)
+                    + "&language=zh-CN&include_adult=false&page=" + page, "chart title search");
+            JsonNode results = payload.path("results");
+            int pages = payload.path("total_pages").asInt(-1);
+            int total = payload.path("total_results").asInt(-1);
+            if (!results.isArray() || payload.path("page").asInt(-1) != page || pages < 0 || pages > 5
+                    || total < 0 || (totalPages != null && totalPages != pages)
+                    || (totalResults != null && totalResults != total)) {
+                throw new TmdbClientException(Reason.INVALID_RESPONSE, "TMDB 分类型目录未查全或超出查询预算");
+            }
+            totalPages = pages;
+            totalResults = total;
+            for (JsonNode result : results) {
+                if (!result.path("id").isIntegralNumber() || result.path("id").asInt() <= 0
+                        || !ids.add(result.path("id").asInt())) {
+                    throw new TmdbClientException(Reason.INVALID_RESPONSE, "TMDB 目录身份或分页重复");
+                }
+                all.add(result);
+            }
+            if (page >= pages) {
+                if (all.size() != total) throw new TmdbClientException(Reason.INVALID_RESPONSE, "TMDB 目录分页条数不完整");
+                return all;
+            }
+        }
+        throw new TmdbClientException(Reason.INVALID_RESPONSE, "TMDB 目录查询预算耗尽");
+    }
+
     public JsonNode getMovieDetails(int movieId, String language) {
         return get("/movie/" + movieId, "language=" + encode(language), "movie details");
     }
