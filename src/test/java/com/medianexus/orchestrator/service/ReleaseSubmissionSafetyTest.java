@@ -31,7 +31,7 @@ class ReleaseSubmissionSafetyTest {
 
     @BeforeEach
     void setUp() {
-        safety = new ReleaseSubmissionSafety(client,
+        safety = new ReleaseSubmissionSafety(new ReleaseFileTables(client, mock(com.medianexus.orchestrator.integration.prowlarr.ProwlarrClient.class)),
                 new ReleaseFileAssessment(new MovieSeriesFileRenameService(), new ReleaseTitleTagParser()));
         when(client.cached(anyString())).thenReturn(Optional.empty());
         doThrow(new GuangyaException(GuangyaException.Reason.NOT_CONFIGURED, "未配置"))

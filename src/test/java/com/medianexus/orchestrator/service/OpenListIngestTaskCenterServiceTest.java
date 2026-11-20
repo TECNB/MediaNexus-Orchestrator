@@ -1910,7 +1910,7 @@ class OpenListIngestTaskCenterServiceTest {
                 MovieSeriesReleaseRetryRecorder movieSeriesRecorder,
                 AnimeReleaseRetryRecorder animeRecorder
         ) {
-            super(null, null, null, null, null, null, null, null);
+            super(null, null, null, null, null);
             this.movieSeriesRecorder = movieSeriesRecorder;
             this.animeRecorder = animeRecorder;
         }

@@ -2,7 +2,7 @@ package com.medianexus.orchestrator.controller;
 
 import com.medianexus.orchestrator.common.response.ApiResponse;
 import com.medianexus.orchestrator.dto.resources.response.ProwlarrReleaseSearchResponse;
-import com.medianexus.orchestrator.service.PanSouMagnetSearch;
+import com.medianexus.orchestrator.service.ReleaseCandidateComparison;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.web.bind.annotation.*;
@@ -11,8 +11,8 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping("/api/v1/resources/releases/comparisons")
 @Tag(name = "文件表候选比较", description = "当前登录用户的搜索快照；轮询不自动延长预算")
 public class ReleaseComparisonController {
-    private final PanSouMagnetSearch comparisons;
-    public ReleaseComparisonController(PanSouMagnetSearch comparisons) { this.comparisons = comparisons; }
+    private final ReleaseCandidateComparison comparisons;
+    public ReleaseComparisonController(ReleaseCandidateComparison comparisons) { this.comparisons = comparisons; }
 
     @GetMapping("/{id}")
     @Operation(summary = "读取当前比较快照", description = "只读进度与已查证据，过期后须重新搜索。")

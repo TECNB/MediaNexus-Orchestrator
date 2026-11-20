@@ -19,13 +19,13 @@ import org.springframework.stereotype.Service;
 
 /** 发现、补证和全队列比较的同一快照；标题启发式只用于调度，不是文件表准入或整包硬门槛。 */
 @Service
-public class PanSouMagnetSearch implements AutoCloseable {
+public class ReleaseCandidateComparison implements AutoCloseable {
     private static final Consumer<ReleaseSearchProgress> NO_PROGRESS = progress -> {};
     private static final Pattern SUBTITLES = Pattern.compile("(?i)简繁|簡繁|简体|簡體|繁体|繁體|中文字幕|中字|(?<![a-z])(?:chs|cht|sc|tc)(?![a-z])");
     private static final Pattern PACK = Pattern.compile("(?i)全集|合集|完结|完結|complete|batch|01\\s*[-~]\\s*\\d+");
-    private final PanSouClient client;
+    private final ReleaseCandidateDiscovery discovery;
     private final ReleaseTitleTagParser tags;
-    private final GuangyaClient guangya;
+    private final ReleaseFileTables fileTables;
     private final ReleaseFileAssessment assessment;
     private final AuthService auth;
     private ReleaseSubmissionSafety submissionSafety;
@@ -38,9 +38,9 @@ public class PanSouMagnetSearch implements AutoCloseable {
                 Thread thread = new Thread(runnable, "release-comparison"); thread.setDaemon(true); return thread;
             }, new ThreadPoolExecutor.AbortPolicy());
 
-    public PanSouMagnetSearch(PanSouClient client, ReleaseTitleTagParser tags, GuangyaClient guangya,
-            ReleaseFileAssessment assessment, AuthService auth) {
-        this.client = client; this.tags = tags; this.guangya = guangya; this.assessment = assessment; this.auth = auth;
+    public ReleaseCandidateComparison(ReleaseCandidateDiscovery discovery, ReleaseTitleTagParser tags,
+            ReleaseFileTables fileTables, ReleaseFileAssessment assessment, AuthService auth) {
+        this.discovery = discovery; this.tags = tags; this.fileTables = fileTables; this.assessment = assessment; this.auth = auth;
     }
 
     public ProwlarrReleaseSearchResponse searchMovie(MovieReleaseSearchRequest request) { return start(movie(request), false).view(); }
@@ -133,7 +133,7 @@ public class PanSouMagnetSearch implements AutoCloseable {
         comparison.progress = progress;
         runRound(comparison);
         var view = comparison.view();
-        List<ProwlarrReleaseItemResponse> usable = view.items().stream().filter(this::recommendable).toList();
+        List<ProwlarrReleaseItemResponse> usable = view.items().stream().filter(this::automaticallySelectable).toList();
         if (!"COMPLETE".equals(view.comparison().status())) {
             throw new NoMatchingReleaseException("EVIDENCE_BUDGET_EXHAUSTED",
                     view.comparison().message() + "；比较快照=" + comparison.id + "，已查=" + view.comparison().checked() + "，待查=" + view.comparison().pending(), view.items());
@@ -202,9 +202,9 @@ public class PanSouMagnetSearch implements AutoCloseable {
             synchronized (comparison) {
                 if (comparison.queries.size() >= 4 || !comparison.queries.add(query)) continue;
             }
-            comparison.progress.accept(new ReleaseSearchProgress(query, "PanSou", "RUNNING", 0, null));
+            comparison.progress.accept(new ReleaseSearchProgress(query, "资源发现", "RUNNING", 0, null));
             Future<SearchBatch> submitted = completion.submit(() -> new SearchBatch(query,
-                    client.searchMagnets(new PanSouSearchCommand(query, comparison.refresh)).entries()));
+                    comparison.refresh ? discovery.refresh(query) : discovery.search(query)));
             futures.add(submitted);
             queryFutures.put(submitted, query);
             count++;
@@ -220,24 +220,23 @@ public class PanSouMagnetSearch implements AutoCloseable {
             }
             synchronized (comparison) {
                 for (var entry : batch.entries) {
-                    var identity = PanSouMagnetIdentity.fromUrl(entry.url()).orElse(null);
-                    if (identity == null) continue;
+                    String identity = entry.identity();
                     comparison.discovered.computeIfAbsent(identity, ignored -> new ArrayList<>()).add(entry);
-                    if (!comparison.target.possiblyRelated(entry.note()) && !comparison.candidates.containsKey(identity)) continue;
+                    if (!comparison.target.possiblyRelated(entry.item().title()) && !comparison.candidates.containsKey(identity)) continue;
                     var candidate = comparison.candidates.get(identity);
                     if (candidate == null) {
-                        candidate = new Discovered(entry, batch.query, tags);
+                        candidate = new Discovered(entry, batch.query);
                         comparison.candidates.put(identity, candidate);
-                        for (var previous : comparison.discovered.get(identity)) candidate.merge(previous, batch.query, tags);
-                    } else candidate.merge(entry, batch.query, tags);
-                    if (submissionSafety != null) submissionSafety.rememberSourceTitles(candidate.item.downloadRef(), List.copyOf(candidate.titles));
+                        for (var previous : comparison.discovered.get(identity)) candidate.merge(previous, batch.query);
+                    } else candidate.merge(entry, batch.query);
+                    rememberTitles(candidate);
                     for (String title : candidate.titles) {
                         String conflict = comparison.target.conflict(title);
                         if (conflict != null) candidate.item = candidate.item.withEvidence(new ReleaseFileEvidence("UNSUITABLE", conflict, null, null, null, false, false), candidate.item.resolutionTags());
                     }
                 }
             }
-            comparison.progress.accept(new ReleaseSearchProgress(batch.query, "PanSou", "SUCCEEDED", 0, batch.entries.size()));
+            comparison.progress.accept(new ReleaseSearchProgress(batch.query, "资源发现", "SUCCEEDED", 0, batch.entries.size()));
         }
     }
 
@@ -272,16 +271,28 @@ public class PanSouMagnetSearch implements AutoCloseable {
                     }
                 }
             }
+            synchronized (comparison) {
+                for (var candidate : List.copyOf(comparison.candidates.values()))
+                    if (candidate.magnet != null && comparison.candidates.containsValue(candidate)) mergeResolvedHash(comparison, candidate);
+            }
         }
     }
 
     private Checked evaluate(ReleaseTarget target, Discovered candidate, ResolveBudget budget) {
         try {
-            var assessment = this.assessment.assess(target, List.copyOf(candidate.titles), guangya.resolve(candidate.item.downloadRef(), budget));
-            return new Checked(candidate, candidate.item.withEvidence(assessment.evidence(), assessment.resolutions()), null);
+            var resolved = candidate.release == null ? fileTables.resolve(candidate.item.downloadRef(), budget)
+                    : fileTables.resolve(candidate.release, budget);
+            candidate.magnet = "magnet:?xt=urn:btih:" + resolved.table().identity().btih();
+            candidate.titles.addAll(fileTables.sourceTitles(candidate.magnet));
+            rememberTitles(candidate);
+            var assessment = this.assessment.assess(target, List.copyOf(candidate.titles), resolved.table());
+            var evidence = assessment.evidence();
+            evidence = new ReleaseFileEvidence(evidence.status(), evidence.reason() + "；证据来源：" + resolved.source(),
+                    evidence.totalBytes(), evidence.targetBytes(), evidence.targetFiles(), evidence.preview(), evidence.camera());
+            return new Checked(candidate, candidate.item.withEvidence(evidence, assessment.resolutions()), null);
         } catch (GuangyaException exception) {
-            if (exception.reason() == GuangyaException.Reason.INVALID_RESPONSE && submissionSafety != null)
-                submissionSafety.rememberInvalidFileTable(candidate.item.downloadRef());
+            if (exception.reason() == GuangyaException.Reason.INVALID_RESPONSE && submissionSafety != null && candidate.magnet != null)
+                submissionSafety.rememberInvalidFileTable(candidate.magnet);
             ReleaseFileEvidence evidence = exception.reason() == GuangyaException.Reason.INVALID_RESPONSE
                     ? new ReleaseFileEvidence("UNSUITABLE", "文件表安全校验失败，禁止提交；需重新核实上游响应", null, null, null, false, false)
                     : ReleaseFileEvidence.unverified(exception.getMessage());
@@ -289,6 +300,45 @@ public class PanSouMagnetSearch implements AutoCloseable {
         }
     }
 
+    private void rememberTitles(Discovered candidate) {
+        if (submissionSafety != null && candidate.magnet != null) {
+            submissionSafety.rememberSourceTitles(candidate.magnet, List.copyOf(candidate.titles));
+            for (String original : fileTables.sourceMagnets(candidate.magnet))
+                submissionSafety.rememberSourceTitles(original, List.copyOf(candidate.titles));
+        }
+    }
+
+    private void mergeResolvedHash(Comparison comparison, Discovered candidate) {
+        Discovered previous = comparison.candidates.values().stream()
+                .filter(other -> other != candidate && Objects.equals(other.magnet, candidate.magnet)).findFirst().orElse(null);
+        if (previous == null) return;
+        previous.titles.addAll(candidate.titles);
+        previous.sources.addAll(candidate.sources);
+        previous.queries.addAll(candidate.queries);
+        if (candidate.item.seeders() != null && (previous.item.seeders() == null || candidate.item.seeders() > previous.item.seeders())) {
+            previous.item = candidate.item;
+            previous.release = candidate.release;
+        }
+        rememberTitles(previous);
+        try {
+            var resolved = fileTables.cached(previous.magnet).orElse(null);
+            if (resolved == null) return;
+            var assessed = assessment.assess(comparison.target, List.copyOf(previous.titles), resolved.table());
+            var evidence = assessed.evidence();
+            evidence = new ReleaseFileEvidence(evidence.status(), evidence.reason() + "；证据来源：" + resolved.source(),
+                    evidence.totalBytes(), evidence.targetBytes(), evidence.targetFiles(), evidence.preview(), evidence.camera());
+            previous.item = previous.item.withEvidence(evidence, assessed.resolutions());
+            comparison.checkedFailures.add(previous);
+        } catch (GuangyaException failure) {
+            previous.item = previous.item.withEvidence(new ReleaseFileEvidence("UNSUITABLE", failure.getMessage(),
+                    null, null, null, false, false), previous.item.resolutionTags());
+        }
+        comparison.candidates.values().removeIf(item -> item == candidate);
+    }
+
+    private boolean automaticallySelectable(ProwlarrReleaseItemResponse item) {
+        return recommendable(item) && (item.indexerId() == null || item.seeders() != null && item.seeders() > 0);
+    }
     /** 三层轮转，标题合格项不能消耗全部解析名额；各层内部保留原发现顺序。 */
     private List<Discovered> schedule(Comparison comparison) {
         List<List<Discovered>> layers = List.of(new ArrayList<>(), new ArrayList<>(), new ArrayList<>());
@@ -335,9 +385,9 @@ public class PanSouMagnetSearch implements AutoCloseable {
         final Long owner;
         final Set<String> queries = new LinkedHashSet<>();
         final Set<String> failedQueries = new LinkedHashSet<>();
-        final Map<PanSouMagnetIdentity, Discovered> candidates = new LinkedHashMap<>();
+        final Map<String, Discovered> candidates = new LinkedHashMap<>();
         Instant deadline = Instant.now().plusSeconds(45);
-        final Map<PanSouMagnetIdentity, List<PanSouSearchEntry>> discovered = new LinkedHashMap<>();
+        final Map<String, List<ReleaseCandidateDiscovery.Found>> discovered = new LinkedHashMap<>();
         boolean searchFailed;
         final Set<Discovered> checkedFailures = new HashSet<>();
         String status = "RUNNING";
@@ -351,13 +401,14 @@ public class PanSouMagnetSearch implements AutoCloseable {
                     Comparator.comparingInt((ProwlarrReleaseItemResponse item) -> switch (item.evidence().status()) {
                         case "RECOMMENDABLE" -> 0; case "NEEDS_PROCESSING" -> 1; case "UNVERIFIED" -> 2; default -> 3;
                     }).thenComparingInt(item -> item.evidence().preview() ? 1 : 0)
+                    .thenComparingInt(item -> item.seeders() != null && item.seeders() <= 0 ? 1 : 0)
                     .thenComparingInt(item -> item.resolutionTags().stream().filter(target.qualities()::contains).mapToInt(target.qualities()::indexOf).min().orElse(99))
                     .thenComparingInt(item -> SUBTITLES.matcher(item.title()).find() ? 0 : 1)
                     .thenComparingInt(item -> item.title().matches(".*[\\u3400-\\u9fff].*") ? 0 : 1)
                     .thenComparingInt(item -> item.dynamicRangeTags().contains("dolby_vision") ? 2 : item.dynamicRangeTags().stream().anyMatch(tag -> !tag.equals("sdr")) ? 1 : 0)
                     .thenComparing(item -> item.evidence().targetBytes(), Comparator.nullsLast(Comparator.reverseOrder()))).toList();
             int pending = (int) candidates.values().stream().filter(candidate -> "UNVERIFIED".equals(candidate.item.evidence().status()) && !checkedFailures.contains(candidate)).count();
-            String ref = items.stream().filter(PanSouMagnetSearch.this::recommendable).map(ProwlarrReleaseItemResponse::downloadRef).findFirst().orElse(null);
+            String ref = items.stream().filter(ReleaseCandidateComparison.this::recommendable).map(ProwlarrReleaseItemResponse::downloadRef).findFirst().orElse(null);
             return new ProwlarrReleaseSearchResponse(String.join(" / ", target.titles()), items, new ReleaseComparisonProgress(id, status,
                     snapshotAt, candidates.size() - pending, pending, resolveRequests, queries.size(), message, ref));
         }
@@ -366,25 +417,31 @@ public class PanSouMagnetSearch implements AutoCloseable {
         final Set<String> titles = new LinkedHashSet<>();
         final Set<String> sources = new LinkedHashSet<>();
         final Set<String> queries = new LinkedHashSet<>();
+        com.medianexus.orchestrator.integration.prowlarr.ProwlarrRelease release;
+        String magnet;
         ProwlarrReleaseItemResponse item;
         boolean sizeConflict;
-        Discovered(PanSouSearchEntry entry, String query, ReleaseTitleTagParser parser) {
-            var tags = parser.parse(entry.note());
-            titles.add(entry.note()); sources.add(entry.source() == null ? "来源未提供" : entry.source()); queries.add(query);
+        Discovered(ReleaseCandidateDiscovery.Found entry, String query) {
+            item = entry.item(); release = entry.release();
+            magnet = release == null ? item.downloadRef() : ReleaseFileTables.magnet(release).orElse(null);
+            titles.add(item.title()); sources.add(item.indexer() == null ? "来源未提供" : item.indexer()); queries.add(query);
             sizeConflict = entry.sizeConflict();
-            item = new ProwlarrReleaseItemResponse(entry.note(), entry.sizeBytes(), null, null, null, String.join(" / ", sources),
-                    entry.datetime(), null, entry.url(), tags.resolutionTags(), tags.dynamicRangeTags(), tags.seasonTags(),
-                    "PanSou；来源报告体积/画质/字幕为声明；做种与可下载性未知", query, List.of(), ReleaseFileEvidence.unverified("排队等待文件表补证"));
         }
-        void merge(PanSouSearchEntry entry, String query, ReleaseTitleTagParser parser) {
-            titles.add(entry.note()); sources.add(entry.source() == null ? "来源未提供" : entry.source()); queries.add(query);
-            sizeConflict |= entry.sizeConflict() || item.size() != null && entry.sizeBytes() != null && !item.size().equals(entry.sizeBytes());
-            Long size = sizeConflict ? null : item.size() == null ? entry.sizeBytes() : item.size();
-            item = new ProwlarrReleaseItemResponse(item.title(), size, null, null, null, String.join(" / ", sources), item.publishDate(),
-                    null, item.downloadRef(), item.resolutionTags(), item.dynamicRangeTags(), item.seasonTags(),
-                    "同 hash 来源标题：" + String.join(" | ", titles) + (sizeConflict ? "；来源体积冲突" : ""), String.join(" / ", queries), item.reviewFlags(), item.evidence());
+        void merge(ReleaseCandidateDiscovery.Found entry, String query) {
+            var incoming = entry.item();
+            titles.add(incoming.title()); sources.add(incoming.indexer() == null ? "来源未提供" : incoming.indexer()); queries.add(query);
+            sizeConflict |= entry.sizeConflict() || item.size() != null && incoming.size() != null && !item.size().equals(incoming.size());
+            Long size = sizeConflict ? null : item.size() == null ? incoming.size() : item.size();
+            if (incoming.seeders() != null && (item.seeders() == null || incoming.seeders() > item.seeders())) {
+                item = incoming;
+                release = entry.release();
+            }
+            item = new ProwlarrReleaseItemResponse(item.title(), size, item.seeders(), item.leechers(), item.grabs(),
+                    String.join(" / ", sources), item.publishDate(), item.indexerId(), item.downloadRef(), item.resolutionTags(),
+                    item.dynamicRangeTags(), item.seasonTags(), "来源标题：" + String.join(" | ", titles)
+                    + (sizeConflict ? "；来源体积冲突" : ""), String.join(" / ", queries), item.reviewFlags(), item.evidence());
         }
     }
-    private record SearchBatch(String query, List<PanSouSearchEntry> entries) {}
+    private record SearchBatch(String query, List<ReleaseCandidateDiscovery.Found> entries) {}
     private record Checked(Discovered candidate, ProwlarrReleaseItemResponse item, GuangyaException failure) {}
 }

@@ -62,13 +62,13 @@ class ReleaseSubmissionAcceptanceTest {
                 IngestTargetFixtures.legacy(), executor, mock(IngestTaskNotifier.class));
         var resolver = mock(GuangyaClient.class);
         when(resolver.resolve(anyString(), any())).thenThrow(new GuangyaException(GuangyaException.Reason.UNAVAILABLE, "超时"));
-        ReflectionTestUtils.setField(ingest, "submissionSafety", new ReleaseSubmissionSafety(resolver,
+        ReflectionTestUtils.setField(ingest, "submissionSafety", new ReleaseSubmissionSafety(
+                new ReleaseFileTables(resolver, mock(ProwlarrClient.class)),
                 new ReleaseFileAssessment(new MovieSeriesFileRenameService(), new ReleaseTitleTagParser())));
         var prowlarr = mock(ProwlarrClient.class);
-        when(prowlarr.resolveMagnet(any(), anyString(), anyString())).thenReturn(MAGNET);
-        selected = new ProwlarrReleaseIngestService(auth, prowlarr, mock(ProwlarrReleaseSearchCache.class),
-                new ReleaseTitleTagParser(), ingest, mock(AnimeMagnetIngestTaskService.class),
-                mock(SettingsService.class), mock(PanSouMagnetSearch.class));
+        when(prowlarr.resolveTorrent(any(), any())).thenReturn(new com.medianexus.orchestrator.integration.prowlarr.ResolvedTorrent(MAGNET, java.util.Optional.empty()));
+        selected = new ProwlarrReleaseIngestService(auth, ingest,
+                mock(AnimeMagnetIngestTaskService.class), mock(ReleaseCandidateComparison.class), new ReleaseFileTables(resolver, prowlarr));
     }
 
     @Test

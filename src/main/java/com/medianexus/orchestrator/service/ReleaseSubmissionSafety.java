@@ -4,7 +4,6 @@ import com.google.common.cache.Cache;
 import com.google.common.cache.CacheBuilder;
 import com.medianexus.orchestrator.common.exception.BusinessException;
 import com.medianexus.orchestrator.common.exception.ErrorCode;
-import com.medianexus.orchestrator.integration.guangya.GuangyaClient;
 import com.medianexus.orchestrator.integration.guangya.GuangyaException;
 import com.medianexus.orchestrator.integration.guangya.ResolveBudget;
 import com.medianexus.orchestrator.integration.guangya.TorrentFileTable;
@@ -25,20 +24,18 @@ import org.springframework.stereotype.Component;
 @Component
 public class ReleaseSubmissionSafety {
     private static final Pattern SEASON = Pattern.compile("(?i)(?:^|[^a-z0-9])s(?:eason)?[ ._-]*(\\d{1,2})(?=e\\d|[^0-9]|$)|第\\s*(\\d{1,2})\\s*[季期]");
-    private final GuangyaClient client;
     private final ReleaseFileAssessment assessment;
+    private final ReleaseFileTables fileTables;
     // 重启失效、有界保留本次运行内已知证据；换入口、去掉标题或暂时断网不能洗掉安全失败。
     private final Cache<String, String> invalidTables = CacheBuilder.newBuilder().maximumSize(2048)
             .expireAfterWrite(2, TimeUnit.HOURS).build();
     private final Cache<String, Set<String>> sourceTitles = CacheBuilder.newBuilder().maximumSize(2048)
             .expireAfterWrite(2, TimeUnit.HOURS).build();
-    private final Cache<String, TorrentFileTable> tables = CacheBuilder.newBuilder().maximumSize(256)
-            .expireAfterWrite(2, TimeUnit.HOURS).build();
     private final Cache<String, String> unsafeTargets = CacheBuilder.newBuilder().maximumSize(2048)
             .expireAfterWrite(2, TimeUnit.HOURS).build();
 
-    public ReleaseSubmissionSafety(GuangyaClient client, ReleaseFileAssessment assessment) {
-        this.client = client;
+    public ReleaseSubmissionSafety(ReleaseFileTables fileTables, ReleaseFileAssessment assessment) {
+        this.fileTables = fileTables;
         this.assessment = assessment;
     }
 
@@ -64,6 +61,7 @@ public class ReleaseSubmissionSafety {
         String invalid = invalidTables.getIfPresent(hash);
         if (invalid != null) throw rejected(invalid);
         ReleaseIngestMetadata release = metadata == null ? ReleaseIngestMetadata.manual() : metadata;
+        for (String source : fileTables.sourceMagnets(magnet)) rememberTitles(hash, source, null);
         List<String> titles = rememberTitles(hash, magnet, release.releaseTitle());
         for (String title : titles) {
             String conflict = target.conflict(title);
@@ -79,22 +77,21 @@ public class ReleaseSubmissionSafety {
                 if (seasons.size() > 1) throw rejected("跨季发布需要处理；现有整包整理不能安全执行");
             }
         }
-        TorrentFileTable table = client.cached(magnet).orElse(tables.getIfPresent(hash));
+        TorrentFileTable table = null;
+        String tableSource = "光鸭文件表";
         String unknownReason = "未取得可信文件表";
-        if (table == null) {
-            try {
-                table = client.resolve(magnet, ResolveBudget.start());
-            } catch (GuangyaException failure) {
-                if (failure.reason() == GuangyaException.Reason.INVALID_RESPONSE) {
-                    invalidTables.put(hash, failure.getMessage());
-                    throw rejected(failure.getMessage());
-                }
-                unknownReason = failure.getMessage();
+        try {
+            var resolved = fileTables.resolve(magnet, ResolveBudget.start());
+            table = resolved.table(); tableSource = resolved.source();
+        } catch (GuangyaException failure) {
+            if (failure.reason() == GuangyaException.Reason.INVALID_RESPONSE) {
+                invalidTables.put(hash, failure.getMessage());
+                throw rejected(failure.getMessage());
             }
+            unknownReason = failure.getMessage();
         }
         if (table == null) return acceptUnknown(release, unknownReason) + "; sourceTitles=" + titles
                 + "; preview=" + titles.stream().anyMatch(ReleaseVersion::isPreview);
-        tables.put(hash, table);
         if (ReleaseVersion.isCamera(table.rootName()) || table.files().stream().anyMatch(file -> ReleaseVersion.isCamera(file.path()))) {
             invalidTables.put(hash, "文件表存在明确枪版声明");
             throw rejected("文件表存在明确枪版声明");
@@ -127,6 +124,7 @@ public class ReleaseSubmissionSafety {
         StringBuilder record = new StringBuilder(permission).append("; reason=").append(evidence.reason())
                 .append("; preview=").append(evidence.preview()).append("; camera=").append(evidence.camera())
                 .append("; root=").append(table.rootName()).append("; sourceTitles=").append(titles);
+        record.append("; file_table_source=").append(tableSource);
         for (var file : table.files()) record.append("\noriginal_file=").append(file.path()).append("; bytes=")
                 .append(file.sizeBytes()).append("; preview=").append(ReleaseVersion.isPreview(file.path()))
                 .append("; camera=").append(ReleaseVersion.isCamera(file.path()));

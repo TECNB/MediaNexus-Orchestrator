@@ -13,6 +13,7 @@ public final class ResolveBudget {
     private final long deadlineNanos;
     private final Semaphore concurrent = new Semaphore(2, true);
     private int resolveRequests;
+    private int originalRequests;
     private Object authenticationRefresh;
 
     public ResolveBudget(Instant totalDeadline, Instant resolveDeadline) {
@@ -34,6 +35,11 @@ public final class ResolveBudget {
         long nanos = deadlineNanos - System.nanoTime();
         if (nanos <= 0) throw exhausted();
         return Duration.ofNanos(nanos);
+    }
+    public synchronized void acquireOriginalMetadata() {
+        remaining();
+        if (originalRequests >= 20) throw exhausted();
+        originalRequests++;
     }
     synchronized void countResolveRequest() {
         remaining();

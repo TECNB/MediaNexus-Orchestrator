@@ -130,6 +130,8 @@ public class ProwlarrReleaseSearchCache {
             weight += estimatedStringWeight(release.publishDate());
             weight += estimatedStringWeight(release.guid());
             weight += estimatedStringWeight(release.downloadRef());
+            weight += estimatedStringWeight(release.infoHash());
+            weight += estimatedStringWeight(release.torrentRef());
         }
         return (int) Math.min(Integer.MAX_VALUE, Math.max(1L, weight));
     }

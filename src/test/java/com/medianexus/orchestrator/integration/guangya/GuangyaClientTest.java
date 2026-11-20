@@ -55,6 +55,13 @@ class GuangyaClientTest {
     @AfterEach void stop() { server.stop(0); }
     private String envelope(String tree) { return "{\"msg\":\"success\",\"data\":{\"resType\":1,\"btResInfo\":" + tree + "}}"; }
 
+    @Test void resourceRejectionIsNotAnInvalidFileTableAndCanBeRetriedByAnotherSource() {
+        response = "{\"code\":353,\"msg\":\"文件违规\"}";
+        assertThatThrownBy(() -> client.resolve(MAGNET, ResolveBudget.start())).isInstanceOfSatisfying(GuangyaException.class,
+                failure -> assertThat(failure.reason()).isEqualTo(GuangyaException.Reason.RESOURCE_REJECTED));
+        assertThat(client.cached(MAGNET)).isEmpty();
+    }
+
     @Test void resolvesSingleFileAndCachesByHashWithoutSpendingBudget() {
         ResolveBudget budget = ResolveBudget.start();
         var table = client.resolve(MAGNET, budget);

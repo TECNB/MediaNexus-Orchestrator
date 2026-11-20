@@ -153,6 +153,9 @@ public class GuangyaClient {
     private void requireSuccess(Reply reply) {
         JsonNode code = reply.body.path("code");
         JsonNode msg = reply.body.path("msg");
+        if (reply.status == 200 && "353".equals(code.asText())) {
+            throw new GuangyaException(GuangyaException.Reason.RESOURCE_REJECTED, "光鸭拒绝解析：文件违规（353）");
+        }
         if (reply.status != 200 || !reply.body.isObject() || (!code.isMissingNode() && !code.isNull() && !"0".equals(code.asText()))
                 || (!msg.isMissingNode() && (!msg.isTextual() || !(msg.asText().isEmpty() || "success".equalsIgnoreCase(msg.asText()))))) {
             throw new GuangyaException(GuangyaException.Reason.UNAVAILABLE, "光鸭未返回成功解析结果；不代表资源缺集或失效");

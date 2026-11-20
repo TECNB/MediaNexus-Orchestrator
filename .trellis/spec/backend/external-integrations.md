@@ -73,6 +73,8 @@
 - `GuangyaClient.resolve(String magnet, ResolveBudget budget)` returns a validated `TorrentFileTable`; `cached(String)` does not spend HTTP budget.
 - `GET /api/v1/resources/releases/comparisons/{id}` reads an owner-isolated snapshot; `POST .../{id}/continue` explicitly starts another bounded round.
 - Existing search/recommendation responses include nullable `comparison`; each candidate includes nullable `evidence`.
+- `ReleaseFileTables.resolve(ProwlarrRelease, ResolveBudget)` obtains a validated table from Guangya or the original torrent; the string-magnet operation and submission share its bounded cache.
+- `ProwlarrClient.resolveTorrent(ProwlarrRelease, Duration)` reads only magnet/torrent metadata, returning `ResolvedTorrent`; it never creates an offline task.
 
 ### 3. Contracts
 - Only `resolve_res` and the verified refresh-token grant are called. No create_task, restore, transfers or directory operations.
@@ -82,12 +84,16 @@
 - Automatic recommendation requires COMPLETE and executable evidence. Manual selection may precede completion; unknown evidence requires explicit `accept_unverified_risk`. This permission cannot override known identity/path/target conflicts or unsupported execution.
 - Filename resolution/subtitle/version tags remain declarations, not media inspection. Normal versions precede accepted preview versions, then existing allowed resolution/subtitle priorities; target bytes are the final size comparison, separate from whole-package bytes.
 - Snapshot and evidence caches are bounded and process-local; restart/expiry requires another search. Failed searches retry only on explicit continuation. Ordinary request timeouts are not automatically retried.
+- PanSou and Prowlarr use `ReleaseCandidateComparison`. Prowlarr retains search hash, indexer/reference, backup torrent reference and peer metadata; source size is separate from file-table total/target size. Direct magnets and title-incomplete related candidates remain eligible for evidence.
+- Known BTIH uses Guangya first, then the original torrent on source unavailability/rejection. References without BTIH fetch original metadata first; a returned magnet can use Guangya. Successful evidence is reused; there is no mandatory duplicate fetch. Guangya code 353 is a source refusal, not an invalid file table, and may fall back to a safely validated original torrent. Retain source and fallback reason.
+- Original torrent metadata is limited to 4 MiB, depth 32, 20,000 nodes; reject duplicate keys/trailing bytes, malformed bencode, unsafe/duplicate/conflicting paths, symlinks, hash mismatch and inconsistent piece sizes. Recompute BTIH from raw info bytes. Known safety failures cannot be washed by another source or human permission.
+- Up to 20 original-reference operations per round, at most six HTTP requests per operation, each at most eight seconds and all inside the shared remaining deadline. Prowlarr automation additionally preserves its positive-seeder requirement; peer counts never establish content safety.
 
 ### 4. Validation & Error Matrix
 | Condition | Outcome |
 | --- | --- |
 | Invalid hash, unsafe/duplicate paths, inconsistent leaf count/size, structure limits | No success cache; reject submission even with risk permission |
-| Auth/quota/persistence failure | BLOCKED, retain evidence; never call it dead/zero episodes |
+| Auth/quota/persistence failure | Try an available original torrent source; otherwise keep unavailable evidence (PanSou-only comparison may BLOCK), never call it dead/zero episodes |
 | Budget exhausted with pending queue | PAUSED; current recommendation only, no automatic submission |
 | Mixed seasons, unmapped absolute numbering, unknown video or duplicate main version | NEEDS_PROCESSING; never relax unknown-video deletion safety |
 | Missing credentials or unavailable metadata | UNVERIFIED; administrator setup or explicit human risk acceptance |

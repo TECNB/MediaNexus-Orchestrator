@@ -8,6 +8,7 @@ import com.medianexus.orchestrator.dto.resources.request.*;
 import com.medianexus.orchestrator.dto.resources.response.*;
 import com.medianexus.orchestrator.integration.guangya.*;
 import com.medianexus.orchestrator.integration.pansou.*;
+import com.medianexus.orchestrator.integration.prowlarr.ProwlarrClient;
 import com.medianexus.orchestrator.model.User;
 import java.time.Duration;
 import java.util.*;
@@ -17,18 +18,26 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-class PanSouMagnetSearchTest {
+class ReleaseCandidateComparisonTest {
     private final PanSouClient client = mock(PanSouClient.class);
     private final GuangyaClient guangya = mock(GuangyaClient.class);
     private final AuthService auth = mock(AuthService.class);
     private final ReleaseTitleTagParser tags = new ReleaseTitleTagParser();
-    private final PanSouMagnetSearch search = new PanSouMagnetSearch(client, tags, guangya,
+    private final SettingsService settings = mock(SettingsService.class);
+    private final ProwlarrReleaseSearchCache prowlarr = mock(ProwlarrReleaseSearchCache.class);
+    private final ProwlarrClient originalClient = mock(ProwlarrClient.class);
+    private final ReleaseFileTables tables = new ReleaseFileTables(guangya, originalClient);
+    private final ReleaseCandidateComparison search = new ReleaseCandidateComparison(
+            new ReleaseCandidateDiscovery(client, prowlarr, settings, tags, tables), tags, tables,
             new ReleaseFileAssessment(new MovieSeriesFileRenameService(), tags), auth);
     private final SeriesReleaseSearchRequest request = new SeriesReleaseSearchRequest(null, null, null, "Show", "Original", 1, "1080p");
 
     @BeforeEach void setup() {
+        when(settings.usesPanSouForMagnetSearch()).thenReturn(true);
         User user = new User(); user.setId(1L); when(auth.requireCurrentUser()).thenReturn(user);
         when(guangya.resolve(anyString(), any())).thenAnswer(call -> table(call.getArgument(0), "Show Season 1 1080p", "Show.S01E01.1080p.mkv"));
+        when(originalClient.resolveTorrent(any(), any())).thenThrow(new com.medianexus.orchestrator.integration.prowlarr.ProwlarrClientException(
+                com.medianexus.orchestrator.integration.prowlarr.ProwlarrClientException.Reason.MAGNET_RESOLUTION, "无原始文件表"));
     }
     @AfterEach void close() { search.close(); }
 
@@ -149,7 +158,7 @@ class PanSouMagnetSearchTest {
     }
 
     @Test void manualRefreshPreservesPausedSnapshotAndUnsafeEvidenceReachesRawSubmission() throws Exception {
-        var safety = new ReleaseSubmissionSafety(guangya, new ReleaseFileAssessment(new MovieSeriesFileRenameService(), tags));
+        var safety = new ReleaseSubmissionSafety(tables, new ReleaseFileAssessment(new MovieSeriesFileRenameService(), tags));
         search.shareSubmissionEvidence(safety);
         when(client.searchMagnets(any())).thenReturn(new PanSouSearchResult(List.of(entry(1, "Show 1080p", 100L))));
         doThrow(new GuangyaException(GuangyaException.Reason.INVALID_RESPONSE, "unsafe path")).when(guangya).resolve(anyString(), any());
@@ -160,9 +169,92 @@ class PanSouMagnetSearchTest {
         assertThatThrownBy(() -> safety.check(magnet(1), ReleaseTarget.of("Show", null, null, null, 1, null),
                 ReleaseIngestMetadata.manual().withUnverifiedRisk(true))).hasMessageContaining("安全校验失败");
         doThrow(new GuangyaException(GuangyaException.Reason.BUDGET_EXHAUSTED, "pause")).when(guangya).resolve(anyString(), any());
+        when(client.searchMagnets(any())).thenReturn(new PanSouSearchResult(List.of(entry(2, "Show 1080p", 100L))));
         var paused = search.refreshRecommendSeries(new SeriesReleaseRecommendationRequest(null, null, null, "Show", null, 1, "1080p"));
         assertThat(paused.comparison().status()).isEqualTo("PAUSED");
         assertThat(paused.items()).hasSize(1);
+    }
+
+    @Test void prowlarrDirectMagnetsAndMissingTitleQualityUseTheSameFileAssessment() throws Exception {
+        when(settings.usesPanSouForMagnetSearch()).thenReturn(false);
+        var first = new com.medianexus.orchestrator.integration.prowlarr.ProwlarrRelease("Show S01", 999L, 20, 1, 10,
+                "Indexer", null, 7, "guid1", magnet(1));
+        var second = new com.medianexus.orchestrator.integration.prowlarr.ProwlarrRelease("Show S01 1080p", 100L, 5, 1, 10,
+                "Indexer", null, 7, "guid2", magnet(2));
+        when(prowlarr.search(anyString())).thenReturn(List.of(first, second));
+        when(guangya.resolve(eq(magnet(1)), any())).thenThrow(new GuangyaException(GuangyaException.Reason.RESOURCE_REJECTED, "文件违规（353）"));
+        var initial = search.searchSeries(request);
+        var complete = await(initial.comparison().id());
+        assertThat(complete.comparison().status()).isEqualTo("COMPLETE");
+        assertThat(complete.comparison().recommendedRef()).isEqualTo(magnet(2));
+        assertThat(complete.items()).hasSize(2);
+        assertThat(complete.items().get(0).indexerId()).isEqualTo(7);
+        assertThat(complete.items().get(0).seeders()).isEqualTo(5);
+        assertThat(complete.items().get(1).evidence().reason()).contains("353");
+        verifyNoInteractions(client);
+    }
+
+    @Test void originalFileTableFallbackCanWinComparisonBeforeSubmission() throws Exception {
+        when(settings.usesPanSouForMagnetSearch()).thenReturn(false);
+        var release = new com.medianexus.orchestrator.integration.prowlarr.ProwlarrRelease("Show", 999L, 20, 1, 10,
+                "Indexer", null, 7, "guid", "opaque");
+        when(prowlarr.search(anyString())).thenReturn(List.of(release));
+        var resolved = table(magnet(1), "Show S01 1080p", "Show.S01E01.1080p.mkv");
+        var originalClient = mock(ProwlarrClient.class);
+        when(originalClient.resolveTorrent(eq(release), any())).thenReturn(
+                new com.medianexus.orchestrator.integration.prowlarr.ResolvedTorrent(magnet(1), Optional.of(resolved)));
+        var shared = new ReleaseFileTables(guangya, originalClient);
+        try (var comparison = new ReleaseCandidateComparison(new ReleaseCandidateDiscovery(client, prowlarr, settings, tags, shared),
+                tags, shared, new ReleaseFileAssessment(new MovieSeriesFileRenameService(), tags), auth)) {
+            var result = comparison.previewSeries(new SeriesReleaseRecommendationRequest(null, null, null, "Show", null, 1, "1080p"));
+            assertThat(result.comparison().status()).isEqualTo("COMPLETE");
+            assertThat(result.item().downloadRef()).isEqualTo("opaque");
+            assertThat(result.item().evidence().reason()).contains("原始 torrent");
+            assertThat(shared.knownMagnet(7, "opaque")).contains(magnet(1));
+            verifyNoInteractions(guangya);
+        }
+    }
+
+    @Test void differentReferencesResolvingToOneHashMergeWithoutLosingSourceEvidence() {
+        when(settings.usesPanSouForMagnetSearch()).thenReturn(false);
+        var first = new com.medianexus.orchestrator.integration.prowlarr.ProwlarrRelease("Show S01 1080p", 100L, 5, null, null,
+                "A", null, 1, "guid-a", "opaque-a");
+        var second = new com.medianexus.orchestrator.integration.prowlarr.ProwlarrRelease("Show S01 1080p 尝鲜版", 100L, 5, null, null,
+                "B", null, 2, "guid-b", "opaque-b");
+        when(prowlarr.search(anyString())).thenReturn(List.of(first, second));
+        doReturn(new com.medianexus.orchestrator.integration.prowlarr.ResolvedTorrent(
+                magnet(1), Optional.of(table(magnet(1), "Show S01 1080p", "Show.S01E01.1080p.mkv"))))
+                .when(originalClient).resolveTorrent(any(), any());
+        var result = search.previewSeries(new SeriesReleaseRecommendationRequest(null, null, null, "Show", null, 1, "1080p"));
+        assertThat(result.comparison().status()).isEqualTo("COMPLETE");
+        assertThat(result.items()).singleElement().satisfies(item -> {
+            assertThat(item.evidence().status()).isEqualTo("RECOMMENDABLE");
+            assertThat(item.evidence().preview()).isTrue();
+        });
+    }
+
+    @Test void zeroSeedersRemainVisibleButNeverAutomaticallySelected() {
+        when(settings.usesPanSouForMagnetSearch()).thenReturn(false);
+        var release = new com.medianexus.orchestrator.integration.prowlarr.ProwlarrRelease("Show S01 1080p", 100L, 0, null, null,
+                "Indexer", null, 7, "guid", magnet(1));
+        when(prowlarr.search(anyString())).thenReturn(List.of(release));
+        var request = new SeriesReleaseRecommendationRequest(null, null, null, "Show", null, 1, "1080p");
+        assertThat(search.previewSeries(request).items()).hasSize(1);
+        assertThatThrownBy(() -> search.recommendSeries(request)).isInstanceOf(ProwlarrReleaseIngestService.NoMatchingReleaseException.class);
+    }
+
+    @Test void sameHashUsesThePositiveSeederPublicationAndItsBackupReference() {
+        when(settings.usesPanSouForMagnetSearch()).thenReturn(false);
+        var first = new com.medianexus.orchestrator.integration.prowlarr.ProwlarrRelease("Show S01 1080p", 100L, 0, null, null,
+                "A", null, 1, "guid-a", magnet(1));
+        var second = new com.medianexus.orchestrator.integration.prowlarr.ProwlarrRelease("Show S01 1080p", 100L, 9, null, null,
+                "B", null, 2, "guid-b", magnet(1), null, "backup");
+        when(prowlarr.search(anyString())).thenReturn(List.of(first, second));
+        var result = search.recommendSeries(new SeriesReleaseRecommendationRequest(null, null, null, "Show", null, 1, "1080p"));
+        assertThat(result.items()).singleElement().satisfies(item -> {
+            assertThat(item.indexerId()).isEqualTo(2);
+            assertThat(item.seeders()).isEqualTo(9);
+        });
     }
 
     private ProwlarrReleaseSearchResponse await(String id) throws InterruptedException {
