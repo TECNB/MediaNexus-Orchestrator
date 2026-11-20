@@ -24,7 +24,7 @@ public final class DoubanChartContract {
         public int limit() { return limit; }
     }
 
-    @Schema(description = "白名单目录字段；未知评分、人数、榜位保持 null")
+    @Schema(description = "白名单目录字段；rank 为周榜/Top250 显式排名，热门榜为来源列表位置；未知评分、人数、榜位保持 null")
     public record Subject(long id, String title, String originalTitle, String coverUrl, Integer year,
                           String mediaType, Double score, Long votes, Integer rank, String progress, Instant observedAt) {}
     @Schema(description = "具体检查日期的来源进度，不表示完结发生日期")

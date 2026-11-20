@@ -22,7 +22,9 @@ class DoubanChartClientTest {
         assertEquals(20, hot.size());
         assertEquals(1, requests.get());
         assertNull(hot.get(0).score()); assertNull(hot.get(0).votes());
-        assertNull(hot.get(0).rank());
+        assertEquals(1, hot.get(0).rank());
+        assertEquals(20, hot.get(19).rank());
+        assertEquals("https://img3.doubanio.com/view/photo/m_ratio_poster/public/p2935488630.jpg", hot.get(0).coverUrl());
         assertEquals("电影 原名保持完整", hot.get(0).title());
         var ranked = new DoubanChartClient(json, (url, referer) -> {
             int offset = Integer.parseInt(url.split("start=")[1].split("&")[0]);
@@ -77,6 +79,10 @@ class DoubanChartClientTest {
         result.set(null);
         assertNull(client.refreshSubject(old).progress());
     }
+    @Test void rankedChartsRequireExplicitSourceRankEvenWhenListOrderIsAvailable() {
+        var client = new DoubanChartClient(json, (url, referer) -> page(0, 10, 10, false));
+        assertThrows(DoubanChartClient.ChartReadException.class, () -> client.fetch(ChartId.movie_weekly_best));
+    }
 
 
     private ObjectNode page(int offset, int total, int count, boolean ranked) {
@@ -85,6 +91,7 @@ class DoubanChartClientTest {
         for (int i = 1; i <= count; i++) {
             var item = items.addObject().put("id", String.valueOf(offset+i)).put("title", "电影 原名保持完整")
                     .put("type", "movie").put("year", "2020");
+            item.putObject("cover").put("url", "https://img3.doubanio.com/view/photo/m_ratio_poster/public/p2935488630.jpg");
             if (ranked) item.put("rank", offset+i);
         }
         return root;

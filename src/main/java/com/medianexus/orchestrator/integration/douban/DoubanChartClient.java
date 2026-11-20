@@ -51,7 +51,7 @@ public class DoubanChartClient {
             int slots = Math.min(count, total - offset);
             if (items.size() != slots || items.isEmpty()) throw invalid();
             for (JsonNode node : items) {
-                Subject subject = subject(node, chart);
+                Subject subject = subject(node, chart, subjects.size() + 1);
                 if (!ids.add(subject.id())) throw invalid();
                 if ((chart == ChartId.movie_top250 || chart == ChartId.movie_weekly_best)
                         && (subject.rank() == null || subject.rank() != subjects.size() + 1)) throw invalid();
@@ -64,7 +64,7 @@ public class DoubanChartClient {
         throw new ChartReadException("榜单分页超过安全上限，保留上次成功清单");
     }
 
-    private Subject subject(JsonNode node, ChartId chart) {
+    private Subject subject(JsonNode node, ChartId chart, int position) {
         long id = id(node.path("id"));
         String title = text(node, "title");
         String type = text(node, "type");
@@ -78,7 +78,9 @@ public class DoubanChartClient {
         Double score = rating.path("value").isNumber() ? rating.path("value").doubleValue() : null;
         Long votes = rating.path("count").isIntegralNumber() ? rating.path("count").longValue() : null;
         if (score != null && (!Double.isFinite(score) || score < 0 || score > 10) || votes != null && votes < 0) throw invalid();
+        // 热门接口没有显式 rank；保存来源列表位置，UI 按热门位置而非评分排名展示。
         Integer rank = node.hasNonNull("rank") ? integer(node.get("rank"), -1) : null;
+        if (rank == null && chart.limit() > 0) rank = position;
         if (rank != null && rank < 1) throw invalid();
         Subject result = new Subject(id, title, text(node,"original_title"), cover(node), year,
                 chart.mediaType(), score, votes, rank, text(node,"episodes_info"), Instant.now());
@@ -165,7 +167,8 @@ public class DoubanChartClient {
     }
 
     private static String cover(JsonNode node) {
-        String url = text(node.path("pic"),"normal");
+        String url = text(node.path("cover"), "url");
+        if (url == null) url = text(node.path("pic"), "normal");
         if (url == null) url = text(node,"cover_url");
         return url != null && url.startsWith("https://") ? url : null;
     }
