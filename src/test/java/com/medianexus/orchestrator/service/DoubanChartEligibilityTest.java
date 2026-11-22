@@ -35,6 +35,47 @@ class DoubanChartEligibilityTest {
         assertEquals("PROGRESS_UNKNOWN",eligibility.assess(subject(null), identity).reason().code());
     }
 
+    @Test void missingSourceProgressRequiresStrictPastSeasonAndEndingEvidence() throws Exception {
+        var clock = java.time.Clock.fixed(Instant.parse("2026-11-22T04:00:00Z"), DoubanChartStore.ZONE);
+        var checked = new DoubanChartEligibility(tmdb, tables, new MovieSeriesFileRenameService(), clock);
+        var series = json.readTree("""
+                {"id":123,"name":"测试剧","original_name":"Series","status":"Ended","seasons":[{"season_number":2,"episode_count":2,"air_date":"2025-01-01"}]}
+                """);
+        var season = json.readTree("""
+                {"id":22,"season_number":2,"episodes":[{"episode_number":1,"season_number":2,"air_date":"2026-11-20"},{"episode_number":2,"season_number":2,"air_date":"2026-11-21"}]}
+                """);
+        when(tmdb.getTvDetails(123,"zh-CN")).thenReturn(series);
+        when(tmdb.getTvSeasonDetails(123,2,"zh-CN")).thenReturn(season);
+        assertNull(checked.assess(subject(null), identity).reason());
+        assertEquals(List.of(1,2), checked.assess(subject(null), identity).expectedEpisodes());
+        assertEquals("AIRING", checked.assess(subject("更新至1集"), identity).reason().code());
+        for (String date : List.of("2026-11-22", "2026-11-23", "", "2026-02-30")) {
+            ((com.fasterxml.jackson.databind.node.ObjectNode)season.path("episodes").get(1)).put("air_date", date);
+            assertNotNull(checked.assess(subject(null), identity).reason(), date);
+        }
+        ((com.fasterxml.jackson.databind.node.ObjectNode)season.path("episodes").get(1)).put("air_date", "2026-11-21");
+        ((com.fasterxml.jackson.databind.node.ObjectNode)series).put("status", "Returning Series");
+        assertNotNull(checked.assess(subject(null), identity).reason());
+        ((com.fasterxml.jackson.databind.node.ObjectNode)season.path("episodes").get(1)).put("episode_type", "finale");
+        assertNull(checked.assess(subject(null), identity).reason());
+        ((com.fasterxml.jackson.databind.node.ObjectNode)season.path("episodes").get(1)).put("episode_number", 1);
+        assertNotNull(checked.assess(subject(null), identity).reason());
+    }
+
+    @Test void explicitCompletionAndPastSeasonCannotOverrideConflictingFutureSchedule() throws Exception {
+        var checked = new DoubanChartEligibility(tmdb, tables, new MovieSeriesFileRenameService(),
+                java.time.Clock.fixed(Instant.parse("2026-11-22T04:00:00Z"), DoubanChartStore.ZONE));
+        when(tmdb.getTvDetails(123,"zh-CN")).thenReturn(json.readTree("""
+                {"id":123,"name":"测试剧","original_name":"Series","status":"Ended","seasons":[{"season_number":2,"episode_count":1}],
+                 "next_episode_to_air":{"season_number":2,"episode_number":2,"air_date":"2026-11-23"}}
+                """));
+        when(tmdb.getTvSeasonDetails(123,2,"zh-CN")).thenReturn(json.readTree("""
+                {"id":22,"season_number":2,"episodes":[{"episode_number":1,"season_number":2,"air_date":"2026-11-20"}]}
+                """));
+        assertEquals("PROGRESS_CONFLICT", checked.assess(subject(null), identity).reason().code());
+        assertEquals("PROGRESS_CONFLICT", checked.assess(subject("1集全"), identity).reason().code());
+    }
+
     @Test void fullSeasonRequiresDistinctExactEpisodeSetAndSafeKnownFileTable() {
         var assessed = new DoubanChartEligibility.Assessment(identity,
                 BgmWishlistService.target(identity), List.of(1,2,3), null);

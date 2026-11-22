@@ -23,9 +23,14 @@ public class DoubanChartEligibility {
     private final ReleaseFileAssessment fileAssessment;
     private final ReleaseFileTables tables;
     private final MovieSeriesFileRenameService names;
+    private final java.time.Clock clock;
 
+    @org.springframework.beans.factory.annotation.Autowired
     public DoubanChartEligibility(TmdbClient tmdb, ReleaseFileTables tables, MovieSeriesFileRenameService names) {
-        this.tmdb = tmdb; this.tables = tables; this.names = names;
+        this(tmdb, tables, names, java.time.Clock.system(DoubanChartStore.ZONE));
+    }
+    DoubanChartEligibility(TmdbClient tmdb, ReleaseFileTables tables, MovieSeriesFileRenameService names, java.time.Clock clock) {
+        this.tmdb = tmdb; this.tables = tables; this.names = names; this.clock = clock;
         this.fileAssessment = new ReleaseFileAssessment(names, new ReleaseTitleTagParser());
     }
 
@@ -41,13 +46,20 @@ public class DoubanChartEligibility {
             }
             String progress = subject.progress() == null ? "" : subject.progress();
             var completion = COMPLETE.matcher(progress);
-            if (!completion.matches()) return refusal(identity, AIRING.matcher(progress).matches() ? "AIRING" : "PROGRESS_UNKNOWN",
-                    AIRING.matcher(progress).matches() ? "仍在更新，等待明确完结" : "没有明确完结信息，等待核实");
-            int expected = Integer.parseInt(completion.group(1));
+            boolean sourceComplete = completion.matches();
+            if (!sourceComplete && !progress.isBlank()) return refusal(identity, AIRING.matcher(progress).matches() ? "AIRING" : "PROGRESS_UNKNOWN",
+                    AIRING.matcher(progress).matches() ? "仍在更新，等待明确完结" : "来源进度声明尚不能确认完结，等待核实");
             JsonNode series = tmdb.getTvDetails(identity.tmdbId(),"zh-CN");
             JsonNode summary = findSeason(series,identity.seasonNumber());
             JsonNode season = tmdb.getTvSeasonDetails(identity.tmdbId(),identity.seasonNumber(),"zh-CN");
             JsonNode episodes = season.path("episodes");
+            var catalog = CatalogSeasonProgress.inspect(series, season, identity, clock);
+            if (!sourceComplete && !"COMPLETE".equals(catalog.seasonStatus()))
+                return refusal(identity, "CONFLICT".equals(catalog.seasonStatus()) ? "PROGRESS_CONFLICT" : "PROGRESS_UNKNOWN",
+                        "目录完结证据不足：" + catalog.message());
+            if (sourceComplete && Set.of("AIRING", "NOT_AIRED", "CONFLICT").contains(catalog.seasonStatus()))
+                return refusal(identity, "PROGRESS_CONFLICT", "豆瓣完结声明与目标季目录日期或后续安排矛盾，等待核实");
+            int expected = sourceComplete ? Integer.parseInt(completion.group(1)) : catalog.totalEpisodes();
             if (summary == null || summary.path("episode_count").asInt(-1) != expected
                     || !episodes.isArray() || episodes.size() != expected) {
                 return refusal(identity,"EPISODE_CONFLICT","已确认完结，但总集数与目标季目录不一致，等待版本或季映射确认");
