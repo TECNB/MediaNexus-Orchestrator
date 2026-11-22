@@ -60,8 +60,11 @@ public class DoubanChartService {
         Board board = store.board(id);
         List<Candidate> candidates = board.candidates().stream().map(candidate -> {
             Identity corrected = store.identity(candidate.subject().id());
-            return candidate(candidate, candidate.subject(), candidate.current(), candidate.excluded(),
+            Candidate visible = candidate(candidate, candidate.subject(), candidate.current(), candidate.excluded(),
                     corrected == null ? candidate.identity() : corrected, candidate.reason());
+            return new Candidate(visible.subject(), visible.current(), visible.firstSeenAt(), visible.lastSeenAt(),
+                    visible.lastRank(), visible.excluded(), visible.observations(), visible.identity(), visible.reason(),
+                    DoubanChartProgress.visible(store.progress(id, candidate.subject().id()), candidate.subject(), corrected, Instant.now()));
         }).sorted(Comparator.comparing(Candidate::current).reversed()
                 .thenComparing(candidate -> candidate.current() ? candidate.subject().rank() : candidate.lastRank(),
                         Comparator.nullsLast(Comparator.naturalOrder()))).toList();

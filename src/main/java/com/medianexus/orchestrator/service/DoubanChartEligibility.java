@@ -114,6 +114,12 @@ public class DoubanChartEligibility {
                 year(text(details,"MOVIE".equals(input.mediaType()) ? "release_date" : "first_air_date")));
     }
 
+    /** 只读目录身份完整操作；null 表示身份待确认，异常表示目录读取失败；不调用受理资格。 */
+    public Identity resolveProgressIdentity(Subject subject, Identity corrected) {
+        return corrected == null ? match(subject) : correct(subject,
+                new IdentityInput(corrected.mediaType(), corrected.tmdbId(), corrected.seasonNumber()));
+    }
+
     private Identity match(Subject subject) {
         if (subject.year() == null) return null;
         var matches = search(subject.title(),subject.mediaType()).stream().filter(candidate ->

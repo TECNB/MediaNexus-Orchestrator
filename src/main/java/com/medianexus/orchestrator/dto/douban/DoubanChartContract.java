@@ -32,7 +32,27 @@ public final class DoubanChartContract {
     @Schema(description = "本榜当前或曾属候选；排除跨刷新持久生效")
     public record Candidate(Subject subject, boolean current, Instant firstSeenAt, Instant lastSeenAt,
                             Integer lastRank, boolean excluded, List<Observation> observations,
-                            Identity identity, Reason reason) {}
+                            Identity identity, Reason reason,
+                            @Schema(description = "独立进度证据；电影为 null；过期证据过滤为等待补查", nullable = true)
+                            ProgressEvidence progressEvidence) {
+        public Candidate(Subject subject, boolean current, Instant firstSeenAt, Instant lastSeenAt,
+                         Integer lastRank, boolean excluded, List<Observation> observations, Identity identity, Reason reason) {
+            this(subject, current, firstSeenAt, lastSeenAt, lastRank, excluded, observations, identity, reason, null);
+        }
+    }
+    @Schema(description = "仅供展示的进度证据，不改变榜单原始进度、观察历史或整季受理资格")
+    public record ProgressEvidence(Instant sourceObservedAt, Instant checkedAt,
+            @Schema(description = "豆瓣详情：PENDING、SUPPLIED、NOT_PROVIDED、FAILED；NOT_NEEDED 表示榜单已有进度")
+            String doubanStatus, String doubanProgress, Instant doubanCheckedAt, String doubanMessage,
+            @Schema(description = "目录独立证据；尚待补查时为 null", nullable = true) CatalogProgress catalog) {}
+    @Schema(description = "目标季目录播出日期证据；不承诺真实资源上线或下载资格")
+    public record CatalogProgress(
+            @Schema(description = "目录检查：SUCCEEDED、FAILED 或 IDENTITY_REQUIRED") String status,
+            Instant checkedAt, Identity identity, String seriesStatus, Integer totalEpisodes,
+            Integer pastEpisodes, Integer todayEpisodes, Integer undatedEpisodes, Integer nextEpisodeNumber,
+            @Schema(description = "目标季下一集目录日期 YYYY-MM-DD；未知或不属于目标季时为 null", nullable = true) String nextAirDate,
+            @Schema(description = "目标季证据：AIRING、COMPLETE、NOT_AIRED、UNKNOWN 或 CONFLICT") String seasonStatus,
+            String message) {}
     @Schema(description = "独立公共榜单配置与最后成功清单；抓取失败保留旧数据")
     public record Board(ChartId id, String label, boolean autoEnabled, Long ownerUserId,
                         String refreshStatus, String refreshError, Instant lastAttemptAt, Instant lastSuccessAt,
