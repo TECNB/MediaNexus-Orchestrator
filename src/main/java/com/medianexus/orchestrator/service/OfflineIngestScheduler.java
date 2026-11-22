@@ -109,6 +109,8 @@ public class OfflineIngestScheduler implements AutoCloseable {
         log.warn("Offline submissions blocked: {}", reason);
     }
 
+    public synchronized String submissionPauseReason() { return restartBlock; }
+
     private void checkUpstream() {
         try {
             if (client.unfinishedOfflineTaskCount() != 0) {

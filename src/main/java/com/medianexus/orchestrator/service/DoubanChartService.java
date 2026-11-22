@@ -39,6 +39,7 @@ public class DoubanChartService {
     private final BgmWishlistSessionLocks locks;
     private final AuthService auth;
     private final UserMapper users;
+    private final OfflineIngestScheduler downloads;
     private final ThreadPoolExecutor executor = new ThreadPoolExecutor(1, 1, 0, TimeUnit.SECONDS,
             new ArrayBlockingQueue<>(8), runnable -> {
                 Thread thread = new Thread(runnable, "douban-chart-ingest"); thread.setDaemon(true); return thread;
@@ -46,9 +47,11 @@ public class DoubanChartService {
     private final Set<String> enqueued = ConcurrentHashMap.newKeySet();
 
     public DoubanChartService(DoubanChartStore store, DoubanChartClient client, DoubanChartEligibility eligibility,
-                              BgmWishlistTaskGateway tasks, BgmWishlistSessionLocks locks, AuthService auth, UserMapper users) {
+                              BgmWishlistTaskGateway tasks, BgmWishlistSessionLocks locks, AuthService auth, UserMapper users,
+                              OfflineIngestScheduler downloads) {
         this.store = store; this.client = client; this.eligibility = eligibility;
         this.tasks = tasks; this.locks = locks; this.auth = auth; this.users = users;
+        this.downloads = downloads;
     }
 
     public Overview overview() {
@@ -286,6 +289,8 @@ public class DoubanChartService {
             if (requireCandidate(chart, subjectId).excluded()) {
                 outcome(id, subjectId, "SKIPPED", reason("EXCLUDED", "最终核验期间管理员已排除")); return;
             }
+            String pause = downloads.submissionPauseReason();
+            if (pause != null) { outcome(id, subjectId, "SKIPPED", reason("DOWNLOAD_PAUSED", pause + "；本轮已查证据保留，未创建下载任务")); return; }
             User owner = requireAdminIdentity(store.run(id).operation().actorUserId());
             String reservation = store.reserveCreate();
             if (reservation == null) { outcome(id, subjectId, "SKIPPED", reason("DAILY_CREATE_LIMIT", "榜单共享每日创建数已达上限")); return; }

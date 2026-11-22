@@ -207,6 +207,16 @@ class DoubanChartServiceTest {
         verifyNoInteractions(f.tasks);
     }
 
+    @Test void pausedDownloadsPreserveEvidenceWithoutCreatingOrReservingQuota() throws Exception {
+        when(f.client.fetch(ChartId.tv_chinese_best_weekly)).thenReturn(List.of(f.subject(1,"SERIES")));
+        when(f.downloads.submissionPauseReason()).thenReturn("重启任务仍待核实");
+        Operation run = f.await(f.service.execute(ChartId.tv_chinese_best_weekly).id());
+        assertEquals("DOWNLOAD_PAUSED", run.entries().get(0).reason().code());
+        assertNotNull(run.entries().get(0).selected());
+        assertEquals(0, f.store.counts().created());
+        verify(f.tasks, never()).createChartSeries(any(), any(), any());
+    }
+
     @Test void currentWeeklySeriesWithoutProgressReadsFreshDetailBeforeEligibility() throws Exception {
         Subject missing = new Subject(1,"作品1",null,null,2020,"SERIES",null,null,1,null,Instant.now());
         Subject complete = new Subject(1,"作品1",null,null,2020,"SERIES",null,null,1,"2集全",Instant.now());
@@ -343,6 +353,7 @@ class DoubanChartServiceTest {
         final BgmWishlistSessionLocks locks = mock(BgmWishlistSessionLocks.class);
         final AuthService auth = mock(AuthService.class);
         final UserMapper users = mock(UserMapper.class);
+        final OfflineIngestScheduler downloads = mock(OfflineIngestScheduler.class);
         final CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
         final User admin = new User();
         final DoubanChartStore store;
@@ -379,7 +390,7 @@ class DoubanChartServiceTest {
             when(tasks.createChartMovie(any(), any(), any())).thenReturn(new BgmWishlistTaskGateway.ActiveTask("MOVIE", "movie-task", "PENDING"));
             when(tasks.createChartSeries(any(), any(), any())).thenReturn(new BgmWishlistTaskGateway.ActiveTask("SERIES", "series-task", "PENDING"));
             store = new DoubanChartStore(mapper, json, transactions);
-            service = new DoubanChartService(store, client, eligibility, tasks, locks, auth, users);
+            service = new DoubanChartService(store, client, eligibility, tasks, locks, auth, users, downloads);
         }
         List<String> operationRows(String chart) { return rows.entrySet().stream().filter(row -> "OPERATION".equals(kinds.get(row.getKey()))
                 && chart.equals(charts.get(row.getKey()))).map(Map.Entry::getValue).toList(); }

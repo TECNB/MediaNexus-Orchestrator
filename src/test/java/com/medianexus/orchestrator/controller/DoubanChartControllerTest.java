@@ -24,7 +24,7 @@ class DoubanChartControllerTest {
         when(auth.requireAdminUser()).thenThrow(new BusinessException(ErrorCode.FORBIDDEN,"仅管理员可操作",HttpStatus.FORBIDDEN));
         when(store.board(ChartId.tv_hot)).thenReturn(new Board(ChartId.tv_hot,"热门电视剧",false,null,"NEVER",null,null,null,null,List.of()));
         var service = new DoubanChartService(store,mock(DoubanChartClient.class),mock(DoubanChartEligibility.class),
-                mock(BgmWishlistTaskGateway.class),mock(BgmWishlistSessionLocks.class),auth,mock(UserMapper.class));
+                mock(BgmWishlistTaskGateway.class),mock(BgmWishlistSessionLocks.class),auth,mock(UserMapper.class),mock(com.medianexus.orchestrator.service.OfflineIngestScheduler.class));
         var mvc = MockMvcBuilders.standaloneSetup(new DoubanChartController(service)).setControllerAdvice(new GlobalExceptionHandler()).build();
         try {
             String base="/api/v1/douban-charts";

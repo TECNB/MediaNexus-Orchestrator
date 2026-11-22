@@ -202,7 +202,7 @@ class DoubanChartProgressTest {
         assertNull(json.treeToValue(tree,Candidate.class).progressEvidence());
         AuthService auth = mock(AuthService.class);
         DoubanChartService service = new DoubanChartService(store,douban,eligibility,mock(BgmWishlistTaskGateway.class),
-                mock(BgmWishlistSessionLocks.class),auth,mock(com.medianexus.orchestrator.mapper.UserMapper.class));
+                mock(BgmWishlistSessionLocks.class),auth,mock(com.medianexus.orchestrator.mapper.UserMapper.class),mock(OfflineIngestScheduler.class));
         try {
             assertEquals("PENDING",service.board(ChartId.tv_hot).candidates().get(0).progressEvidence().doubanStatus());
             service.overview();
