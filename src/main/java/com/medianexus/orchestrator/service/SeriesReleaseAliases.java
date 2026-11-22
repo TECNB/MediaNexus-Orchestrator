@@ -36,6 +36,17 @@ public class SeriesReleaseAliases {
                     add(titles, details.path("name").asText(""));
                     add(titles, details.path("original_name").asText(""));
                 }
+                try {
+                    JsonNode alternatives = tmdb.getTvAlternativeTitles(tmdbId);
+                    if (alternatives.path("id").asInt(-1) == tmdbId) for (JsonNode alias : alternatives.path("results")) {
+                        String type = alias.path("type").asText("").toLowerCase(java.util.Locale.ROOT);
+                        if (type.contains("working") || type.contains("production") || type.contains("literal")) continue;
+                        if (List.of("US", "GB", "CN", "TW", "HK", "KR", "JP").contains(alias.path("iso_3166_1").asText()))
+                            add(titles, alias.path("title").asText(""));
+                    }
+                } catch (RuntimeException failure) {
+                    log.warn("Series alternative titles unavailable tmdbId={}; retaining verified basic names", tmdbId);
+                }
                 names = new CatalogNames(List.copyOf(titles), local, english);
                 cache.put(tmdbId, names);
             }
@@ -61,7 +72,7 @@ public class SeriesReleaseAliases {
         return matches == 1;
     }
     private static void add(LinkedHashSet<String> titles, String title) {
-        if (!title.isBlank() && title.length() <= 255) titles.add(title.strip());
+        if (!title.isBlank() && title.length() <= 255 && titles.size() < 16) titles.add(title.strip());
     }
     private record CatalogNames(List<String> titles, JsonNode local, JsonNode english) { }
 }

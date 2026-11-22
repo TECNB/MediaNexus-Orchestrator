@@ -267,13 +267,13 @@ public class MagnetIngestService {
     private void reconcileStoppedRestartTasks() {
         for (var task : movieTaskMapper.selectList(new LambdaQueryWrapper<MovieMagnetIngestTask>()
                 .eq(MovieMagnetIngestTask::getStatus, "INTERRUPTED")
-                .like(MovieMagnetIngestTask::getErrorMessage, "OFFLINE_UNRESOLVED").last("LIMIT 128"))) {
+                .like(MovieMagnetIngestTask::getErrorMessage, "OFFLINE_UNRESOLVED"))) {
             String failure = stoppedRestartFailure(task.getOpenlistTaskId());
             if (failure != null) markMovieFailed(task.getId(), failure);
         }
         for (var task : seriesTaskMapper.selectList(new LambdaQueryWrapper<SeriesMagnetIngestTask>()
                 .eq(SeriesMagnetIngestTask::getStatus, "INTERRUPTED")
-                .like(SeriesMagnetIngestTask::getErrorMessage, "OFFLINE_UNRESOLVED").last("LIMIT 128"))) {
+                .like(SeriesMagnetIngestTask::getErrorMessage, "OFFLINE_UNRESOLVED"))) {
             String failure = stoppedRestartFailure(task.getOpenlistTaskId());
             if (failure != null) markSeriesFailed(task.getId(), failure);
         }

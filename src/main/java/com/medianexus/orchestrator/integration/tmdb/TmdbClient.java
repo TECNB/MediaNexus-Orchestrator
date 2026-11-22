@@ -148,6 +148,10 @@ public class TmdbClient {
         return get(snapshot, "/tv/" + seriesId, "language=" + encode(language), "tv details");
     }
 
+    public JsonNode getTvAlternativeTitles(int seriesId) {
+        return get("/tv/" + seriesId + "/alternative_titles", "", "tv alternative titles");
+    }
+
     public JsonNode getTvSeasonDetails(int seriesId, int seasonNumber, String language) {
         return getTvSeasonDetails(seriesId, seasonNumber, language, properties.snapshot());
     }
