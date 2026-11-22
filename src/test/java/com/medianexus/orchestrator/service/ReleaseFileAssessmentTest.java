@@ -10,6 +10,21 @@ class ReleaseFileAssessmentTest {
     private final ReleaseFileAssessment assessment = new ReleaseFileAssessment(new MovieSeriesFileRenameService(), new ReleaseTitleTagParser());
     private final ReleaseTarget target = ReleaseTarget.of("切尔诺贝利", "Chernobyl", null, null, 1, "1080p");
 
+    @Test void ignoresOnlySmallExplicitPromotionalVideosForSeries() {
+        String advertisement = "【更多无水印高品质资源请访问 www.Butailing.com】.MKV";
+        var safe = sizedTable("Chernobyl S01 1080p", new TorrentFileTable.Entry("Chernobyl.S01E01.mkv", 200000000),
+                new TorrentFileTable.Entry(advertisement, 636976));
+        assertThat(assessment.assess(target, List.of("Chernobyl S01 1080p"), safe).evidence().status()).isEqualTo("RECOMMENDABLE");
+        var variant = sizedTable("Chernobyl S01 1080p", new TorrentFileTable.Entry("Chernobyl.S01E01.mkv", 200000000),
+                new TorrentFileTable.Entry(advertisement.replace("无水印", ""), 296080));
+        assertThat(assessment.assess(target, List.of("Chernobyl S01 1080p"), variant).evidence().status()).isEqualTo("RECOMMENDABLE");
+        for (var extra : List.of(new TorrentFileTable.Entry("unknown.mkv", 636976),
+                new TorrentFileTable.Entry(advertisement, 1048576))) {
+            assertThat(assessment.assess(target, List.of("Chernobyl S01 1080p"), sizedTable("Chernobyl S01 1080p",
+                    new TorrentFileTable.Entry("Chernobyl.S01E01.mkv", 200000000), extra)).evidence().status()).isEqualTo("NEEDS_PROCESSING");
+        }
+    }
+
     @Test
     void recognizesChineseRootWithEpisodeRangeAndRelativeSecondSeasonWithoutBlindOffset() {
         var chinese = ReleaseTarget.of("隐秘的角落", "The Bad Kids", null, null, 1, "1080p");

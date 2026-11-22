@@ -34,6 +34,7 @@ class ReleaseCandidateComparisonTest {
 
     @BeforeEach void setup() {
         when(settings.usesPanSouForMagnetSearch()).thenReturn(true);
+        when(client.searchMagnets(any())).thenReturn(new PanSouSearchResult(List.of()));
         User user = new User(); user.setId(1L); when(auth.requireCurrentUser()).thenReturn(user);
         when(guangya.resolve(anyString(), any())).thenAnswer(call -> table(call.getArgument(0), "Show Season 1 1080p", "Show.S01E01.1080p.mkv"));
         when(originalClient.resolveTorrent(any(), any())).thenThrow(new com.medianexus.orchestrator.integration.prowlarr.ProwlarrClientException(
@@ -65,6 +66,41 @@ class ReleaseCandidateComparisonTest {
         assertThat(result.item().downloadRef()).isEqualTo(magnet(2));
         assertThat(result.comparison().searchQueries()).isLessThanOrEqualTo(4);
         verify(prowlarr).search("Arrival 2016");
+    }
+
+    @Test void cachedPartialSeriesStillSearchesSupplement() {
+        when(client.searchMagnets(any())).thenReturn(new PanSouSearchResult(List.of(entry(1, "Show S01 1080p", null))));
+        when(guangya.cached(magnet(1))).thenReturn(Optional.of(table(magnet(1), "Show S01 1080p", "Show.S01E01.mkv")));
+        var release = new com.medianexus.orchestrator.integration.prowlarr.ProwlarrRelease(
+                "Show S01 Complete 1080p", 200000000L, 5, null, null, "Indexer", null, 7, "guid", magnet(2));
+        when(prowlarr.search("Show S01")).thenReturn(List.of(release));
+        var result = search.recommendSeries(new SeriesReleaseRecommendationRequest(null, null, null, "Show", "Original", 1, "1080p"));
+        assertThat(result.items()).extracting(ProwlarrReleaseItemResponse::downloadRef).contains(magnet(2));
+    }
+
+    @Test void seriesRetainsNormalizedTitleSearchWithinFourQueries() {
+        when(client.searchMagnets(any())).thenAnswer(call -> new PanSouSearchResult(
+                call.<PanSouSearchCommand>getArgument(0).keyword().equals("AxB") ? List.of(entry(1, "A×B S01 1080p", null)) : List.of()));
+        when(guangya.resolve(eq(magnet(1)), any())).thenReturn(table(magnet(1), "A×B S01 1080p", "A×B.S01E01.mkv"));
+        var result = search.recommendSeries(new SeriesReleaseRecommendationRequest(null, null, null, "A×B", null, 1, "1080p"));
+        assertThat(result.item().downloadRef()).isEqualTo(magnet(1));
+        assertThat(result.comparison().searchQueries()).isLessThanOrEqualTo(4);
+    }
+
+    @Test void seriesSupplementIncludesFullPackWhenPreferredSourceOnlyHasPartialEpisodes() {
+        when(client.searchMagnets(any())).thenReturn(new PanSouSearchResult(List.of(entry(1, "Show S01 1080p", null))));
+        when(guangya.resolve(eq(magnet(1)), any())).thenReturn(table(magnet(1), "Show S01 1080p", "Show.S01E01.1080p.mkv"));
+        var release = new com.medianexus.orchestrator.integration.prowlarr.ProwlarrRelease(
+                "Show S01 Complete 1080p", 200000000L, 5, null, null, "Indexer", null, 7, "guid", magnet(2));
+        when(prowlarr.search("Show S01")).thenReturn(List.of(release));
+        when(guangya.resolve(eq(magnet(2)), any())).thenReturn(table(magnet(2), "Show S01 1080p",
+                "Show.S01E01.1080p.mkv", "Show.S01E02.1080p.mkv"));
+        var result = search.recommendSeries(new SeriesReleaseRecommendationRequest(null, null, null, "Show", "Original", 1, "1080p"));
+        assertThat(result.items()).anySatisfy(item -> {
+            assertThat(item.downloadRef()).isEqualTo(magnet(2));
+            assertThat(item.evidence().targetFiles()).isEqualTo(2);
+        });
+        assertThat(result.comparison().searchQueries()).isLessThanOrEqualTo(4);
     }
 
     @Test void disabledSupplementRemainsNormalNoRelease() {
@@ -312,7 +348,7 @@ class ReleaseCandidateComparisonTest {
         assertThat(complete.items().get(0).indexerId()).isEqualTo(7);
         assertThat(complete.items().get(0).seeders()).isEqualTo(5);
         assertThat(complete.items().get(1).evidence().reason()).contains("353");
-        verifyNoInteractions(client);
+        verify(client, atLeastOnce()).searchMagnets(any());
     }
 
     @Test void originalFileTableFallbackCanWinComparisonBeforeSubmission() throws Exception {

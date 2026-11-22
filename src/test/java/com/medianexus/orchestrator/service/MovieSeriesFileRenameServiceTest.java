@@ -15,6 +15,19 @@ class MovieSeriesFileRenameServiceTest {
         assertThat(renameService.isMovieFeatureVideo("unknown.txt", 2000000000L)).isFalse();
     }
 
+    @Test void recognizesLeadingEpisodeOnlyWithExplicitReleaseQuality() {
+        for (int episode = 1; episode <= 60; episode++) {
+            String name = "%02d.1080p.HD国语中字无水印[最新电影www.dyg7.com].mkv".formatted(episode);
+            assertThat(renameService.episodeNumber(name, 1)).contains(episode);
+            assertThat(renameService.seriesVideo(name, "小城良方", 1).orElseThrow().episodeNumber()).isEqualTo(episode);
+        }
+        for (String name : java.util.List.of("2026.1080p.mkv", "1080p.mkv", "00.1080p.mkv", "01-08.1080p.mkv",
+                "01.5.1080p.mkv", "01.flv", "01.unknown.mkv", "01.1080p.sample.mkv", "01.Episode.2.1080p.mkv")) {
+            assertThat(renameService.episodeNumber(name, 1)).as(name).isEmpty();
+        }
+        assertThat(renameService.episodeNumber("01.Episode.1.2160p.HD.mkv", 1)).contains(1);
+    }
+
     @Test
     void recognizesEpisodeSuffixOnlyAfterTheKnownSeriesTitle() {
         for (int episode = 1; episode <= 12; episode++) {

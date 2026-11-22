@@ -1116,6 +1116,11 @@ public class MagnetIngestService {
             if (!renameService.isVideo(file.name())) {
                 continue;
             }
+            if (renameService.isPromotionalVideo(file.name(), file.size())) {
+                skipped++;
+                skipFile(taskLogWriter, plan, file, "跳过小体积且明确推广文案的辅助视频");
+                continue;
+            }
             Optional<MovieSeriesFileRenameService.RenameResult> rename = renameService.seriesVideo(
                     file.name(),
                     seriesFileTitle(task),

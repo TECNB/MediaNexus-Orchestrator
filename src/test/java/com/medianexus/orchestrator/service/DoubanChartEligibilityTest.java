@@ -53,6 +53,19 @@ class DoubanChartEligibilityTest {
         assertFalse(eligibility.completeRelease(assessed,release()));
     }
 
+    @Test void fullSeasonKeepsExactCoverageWhenExplicitSmallAdvertisementsArePresent() {
+        var assessed = new DoubanChartEligibility.Assessment(identity, BgmWishlistService.target(identity), List.of(1,2), null);
+        when(tables.knownMagnet(null, magnet)).thenReturn(Optional.of(magnet));
+        var files = List.of(new TorrentFileTable.Entry("Show.S02E01.1080p.mkv", 200000000),
+                new TorrentFileTable.Entry("Show.S02E02.1080p.mkv", 200000000),
+                new TorrentFileTable.Entry("【更多高品质资源请访问 www.Butailing.com】.MP4", 296080));
+        var table = new TorrentFileTable(PanSouMagnetIdentity.fromUrl(magnet).orElseThrow(), "Show", files, 400296080);
+        when(tables.cached(magnet)).thenReturn(Optional.of(new ReleaseFileTables.Evidence(table, "fixture")));
+        assertTrue(eligibility.completeRelease(assessed, release()));
+        var incomplete = new DoubanChartEligibility.Assessment(identity, BgmWishlistService.target(identity), List.of(1,2,3), null);
+        assertFalse(eligibility.completeRelease(incomplete, release()));
+    }
+
     @Test void ambiguousMultiSeasonMatchNeverDefaultsToFirstOrLatestSeason() throws Exception {
         when(tmdb.searchChartTitles("测试剧", "SERIES")).thenReturn(json.readTree("""
                 [{"id":123,"name":"测试剧","original_name":"Series","first_air_date":"2020-01-01"}]

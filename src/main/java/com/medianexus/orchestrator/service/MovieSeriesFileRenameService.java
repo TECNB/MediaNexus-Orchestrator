@@ -32,6 +32,8 @@ public class MovieSeriesFileRenameService {
     private static final Pattern EPISODE_PREFIX_PATTERN = Pattern.compile("(?i)(?:^|[^a-z0-9])(?:ep|e)\\s*(\\d{1,3})(?:[^a-z0-9]|$)");
     private static final Pattern CHINESE_EPISODE_PATTERN = Pattern.compile("第\\s*(\\d{1,3})\\s*[集话話]");
     private static final Pattern BRACKET_EPISODE_PATTERN = Pattern.compile("(?i)[\\[【]\\s*(\\d{1,3})(?:v\\d+)?\\s*[\\]】]");
+    private static final Pattern LEADING_RELEASE_EPISODE = Pattern.compile(
+            "(?i)^(\\d{1,3})[._ -]+(?:Episode[._ -]+(\\d{1,3})[._ -]+)?(?=(?:2160p|1080p|720p|480p|4k|uhd)(?![a-z0-9]))");
     private static final Pattern BARE_ANIME_EPISODE_PATTERN = Pattern.compile(
             "(?i)\\s+-\\s+(\\d{1,3})(?:v\\d+)?(?=\\s*(?:\\[|【|\\(|（|$))"
     );
@@ -138,6 +140,12 @@ public class MovieSeriesFileRenameService {
 
     public boolean isNonFeatureVideo(String sourceName) {
         return isVideo(sourceName) && NON_FEATURE_EPISODE.matcher(mainName(sourceName)).find();
+    }
+
+    /** 小体积且明确推广文案的伪视频；不能将普通未知视频或真实短集按大小忽略。 */
+    public boolean isPromotionalVideo(String name, long sizeBytes) {
+        return isVideo(name) && sizeBytes > 0 && sizeBytes < 1024 * 1024
+                && mainName(name).matches(".*更多(?:无水印)?高品质资源请访问.*www\\.[A-Za-z0-9.-]+.*");
     }
 
     public String qualityFull(String name) {
@@ -277,6 +285,11 @@ public class MovieSeriesFileRenameService {
                 }
             }
         }
+
+        Matcher leading = LEADING_RELEASE_EPISODE.matcher(mainName(sourceName));
+        if (leading.find() && Integer.parseInt(leading.group(1)) > 0
+                && (leading.group(2) == null || Integer.parseInt(leading.group(2)) == Integer.parseInt(leading.group(1))))
+            return Optional.of(Integer.parseInt(leading.group(1)));
 
         Matcher bareAnimeEpisode = BARE_ANIME_EPISODE_PATTERN.matcher(mainName(sourceName));
         if (bareAnimeEpisode.find()) {

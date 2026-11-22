@@ -170,7 +170,8 @@ public class ReleaseCandidateComparison implements AutoCloseable {
                 evaluateQueue(comparison, budget, deadline, pool, futures);
                 synchronized (comparison) {
                     if (!"RUNNING".equals(comparison.status)) return;
-                    if (comparison.candidates.values().stream().anyMatch(candidate -> automaticallySelectable(candidate.item))) break;
+                    if ((comparison.target.season() == null || comparison.queries.stream().anyMatch(query -> query.startsWith("补源：")))
+                            && comparison.candidates.values().stream().anyMatch(candidate -> automaticallySelectable(candidate.item))) break;
                 }
                 if (comparison.target.season() == null) {
                     List<String> supplement = movieQueries(comparison.target).stream()
@@ -179,9 +180,14 @@ public class ReleaseCandidateComparison implements AutoCloseable {
                     if (supplement.isEmpty()) break;
                     searchSupplement(comparison, supplement, deadline, pool, futures);
                 } else {
-                    List<String> supplement = queries(comparison.target).stream().filter(query -> !comparison.queries.contains(query)).limit(4 - comparison.queries.size()).toList();
+                    List<String> aliases = seriesQueries(comparison.target).stream().filter(query -> !comparison.queries.contains(query))
+                            .limit(Math.max(0, 3 - comparison.queries.size())).toList();
+                    searchQueries(comparison, aliases, deadline, pool, futures);
+                    List<String> supplement = comparison.target.titles().stream()
+                            .map(title -> title + " S%02d".formatted(comparison.target.season()))
+                            .filter(query -> !comparison.queries.contains("补源：" + query)).limit(4 - comparison.queries.size()).toList();
                     if (supplement.isEmpty()) break;
-                    searchQueries(comparison, supplement, deadline, pool, futures);
+                    searchSupplement(comparison, supplement, deadline, pool, futures);
                 }
             }
             if (comparison.searchFailed) {
@@ -304,8 +310,10 @@ public class ReleaseCandidateComparison implements AutoCloseable {
         synchronized (comparison) {
             queue = schedule(comparison);
             // 冷解析前先补齐来源，避免优选源耗完共享解析预算后才发现备用来源。
-            if (comparison.target.season() == null && comparison.queries.stream().noneMatch(query -> query.startsWith("补源："))) queue = queue.stream()
-                    .filter(candidate -> candidate.magnet != null && fileTables.cached(candidate.magnet).isPresent()).toList();
+            if (comparison.queries.stream().noneMatch(query -> query.startsWith("补源："))) {
+                if (comparison.target.season() != null) queue = List.of();
+                else queue = queue.stream().filter(candidate -> candidate.magnet != null && fileTables.cached(candidate.magnet).isPresent()).toList();
+            }
         }
         for (int i = 0; i < queue.size(); i += 2) {
             budget.remaining();
@@ -426,17 +434,15 @@ public class ReleaseCandidateComparison implements AutoCloseable {
         if (nanos <= 0) throw new TimeoutException();
         return nanos;
     }
+    private List<String> seriesQueries(ReleaseTarget target) {
+        LinkedHashSet<String> queries = new LinkedHashSet<>(target.titles());
+        for (String title : target.titles()) queries.add(title.replace('×', 'x')
+                .replaceAll("[：:;；/\\[\\]【】()（）・]", " ").replaceAll("\\s+", " ").trim());
+        return List.copyOf(queries);
+    }
+
     private void pause(Comparison comparison, String message) { synchronized (comparison) { comparison.status = "PAUSED"; comparison.message = message; } }
     private boolean recommendable(ProwlarrReleaseItemResponse item) { return item.evidence() != null && "RECOMMENDABLE".equals(item.evidence().status()); }
-    private List<String> queries(ReleaseTarget target) {
-        LinkedHashSet<String> queries = new LinkedHashSet<>(target.titles());
-        for (String title : target.titles()) {
-            String variant = title.replace('×', 'x').replaceAll("[：:;；/\\[\\]【】()（）・]", " ").replaceAll("\\s+", " ").trim();
-            queries.add(variant);
-        }
-        queries.add(target.titles().get(0) + (target.season() == null ? " " + target.year() : " S%02d".formatted(target.season())));
-        return queries.stream().limit(4).toList();
-    }
     private static long elapsedMillis(long started) { return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started); }
     private static String evidenceFailureCode(GuangyaException.Reason reason) {
         return switch (reason) {

@@ -163,6 +163,7 @@ public class DoubanChartEligibility {
         int season = assessment.identity().seasonNumber();
         for (var file : evidence.table().files()) {
             if (!names.isVideo(file.path())) continue;
+            if (names.isPromotionalVideo(file.path(), file.sizeBytes())) continue;
             if (fileAssessment.isAuxiliaryVideo(file.path())) continue;
             if (file.sizeBytes() <= 0) return false;
             var marker = SEASON.matcher(file.path());

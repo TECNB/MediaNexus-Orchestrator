@@ -53,6 +53,7 @@ public class ReleaseFileAssessment {
         for (var file : table.files()) {
             String name = file.path().substring(file.path().lastIndexOf('/') + 1);
             if (!rename.isVideo(name) || file.sizeBytes() == 0) continue;
+            if (rename.isPromotionalVideo(name, file.sizeBytes())) continue;
             if (target.season() == null && !rename.isMovieFeatureVideo(name, file.sizeBytes())) continue;
             String relative = file.path().startsWith(table.rootName() + "/") ? file.path().substring(table.rootName().length() + 1) : file.path();
             if (isAuxiliaryVideo(relative)) continue;

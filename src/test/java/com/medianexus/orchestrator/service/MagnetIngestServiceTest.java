@@ -68,6 +68,20 @@ class MagnetIngestServiceTest {
         verify(client, never()).remove(anyString(), org.mockito.ArgumentMatchers.anyList());
     }
 
+    @Test void seriesSkipsOnlyExplicitSmallPromotionalVideoBeforeOrganization() {
+        OpenListClient client = mock(OpenListClient.class);
+        stubPathHelpers(client);
+        SeriesMagnetIngestTask task = animeSeriesTask();
+        task.setTaskProductType("SERIES");
+        when(client.findFiles(task.getTempPath())).thenReturn(List.of(
+                new OpenListFileInfo("01.1080p.HD.mkv", 900_000_000L, false, task.getTempPath()),
+                new OpenListFileInfo("【更多无水印高品质资源请访问 www.Butailing.com】.MKV", 636976L, false, task.getTempPath())));
+        RecordingLibraryOrganizer organizer = new RecordingLibraryOrganizer();
+        ReflectionTestUtils.invokeMethod(service(client, organizer), "organizeSeriesFiles", task);
+        assertThat(organizer.plan.expectedTargetNames()).hasSize(1);
+        assertThat(organizer.plan.deletions()).hasSize(1);
+    }
+
     @Test
     void seriesDuplicateVideoTargetsStopBeforeAnyOrganization() {
         OpenListClient client = mock(OpenListClient.class);
