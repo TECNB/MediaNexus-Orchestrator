@@ -49,7 +49,8 @@ public class DoubanChartClient {
             expected = total;
             int wanted = chart.limit() > 0 ? Math.min(chart.limit(), total) : total;
             int slots = Math.min(count, total - offset);
-            if (items.size() != slots || items.isEmpty()) throw invalid();
+            if (items.size() != slots || items.isEmpty()) throw new ChartReadException("豆瓣榜单分页不完整（偏移 " + offset
+                    + "，应有 " + slots + "，实有 " + items.size() + "），保留上次成功清单");
             for (JsonNode node : items) {
                 Subject subject = subject(node, chart, subjects.size() + 1);
                 if (!ids.add(subject.id())) throw invalid();
@@ -158,12 +159,14 @@ public class DoubanChartClient {
                     throw new ChartReadException("豆瓣返回访问限制，来源已暂停");
                 }
                 return root;
-            } catch (java.util.concurrent.ExecutionException | java.util.concurrent.TimeoutException failure) {
-                throw new ChartReadException("豆瓣 JSON 超时或读取失败，保留上次成功清单");
+            } catch (java.util.concurrent.TimeoutException failure) {
+                throw new ChartReadException("豆瓣 JSON 请求超时（22 秒），保留上次成功清单", failure);
+            } catch (java.util.concurrent.ExecutionException failure) {
+                throw new ChartReadException("豆瓣 JSON 连接或读取失败，保留上次成功清单", failure.getCause());
             } finally { pending.cancel(true); }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt(); throw new ChartReadException("豆瓣检查已中断");
-        } catch (IOException e) { throw new ChartReadException("豆瓣 JSON 读取失败，保留上次成功清单"); }
+        } catch (IOException e) { throw new ChartReadException("豆瓣 JSON 读取失败，保留上次成功清单", e); }
     }
 
     private static String cover(JsonNode node) {
@@ -208,6 +211,7 @@ public class DoubanChartClient {
 
     @FunctionalInterface interface JsonRead { JsonNode get(String url, String referer); }
     public static class ChartReadException extends RuntimeException {
+        public ChartReadException(String message, Throwable cause) { super(message, cause); }
         public ChartReadException(String message) { super(message); }
     }
 }

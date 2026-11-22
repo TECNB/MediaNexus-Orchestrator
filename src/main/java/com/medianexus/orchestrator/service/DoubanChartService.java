@@ -138,8 +138,9 @@ public class DoubanChartService {
                 });
             } catch (RuntimeException exception) {
                 log.warn("豆瓣榜单刷新失败 chart={}", id, exception);
+                String failure = exception instanceof DoubanChartClient.ChartReadException ? exception.getMessage() : "榜单读取失败，请查看服务日志";
                 store.updateBoard(id, previous -> new Board(id, id.label(), previous.autoEnabled(), previous.ownerUserId(), "FAILED",
-                        "榜单读取失败，保留最后成功清单，本轮旧在榜不受理", attempted, previous.lastSuccessAt(), nextRun(), previous.candidates()));
+                        failure + "；保留最后成功清单，本轮旧在榜不受理", attempted, previous.lastSuccessAt(), nextRun(), previous.candidates()));
             }
             // 掉榜进度独立核验，不以整榜故障或自动开关停止历史治理。
             for (Candidate old : store.board(id).candidates()) {
@@ -205,7 +206,9 @@ public class DoubanChartService {
                     candidate.excluded(), candidate.identity(), candidate.excluded() ? reason("EXCLUDED", "管理员已排除") : inclusion(candidate))).toList();
             store.updateRun(id, previous -> new Run(operation(previous.operation(), previous.operation().status(), scope.stream()
                     .map(candidate -> new Entry(item(candidate.subject(), candidate.identity(), candidate.reason()), "QUEUED", null, List.of(), List.of(), null, null,
-                            candidate.reason(), null)).toList(), previous.operation().reason()), scope, true, previous.stopRequested()));
+                            candidate.reason(), null)).toList(), "SUCCESS".equals(fresh.refreshStatus()) ? null
+                            : reason("CHART_REFRESH_FAILED", "本轮榜单抓取失败，当前在榜作品未搜索资源、未创建任务。" + fresh.refreshError()
+                            + "；来源恢复后可手动发起新一轮，本记录不会自动重跑。")), scope, true, previous.stopRequested()));
             Set<String> targets = new HashSet<>();
             for (Candidate candidate : scope) {
                 if (store.run(id).stopRequested()) break;
@@ -346,7 +349,7 @@ public class DoubanChartService {
                     ? entry(entry, "SKIPPED", reason("STOPPED", "本轮已停止，未创建任务")) : entry).toList();
             String status = previous.stopRequested() ? "STOPPED" : entries.stream().anyMatch(entry -> "INTERRUPTED".equals(entry.status())) ? "INTERRUPTED"
                     : entries.stream().anyMatch(entry -> "FAILED".equals(entry.status())) ? "PARTIAL_SUCCESS" : "SUCCEEDED";
-            return new Run(operation(previous.operation(), status, entries, previous.stopRequested() ? reason("STOPPED", "已停止新受理，已有任务保留") : null),
+            return new Run(chartReadOutcome(operation(previous.operation(), status, entries, previous.stopRequested() ? reason("STOPPED", "已停止新受理，已有任务保留") : previous.operation().reason())),
                     previous.scope(), previous.scopeCaptured(), previous.stopRequested());
         });
     }
@@ -405,8 +408,21 @@ public class DoubanChartService {
             } catch (RuntimeException exception) { log.debug("榜单任务摘要暂不可读 task={}", entry.task().taskId()); }
             return entry;
         }).toList();
+        return chartReadOutcome(new Operation(operation.id(), operation.chartId(), operation.chartLabel(), operation.triggerType(), operation.actorUserId(),
+                operation.startedAt(), operation.updatedAt(), operation.status(), entries, operation.reason()));
+    }
+    /** 兼容旧记录的错误成功汇总；不改写持久条目、执行时间或触发重放。 */
+    private static Operation chartReadOutcome(Operation operation) {
+        if (!Set.of("SUCCEEDED", "PARTIAL_SUCCESS").contains(operation.status())) return operation;
+        boolean failed = operation.reason() != null && "CHART_REFRESH_FAILED".equals(operation.reason().code())
+                || operation.entries().stream().anyMatch(entry -> entry.reason() != null && "SOURCE_UNAVAILABLE".equals(entry.reason().code())
+                && entry.item().reasons().stream().anyMatch(inclusion -> "CURRENT_CANDIDATE".equals(inclusion.code())));
+        if (!failed) return operation;
+        boolean processed = operation.entries().stream().anyMatch(entry -> !"SKIPPED".equals(entry.status()));
+        Reason failure = operation.reason() != null && "CHART_REFRESH_FAILED".equals(operation.reason().code()) ? operation.reason()
+                : reason("CHART_REFRESH_FAILED", "本轮榜单抓取失败，当前在榜作品未搜索资源、未创建任务。来源恢复后可手动发起新一轮；本记录不会自动重跑。");
         return new Operation(operation.id(), operation.chartId(), operation.chartLabel(), operation.triggerType(), operation.actorUserId(),
-                operation.startedAt(), operation.updatedAt(), operation.status(), entries, operation.reason());
+                operation.startedAt(), operation.updatedAt(), processed ? "PARTIAL_SUCCESS" : "FAILED", operation.entries(), failure);
     }
     private void associate(String id, long subjectId, ActiveTask task, String status, Reason reason) {
         updateEntry(id, subjectId, entry -> new Entry(entry.item(), status, entry.startedAt(), entry.searches(), entry.candidates(), entry.selected(),

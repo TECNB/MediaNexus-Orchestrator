@@ -65,6 +65,29 @@ class DoubanChartServiceTest {
         assertTrue(stopped.entries().stream().allMatch(e -> e.item().reasons().get(0).code().equals("CURRENT_CANDIDATE")));
     }
 
+    @Test void failedChartReadMarksWholeRunFailedAndKeepsCauseWithoutSearchingOrCreating() throws Exception {
+        when(f.client.fetch(ChartId.movie_hot_gaia)).thenReturn(java.util.stream.LongStream.rangeClosed(1, 20)
+                .mapToObj(id -> f.subject(id, "MOVIE")).toList());
+        f.refresh(ChartId.movie_hot_gaia);
+        when(f.client.fetch(ChartId.movie_hot_gaia)).thenThrow(new DoubanChartClient.ChartReadException("豆瓣 JSON 请求超时，保留上次成功清单"));
+        Operation done = f.await(f.service.execute(ChartId.movie_hot_gaia).id());
+        assertEquals("FAILED", done.status());
+        assertEquals("CHART_REFRESH_FAILED", done.reason().code());
+        assertTrue(done.reason().message().contains("超时"));
+        assertEquals(20, done.entries().size());
+        assertTrue(done.entries().stream().allMatch(entry -> "SOURCE_UNAVAILABLE".equals(entry.reason().code())));
+        assertTrue(f.service.board(ChartId.movie_hot_gaia).refreshError().contains("超时"));
+        verifyNoInteractions(f.tasks);
+        // 旧版记录的汇总在读取时纠正，持久作品证据及时间不改写。
+        f.store.updateRun(done.id(), old -> new Run(new Operation(done.id(), done.chartId(), done.chartLabel(), done.triggerType(),
+                done.actorUserId(), done.startedAt(), done.updatedAt(), "SUCCEEDED", done.entries(), null), old.scope(), true, false));
+        Operation historical = f.service.get(done.id());
+        assertEquals("FAILED", historical.status());
+        assertEquals(done.updatedAt(), historical.updatedAt());
+        assertEquals(done.entries(), historical.entries());
+        assertEquals("SUCCEEDED", f.store.run(done.id()).operation().status());
+    }
+
     @Test void failedCurrentBoardCannotCreateButIndependentlyVerifiedHistoryUsesRegularSeriesPath() throws Exception {
         when(f.client.fetch(ChartId.tv_hot)).thenReturn(List.of(f.subject(1, "SERIES"), f.subject(2, "SERIES")));
         f.refresh(ChartId.tv_hot);
@@ -77,6 +100,8 @@ class DoubanChartServiceTest {
         assertEquals("CREATED", historical.status()); assertEquals("HISTORICAL_CANDIDATE", historical.item().reasons().get(0).code());
         assertFalse(historical.selected().acceptUnverifiedRisk());
         assertEquals("SOURCE_UNAVAILABLE", current.reason().code());
+        assertEquals("PARTIAL_SUCCESS", done.status());
+        assertEquals("CHART_REFRESH_FAILED", done.reason().code());
         verify(f.tasks).createChartSeries(argThat(target -> target.tmdbId() == 1), any(), eq(f.admin));
         verify(f.tasks, never()).createChartMovie(any(), any(), any());
         f.service.exclusion(ChartId.tv_hot, 1, new ExclusionInput(true));
