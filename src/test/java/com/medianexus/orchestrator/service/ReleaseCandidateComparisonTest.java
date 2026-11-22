@@ -61,10 +61,15 @@ class ReleaseCandidateComparisonTest {
         when(prowlarr.search("Doctor X: Mafia in White S01")).thenReturn(List.of(release));
         when(guangya.resolve(eq(magnet(2)), any())).thenReturn(table(magnet(2), "Doctor X Mafia in White S01 1080p",
                 "Doctor.X.Mafia.in.White.S01E01.1080p.mkv", "Doctor.X.Mafia.in.White.S01E02.1080p.mkv"));
+        var progress = new java.util.concurrent.CopyOnWriteArrayList<ProwlarrReleaseIngestService.ReleaseSearchProgress>();
         var result = search.recommendSeries(new SeriesReleaseRecommendationRequest(null, 293610, null,
-                "Doctor X：白色黑手党时代", "닥터X: 하얀 마피아의 시대", 1, "1080p"));
+                "Doctor X：白色黑手党时代", "닥터X: 하얀 마피아의 시대", 1, "1080p"), progress::add);
         assertThat(result.item().downloadRef()).isEqualTo(magnet(2));
         assertThat(result.comparison().searchQueries()).isLessThanOrEqualTo(4);
+        assertThat(progress.stream().filter(p -> p.query().equals("Doctor X: Mafia in White S01")).toList())
+                .extracting(ProwlarrReleaseIngestService.ReleaseSearchProgress::status).containsExactly("RUNNING", "SUCCEEDED");
+        assertThat(progress.stream().filter(p -> p.query().equals("Doctor X: Mafia in White S01")).toList())
+                .allSatisfy(p -> assertThat(p.source()).isEqualTo("补充来源"));
         var target = ReleaseTarget.of("Doctor X：白色黑手党时代", "닥터X: 하얀 마피아의 시대", null, null, 1, "1080p");
         assertThat(safety.checkSeries(293610, magnet(2), target, ReleaseIngestMetadata.manual())).contains("RECOMMENDABLE");
         safety.rememberSourceTitles(magnet(2), List.of("Doctor X Mafia in White S02 1080p"));

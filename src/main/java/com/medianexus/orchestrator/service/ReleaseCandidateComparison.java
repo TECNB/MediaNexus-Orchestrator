@@ -248,7 +248,7 @@ public class ReleaseCandidateComparison implements AutoCloseable {
                 if (comparison.queries.size() >= 4 || !comparison.queries.add(query.key())) continue;
                 comparison.searchPlans.put(query.key(), query);
             }
-            comparison.progress.accept(new ReleaseSearchProgress(query.label(), query.key().startsWith("补源：") ? "补充来源" : "资源发现", "RUNNING", 0, null));
+            comparison.progress.accept(query.progress("RUNNING", 0, null));
             started.put(query.key(), System.nanoTime());
             Future<SearchBatch> submitted = completion.submit(() -> new SearchBatch(query.key(), query.search().call()));
             futures.add(submitted);
@@ -266,7 +266,7 @@ public class ReleaseCandidateComparison implements AutoCloseable {
                 catch (ExecutionException exception) {
                     synchronized (comparison) { comparison.searchFailed = true; comparison.failedQueries.add(query); }
                     finished.add(query);
-                    comparison.progress.accept(new ReleaseSearchProgress(query, "资源发现", "FAILED", elapsedMillis(started.get(query)), null));
+                    comparison.progress.accept(comparison.searchPlans.get(query).progress("FAILED", elapsedMillis(started.get(query)), null));
                     continue;
                 }
                 synchronized (comparison) {
@@ -295,14 +295,14 @@ public class ReleaseCandidateComparison implements AutoCloseable {
                     }
                 }
                 finished.add(query);
-                comparison.progress.accept(new ReleaseSearchProgress(batch.query, "资源发现", "SUCCEEDED", elapsedMillis(started.get(query)), batch.entries.size()));
+                comparison.progress.accept(comparison.searchPlans.get(query).progress("SUCCEEDED", elapsedMillis(started.get(query)), batch.entries.size()));
             }
         } finally {
             for (var entry : queryFutures.entrySet()) {
                 if (finished.contains(entry.getValue())) continue;
                 entry.getKey().cancel(true);
                 synchronized (comparison) { comparison.searchFailed = true; comparison.failedQueries.add(entry.getValue()); }
-                comparison.progress.accept(new ReleaseSearchProgress(entry.getValue(), "资源发现", "FAILED", elapsedMillis(started.get(entry.getValue())), null));
+                comparison.progress.accept(comparison.searchPlans.get(entry.getValue()).progress("FAILED", elapsedMillis(started.get(entry.getValue())), null));
             }
         }
     }
@@ -544,7 +544,11 @@ public class ReleaseCandidateComparison implements AutoCloseable {
                     + (sizeConflict ? "；来源体积冲突" : ""), String.join(" / ", queries), item.reviewFlags(), item.evidence());
         }
     }
-    private record SearchQuery(String key, String label, Callable<List<ReleaseCandidateDiscovery.Found>> search) {}
+    private record SearchQuery(String key, String label, Callable<List<ReleaseCandidateDiscovery.Found>> search) {
+        ReleaseSearchProgress progress(String status, long elapsedMs, Integer resultCount) {
+            return new ReleaseSearchProgress(label, key.startsWith("补源：") ? "补充来源" : "资源发现", status, elapsedMs, resultCount);
+        }
+    }
     private record SearchBatch(String query, List<ReleaseCandidateDiscovery.Found> entries) {}
     private record Checked(Discovered candidate, ProwlarrReleaseItemResponse item, GuangyaException failure) {}
 }
