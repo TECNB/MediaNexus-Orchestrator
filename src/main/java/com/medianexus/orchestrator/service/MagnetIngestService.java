@@ -232,6 +232,7 @@ public class MagnetIngestService {
 
     @EventListener(ApplicationReadyEvent.class)
     public void markUnfinishedTasksInterrupted() {
+        reconcileStoppedRestartTasks();
         boolean unresolved = movieTaskMapper.selectCount(new LambdaQueryWrapper<MovieMagnetIngestTask>()
                 .in(MovieMagnetIngestTask::getStatus, List.of("SUBMITTED", "DOWNLOADING", "ORGANIZING"))) > 0
                 || seriesTaskMapper.selectCount(new LambdaQueryWrapper<SeriesMagnetIngestTask>()
@@ -259,6 +260,36 @@ public class MagnetIngestService {
                     movieInterruptedCount,
                     seriesInterruptedCount
             );
+        }
+    }
+
+    /** Only a persisted upstream identity with a terminal stop can settle a restart hold. */
+    private void reconcileStoppedRestartTasks() {
+        for (var task : movieTaskMapper.selectList(new LambdaQueryWrapper<MovieMagnetIngestTask>()
+                .eq(MovieMagnetIngestTask::getStatus, "INTERRUPTED")
+                .like(MovieMagnetIngestTask::getErrorMessage, "OFFLINE_UNRESOLVED").last("LIMIT 128"))) {
+            String failure = stoppedRestartFailure(task.getOpenlistTaskId());
+            if (failure != null) markMovieFailed(task.getId(), failure);
+        }
+        for (var task : seriesTaskMapper.selectList(new LambdaQueryWrapper<SeriesMagnetIngestTask>()
+                .eq(SeriesMagnetIngestTask::getStatus, "INTERRUPTED")
+                .like(SeriesMagnetIngestTask::getErrorMessage, "OFFLINE_UNRESOLVED").last("LIMIT 128"))) {
+            String failure = stoppedRestartFailure(task.getOpenlistTaskId());
+            if (failure != null) markSeriesFailed(task.getId(), failure);
+        }
+    }
+
+    private String stoppedRestartFailure(String upstreamId) {
+        if (upstreamId == null || upstreamId.isBlank()) return null;
+        try {
+            var snapshot = openListClient.offlineTaskInfo(upstreamId);
+            if (!upstreamId.equals(snapshot.id())
+                    || !(Integer.valueOf(4).equals(snapshot.state()) || Integer.valueOf(7).equals(snapshot.state()))) return null;
+            return "重启后已核实原上游停止；未重试或删除源文件；upstream=" + upstreamId
+                    + "; state=" + snapshot.state() + "; error=" + snapshot.error();
+        } catch (RuntimeException failure) {
+            log.warn("Restart task remains unresolved; upstream read failed id={}", upstreamId);
+            return null;
         }
     }
 
