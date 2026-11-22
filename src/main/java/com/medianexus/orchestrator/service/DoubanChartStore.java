@@ -60,6 +60,26 @@ public class DoubanChartStore {
         });
     }
 
+    public ProgressRecord progress(ChartId chart, long id) {
+        initialize(); String raw = mapper.select("progress:" + chart + ":" + id);
+        return raw == null ? null : decode(raw, ProgressRecord.class);
+    }
+
+    /** 写入前在榜单行锁下校验快照；身份再次变更时读取侧同样过滤，不把旧证据伪装为新身份。 */
+    public void saveProgress(ChartId chart, ProgressRecord record) {
+        initialize();
+        transactions.executeWithoutResult(tx -> {
+            BoardState state = decode(mapper.lock(boardKey(chart)), BoardState.class);
+            boolean present = state.board().candidates().stream().anyMatch(candidate -> candidate.current()
+                    && candidate.subject().equals(record.subject()));
+            if (!present || !Objects.equals(identity(record.subject().id()), record.correctedIdentity())) return;
+            String key = "progress:" + chart + ":" + record.subject().id();
+            mapper.insert(key, "PROGRESS", chart.name(), encode(record));
+            mapper.lock(key); mapper.update(key, encode(record));
+        });
+    }
+    public record ProgressRecord(Subject subject, Identity correctedIdentity, ProgressEvidence evidence) {}
+
     /** 本榜行锁将手动和定时的查找/创建收敛到同一个持久操作。 */
     public Run submit(ChartId chart, Long actor, String trigger) {
         initialize();
