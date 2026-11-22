@@ -122,10 +122,22 @@ public class DoubanChartEligibility {
 
     private Identity match(Subject subject) {
         if (subject.year() == null) return null;
-        var matches = search(subject.title(),subject.mediaType()).stream().filter(candidate ->
-                sameTitle(subject.title(),candidate.title()) || sameTitle(subject.title(),candidate.originalTitle())
-                || subject.originalTitle() != null && sameTitle(subject.originalTitle(),candidate.originalTitle())).toList();
-        if ("MOVIE".equals(subject.mediaType())) matches = matches.stream().filter(candidate -> Objects.equals(candidate.year(),subject.year())).toList();
+        LinkedHashSet<String> queries = new LinkedHashSet<>();
+        queries.add(subject.title());
+        if (subject.originalTitle() != null) queries.add(subject.originalTitle());
+        if ("MOVIE".equals(subject.mediaType())) {
+            queries.add(subject.title().replaceFirst("(?<=\\p{L})[0-9]+(?=[：:])", ""));
+        }
+        Map<Integer, CatalogCandidate> found = new LinkedHashMap<>();
+        for (String query : queries) {
+            for (var candidate : search(query, subject.mediaType())) {
+                if (queries.stream().noneMatch(name -> sameTitle(name, candidate.title()) || sameTitle(name, candidate.originalTitle()))) continue;
+                if ("MOVIE".equals(subject.mediaType()) && !Objects.equals(candidate.year(), subject.year())) continue;
+                found.put(candidate.tmdbId(), candidate);
+            }
+            if (!found.isEmpty()) break;
+        }
+        var matches = List.copyOf(found.values());
         if (matches.size() != 1) return null;
         var candidate = matches.get(0);
         Integer season = null;

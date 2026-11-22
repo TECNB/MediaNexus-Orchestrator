@@ -53,6 +53,7 @@ public class ReleaseFileAssessment {
         for (var file : table.files()) {
             String name = file.path().substring(file.path().lastIndexOf('/') + 1);
             if (!rename.isVideo(name) || file.sizeBytes() == 0) continue;
+            if (target.season() == null && !rename.isMovieFeatureVideo(name, file.sizeBytes())) continue;
             String relative = file.path().startsWith(table.rootName() + "/") ? file.path().substring(table.rootName().length() + 1) : file.path();
             if (isAuxiliaryVideo(relative)) continue;
             if (target.conflict(name) != null) return assessment("UNSUITABLE", "包内正片存在明确作品/年份冲突", table, null, null, false, false, List.of());

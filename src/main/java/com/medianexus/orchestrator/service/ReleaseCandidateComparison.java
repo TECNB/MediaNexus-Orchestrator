@@ -28,6 +28,8 @@ public class ReleaseCandidateComparison implements AutoCloseable {
     private final ReleaseFileTables fileTables;
     private final ReleaseFileAssessment assessment;
     private final AuthService auth;
+    @org.springframework.beans.factory.annotation.Autowired
+    private MovieReleaseAliases movieAliases;
     private ReleaseSubmissionSafety submissionSafety;
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -49,13 +51,13 @@ public class ReleaseCandidateComparison implements AutoCloseable {
     public ProwlarrReleaseSearchResponse refreshSeries(SeriesReleaseSearchRequest request) { return start(series(request), true).view(); }
     public ProwlarrReleaseRecommendationResponse recommendMovie(MovieReleaseRecommendationRequest request) { return recommendMovie(request, NO_PROGRESS); }
     public ProwlarrReleaseRecommendationResponse recommendMovie(MovieReleaseRecommendationRequest request, Consumer<ReleaseSearchProgress> progress) {
-        return recommend(ReleaseTarget.of(request.title(), request.originalTitle(), null, request.year(), null, request.quality()), false, progress);
+        return recommend(movieTarget(request.tmdbId(), ReleaseTarget.of(request.title(), request.originalTitle(), null, request.year(), null, request.quality())), false, progress);
     }
     ProwlarrReleaseRecommendationResponse recommendMovie(MovieReleaseRecommendationRequest request, String alias, Consumer<ReleaseSearchProgress> progress) {
-        return recommend(ReleaseTarget.of(request.title(), request.originalTitle(), alias, request.year(), null, request.quality()), false, progress);
+        return recommend(movieTarget(request.tmdbId(), ReleaseTarget.of(request.title(), request.originalTitle(), alias, request.year(), null, request.quality())), false, progress);
     }
     public ProwlarrReleaseRecommendationResponse refreshRecommendMovie(MovieReleaseRecommendationRequest request) {
-        return previewFresh(ReleaseTarget.of(request.title(), request.originalTitle(), null, request.year(), null, request.quality()));
+        return previewFresh(movieTarget(request.tmdbId(), ReleaseTarget.of(request.title(), request.originalTitle(), null, request.year(), null, request.quality())));
     }
     public ProwlarrReleaseRecommendationResponse recommendSeries(SeriesReleaseRecommendationRequest request) { return recommendSeries(request, NO_PROGRESS); }
     public ProwlarrReleaseRecommendationResponse recommendSeries(SeriesReleaseRecommendationRequest request, Consumer<ReleaseSearchProgress> progress) {
@@ -68,7 +70,7 @@ public class ReleaseCandidateComparison implements AutoCloseable {
         return previewFresh(ReleaseTarget.of(request.title(), request.originalTitle(), null, null, request.seasonNumber(), request.quality()));
     }
     public ProwlarrReleaseRecommendationResponse previewMovie(MovieReleaseRecommendationRequest request) {
-        return preview(ReleaseTarget.of(request.title(), request.originalTitle(), null, request.year(), null, request.quality()));
+        return preview(movieTarget(request.tmdbId(), ReleaseTarget.of(request.title(), request.originalTitle(), null, request.year(), null, request.quality())));
     }
     public ProwlarrReleaseRecommendationResponse previewSeries(SeriesReleaseRecommendationRequest request) {
         return preview(ReleaseTarget.of(request.title(), request.originalTitle(), null, null, request.seasonNumber(), request.quality()));
@@ -159,26 +161,39 @@ public class ReleaseCandidateComparison implements AutoCloseable {
             synchronized (comparison) { comparison.resolveRequests = 0; }
             LinkedHashSet<String> initial = new LinkedHashSet<>(comparison.failedQueries);
             comparison.failedQueries.clear();
-            comparison.target.titles().stream().limit(2).filter(query -> !comparison.queries.contains(query)).forEach(initial::add);
+            if (comparison.target.season() == null) movieQueries(comparison.target).stream().limit(2)
+                    .filter(query -> !comparison.queries.contains(query)).forEach(initial::add);
+            else comparison.target.titles().stream().limit(2).filter(query -> !comparison.queries.contains(query)).forEach(initial::add);
             searchQueries(comparison, List.copyOf(initial), deadline, pool, futures);
             budget = new ResolveBudget(deadline, Instant.now().plusSeconds(30));
             while (true) {
                 evaluateQueue(comparison, budget, deadline, pool, futures);
                 synchronized (comparison) {
                     if (!"RUNNING".equals(comparison.status)) return;
-                    if (comparison.candidates.values().stream().anyMatch(candidate -> recommendable(candidate.item))) break;
+                    if (comparison.candidates.values().stream().anyMatch(candidate -> automaticallySelectable(candidate.item))) break;
                 }
-                List<String> supplement = queries(comparison.target).stream().filter(query -> !comparison.queries.contains(query)).limit(4 - comparison.queries.size()).toList();
-                if (supplement.isEmpty()) break;
-                searchQueries(comparison, supplement, deadline, pool, futures);
+                if (comparison.target.season() == null) {
+                    List<String> supplement = movieQueries(comparison.target).stream()
+                            .sorted(Comparator.comparingInt(query -> query.equals(comparison.target.titles().get(0) + " " + comparison.target.year()) ? 1 : 0))
+                            .filter(query -> !comparison.queries.contains("补源：" + query)).limit(4 - comparison.queries.size()).toList();
+                    if (supplement.isEmpty()) break;
+                    searchSupplement(comparison, supplement, deadline, pool, futures);
+                } else {
+                    List<String> supplement = queries(comparison.target).stream().filter(query -> !comparison.queries.contains(query)).limit(4 - comparison.queries.size()).toList();
+                    if (supplement.isEmpty()) break;
+                    searchQueries(comparison, supplement, deadline, pool, futures);
+                }
             }
             if (comparison.searchFailed) {
                 synchronized (comparison) { comparison.status = "BLOCKED"; comparison.failureCode = "SEARCH_UNAVAILABLE"; comparison.message = "部分搜索请求失败，已取得的候选和核验结果保留"; }
                 return;
             }
             synchronized (comparison) {
-                comparison.status = "COMPLETE";
-                if (comparison.failureCode == null) comparison.message = "本轮已发现候选全部评估完成；不代表穷举互联网或媒体质量实测";
+                boolean pending = comparison.candidates.values().stream().anyMatch(candidate ->
+                        "UNVERIFIED".equals(candidate.item.evidence().status()) && !comparison.checkedFailures.contains(candidate));
+                comparison.status = pending ? "PAUSED" : "COMPLETE";
+                if (pending) comparison.message = "已取得可靠候选，其余候选尚未全部核验；可明确继续比较";
+                else if (comparison.failureCode == null) comparison.message = "本轮已发现候选全部评估完成；不代表穷举互联网或媒体质量实测";
             }
         } catch (TimeoutException exception) {
             comparison.failureCode = "EVIDENCE_BUDGET_EXHAUSTED";
@@ -202,20 +217,33 @@ public class ReleaseCandidateComparison implements AutoCloseable {
 
     private void searchQueries(Comparison comparison, List<String> queries, Instant deadline, ExecutorService pool, List<Future<?>> futures)
             throws InterruptedException, ExecutionException, TimeoutException {
+        List<SearchQuery> plan = queries.stream().map(query -> comparison.searchPlans.getOrDefault(query,
+                new SearchQuery(query, query, () -> comparison.refresh ? discovery.refresh(query) : discovery.search(query)))).toList();
+        executeSearchQueries(comparison, plan, deadline, pool, futures);
+    }
+
+    private void searchSupplement(Comparison comparison, List<String> queries, Instant deadline, ExecutorService pool, List<Future<?>> futures)
+            throws InterruptedException, ExecutionException, TimeoutException {
+        executeSearchQueries(comparison, queries.stream().map(query -> new SearchQuery("补源：" + query, query,
+                () -> discovery.supplement(query))).toList(), deadline, pool, futures);
+    }
+
+    private void executeSearchQueries(Comparison comparison, List<SearchQuery> plan, Instant deadline, ExecutorService pool, List<Future<?>> futures)
+            throws InterruptedException, ExecutionException, TimeoutException {
         CompletionService<SearchBatch> completion = new ExecutorCompletionService<>(pool);
         int count = 0;
         Map<Future<SearchBatch>, String> queryFutures = new HashMap<>();
         Map<String, Long> started = new HashMap<>();
-        for (String query : queries) {
+        for (SearchQuery query : plan) {
             synchronized (comparison) {
-                if (comparison.queries.size() >= 4 || !comparison.queries.add(query)) continue;
+                if (comparison.queries.size() >= 4 || !comparison.queries.add(query.key())) continue;
+                comparison.searchPlans.put(query.key(), query);
             }
-            comparison.progress.accept(new ReleaseSearchProgress(query, "资源发现", "RUNNING", 0, null));
-            started.put(query, System.nanoTime());
-            Future<SearchBatch> submitted = completion.submit(() -> new SearchBatch(query,
-                    comparison.refresh ? discovery.refresh(query) : discovery.search(query)));
+            comparison.progress.accept(new ReleaseSearchProgress(query.label(), query.key().startsWith("补源：") ? "补充来源" : "资源发现", "RUNNING", 0, null));
+            started.put(query.key(), System.nanoTime());
+            Future<SearchBatch> submitted = completion.submit(() -> new SearchBatch(query.key(), query.search().call()));
             futures.add(submitted);
-            queryFutures.put(submitted, query);
+            queryFutures.put(submitted, query.key());
             count++;
         }
         Set<String> finished = new HashSet<>();
@@ -236,13 +264,20 @@ public class ReleaseCandidateComparison implements AutoCloseable {
                     for (var entry : batch.entries) {
                         String identity = entry.identity();
                         comparison.discovered.computeIfAbsent(identity, ignored -> new ArrayList<>()).add(entry);
-                        if (!comparison.target.possiblyRelated(entry.item().title()) && !comparison.candidates.containsKey(identity)) continue;
+                        if (!comparison.target.possiblyRelated(entry.item().title())
+                                && entry.sourceTitles().stream().noneMatch(comparison.target::possiblyRelated)
+                                && !comparison.candidates.containsKey(identity)) continue;
                         var candidate = comparison.candidates.get(identity);
                         if (candidate == null) {
                             candidate = new Discovered(entry, batch.query);
                             comparison.candidates.put(identity, candidate);
                             for (var previous : comparison.discovered.get(identity)) candidate.merge(previous, batch.query);
                         } else candidate.merge(entry, batch.query);
+                        if (comparison.searchPlans.get(query).key().startsWith("补源：")
+                                && !"UNSUITABLE".equals(candidate.item.evidence().status())) {
+                            comparison.checkedFailures.remove(candidate);
+                            candidate.item = candidate.item.withEvidence(ReleaseFileEvidence.unverified("补充来源已合并，重新核验"), candidate.item.resolutionTags());
+                        }
                         rememberTitles(candidate);
                         for (String title : candidate.titles) {
                             String conflict = comparison.target.conflict(title);
@@ -268,6 +303,7 @@ public class ReleaseCandidateComparison implements AutoCloseable {
         List<Discovered> queue;
         synchronized (comparison) {
             queue = schedule(comparison);
+            if (comparison.target.season() == null && comparison.queries.size() < 4) queue = queue.stream().limit(4).toList();
         }
         for (int i = 0; i < queue.size(); i += 2) {
             budget.remaining();
@@ -408,7 +444,19 @@ public class ReleaseCandidateComparison implements AutoCloseable {
             default -> "EVIDENCE_UNAVAILABLE";
         };
     }
-    private ReleaseTarget movie(MovieReleaseSearchRequest request) { return ReleaseTarget.of(request.title(), request.originalTitle(), request.bangumiTitle(), request.year(), null, request.quality()); }
+    private ReleaseTarget movie(MovieReleaseSearchRequest request) { return movieTarget(request.tmdbId(), ReleaseTarget.of(request.title(), request.originalTitle(), request.bangumiTitle(), request.year(), null, request.quality())); }
+    private ReleaseTarget movieTarget(Integer id, ReleaseTarget target) {
+        return id == null ? target : movieAliases.enrich(id, target);
+    }
+
+    private List<String> movieQueries(ReleaseTarget target) {
+        LinkedHashSet<String> result = new LinkedHashSet<>();
+        result.add(target.titles().get(0) + " " + target.year());
+        target.titles().stream().filter(title -> title.matches("[\\p{IsLatin}\\p{P}\\p{Z}0-9]+") && title.length() > 2)
+                .limit(2).forEach(title -> result.add(title + " " + target.year()));
+        for (String title : target.titles()) if (result.size() < 3) result.add(title + " " + target.year());
+        return List.copyOf(result);
+    }
     private ReleaseTarget series(SeriesReleaseSearchRequest request) { return ReleaseTarget.of(request.title(), request.originalTitle(), request.bangumiTitle(), null, request.seasonNumber(), request.quality()); }
 
     @PreDestroy @Override public void close() { rounds.shutdownNow(); }
@@ -421,6 +469,7 @@ public class ReleaseCandidateComparison implements AutoCloseable {
         final Long owner;
         final Set<String> queries = new LinkedHashSet<>();
         final Set<String> failedQueries = new LinkedHashSet<>();
+        final Map<String, SearchQuery> searchPlans = new LinkedHashMap<>();
         final Map<String, Discovered> candidates = new LinkedHashMap<>();
         Instant deadline = Instant.now().plusSeconds(45);
         final Map<String, List<ReleaseCandidateDiscovery.Found>> discovered = new LinkedHashMap<>();
@@ -462,11 +511,13 @@ public class ReleaseCandidateComparison implements AutoCloseable {
             item = entry.item(); release = entry.release();
             magnet = release == null ? item.downloadRef() : ReleaseFileTables.magnet(release).orElse(null);
             titles.add(item.title()); sources.add(item.indexer() == null ? "来源未提供" : item.indexer()); queries.add(query);
+            titles.addAll(entry.sourceTitles());
             sizeConflict = entry.sizeConflict();
         }
         void merge(ReleaseCandidateDiscovery.Found entry, String query) {
             var incoming = entry.item();
             titles.add(incoming.title()); sources.add(incoming.indexer() == null ? "来源未提供" : incoming.indexer()); queries.add(query);
+            titles.addAll(entry.sourceTitles());
             sizeConflict |= entry.sizeConflict() || item.size() != null && incoming.size() != null && !item.size().equals(incoming.size());
             Long size = sizeConflict ? null : item.size() == null ? incoming.size() : item.size();
             if (incoming.seeders() != null && (item.seeders() == null || incoming.seeders() > item.seeders())) {
@@ -479,6 +530,7 @@ public class ReleaseCandidateComparison implements AutoCloseable {
                     + (sizeConflict ? "；来源体积冲突" : ""), String.join(" / ", queries), item.reviewFlags(), item.evidence());
         }
     }
+    private record SearchQuery(String key, String label, Callable<List<ReleaseCandidateDiscovery.Found>> search) {}
     private record SearchBatch(String query, List<ReleaseCandidateDiscovery.Found> entries) {}
     private record Checked(Discovered candidate, ProwlarrReleaseItemResponse item, GuangyaException failure) {}
 }

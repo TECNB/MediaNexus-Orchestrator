@@ -8,8 +8,13 @@ public record PanSouSearchEntry(
         String datetime,
         String source,
         Long sizeBytes,
-        boolean sizeConflict
+        boolean sizeConflict,
+        java.util.List<String> sourceTitles
 ) {
+    public PanSouSearchEntry { sourceTitles = java.util.List.copyOf(sourceTitles); }
+    public PanSouSearchEntry(String url, String password, String note, String datetime, String source, Long sizeBytes, boolean sizeConflict) {
+        this(url, password, note, datetime, source, sizeBytes, sizeConflict, java.util.List.of());
+    }
     public PanSouSearchEntry(String url, String password, String note, String datetime, String source) {
         this(url, password, note, datetime, source, null, false);
     }

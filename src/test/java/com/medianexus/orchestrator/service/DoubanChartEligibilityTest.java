@@ -66,6 +66,22 @@ class DoubanChartEligibilityTest {
         assertThrows(RuntimeException.class, () -> eligibility.correct(subject("3集全"), new IdentityInput("SERIES",123,9)));
     }
 
+    @Test void numberedMovieSubtitleCanResolveOnlyToOneSameYearCatalogIdentity() throws Exception {
+        when(tmdb.searchChartTitles("老千4：别西卜之歌", "MOVIE")).thenReturn(json.readTree("[]"));
+        when(tmdb.searchChartTitles("老千：别西卜之歌", "MOVIE")).thenReturn(json.readTree("""
+                [{"id":1394740,"title":"老千：别西卜之歌","original_title":"타짜: 벨제붑의 노래","release_date":"2026-09-23"}]
+                """));
+        when(tmdb.getMovieDetails(1394740, "zh-CN")).thenReturn(json.readTree("""
+                {"id":1394740,"title":"老千：别西卜之歌","original_title":"타짜: 벨제붑의 노래","release_date":"2026-09-23"}
+                """));
+        var subject = new Subject(37134880,"老千4：别西卜之歌",null,null,2026,"MOVIE",null,null,1,null,Instant.now());
+        assertEquals(1394740, eligibility.resolveProgressIdentity(subject, null).tmdbId());
+        when(tmdb.searchChartTitles("老千：别西卜之歌", "MOVIE")).thenReturn(json.readTree("""
+                [{"id":1,"title":"老千：别西卜之歌","original_title":"Other","release_date":"2006-09-23"}]
+                """));
+        assertNull(eligibility.resolveProgressIdentity(subject, null));
+    }
+
     private Subject subject(String progress) { return new Subject(1,"测试剧",null,null,2025,"SERIES",null,null,1,progress,Instant.now()); }
     private void cache(List<String> names) {
         var table = new TorrentFileTable(PanSouMagnetIdentity.fromUrl(magnet).orElseThrow(),"Show",

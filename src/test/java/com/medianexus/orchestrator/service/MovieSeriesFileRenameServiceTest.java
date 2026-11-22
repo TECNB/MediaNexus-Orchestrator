@@ -8,6 +8,13 @@ class MovieSeriesFileRenameServiceTest {
 
     private final MovieSeriesFileRenameService renameService = new MovieSeriesFileRenameService();
 
+    @Test void movieFeatureEligibilityUsesTheLandingSizeBoundary() {
+        assertThat(renameService.isMovieFeatureVideo("unknown.MKV", 104857599)).isFalse();
+        assertThat(renameService.isMovieFeatureVideo("unknown.MP4", 104857600)).isTrue();
+        assertThat(renameService.isMovieFeatureVideo("unknown.mkv", 104857601)).isTrue();
+        assertThat(renameService.isMovieFeatureVideo("unknown.txt", 2000000000L)).isFalse();
+    }
+
     @Test
     void recognizesEpisodeSuffixOnlyAfterTheKnownSeriesTitle() {
         for (int episode = 1; episode <= 12; episode++) {

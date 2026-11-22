@@ -195,6 +195,7 @@ public class PanSouClient implements AutoCloseable {
             episodeCoverage.registerSources(body.path("results"));
         }
         Map<PanSouMagnetIdentity, Long> sizes = magnetSizes(body.path("results"));
+        Map<PanSouMagnetIdentity, List<String>> declarations = magnetSourceTitles(body.path("results"));
         for (JsonNode entry : entries) {
             String type = text(entry, "type");
             if (!entry.isObject() || (StringUtils.hasText(type) && !"magnet".equalsIgnoreCase(type))) {
@@ -209,7 +210,8 @@ public class PanSouClient implements AutoCloseable {
                     firstText(entry, "note", "title", "name", "work_title", "desc"),
                     firstText(entry, "datetime", "time", "created_at"),
                     firstText(entry, "source", "channel", "plugin"),
-                    sizes.get(identity), sizes.containsKey(identity) && sizes.get(identity) == null
+                    sizes.get(identity), sizes.containsKey(identity) && sizes.get(identity) == null,
+                    declarations.getOrDefault(identity, List.of())
             ));
         }
         // 非空分类全部链接无效属于坏响应，不能伪装成零命中。
@@ -217,6 +219,31 @@ public class PanSouClient implements AutoCloseable {
             throw new PanSouClientException(INVALID_RESPONSE, "PanSou 磁力分类包含无效链接");
         }
         return new PanSouSearchResult(result);
+    }
+
+    private Map<PanSouMagnetIdentity, List<String>> magnetSourceTitles(JsonNode messages) {
+        Map<PanSouMagnetIdentity, Set<String>> titles = new HashMap<>();
+        Pattern yearField = Pattern.compile("(?:◎|【)\\s*年\\s*代\\s*[】:：]?\\s*((?:18|19|20)\\d{2})(?!\\d)");
+        if (messages.isArray()) for (JsonNode message : messages) {
+            Set<PanSouMagnetIdentity> identities = new HashSet<>();
+            for (JsonNode link : message.path("links")) {
+                if ("magnet".equalsIgnoreCase(text(link, "type")))
+                    PanSouMagnetIdentity.fromUrl(text(link, "url")).ifPresent(identities::add);
+            }
+            Matcher magnets = CONTENT_MAGNET_URL.matcher(text(message, "content"));
+            while (magnets.find()) PanSouMagnetIdentity.fromUrl(magnets.group()).ifPresent(identities::add);
+            if (identities.size() != 1) continue;
+            String title = firstText(message, "title", "name");
+            if (!StringUtils.hasText(title) || title.length() > 4096) continue;
+            Set<String> source = titles.computeIfAbsent(identities.iterator().next(), ignored -> new java.util.LinkedHashSet<>());
+            source.add(title);
+            var years = yearField.matcher(text(message, "content"));
+            while (years.find()) source.add(title + " (" + years.group(1) + ")");
+            if (source.size() > 64) throw new PanSouClientException(INVALID_RESPONSE, "同磁力发行声明超出安全上限");
+        }
+        Map<PanSouMagnetIdentity, List<String>> result = new HashMap<>();
+        titles.forEach((hash, values) -> result.put(hash, List.copyOf(values)));
+        return result;
     }
 
     private Map<PanSouMagnetIdentity, Long> magnetSizes(JsonNode messages) {

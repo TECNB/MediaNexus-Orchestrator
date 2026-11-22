@@ -23,6 +23,19 @@ public class ReleaseFileTables {
             .expireAfterWrite(2, TimeUnit.HOURS).build();
     private final Cache<String, String> resolvedMagnets = CacheBuilder.newBuilder().maximumSize(2048)
             .expireAfterWrite(2, TimeUnit.HOURS).build();
+    private final Cache<String, List<String>> declaredTitles = CacheBuilder.newBuilder().maximumSize(2048)
+            .expireAfterWrite(2, TimeUnit.HOURS).build();
+
+    public synchronized void rememberSourceTitles(String magnet, List<String> titles) {
+        String hash = identity(magnet);
+        Set<String> declarations = new LinkedHashSet<>(declaredTitles.getIfPresent(hash) == null
+                ? List.of() : declaredTitles.getIfPresent(hash));
+        declarations.addAll(titles);
+        if (declarations.size() > 64 || declarations.stream().anyMatch(title -> title.length() > 4096))
+            throw invalid("磁力来源声明超出安全上限");
+        declaredTitles.put(hash, List.copyOf(declarations));
+    }
+
 
     public ReleaseFileTables(GuangyaClient guangya, ProwlarrClient prowlarr) {
         this.guangya = guangya;
@@ -54,6 +67,8 @@ public class ReleaseFileTables {
 
     public List<String> sourceTitles(String magnet) {
         var titles = new LinkedHashSet<String>();
+        var declared = declaredTitles.getIfPresent(identity(magnet));
+        if (declared != null) titles.addAll(declared);
         var sources = releases.getIfPresent(identity(magnet));
         if (sources != null) sources.forEach(release -> titles.add(release.title()));
         var originals = new ArrayList<>(sourceMagnets(magnet)); originals.add(magnet);

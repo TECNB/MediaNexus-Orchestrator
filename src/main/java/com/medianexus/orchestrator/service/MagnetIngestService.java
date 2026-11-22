@@ -74,7 +74,6 @@ public class MagnetIngestService {
     private static final List<String> UNFINISHED_STATUSES = List.of("PENDING", "SUBMITTED", "DOWNLOADING", "ORGANIZING");
     private static final List<String> TERMINAL_STATUSES = List.of("SUCCEEDED", "PARTIAL_SUCCESS", "FAILED", "INTERRUPTED");
     private static final int FIRST_MOVIE_YEAR = 1888;
-    private static final long MIN_MOVIE_VIDEO_BYTES = 100L * 1024L * 1024L;
     private static final int OPENLIST_ORGANIZE_BATCH_SIZE = 10;
     private static final String ADMIN_ROLE = "ADMIN";
     private static final String SERIES_PRODUCT_TYPE = "SERIES";
@@ -393,7 +392,7 @@ public class MagnetIngestService {
             ReleaseIngestMetadata releaseMetadata,
             TaskRetryReference retryReference
     ) {
-        String safetyRecord = submissionSafety.check(plan.magnet(),
+        String safetyRecord = submissionSafety.checkMovie(plan.tmdbId(), plan.magnet(),
                 ReleaseTarget.of(plan.title(), plan.originalTitle(), null, plan.year(), null, null), releaseMetadata);
         userActionQuotaService.consumeDailyContentCreate(user, UserActionType.MAGNET_INGEST_CREATE);
         String taskId = UUID.randomUUID().toString();
@@ -1048,7 +1047,7 @@ public class MagnetIngestService {
                         "OpenList 未返回电影视频文件大小: " + file.path() + "/" + file.name()
                 );
             }
-            if (file.size() < MIN_MOVIE_VIDEO_BYTES) {
+            if (!renameService.isMovieFeatureVideo(file.name(), file.size())) {
                 skipped++;
                 skipFile(
                         taskLogWriter,

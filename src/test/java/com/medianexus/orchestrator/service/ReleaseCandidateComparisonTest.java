@@ -41,6 +41,42 @@ class ReleaseCandidateComparisonTest {
     }
     @AfterEach void close() { search.close(); }
 
+    @Test void panSouYearDeclarationsSurviveRecommendationAndFinalSubmission() {
+        when(client.searchMagnets(any())).thenReturn(new PanSouSearchResult(List.of(new PanSouSearchEntry(
+                magnet(1), "", "电影", null, "plugin:dygang", null, false,
+                List.of("电影 - 1080p.HD中字.mp4 (2026)")))));
+        when(guangya.resolve(eq(magnet(1)), any())).thenReturn(table(magnet(1), "电影.1080p", "电影.1080p.mkv"));
+        var safety = new ReleaseSubmissionSafety(tables, new ReleaseFileAssessment(new MovieSeriesFileRenameService(), tags));
+        search.shareSubmissionEvidence(safety);
+        var result = search.recommendMovie(new MovieReleaseRecommendationRequest(null, null, "电影", null, 2026, "1080p"));
+        assertThat(result.item().evidence().status()).isEqualTo("RECOMMENDABLE");
+        assertThat(safety.check(magnet(1), ReleaseTarget.of("电影", null, null, 2026, null, null), ReleaseIngestMetadata.manual()))
+                .contains("RECOMMENDABLE");
+        verifyNoInteractions(prowlarr);
+    }
+
+    @Test void movieSearchSupplementsMissingPreferredSourceWithinFourQueries() {
+        when(client.searchMagnets(any())).thenReturn(new PanSouSearchResult(List.of()));
+        var release = new com.medianexus.orchestrator.integration.prowlarr.ProwlarrRelease(
+                "Arrival 2016 1080p", 100L, 5, null, null, "Indexer", null, 7, "guid", magnet(2));
+        when(prowlarr.search("Arrival 2016")).thenReturn(List.of(release));
+        when(guangya.resolve(eq(magnet(2)), any())).thenReturn(table(magnet(2), "Arrival 2016 1080p", "Arrival.2016.1080p.mkv"));
+        var result = search.recommendMovie(new MovieReleaseRecommendationRequest(null, null, "降临", "Arrival", 2016, "1080p"));
+        assertThat(result.item().downloadRef()).isEqualTo(magnet(2));
+        assertThat(result.comparison().searchQueries()).isLessThanOrEqualTo(4);
+        verify(prowlarr).search("Arrival 2016");
+    }
+
+    @Test void sameHashConflictingSourceYearStillPreventsAutomaticMovieSubmission() {
+        when(client.searchMagnets(any())).thenReturn(new PanSouSearchResult(List.of(new PanSouSearchEntry(
+                magnet(1), "", "电影", null, "plugin:dygang", null, false,
+                List.of("电影 2026 1080p", "电影 2001 1080p")))));
+        when(prowlarr.search(anyString())).thenReturn(List.of());
+        assertThatThrownBy(() -> search.recommendMovie(new MovieReleaseRecommendationRequest(null, null, "电影", null, 2026, "1080p")))
+                .isInstanceOf(ProwlarrReleaseIngestService.NoMatchingReleaseException.class);
+        verify(guangya, never()).resolve(eq(magnet(1)), any());
+    }
+
     @Test void waitsForAllDiscoveredCandidatesAndNormalVersionOutranksPreviewBeforeQuality() {
         when(client.searchMagnets(any())).thenReturn(new PanSouSearchResult(List.of(
                 entry(1, "Show S01 Complete 1080p 尝鲜版", 999L),
@@ -331,6 +367,6 @@ class ReleaseCandidateComparisonTest {
     private PanSouSearchEntry entry(int number, String title, Long size) { return new PanSouSearchEntry(magnet(number), "", title, null, "source", size); }
     private TorrentFileTable table(String magnet, String root, String... files) {
         return new TorrentFileTable(PanSouMagnetIdentity.fromUrl(magnet).orElseThrow(), root,
-                Arrays.stream(files).map(file -> new TorrentFileTable.Entry(root + "/" + file, 100L)).toList(), files.length * 100L);
+                Arrays.stream(files).map(file -> new TorrentFileTable.Entry(root + "/" + file, 104_857_600L)).toList(), files.length * 104_857_600L);
     }
 }

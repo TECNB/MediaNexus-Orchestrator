@@ -104,6 +104,18 @@ class ReleaseSubmissionSafetyTest {
                 .contains("RECOMMENDABLE", "preview=true", "Show S01E02 尝鲜版 1080p.ts");
     }
 
+    @Test void movieSmallSidecarsPassButUnknownLargeVideosCannotBeAcknowledged() {
+        var entries = List.of(new TorrentFileTable.Entry("Arrival.2016.1080p.mkv", 2000000000L),
+                new TorrentFileTable.Entry("unknown.MP4", 296080),
+                new TorrentFileTable.Entry("unknown.MKV", 636976));
+        when(client.cached(MAGNET)).thenReturn(Optional.of(new TorrentFileTable(
+                PanSouMagnetIdentity.fromUrl(MAGNET).orElseThrow(), "Arrival 2016 1080p", entries, 2000933056L)));
+        assertThat(safety.check(MAGNET, movie, ReleaseIngestMetadata.manual())).contains("RECOMMENDABLE");
+        cacheTable("Arrival 2016 1080p", "Arrival 2016 1080p.mkv", "unknown.mkv");
+        assertThatThrownBy(() -> safety.check(MAGNET, movie, ReleaseIngestMetadata.manual().withUnverifiedRisk(true)))
+                .hasMessageContaining("不能安全执行");
+    }
+
     @Test
     void magnetDisplayNameAlsoCarriesNonBypassableEvidence() {
         assertThatThrownBy(() -> safety.check(MAGNET + "&dn=Arrival.2016.CAM", movie,
@@ -143,8 +155,8 @@ class ReleaseSubmissionSafetyTest {
     }
 
     private void cacheTable(String root, String... names) {
-        var entries = java.util.Arrays.stream(names).map(name -> new TorrentFileTable.Entry(name, 100L)).toList();
+        var entries = java.util.Arrays.stream(names).map(name -> new TorrentFileTable.Entry(name, 100L * 1024 * 1024)).toList();
         when(client.cached(MAGNET)).thenReturn(Optional.of(new TorrentFileTable(
-                PanSouMagnetIdentity.fromUrl(MAGNET).orElseThrow(), root, entries, entries.size() * 100L)));
+                PanSouMagnetIdentity.fromUrl(MAGNET).orElseThrow(), root, entries, entries.size() * 100L * 1024 * 1024)));
     }
 }

@@ -12,6 +12,8 @@ import org.springframework.util.StringUtils;
 @Service
 public class MovieSeriesFileRenameService {
 
+    private static final long MIN_MOVIE_VIDEO_BYTES = 100L * 1024L * 1024L;
+
     private static final String MOVIE_STANDARD_FILE_FORMAT = "{Movie Title} ({Release Year}) {Quality Full}";
     private static final String MOVIE_FOLDER_FORMAT = "{Movie Title} ({Release Year})";
     private static final String SERIES_STANDARD_EPISODE_FORMAT =
@@ -123,6 +125,11 @@ public class MovieSeriesFileRenameService {
 
     public boolean isVideo(String name) {
         return VIDEO_EXTENSIONS.contains(extension(name).toLowerCase(Locale.ROOT));
+    }
+
+    /** 电影落地的大小资格：恰好 100 MiB 仍保留；大小须已由文件表或 OpenList 边界验证。 */
+    public boolean isMovieFeatureVideo(String name, long sizeBytes) {
+        return isVideo(name) && sizeBytes >= MIN_MOVIE_VIDEO_BYTES;
     }
 
     public boolean isSubtitle(String name) {

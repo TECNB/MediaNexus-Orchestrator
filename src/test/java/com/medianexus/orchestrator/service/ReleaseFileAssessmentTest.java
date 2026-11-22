@@ -26,7 +26,9 @@ class ReleaseFileAssessmentTest {
     }
     @Test
     void fileEvidencePromotesSmallPackWithoutTitleCompleteOrCapacityHeuristic() {
-        var table = table("Chernobyl (2019) Season 1 1080p", "Chernobyl.S01E01.1.23.45.mkv", "Chernobyl.S01E02.mkv");
+        var table = sizedTable("Chernobyl (2019) Season 1 1080p",
+                new TorrentFileTable.Entry("Chernobyl.S01E01.1.23.45.mkv", 100),
+                new TorrentFileTable.Entry("Chernobyl.S01E02.mkv", 100));
         var evidence = assessment.assess(target, List.of("Chernobyl Season 1 HEVC 1080p 7RIP"), table).evidence();
         assertThat(evidence.status()).isEqualTo("RECOMMENDABLE");
         assertThat(evidence.targetFiles()).isEqualTo(2);
@@ -63,8 +65,8 @@ class ReleaseFileAssessmentTest {
         var evidence = assessment.assess(film, List.of("Dead Poets Society 1989 1080p"),
                 table("Dead Poets Society 1989 1080p", "Dead.Poets.Society.1989.mkv", "Extras/Interview.mkv")).evidence();
         assertThat(evidence.status()).isEqualTo("RECOMMENDABLE");
-        assertThat(evidence.totalBytes()).isEqualTo(200L);
-        assertThat(evidence.targetBytes()).isEqualTo(100L);
+        assertThat(evidence.totalBytes()).isEqualTo(2L * 100 * 1024 * 1024);
+        assertThat(evidence.targetBytes()).isEqualTo(100L * 1024 * 1024);
     }
 
     @Test
@@ -117,8 +119,63 @@ class ReleaseFileAssessmentTest {
                 table("The Golem 1920 1920x1080", "The.Golem.1080p.mkv")).evidence().status()).isEqualTo("RECOMMENDABLE");
     }
 
+    @Test void movieSmallVideoSidecarsDoNotInflateFeatureCountOrBytes() {
+        var film = ReleaseTarget.of("疯狂舞蹈办公室", "Mad Dance Office", null, 2026, null, "1080p");
+        // 真实广告的大小与后缀；任意 basename 都适用同一落地门槛。
+        var table = sizedTable("Mad Dance Office 2026 1080p",
+                new TorrentFileTable.Entry("Mad.Dance.Office.2026.1080p.mkv", 7844369377L),
+                new TorrentFileTable.Entry("unknown.MP4", 296080),
+                new TorrentFileTable.Entry("unknown.MKV", 636976));
+        var evidence = assessment.assess(film, List.of("Mad Dance Office 2026 1080p"), table).evidence();
+        assertThat(evidence.status()).isEqualTo("RECOMMENDABLE");
+        assertThat(evidence.targetFiles()).isEqualTo(1);
+        assertThat(evidence.targetBytes()).isEqualTo(7844369377L);
+        assertThat(evidence.totalBytes()).isEqualTo(7845302433L);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({
+            "104857599, RECOMMENDABLE, 1", "104857600, NEEDS_PROCESSING, 2", "104857601, NEEDS_PROCESSING, 2",
+            "2147483648, NEEDS_PROCESSING, 2"
+    })
+    void movieSizeBoundaryNeverHidesUnknownLargeVideo(long sidecarBytes, String status, int count) {
+        var film = ReleaseTarget.of("Buddy", null, null, 2026, null, "1080p");
+        var evidence = assessment.assess(film, List.of("Buddy 2026 1080p"), sizedTable("Buddy 2026 1080p",
+                new TorrentFileTable.Entry("Buddy.2026.1080p.mkv", 2000000000L),
+                new TorrentFileTable.Entry("unknown.mkv", sidecarBytes))).evidence();
+        assertThat(evidence.status()).isEqualTo(status);
+        assertThat(evidence.targetFiles()).isEqualTo(count);
+        assertThat(evidence.targetBytes()).isEqualTo(2000000000L + (count == 2 ? sidecarBytes : 0));
+    }
+
+    @Test void smallMovieCannotEstablishIdentityOrBecomeAFeature() {
+        var film = ReleaseTarget.of("Buddy", null, null, 2026, null, "1080p");
+        assertThat(assessment.assess(film, List.of("Buddy 2026 1080p"), sizedTable("Download 2026 1080p",
+                new TorrentFileTable.Entry("Buddy.2026.1080p.mkv", 636976),
+                new TorrentFileTable.Entry("unknown.mkv", 2000000000L))).evidence().status()).isEqualTo("UNVERIFIED");
+        assertThat(assessment.assess(film, List.of("Buddy 2026 1080p"), sizedTable("Buddy 2026 1080p",
+                new TorrentFileTable.Entry("Buddy.2026.1080p.mkv", 104857599))).evidence().status()).isEqualTo("UNSUITABLE");
+        assertThat(assessment.assess(film, List.of("Buddy 2026 1080p"), sizedTable("Buddy 2026 1080p",
+                new TorrentFileTable.Entry("Buddy.2026.1080p.mkv", 104857600))).evidence().status()).isEqualTo("RECOMMENDABLE");
+    }
+
+    @Test void twoRealMovieVersionsStillRequireProcessing() {
+        var film = ReleaseTarget.of("Buddy", null, null, 2026, null, "1080p");
+        var evidence = assessment.assess(film, List.of("Buddy 2026 1080p"), sizedTable("Buddy 2026 1080p",
+                new TorrentFileTable.Entry("Buddy.2026.1080p.WEB-DL.mkv", 2000000000L),
+                new TorrentFileTable.Entry("Buddy.2026.1080p.BluRay.mkv", 3000000000L))).evidence();
+        assertThat(evidence.status()).isEqualTo("NEEDS_PROCESSING");
+        assertThat(evidence.targetFiles()).isEqualTo(2);
+        assertThat(evidence.targetBytes()).isEqualTo(5000000000L);
+    }
+
+    private TorrentFileTable sizedTable(String root, TorrentFileTable.Entry... files) {
+        return new TorrentFileTable(new PanSouMagnetIdentity("a".repeat(40)), root,
+                List.of(files), java.util.Arrays.stream(files).mapToLong(TorrentFileTable.Entry::sizeBytes).sum());
+    }
+
     private TorrentFileTable table(String root, String... paths) {
         return new TorrentFileTable(new PanSouMagnetIdentity("a".repeat(40)), root,
-                java.util.Arrays.stream(paths).map(path -> new TorrentFileTable.Entry(root + "/" + path, 100L)).toList(), paths.length * 100L);
+                java.util.Arrays.stream(paths).map(path -> new TorrentFileTable.Entry(root + "/" + path, 100L * 1024 * 1024)).toList(), paths.length * 100L * 1024 * 1024);
     }
 }

@@ -212,7 +212,6 @@ public class GuangyaClient {
         String name = name(node.path("fileName"));
         String path = parent.isEmpty() ? name : parent + "/" + name;
         if (path.length() > 4096) throw invalid("光鸭文件路径过长");
-        long declaredSize = integer(node.path("fileSize"));
         JsonNode children = node.path("subfiles");
         JsonNode directory = node.path("isDir");
         if (!directory.isMissingNode() && !directory.isBoolean()) throw invalid("光鸭目录标记格式无效");
@@ -227,8 +226,10 @@ public class GuangyaClient {
                 try { sum = Math.addExact(sum, walk(child, depth == 0 ? "" : path, depth + 1, files, paths, nodes)); }
                 catch (ArithmeticException exception) { throw invalid("光鸭文件大小总和溢出"); }
             }
-            if (sum != declaredSize) throw invalid("光鸭目录大小与叶子总和不一致");
+            // 光鸭可省略中间目录汇总大小；根总量与每个叶子仍须提供，并校验所有已声明大小。
+            if ((depth == 0 || node.has("fileSize")) && sum != integer(node.path("fileSize"))) throw invalid("光鸭目录大小与叶子总和不一致");
         } else {
+            long declaredSize = integer(node.path("fileSize"));
             files.add(new TorrentFileTable.Entry(path, declaredSize)); sum = declaredSize;
         }
         // 单文件的 subfilesNum=0 是 protobuf 缺省子项数；不是整张表有零个文件。

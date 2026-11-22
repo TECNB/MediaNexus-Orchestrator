@@ -99,6 +99,80 @@ class GuangyaClientTest {
                 new TorrentFileTable.Entry("S01/E01.mkv", 2), new TorrentFileTable.Entry("S01/E02.mkv", 3));
     }
 
+    @Test void derivesMissingNestedDirectorySizesFromCompleteLeaves() {
+        // 缩减自 Other Mommy 的真实 Subs 表；保留原始叶子大小，重算缩减后的根总量与叶数。
+        response = envelope(nestedSubtitleTree());
+        var table = client.resolve(MAGNET, ResolveBudget.start());
+        assertThat(table.files()).containsExactly(
+                new TorrentFileTable.Entry("Subs/English.srt", 75409),
+                new TorrentFileTable.Entry("Other.Mommy.2026.1080p.mp4", 1864561201));
+        assertThat(table.totalBytes()).isEqualTo(1864636610L);
+    }
+
+    private String nestedSubtitleTree() {
+        return """
+                {"infoHash":"%s","fileName":"Other Mommy (2026) [1080p]","fileSize":1864636610,
+                 "subfilesNum":2,"excludeIndices":[1],"subfiles":[
+                  {"fileName":"Subs","isDir":true,"subfiles":[
+                    {"fileName":"English.srt","fileIndex":1,"fileSize":75409}]},
+                  {"fileName":"Other.Mommy.2026.1080p.mp4","fileSize":1864561201}]}
+                """.formatted(HASH);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {
+            "missingRootSize", "nullRootSize", "missingRootCount", "wrongRootCount", "wrongRootSize",
+            "missingLeafSize", "nullLeafSize", "negativeLeafSize", "fractionalLeafSize", "overflowLeafSize",
+            "nullDirectorySize", "negativeDirectorySize", "wrongDirectorySize", "wrongDirectoryCount",
+            "missingChildren", "duplicateLeaf", "directoryFileCollision", "unsafeExcludedLeaf", "wrongHash"
+    })
+    void missingDirectorySizeDoesNotRelaxTableSafety(String mutation) throws Exception {
+        var root = (com.fasterxml.jackson.databind.node.ObjectNode) json.readTree(nestedSubtitleTree());
+        var children = (com.fasterxml.jackson.databind.node.ArrayNode) root.path("subfiles");
+        var directory = (com.fasterxml.jackson.databind.node.ObjectNode) children.get(0);
+        var leaves = (com.fasterxml.jackson.databind.node.ArrayNode) directory.path("subfiles");
+        var leaf = (com.fasterxml.jackson.databind.node.ObjectNode) leaves.get(0);
+        switch (mutation) {
+            case "missingRootSize" -> root.remove("fileSize");
+            case "nullRootSize" -> root.putNull("fileSize");
+            case "missingRootCount" -> root.remove("subfilesNum");
+            case "wrongRootCount" -> root.put("subfilesNum", 1);
+            case "wrongRootSize" -> root.put("fileSize", 1864636609L);
+            case "missingLeafSize" -> leaf.remove("fileSize");
+            case "nullLeafSize" -> leaf.putNull("fileSize");
+            case "negativeLeafSize" -> leaf.put("fileSize", -1);
+            case "fractionalLeafSize" -> leaf.put("fileSize", 1.5);
+            case "overflowLeafSize" -> leaf.put("fileSize", "9223372036854775808");
+            case "nullDirectorySize" -> directory.putNull("fileSize");
+            case "negativeDirectorySize" -> directory.put("fileSize", -1);
+            case "wrongDirectorySize" -> directory.put("fileSize", 75408);
+            case "wrongDirectoryCount" -> directory.put("subfilesNum", 2);
+            case "missingChildren" -> directory.remove("subfiles");
+            case "duplicateLeaf" -> leaves.add(leaf.deepCopy());
+            case "directoryFileCollision" -> children.addObject().put("fileName", "Subs").put("fileSize", 0);
+            case "unsafeExcludedLeaf" -> leaf.put("fileName", "../English.srt");
+            case "wrongHash" -> root.put("infoHash", "0".repeat(40));
+            default -> throw new AssertionError(mutation);
+        }
+        response = envelope(root.toString());
+        assertThatThrownBy(() -> client.resolve(MAGNET, ResolveBudget.start()))
+                .isInstanceOfSatisfying(GuangyaException.class,
+                        failure -> assertThat(failure.reason()).isEqualTo(GuangyaException.Reason.INVALID_RESPONSE));
+        assertThat(client.cached(MAGNET)).isEmpty();
+    }
+
+    @Test void missingDirectorySizesStillEnforceDepthNodeAndOverflowLimits() {
+        response = envelope(nestedSubtitleTree());
+        properties.setMaxDepth(1);
+        assertThatThrownBy(() -> client.resolve(MAGNET, ResolveBudget.start())).hasMessageContaining("深度或节点数超限");
+        properties.setMaxDepth(32); properties.setMaxNodes(2);
+        assertThatThrownBy(() -> client.resolve(MAGNET, ResolveBudget.start())).hasMessageContaining("深度或节点数超限");
+        properties.setMaxNodes(20000);
+        response = envelope(nestedSubtitleTree().replace("75409", "9223372036854775807"));
+        assertThatThrownBy(() -> client.resolve(MAGNET, ResolveBudget.start())).hasMessageContaining("总和溢出");
+        assertThat(client.cached(MAGNET)).isEmpty();
+    }
+
     @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.ValueSource(strings = {"../evil", "/absolute", "C:evil", "a/b", "a\\b", ".", "..", " spaced "})
     void rejectsUnsafePathWithoutCaching(String name) throws Exception {

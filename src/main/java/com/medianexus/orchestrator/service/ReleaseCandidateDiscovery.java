@@ -36,12 +36,13 @@ public class ReleaseCandidateDiscovery {
 
     private List<Found> panSou(PanSouSearchResult result, String query) {
         return result.entries().stream().filter(entry -> PanSouMagnetIdentity.fromUrl(entry.url()).isPresent()).map(entry -> {
+            tables.rememberSourceTitles(entry.url(), entry.sourceTitles());
             var parsed = tags.parse(entry.note());
             var item = new ProwlarrReleaseItemResponse(entry.note(), entry.sizeBytes(), null, null, null,
                     entry.source(), entry.datetime(), null, entry.url(), parsed.resolutionTags(), parsed.dynamicRangeTags(),
                     parsed.seasonTags(), "PanSou；来源报告体积/画质/字幕为声明；做种与可下载性未知", query, List.of(),
                     ReleaseFileEvidence.unverified("排队等待文件表补证"));
-            return new Found(PanSouMagnetIdentity.fromUrl(entry.url()).orElseThrow().btih(), item, null, entry.sizeConflict());
+            return new Found(PanSouMagnetIdentity.fromUrl(entry.url()).orElseThrow().btih(), item, null, entry.sizeConflict(), entry.sourceTitles());
         }).toList();
     }
 
@@ -60,5 +61,16 @@ public class ReleaseCandidateDiscovery {
         }).toList();
     }
 
-    public record Found(String identity, ProwlarrReleaseItemResponse item, ProwlarrRelease release, boolean sizeConflict) {}
+    public record Found(String identity, ProwlarrReleaseItemResponse item, ProwlarrRelease release, boolean sizeConflict,
+                        List<String> sourceTitles) {
+        public Found { sourceTitles = List.copyOf(sourceTitles); }
+        public Found(String identity, ProwlarrReleaseItemResponse item, ProwlarrRelease release, boolean sizeConflict) {
+            this(identity, item, release, sizeConflict, List.of());
+        }
+    }
+
+    public List<Found> supplement(String query) {
+        return settings.usesPanSouForMagnetSearch() ? prowlarr(prowlarr.search(query), query)
+                : panSou(panSou.searchMagnets(new PanSouSearchCommand(query, false)), query);
+    }
 }

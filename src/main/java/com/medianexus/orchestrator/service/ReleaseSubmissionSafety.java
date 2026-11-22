@@ -37,6 +37,13 @@ public class ReleaseSubmissionSafety {
         this.fileTables = fileTables;
         this.assessment = assessment;
     }
+    @org.springframework.beans.factory.annotation.Autowired
+    private MovieReleaseAliases movieAliases;
+
+    public String checkMovie(Integer tmdbId, String magnet, ReleaseTarget target, ReleaseIngestMetadata metadata) {
+        return check(magnet, tmdbId == null ? target : movieAliases.enrich(tmdbId, target), metadata);
+    }
+
 
     /** 比较端已发现的来源声明与受理共享；去掉 dn/发布标题不能抹掉同 hash 的冲突。 */
     public void rememberSourceTitles(String magnet, List<String> titles) {
@@ -61,6 +68,7 @@ public class ReleaseSubmissionSafety {
         if (invalid != null) throw rejected(invalid);
         ReleaseIngestMetadata release = metadata == null ? ReleaseIngestMetadata.manual() : metadata;
         for (String source : fileTables.sourceMagnets(magnet)) rememberTitles(hash, source, null);
+        rememberSourceTitles(magnet, fileTables.sourceTitles(magnet));
         List<String> titles = rememberTitles(hash, magnet, release.releaseTitle());
         for (String title : titles) {
             String conflict = target.conflict(title);
