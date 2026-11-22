@@ -129,6 +129,7 @@ public class JavdbAutomationService {
     private final AuthService authService;
     private final SystemSettingMapper systemSettingMapper;
     private final JavdbClient javdbClient;
+    private final com.medianexus.orchestrator.config.JavdbActorProperties actorProperties;
     private final EmbyClient embyClient;
     private final AdultMagnetIngestService adultMagnetIngestService;
     private final AdultMagnetIngestTaskMapper adultTaskMapper;
@@ -166,11 +167,13 @@ public class JavdbAutomationService {
             JavdbPlaylistSyncRunMapper playlistSyncRunMapper,
             JavdbPlaylistHistoryMapper playlistHistoryMapper,
             IngestExceptionNotifier exceptionNotifier,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            com.medianexus.orchestrator.config.JavdbActorProperties actorProperties
     ) {
         this.authService = authService;
         this.systemSettingMapper = systemSettingMapper;
         this.javdbClient = javdbClient;
+        this.actorProperties = actorProperties;
         this.embyClient = embyClient;
         this.adultMagnetIngestService = adultMagnetIngestService;
         this.adultTaskMapper = adultTaskMapper;
@@ -290,7 +293,7 @@ public class JavdbAutomationService {
                 request.minimumReviewCount() == null ? DEFAULT_MINIMUM_REVIEW_COUNT : request.minimumReviewCount(),
                 request.limitPerRanking() == null ? DEFAULT_LIMIT : request.limitPerRanking(),
                 StringUtils.hasText(request.scheduleTime()) ? request.scheduleTime() : DEFAULT_SCHEDULE_TIME,
-                TIMEZONE, "STANDARD", Year.now().getValue(), DEFAULT_TOP_LIMIT
+                TIMEZONE, "STANDARD", Year.now().getValue(), DEFAULT_TOP_LIMIT, followedActorSnapshot()
         );
         validateConfig(config);
         if (config.enabled()) {
@@ -370,7 +373,7 @@ public class JavdbAutomationService {
                 request.limitPerRanking(), request.scheduleTime(), TIMEZONE,
                 StringUtils.hasText(request.rankingSource()) ? request.rankingSource().trim().toUpperCase(Locale.ROOT) : "STANDARD",
                 request.topYear() == null ? Year.now().getValue() : request.topYear(),
-                request.topLimit() == null ? DEFAULT_TOP_LIMIT : request.topLimit()
+                request.topLimit() == null ? DEFAULT_TOP_LIMIT : request.topLimit(), followedActorSnapshot()
         );
     }
 
@@ -576,7 +579,7 @@ public class JavdbAutomationService {
                 run.setHistoryDuplicates(safeCount(run.getHistoryDuplicates()) + 1);
                 continue;
             }
-            if (!matchesRankingFilters(movie, config)) {
+            if ((config.isTop() || config.followedActors().isEmpty()) && !matchesRankingFilters(movie, config)) {
                 saveItem(run, movie, "NO_MAGNET", crossRankReason, null, null, null, null);
                 continue;
             }
@@ -604,7 +607,9 @@ public class JavdbAutomationService {
                     }
                     throw exception;
                 }
-                if (!matchesMovieFilters(detail, config)) {
+                List<String> followedActors = config.isTop() ? List.of() : matchedActors(detail.actors(), config.followedActors());
+                if (followedActors.isEmpty() && !matchesRankingFilters(movie, config)
+                        || !matchesMovieFilters(detail, config, followedActors)) {
                     saveItem(run, movie, "NO_MAGNET", reasonFor(movie), detail.magnets(), null, null, null);
                     continue;
                 }
@@ -613,7 +618,8 @@ public class JavdbAutomationService {
                     saveItem(run, movie, "NO_MAGNET", reasonFor(movie), detail.magnets(), null, null, null);
                     continue;
                 }
-                String selectionReason = selectionReason(selected);
+                String selectionReason = (followedActors.isEmpty() ? "" : "命中关注演员「" + String.join("、", followedActors)
+                        + "」；允许低于最低评分；") + selectionReason(selected);
                 saveItem(run, movie, "READY_TO_SUBMIT", reasonFor(movie), detail.magnets(), selected,
                         selectionReason, null);
                 pendingSubmissions.add(new PendingSubmission(movie, detail.magnets(), selected, selectionReason));
@@ -966,8 +972,8 @@ public class JavdbAutomationService {
         return magnet.sizeBytes() == null ? 0L : magnet.sizeBytes();
     }
 
-    private boolean matchesMovieFilters(JavdbMovieDetail detail, Config config) {
-        if (detail.rating() == null || detail.rating() < config.minimumRating()
+    private boolean matchesMovieFilters(JavdbMovieDetail detail, Config config, List<String> followedActors) {
+        if (followedActors.isEmpty() && (detail.rating() == null || detail.rating() < config.minimumRating())
                 || detail.reviewCount() == null || detail.reviewCount() < config.minimumReviewCount()) {
             return false;
         }
@@ -975,6 +981,23 @@ public class JavdbAutomationService {
         return detail.tags() == null || detail.tags().stream()
                 .map(this::normalizeTag)
                 .noneMatch(excludedTags::contains);
+    }
+
+    private Map<String, List<String>> followedActorSnapshot() {
+        Map<String, List<String>> snapshot = new LinkedHashMap<>();
+        actorProperties.getFollowed().forEach((name, aliases) -> snapshot.put(name, List.copyOf(aliases)));
+        return java.util.Collections.unmodifiableMap(snapshot);
+    }
+
+    static List<String> matchedActors(List<String> actors, Map<String, List<String>> followed) {
+        Set<String> actual = actors.stream().map(JavdbAutomationService::actorName).collect(java.util.stream.Collectors.toSet());
+        return followed.entrySet().stream().filter(entry -> actual.contains(actorName(entry.getKey()))
+                        || entry.getValue().stream().map(JavdbAutomationService::actorName).anyMatch(actual::contains))
+                .map(Map.Entry::getKey).sorted().toList();
+    }
+
+    private static String actorName(String name) {
+        return Normalizer.normalize(name, Normalizer.Form.NFKC).replaceAll("[\\s\\p{Z}]+", "").toLowerCase(Locale.ROOT);
     }
 
     private boolean matchesRankingFilters(MergedMovie movie, Config config) {
@@ -1677,7 +1700,7 @@ public class JavdbAutomationService {
                     legacyConfig ? DEFAULT_LIMIT
                             : node.path("limitPerRanking").asInt(node.path("limit_per_ranking").asInt(DEFAULT_LIMIT)),
                     node.path("scheduleTime").asText(node.path("schedule_time").asText(DEFAULT_SCHEDULE_TIME)),
-                    TIMEZONE, "STANDARD", Year.now().getValue(), DEFAULT_TOP_LIMIT
+                    TIMEZONE, "STANDARD", Year.now().getValue(), DEFAULT_TOP_LIMIT, followedActorSnapshot()
             );
         } catch (JsonProcessingException exception) {
             log.warn("Invalid JAVDB automation config, using defaults");
@@ -1689,7 +1712,7 @@ public class JavdbAutomationService {
         return new Config(false, true, true, true, false, false, DEFAULT_EXCLUDED_TAGS,
                 DEFAULT_MINIMUM_RATING, DEFAULT_MINIMUM_REVIEW_COUNT,
                 DEFAULT_LIMIT, DEFAULT_SCHEDULE_TIME, TIMEZONE,
-                "STANDARD", Year.now().getValue(), DEFAULT_TOP_LIMIT);
+                "STANDARD", Year.now().getValue(), DEFAULT_TOP_LIMIT, followedActorSnapshot());
     }
 
     private Config readConfigSnapshot(String raw) {
@@ -1789,7 +1812,7 @@ public class JavdbAutomationService {
                 config.excludedTags(), config.minimumRating(),
                 config.minimumReviewCount(),
                 config.limitPerRanking(), config.scheduleTime(), TIMEZONE,
-                "STANDARD", Year.now().getValue(), DEFAULT_TOP_LIMIT));
+                "STANDARD", Year.now().getValue(), DEFAULT_TOP_LIMIT, config.followedActors()));
     }
 
     private void ensureCanEnable() {
@@ -1943,8 +1966,14 @@ public class JavdbAutomationService {
             String timezone,
             String rankingSource,
             int topYear,
-            int topLimit
+            int topLimit,
+            Map<String, List<String>> followedActors
     ) {
+        private Config {
+            // Historical snapshots predate actor selection and must not be reused as the current policy.
+            followedActors = followedActors == null ? Map.of() : Map.copyOf(followedActors);
+        }
+
         private boolean isTop() {
             return "TOP_250".equals(rankingSource);
         }

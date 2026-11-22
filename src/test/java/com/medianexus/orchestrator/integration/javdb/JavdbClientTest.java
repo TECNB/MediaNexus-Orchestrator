@@ -140,4 +140,31 @@ class JavdbClientTest {
         assertThat(reviewCount).isEqualTo(27);
         assertThat(tags).containsExactly("熟女", "中文字幕");
     }
+    @Test
+    @SuppressWarnings("unchecked")
+    void detailReadsOnlyActorFieldAndVerifiesActualNumber() throws Exception {
+        HttpClient http = mock(HttpClient.class);
+        HttpResponse<String> response = mock(HttpResponse.class);
+        when(http.<String>send(any(), any())).thenReturn(response);
+        when(response.uri()).thenReturn(URI.create("https://javdb.com/v/one"));
+        when(response.statusCode()).thenReturn(200);
+        when(response.body()).thenReturn("""
+                <h2 class="title"><span class="current-title">标题提到楓カレン</span></h2>
+                <div class="panel-block"><strong>番號:</strong><span class="value">ABC-123</span></div>
+                <div class="panel-block"><strong>導演:</strong><span class="value"><a href="/directors/a">彩月七緒</a></span></div>
+                <div class="panel-block"><strong>演員:</strong><span class="value">
+                  <a href="/actors/a">田中レモン</a><a href="/actors/a">田中レモン</a><strong>其他文字</strong>
+                </span></div>
+                <section id="magnets-content"></section>
+                """);
+        var detail = new JavdbClient(http).detail("https://javdb.com/v/one", "ABC-123", "cookie");
+        assertThat(detail.actors()).containsExactly("田中レモン");
+        assertThat(detail.title()).isEqualTo("标题提到楓カレン");
+        assertThatThrownBy(() -> new JavdbClient(http).detail("https://javdb.com/v/one", "XYZ-999", "cookie"))
+                .isInstanceOf(JavdbClientException.class).hasMessageContaining("番号缺失或不匹配");
+        when(response.body()).thenReturn("<h1>ABC-123 标题不能代替身份</h1><section id='magnets-content'></section>");
+        assertThatThrownBy(() -> new JavdbClient(http).detail("https://javdb.com/v/one", "ABC-123", "cookie"))
+                .isInstanceOf(JavdbClientException.class).hasMessageContaining("番号缺失或不匹配");
+    }
+
 }

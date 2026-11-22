@@ -18,6 +18,8 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import org.jsoup.Jsoup;
+import org.jsoup.nodes.Element;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
@@ -170,15 +172,30 @@ public class JavdbClient {
         }
 
         List<JavdbMagnet> magnets = parseMagnets(body);
-        String title = textFromHtml(firstMatch(body, "(?is)<h1[^>]*>(.*?)</h1>"));
-        String code = normalizeCode(expectedCode);
-        if (!StringUtils.hasText(code)) {
-            code = extractSingleCode(title);
+        var document = Jsoup.parse(body);
+        Element numberField = null;
+        List<String> actors = new ArrayList<>();
+        for (Element block : document.select(".panel-block")) {
+            Element label = block.selectFirst("strong"), value = block.selectFirst(".value");
+            if (label == null || value == null) continue;
+            String heading = label.text().replace(":", "").replace("：", "").trim();
+            if (Set.of("番號", "番号").contains(heading)) {
+                if (numberField != null) throw new JavdbClientException(JavdbClientException.Reason.PARSE, "JAVDB 详情页番号不唯一");
+                numberField = value;
+            }
+            if (Set.of("演員", "演员").contains(heading)) {
+                value.select("a[href^=/actors/]").stream().map(Element::text).map(String::trim)
+                        .filter(name -> !name.isEmpty()).forEach(actors::add);
+            }
         }
-        if (!StringUtils.hasText(code)) {
-            throw new JavdbClientException(JavdbClientException.Reason.PARSE, "JAVDB 详情页番号无法识别");
+        String code = numberField == null ? null : normalizeCode(numberField.text());
+        if (!StringUtils.hasText(code) || StringUtils.hasText(expectedCode) && !code.equals(normalizeCode(expectedCode))) {
+            throw new JavdbClientException(JavdbClientException.Reason.PARSE, "JAVDB 详情页番号缺失或不匹配");
         }
-        return new JavdbMovieDetail(code, title, detailUrl, magnets, parseRating(body), parseReviewCount(body), parseTags(body));
+        Element titleElement = document.selectFirst("h2.title .current-title, h1 .current-title, h2.title, h1");
+        String title = titleElement == null ? "" : titleElement.text();
+        return new JavdbMovieDetail(code, title, detailUrl, magnets, parseRating(body), parseReviewCount(body),
+                parseTags(body), actors.stream().distinct().toList());
     }
 
     public void validate(String cookie) {

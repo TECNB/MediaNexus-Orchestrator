@@ -79,6 +79,20 @@ medianexus:
     adult:
       uuid: ${MEDIANEXUS_AUTOSYMLINK_ADULT_TASK_UUID:}
       request-body-json: ${MEDIANEXUS_AUTOSYMLINK_ADULT_REQUEST_BODY_JSON:}
+  javdb-actors:
+    followed:
+      "[彩月七緒]": []
+      "[瀬戸環奈]": []
+      "[みなと羽琉]": []
+      "[北野未奈]": []
+      "[鷲尾めい]": []
+      "[神木麗]": []
+      "[白峰ミウ]": [白峰美羽]
+      "[本庄鈴]": []
+      "[楓カレン]": [田中檸檬, 田中レモン, 楓花戀, 枫花恋]
+      "[橘メアリー]": [橘瑪麗, 夏目ゆみ, 立花メアリー, 市川悠子, 橘友美, りあ, メアリー, メアリさん]
+      "[涼森れむ]": [涼森玲夢, 傻梦]
+
   jav-metadata:
     enabled: ${MEDIANEXUS_JAV_METADATA_ENABLED:false}
     image-base-url: ${MEDIANEXUS_JAV_IMAGE_BASE_URL:http://metatube:8080}

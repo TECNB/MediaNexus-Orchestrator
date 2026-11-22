@@ -84,7 +84,7 @@ class JavdbAutomationCookieSelectionTest {
                 mock(JavdbAutomationRunMapper.class), mock(JavdbAutomationRunItemMapper.class),
                 mock(JavdbAutomationLedgerMapper.class), mock(JavdbAutomationRunLogMapper.class),
                 mock(JavdbPlaylistMembershipMapper.class), mock(JavdbPlaylistSyncRunMapper.class),
-                mock(JavdbPlaylistHistoryMapper.class), notifier, new ObjectMapper()
+                mock(JavdbPlaylistHistoryMapper.class), notifier, new ObjectMapper(), new com.medianexus.orchestrator.config.JavdbActorProperties()
         );
     }
 }
