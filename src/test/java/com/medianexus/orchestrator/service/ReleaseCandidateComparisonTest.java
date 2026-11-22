@@ -42,6 +42,36 @@ class ReleaseCandidateComparisonTest {
     }
     @AfterEach void close() { search.close(); }
 
+    @Test void verifiedSeriesEnglishNameReachesBoundedSearchAndFinalSubmission() throws Exception {
+        var tmdb = mock(com.medianexus.orchestrator.integration.tmdb.TmdbClient.class);
+        var json = new com.fasterxml.jackson.databind.ObjectMapper();
+        when(tmdb.getTvDetails(293610, "zh-CN")).thenReturn(json.readTree("""
+                {"id":293610,"name":"Doctor X：白色黑手党时代","original_name":"닥터X: 하얀 마피아의 시대","seasons":[{"season_number":1}]}
+                """));
+        when(tmdb.getTvDetails(293610, "en-US")).thenReturn(json.readTree("""
+                {"id":293610,"name":"Doctor X: Mafia in White","original_name":"닥터X: 하얀 마피아의 시대","seasons":[{"season_number":1}]}
+                """));
+        var aliases = new SeriesReleaseAliases(tmdb);
+        org.springframework.test.util.ReflectionTestUtils.setField(search, "seriesAliases", aliases);
+        var safety = new ReleaseSubmissionSafety(tables, new ReleaseFileAssessment(new MovieSeriesFileRenameService(), tags));
+        org.springframework.test.util.ReflectionTestUtils.setField(safety, "seriesAliases", aliases);
+        search.shareSubmissionEvidence(safety);
+        var release = new com.medianexus.orchestrator.integration.prowlarr.ProwlarrRelease(
+                "Doctor X Mafia in White S01 1080p", 200000000L, 5, null, null, "Indexer", null, 7, "guid", magnet(2));
+        when(prowlarr.search("Doctor X: Mafia in White S01")).thenReturn(List.of(release));
+        when(guangya.resolve(eq(magnet(2)), any())).thenReturn(table(magnet(2), "Doctor X Mafia in White S01 1080p",
+                "Doctor.X.Mafia.in.White.S01E01.1080p.mkv", "Doctor.X.Mafia.in.White.S01E02.1080p.mkv"));
+        var result = search.recommendSeries(new SeriesReleaseRecommendationRequest(null, 293610, null,
+                "Doctor X：白色黑手党时代", "닥터X: 하얀 마피아의 시대", 1, "1080p"));
+        assertThat(result.item().downloadRef()).isEqualTo(magnet(2));
+        assertThat(result.comparison().searchQueries()).isLessThanOrEqualTo(4);
+        var target = ReleaseTarget.of("Doctor X：白色黑手党时代", "닥터X: 하얀 마피아의 시대", null, null, 1, "1080p");
+        assertThat(safety.checkSeries(293610, magnet(2), target, ReleaseIngestMetadata.manual())).contains("RECOMMENDABLE");
+        safety.rememberSourceTitles(magnet(2), List.of("Doctor X Mafia in White S02 1080p"));
+        assertThatThrownBy(() -> safety.checkSeries(293610, magnet(2), target, ReleaseIngestMetadata.manual()))
+                .hasMessageContaining("季编号");
+    }
+
     @Test void panSouYearDeclarationsSurviveRecommendationAndFinalSubmission() {
         when(client.searchMagnets(any())).thenReturn(new PanSouSearchResult(List.of(new PanSouSearchEntry(
                 magnet(1), "", "电影", null, "plugin:dygang", null, false,

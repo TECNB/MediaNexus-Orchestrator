@@ -551,7 +551,7 @@ public class MagnetIngestService {
             String persistedProductType,
             TaskRetryReference retryReference
     ) {
-        String safetyRecord = submissionSafety.check(plan.magnet(),
+        String safetyRecord = submissionSafety.checkSeries(plan.tmdbId(), plan.magnet(),
                 ReleaseTarget.of(plan.title(), plan.originalTitle(), null, null, plan.seasonNumber(), null), releaseMetadata);
         userActionQuotaService.consumeDailyContentCreate(user, UserActionType.MAGNET_INGEST_CREATE);
         String taskId = UUID.randomUUID().toString();

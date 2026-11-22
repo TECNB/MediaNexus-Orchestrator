@@ -30,6 +30,8 @@ public class ReleaseCandidateComparison implements AutoCloseable {
     private final AuthService auth;
     @org.springframework.beans.factory.annotation.Autowired
     private MovieReleaseAliases movieAliases;
+    @org.springframework.beans.factory.annotation.Autowired
+    private SeriesReleaseAliases seriesAliases;
     private ReleaseSubmissionSafety submissionSafety;
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -61,19 +63,19 @@ public class ReleaseCandidateComparison implements AutoCloseable {
     }
     public ProwlarrReleaseRecommendationResponse recommendSeries(SeriesReleaseRecommendationRequest request) { return recommendSeries(request, NO_PROGRESS); }
     public ProwlarrReleaseRecommendationResponse recommendSeries(SeriesReleaseRecommendationRequest request, Consumer<ReleaseSearchProgress> progress) {
-        return recommend(ReleaseTarget.of(request.title(), request.originalTitle(), null, null, request.seasonNumber(), request.quality()), false, progress);
+        return recommend(seriesTarget(request.tmdbId(), ReleaseTarget.of(request.title(), request.originalTitle(), null, null, request.seasonNumber(), request.quality())), false, progress);
     }
     ProwlarrReleaseRecommendationResponse recommendSeries(SeriesReleaseRecommendationRequest request, String alias, Consumer<ReleaseSearchProgress> progress) {
-        return recommend(ReleaseTarget.of(request.title(), request.originalTitle(), alias, null, request.seasonNumber(), request.quality()), false, progress);
+        return recommend(seriesTarget(request.tmdbId(), ReleaseTarget.of(request.title(), request.originalTitle(), alias, null, request.seasonNumber(), request.quality())), false, progress);
     }
     public ProwlarrReleaseRecommendationResponse refreshRecommendSeries(SeriesReleaseRecommendationRequest request) {
-        return previewFresh(ReleaseTarget.of(request.title(), request.originalTitle(), null, null, request.seasonNumber(), request.quality()));
+        return previewFresh(seriesTarget(request.tmdbId(), ReleaseTarget.of(request.title(), request.originalTitle(), null, null, request.seasonNumber(), request.quality())));
     }
     public ProwlarrReleaseRecommendationResponse previewMovie(MovieReleaseRecommendationRequest request) {
         return preview(movieTarget(request.tmdbId(), ReleaseTarget.of(request.title(), request.originalTitle(), null, request.year(), null, request.quality())));
     }
     public ProwlarrReleaseRecommendationResponse previewSeries(SeriesReleaseRecommendationRequest request) {
-        return preview(ReleaseTarget.of(request.title(), request.originalTitle(), null, null, request.seasonNumber(), request.quality()));
+        return preview(seriesTarget(request.tmdbId(), ReleaseTarget.of(request.title(), request.originalTitle(), null, null, request.seasonNumber(), request.quality())));
     }
     private ProwlarrReleaseRecommendationResponse preview(ReleaseTarget target) {
         return previewRound(new Comparison(target, false, auth.requireCurrentUser().getId()));
@@ -184,6 +186,7 @@ public class ReleaseCandidateComparison implements AutoCloseable {
                             .limit(Math.max(0, 3 - comparison.queries.size())).toList();
                     searchQueries(comparison, aliases, deadline, pool, futures);
                     List<String> supplement = comparison.target.titles().stream()
+                            .sorted(Comparator.comparingInt(title -> title.matches("[\\p{IsLatin}\\p{P}\\p{Z}0-9]+") && title.length() > 2 ? 0 : 1))
                             .map(title -> title + " S%02d".formatted(comparison.target.season()))
                             .filter(query -> !comparison.queries.contains("补源：" + query)).limit(4 - comparison.queries.size()).toList();
                     if (supplement.isEmpty()) break;
@@ -465,7 +468,10 @@ public class ReleaseCandidateComparison implements AutoCloseable {
         for (String title : target.titles()) if (result.size() < 3) result.add(title + " " + target.year());
         return List.copyOf(result);
     }
-    private ReleaseTarget series(SeriesReleaseSearchRequest request) { return ReleaseTarget.of(request.title(), request.originalTitle(), request.bangumiTitle(), null, request.seasonNumber(), request.quality()); }
+    private ReleaseTarget series(SeriesReleaseSearchRequest request) { return seriesTarget(request.tmdbId(), ReleaseTarget.of(request.title(), request.originalTitle(), request.bangumiTitle(), null, request.seasonNumber(), request.quality())); }
+    private ReleaseTarget seriesTarget(Integer id, ReleaseTarget target) {
+        return id == null ? target : seriesAliases.enrich(id, target);
+    }
 
     @PreDestroy @Override public void close() { rounds.shutdownNow(); }
 

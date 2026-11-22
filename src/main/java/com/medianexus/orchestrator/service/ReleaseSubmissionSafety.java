@@ -39,9 +39,15 @@ public class ReleaseSubmissionSafety {
     }
     @org.springframework.beans.factory.annotation.Autowired
     private MovieReleaseAliases movieAliases;
+    @org.springframework.beans.factory.annotation.Autowired
+    private SeriesReleaseAliases seriesAliases;
 
     public String checkMovie(Integer tmdbId, String magnet, ReleaseTarget target, ReleaseIngestMetadata metadata) {
         return check(magnet, tmdbId == null ? target : movieAliases.enrich(tmdbId, target), metadata);
+    }
+
+    public String checkSeries(Integer tmdbId, String magnet, ReleaseTarget target, ReleaseIngestMetadata metadata) {
+        return check(magnet, tmdbId == null ? target : seriesAliases.enrich(tmdbId, target), metadata);
     }
 
 
