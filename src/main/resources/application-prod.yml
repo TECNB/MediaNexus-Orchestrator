@@ -1,0 +1,5 @@
+medianexus:
+  jav-metadata:
+    enabled: ${MEDIANEXUS_JAV_METADATA_ENABLED:true}
+    # The deployed app and MetaTube belong to separate Docker networks; use the published host port.
+    image-base-url: ${MEDIANEXUS_JAV_IMAGE_BASE_URL:http://172.20.0.1:8080}

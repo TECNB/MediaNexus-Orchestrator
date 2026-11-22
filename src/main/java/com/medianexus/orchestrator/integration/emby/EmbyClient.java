@@ -234,6 +234,12 @@ public class EmbyClient {
         delete("/Users/" + encodePath(userId), Map.of());
     }
 
+    /** Exact path lookup for ingest completion; never use potentially polluted titles as identity. */
+    public List<EmbyItem> findVideoItemsByPath(String path) {
+        return items(Map.of("Path", path, "Recursive", "true", "Fields", "Path,ProviderIds",
+                "IncludeItemTypes", "Movie,Video", "GroupItemsIntoCollections", "false", "Limit", "3"));
+    }
+
     public List<EmbyItem> listLibraryVideoItems(String libraryId) {
         return items(Map.of(
                 "ParentId", libraryId,

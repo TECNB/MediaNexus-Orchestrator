@@ -79,6 +79,16 @@ medianexus:
     adult:
       uuid: ${MEDIANEXUS_AUTOSYMLINK_ADULT_TASK_UUID:}
       request-body-json: ${MEDIANEXUS_AUTOSYMLINK_ADULT_REQUEST_BODY_JSON:}
+  jav-metadata:
+    enabled: ${MEDIANEXUS_JAV_METADATA_ENABLED:false}
+    image-base-url: ${MEDIANEXUS_JAV_IMAGE_BASE_URL:http://metatube:8080}
+    legacy-ingest-root: ${MEDIANEXUS_JAV_INGEST_ROOT:/pikpak/Media/Adult}
+    legacy-strm-root: ${MEDIANEXUS_JAV_STRM_ROOT:/srv/media/STRM/Adult}
+    request-timeout: ${MEDIANEXUS_JAV_METADATA_REQUEST_TIMEOUT:30s}
+    poll-interval: ${MEDIANEXUS_JAV_METADATA_POLL_INTERVAL:5s}
+    completion-timeout: ${MEDIANEXUS_JAV_METADATA_COMPLETION_TIMEOUT:30m}
+    max-attempts: ${MEDIANEXUS_JAV_METADATA_MAX_ATTEMPTS:4}
+
   emby:
     playback-collection-delay: ${MEDIANEXUS_EMBY_PLAYBACK_COLLECTION_DELAY:PT1S}
     base-url: ${MEDIANEXUS_EMBY_BASE_URL:}
