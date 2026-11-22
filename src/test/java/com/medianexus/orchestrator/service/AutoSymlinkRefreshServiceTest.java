@@ -103,6 +103,29 @@ class AutoSymlinkRefreshServiceTest {
         assertThat(client.calls()).hasSize(4);
     }
 
+    @Test void refreshesPlaybackDirectoryBeforeSubmittingAndReportsRefreshFailure() throws Exception {
+        var properties = completeProperties();
+        var client = org.mockito.Mockito.mock(AutoSymlinkClient.class);
+        var cloud = org.mockito.Mockito.mock(com.medianexus.orchestrator.integration.onboarding.CloudDriveAccountClient.class);
+        var connection = new com.medianexus.orchestrator.config.CloudDrive2Properties();
+        connection.setOrganizationEnabled(true);
+        var targets = new IngestTargetFixtures();
+        targets.useDefault("old");
+        var service = new AutoSymlinkRefreshService(properties, client, objectMapper, targets.registry);
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "cloudDrive", cloud);
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "cloudDriveProperties", connection);
+        assertThat(service.refreshForPath("MOVIE", "/old/Movies/Film (2026)").status())
+                .isEqualTo(AutoSymlinkRefreshService.Status.SUBMITTED);
+        var order = org.mockito.Mockito.inOrder(cloud, client);
+        order.verify(cloud).refreshMountedDirectory(connection, "/mount/old/Movies/Film (2026)");
+        order.verify(client).submitSyncTask(org.mockito.ArgumentMatchers.eq("old-MOVIE"), org.mockito.ArgumentMatchers.any());
+        org.mockito.Mockito.doThrow(new IllegalStateException("unavailable")).when(cloud)
+                .refreshMountedDirectory(connection, "/mount/old/Movies/Other (2026)");
+        assertThat(service.refreshForPath("MOVIE", "/old/Movies/Other (2026)").status())
+                .isEqualTo(AutoSymlinkRefreshService.Status.FAILED);
+        org.mockito.Mockito.verifyNoMoreInteractions(client);
+    }
+
     private AutoSymlinkProperties completeProperties() {
         AutoSymlinkProperties properties = new AutoSymlinkProperties();
         properties.setBaseUrl("http://autos.example:8095");

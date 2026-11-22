@@ -41,6 +41,11 @@ public class AutoSymlinkRefreshService {
         this.autoSymlinkClient = autoSymlinkClient;
         this.objectMapper = objectMapper;
     }
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.medianexus.orchestrator.integration.onboarding.CloudDriveAccountClient cloudDrive;
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.medianexus.orchestrator.config.CloudDrive2Properties cloudDriveProperties;
+
 
     /** Submits the configured movie refresh without changing the completed ingest task. */
     public RefreshOutcome refreshMovie() {
@@ -69,7 +74,8 @@ public class AutoSymlinkRefreshService {
             var task = new AutoSymlinkProperties.SyncTask();
             task.setUuid(binding.get().asUuid());
             task.setRequestBodyJson(binding.get().asRequestBodyJson());
-            return refresh(category.toLowerCase(java.util.Locale.ROOT), task);
+            String relative = savePath.substring(binding.get().rootPath().length());
+            return refreshMountedPath(category.toLowerCase(java.util.Locale.ROOT), task, relative);
         }
         return switch (category) {
             case "MOVIE" -> refreshMovie();
@@ -90,6 +96,22 @@ public class AutoSymlinkRefreshService {
         }
         throw new BusinessException(ErrorCode.CONFLICT,
                 "下载目标未关联此类别的 AutoSymlink 任务", HttpStatus.CONFLICT);
+    }
+
+    private RefreshOutcome refreshMountedPath(String taskKey, AutoSymlinkProperties.SyncTask task, String relative) {
+        if (cloudDriveProperties != null && cloudDriveProperties.isOrganizationEnabled()) {
+            try {
+                JsonNode body = objectMapper.readTree(task.getRequestBodyJson());
+                String mediaDirectory = body.path("media_dir").asText("");
+                if (!mediaDirectory.startsWith("/") || java.util.Arrays.stream(relative.split("/")).anyMatch(part -> part.equals("..")))
+                    return RefreshOutcome.failed("播放目录配置无效，未提交刷新");
+                cloudDrive.refreshMountedDirectory(cloudDriveProperties, mediaDirectory.replaceAll("/+$", "") + relative);
+            } catch (RuntimeException | JsonProcessingException failure) {
+                log.warn("Playback directory refresh unavailable taskKey={}", taskKey);
+                return RefreshOutcome.failed("播放挂载目录刷新失败，尚未提交 AutoSymlink 刷新");
+            }
+        }
+        return refresh(taskKey, task);
     }
 
     private RefreshOutcome refresh(String taskKey, AutoSymlinkProperties.SyncTask task) {

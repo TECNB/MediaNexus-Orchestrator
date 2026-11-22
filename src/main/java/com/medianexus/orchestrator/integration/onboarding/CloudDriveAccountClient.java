@@ -176,6 +176,29 @@ public class CloudDriveAccountClient {
         });
     }
 
+    /** 系统挂载与整理云盘可使用不同账号；刷新实际播放挂载，避免同步器读取旧目录缓存。 */
+    public void refreshMountedDirectory(CloudDrive2Properties connection, String systemDirectory) {
+        call(connection, stub -> {
+            var mounts = stub.getMountPoints(Empty.getDefaultInstance()).getMountPointsList().stream()
+                    .filter(mount -> mount.getIsMounted() && (systemDirectory.equals(mount.getMountPoint())
+                            || systemDirectory.startsWith(mount.getMountPoint() + "/")))
+                    .sorted(java.util.Comparator.comparingInt((MountPoint mount) -> mount.getMountPoint().length()).reversed()).toList();
+            if (mounts.isEmpty()) throw rejected("播放目录没有已挂载的 CD2 映射");
+            var mount = mounts.get(0);
+            String current = mount.getSourceDir();
+            String relative = systemDirectory.substring(mount.getMountPoint().length());
+            for (String segment : (relative + "/").split("/", -1)) {
+                if (segment.isBlank()) continue;
+                var parents = stub.getSubFiles(ListSubFileRequest.newBuilder().setPath(current).setForceRefresh(true).build());
+                while (parents.hasNext()) parents.next();
+                current = current.replaceAll("/+$", "") + "/" + segment;
+            }
+            var target = stub.getSubFiles(ListSubFileRequest.newBuilder().setPath(current).setForceRefresh(true).build());
+            while (target.hasNext()) target.next();
+            return null;
+        });
+    }
+
     private <T> T call(CloudDrive2Properties connection, Function<CloudDriveFileSrvGrpc.CloudDriveFileSrvBlockingStub, T> action) {
         if (!StringUtils.hasText(connection.getHost()) || !StringUtils.hasText(connection.getApiToken())) {
             throw new BusinessException(ErrorCode.SERVICE_UNAVAILABLE, "CD2 有效连接未配置", HttpStatus.SERVICE_UNAVAILABLE);

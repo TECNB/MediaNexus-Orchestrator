@@ -17,7 +17,7 @@ class MovieReleaseAliasesTest {
                 {"id":123,"title":"All of a Sudden","original_title":"急に具合が悪くなる"}
                 """));
         when(tmdb.getMovieAlternativeTitles(123)).thenReturn(json.readTree("""
-                {"id":123,"titles":[{"iso_3166_1":"FR","title":"Soudain","type":""},
+                {"id":123,"titles":[{"iso_3166_1":"BE","title":"Soudain","type":""},
                 {"iso_3166_1":"US","title":"Old Project","type":"working title"}]}
                 """));
         var aliases = new MovieReleaseAliases(tmdb);

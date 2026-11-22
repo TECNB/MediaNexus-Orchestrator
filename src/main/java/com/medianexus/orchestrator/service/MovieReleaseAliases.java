@@ -43,7 +43,7 @@ public class MovieReleaseAliases {
                     if (alternatives.path("id").asInt(-1) == tmdbId) for (JsonNode alias : alternatives.path("titles")) {
                         String type = alias.path("type").asText("").toLowerCase(java.util.Locale.ROOT);
                         if (type.contains("working") || type.contains("production") || type.contains("literal")) continue;
-                        if (List.of("US", "GB", "FR", "CN", "TW", "HK", "KR", "JP").contains(alias.path("iso_3166_1").asText()))
+                        if (List.of("US", "GB", "FR", "BE", "CN", "TW", "HK", "KR", "JP").contains(alias.path("iso_3166_1").asText()))
                             add(titles, alias.path("title").asText(""));
                     }
                 } catch (RuntimeException failure) {
