@@ -496,6 +496,45 @@ class AdultMagnetIngestServiceTest {
         }
     }
 
+    @Test
+    void registersExactPublicationBeforeMoveAndRefreshesAfterMove() throws Exception {
+        String target = "/adult/JAV/day", temp = target + "/temp";
+        AdultMagnetIngestTask task = new AdultMagnetIngestTask();
+        task.setId("batch"); task.setCategory("JAV"); task.setTargetPath(target);
+        insertedTask.set(task);
+        OpenListClient client = mock(OpenListClient.class);
+        when(client.normalizePath(target)).thenReturn(target);
+        when(client.listFiles(target, true)).thenReturn(List.of());
+        when(client.listFiles(temp, true)).thenReturn(List.of(new OpenListFileInfo("JUQ-986-C", null, true, temp)));
+        when(client.findFiles(temp, true)).thenReturn(List.of(new OpenListFileInfo("JUQ-986-C.mp4", 200_000_000L, false, temp + "/JUQ-986-C")));
+        when(client.joinPath(anyString(), anyString())).thenAnswer(call -> call.getArgument(0) + "/" + call.getArgument(1));
+        JavMetadataCompletion metadata = mock(JavMetadataCompletion.class);
+        var registered = new java.util.concurrent.atomic.AtomicBoolean();
+        org.mockito.Mockito.doAnswer(call -> { registered.set(true); return null; }).when(metadata)
+                .publishedFile("batch", "hash", "magnet:?dn=JUQ-986-C", null, target + "/JUQ-986-C/JUQ-986-C.mp4");
+        LibraryOrganizer organizer = (plan, observer) -> assertThat(registered.get()).isTrue();
+        AutoSymlinkRefreshService refresh = mock(AutoSymlinkRefreshService.class);
+        when(refresh.refreshForPath("ADULT", target)).thenReturn(AutoSymlinkRefreshService.RefreshOutcome.submitted("test"));
+        AdultMagnetIngestService worker = new AdultMagnetIngestService(taskMapper, taskLogMapper, client,
+                openListProperties, new MovieSeriesFileRenameService(), organizer, authService, refresh,
+                objectMapper, new ControlledExecutor(), new ControlledExecutor(), IngestTargetFixtures.legacy());
+        var properties = new com.medianexus.orchestrator.config.JavMetadataProperties(); properties.setEnabled(true);
+        org.springframework.test.util.ReflectionTestUtils.setField(worker, "javMetadataCompletion", metadata);
+        org.springframework.test.util.ReflectionTestUtils.setField(worker, "javMetadataProperties", properties);
+        Class<?> type = Class.forName(AdultMagnetIngestService.class.getName() + "$AdultMagnetItem");
+        Class<?> prepared = Class.forName(AdultMagnetIngestService.class.getName() + "$AdultPreparedItem");
+        Constructor<?> constructor = type.getDeclaredConstructor(int.class, String.class, String.class, String.class, String.class);
+        constructor.setAccessible(true);
+        Object item = constructor.newInstance(1, "magnet:?dn=JUQ-986-C", "hash", target, temp);
+        Constructor<?> preparation = prepared.getDeclaredConstructor(int.class, int.class, int.class, List.class);
+        preparation.setAccessible(true);
+        Method mark = type.getDeclaredMethod("markPrepared", prepared); mark.setAccessible(true);
+        mark.invoke(item, preparation.newInstance(1, 0, 0, List.of()));
+        org.springframework.test.util.ReflectionTestUtils.invokeMethod(worker, "promotePreparedItems", "batch", List.of(item));
+        assertThat(registered.get()).isTrue();
+        verify(refresh).refreshForPath("ADULT", target);
+    }
+
     private static class TestAuthService extends AuthService {
 
         private User admin;

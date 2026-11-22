@@ -95,6 +95,12 @@ public class AdultMagnetIngestService {
     private OfflineIngestScheduler offlineScheduler;
 
     @Autowired
+    private JavMetadataCompletion javMetadataCompletion;
+
+    @Autowired
+    private com.medianexus.orchestrator.config.JavMetadataProperties javMetadataProperties;
+
+    @Autowired
     public AdultMagnetIngestService(
             AdultMagnetIngestTaskMapper taskMapper,
             AdultMagnetIngestTaskLogMapper taskLogMapper,
@@ -419,6 +425,15 @@ public class AdultMagnetIngestService {
     private void runTask(String taskId, List<AdultMagnetItem> items, String rootPath) {
         try {
             AdultMagnetIngestTask task = getExistingTask(taskId);
+            if ("JAV".equals(task.getCategory()) && javMetadataCompletion != null && javMetadataProperties.isEnabled()) {
+                for (AdultMagnetItem item : items) {
+                    try {
+                        javMetadataCompletion.registerDownload(taskId, item.magnetHash(), item.magnet(), task.getAutomationRunId());
+                    } catch (RuntimeException failure) {
+                        writeLog(taskId, "WARN", "jav_metadata", "资料准备登记失败，下载继续", failure.getClass().getSimpleName());
+                    }
+                }
+            }
             Set<String> batchTempPaths = items.stream().map(AdultMagnetItem::tempPath)
                     .collect(java.util.stream.Collectors.toSet());
             items.forEach(item -> item.batchTempPaths = batchTempPaths);
@@ -471,9 +486,10 @@ public class AdultMagnetIngestService {
             persistFailedMagnets(taskId, items);
             AdultMagnetIngestTask finished = getExistingTask(taskId);
             if (safeInt(finished.getSucceededCount()) > 0 && safeInt(finished.getFailedCount()) == 0 && safeInt(finished.getKeptCount()) > 0) {
-                refreshAutoSymlink(taskId, "succeeded");
+                if (!"JAV".equals(finished.getCategory()) || javMetadataCompletion == null || !javMetadataProperties.isEnabled()) refreshAutoSymlink(taskId, "succeeded");
                 markFinished(taskId, "SUCCEEDED", "succeeded", null);
             } else if (safeInt(finished.getKeptCount()) > 0) {
+                if (!"JAV".equals(finished.getCategory()) || javMetadataCompletion == null || !javMetadataProperties.isEnabled()) refreshAutoSymlink(taskId, "partial_success");
                 markFinished(taskId, "PARTIAL_SUCCESS", "partial_success", "部分 Adult 下载链接未成功完成");
             } else {
                 markFinished(taskId, "FAILED", "failed", "没有保留到 100MB 以上的视频文件");
@@ -612,6 +628,7 @@ public class AdultMagnetIngestService {
             AdultPromotionBatch batch;
             try {
                 batch = planPromotionBatch(taskId, targetPath, preparedItems);
+                for (AdultPromotionDecision decision : batch.decisions()) registerJavPublication(taskId, decision);
                 if (!batch.plan().moves().isEmpty() || !batch.plan().deletions().isEmpty()) {
                     adultLibraryOrganizer.organize(batch.plan(), (message, detail) ->
                             writeLog(taskId, "INFO", "organizing", message, detail));
@@ -710,6 +727,31 @@ public class AdultMagnetIngestService {
                             + ", skippedDuplicates=" + result.skippedDuplicateCount()
                             + ", removedDuplicateDirectories=" + result.removedDuplicateDirectoryCount()
             );
+            if (!decision.promoteNames().isEmpty() && "JAV".equals(getExistingTask(taskId).getCategory())
+                    && javMetadataCompletion != null && javMetadataProperties.isEnabled()) {
+                refreshAutoSymlink(taskId, "jav_metadata");
+            }
+        }
+    }
+
+    private void registerJavPublication(String taskId, AdultPromotionDecision decision) {
+        AdultMagnetIngestTask task = getExistingTask(taskId);
+        if (!"JAV".equals(task.getCategory()) || javMetadataCompletion == null || !javMetadataProperties.isEnabled()) return;
+        try {
+            AdultMagnetItem item = decision.item();
+            for (OpenListFileInfo file : openListClient.findFiles(item.tempPath(), true)) {
+                if (!isQualifiedVideo(file)) continue;
+                String absolute = openListClient.joinPath(file.path(), file.name());
+                String relative = absolute.substring(item.tempPath().length() + 1);
+                String top = relative.split("/", 2)[0];
+                if (decision.promoteNames().contains(top)) {
+                    javMetadataCompletion.publishedFile(taskId, item.magnetHash(), item.magnet(), task.getAutomationRunId(),
+                            openListClient.joinPath(item.targetPath(), relative));
+                }
+            }
+        } catch (RuntimeException failure) {
+            writeLog(taskId, "ERROR", "jav_metadata", "资料补全目标登记失败，保留临时文件并停止本次发布", failure.getClass().getSimpleName());
+            throw failure;
         }
     }
 
