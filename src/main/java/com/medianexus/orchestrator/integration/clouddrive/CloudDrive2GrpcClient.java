@@ -79,15 +79,16 @@ class CloudDrive2GrpcClient implements CloudDrive2FileOperations {
         if (operations.isEmpty()) {
             return;
         }
-        RenameFilesRequest.Builder request = RenameFilesRequest.newBuilder();
-        operations.forEach(operation -> request.addRenameFiles(RenameFileRequest.newBuilder()
-                .setTheFilePath(operation.sourcePath())
-                .setNewName(operation.targetName())
-                .build()));
-        try {
-            requireSuccess("rename", stub().renameFiles(request.build()));
-        } catch (StatusRuntimeException exception) {
-            throw grpcFailure("CloudDrive2 rename failed", exception);
+        for (int offset = 0; offset < operations.size(); offset += 10) {
+            RenameFilesRequest.Builder request = RenameFilesRequest.newBuilder();
+            operations.subList(offset, Math.min(offset + 10, operations.size())).forEach(operation ->
+                    request.addRenameFiles(RenameFileRequest.newBuilder().setTheFilePath(operation.sourcePath())
+                            .setNewName(operation.targetName()).build()));
+            try {
+                requireSuccess("rename", stub().renameFiles(request.build()));
+            } catch (StatusRuntimeException exception) {
+                throw grpcFailure("CloudDrive2 rename failed", exception);
+            }
         }
     }
 
@@ -96,15 +97,16 @@ class CloudDrive2GrpcClient implements CloudDrive2FileOperations {
         if (sourcePaths.isEmpty()) {
             return;
         }
-        MoveFileRequest request = MoveFileRequest.newBuilder()
-                .addAllTheFilePaths(sourcePaths)
-                .setDestPath(targetDirectory)
-                .setConflictPolicy(MoveFileRequest.ConflictPolicy.Skip)
-                .build();
-        try {
-            requireSuccess("move", stub().moveFile(request));
-        } catch (StatusRuntimeException exception) {
-            throw grpcFailure("CloudDrive2 move failed", exception);
+        for (int offset = 0; offset < sourcePaths.size(); offset += 10) {
+            MoveFileRequest request = MoveFileRequest.newBuilder()
+                    .addAllTheFilePaths(sourcePaths.subList(offset, Math.min(offset + 10, sourcePaths.size())))
+                    .setDestPath(targetDirectory)
+                    .setConflictPolicy(MoveFileRequest.ConflictPolicy.Skip).build();
+            try {
+                requireSuccess("move", stub().moveFile(request));
+            } catch (StatusRuntimeException exception) {
+                throw grpcFailure("CloudDrive2 move failed", exception);
+            }
         }
     }
 
