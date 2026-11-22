@@ -35,8 +35,6 @@ import com.medianexus.orchestrator.model.UserActionType;
 import com.medianexus.orchestrator.service.organization.LibraryOrganizer;
 import com.medianexus.orchestrator.service.organization.LibraryOrganizationPlan;
 import com.medianexus.orchestrator.service.settings.targets.IngestTargetRegistry;
-import java.time.Duration;
-import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.Year;
 import java.util.ArrayList;
@@ -53,7 +51,6 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -76,7 +73,6 @@ public class MagnetIngestService {
     private static final List<String> ACTIVE_STATUSES = List.of("PENDING", "SUBMITTED", "DOWNLOADING", "ORGANIZING");
     private static final List<String> UNFINISHED_STATUSES = List.of("PENDING", "SUBMITTED", "DOWNLOADING", "ORGANIZING");
     private static final List<String> TERMINAL_STATUSES = List.of("SUCCEEDED", "PARTIAL_SUCCESS", "FAILED", "INTERRUPTED");
-    private static final Duration SAVING_FILES_VISIBLE_GRACE = Duration.ofMinutes(5);
     private static final int FIRST_MOVIE_YEAR = 1888;
     private static final long MIN_MOVIE_VIDEO_BYTES = 100L * 1024L * 1024L;
     private static final int OPENLIST_ORGANIZE_BATCH_SIZE = 10;
@@ -130,6 +126,8 @@ public class MagnetIngestService {
     private final IngestTaskNotifier taskNotifier;
     private final ExecutorService executorService;
     @Autowired
+    private OfflineIngestScheduler offlineScheduler;
+    @Autowired
     private ReleaseSubmissionSafety submissionSafety;
 
     @Autowired
@@ -155,7 +153,8 @@ public class MagnetIngestService {
                 openListClient, openListProperties, renameService, animeLibraryOrganizer, movieLibraryOrganizer,
                 seriesLibraryOrganizer, authService, userActionQuotaService, autoSymlinkRefreshService,
                 mediaLibraryPresenceService, targetRegistry,
-                Executors.newSingleThreadExecutor(new WorkerThreadFactory()), taskNotifier);
+                new java.util.concurrent.ThreadPoolExecutor(1, 1, 0L, java.util.concurrent.TimeUnit.MILLISECONDS,
+                        new java.util.concurrent.ArrayBlockingQueue<>(128), new WorkerThreadFactory()), taskNotifier);
     }
 
     MagnetIngestService(
@@ -234,17 +233,26 @@ public class MagnetIngestService {
 
     @EventListener(ApplicationReadyEvent.class)
     public void markUnfinishedTasksInterrupted() {
+        boolean unresolved = movieTaskMapper.selectCount(new LambdaQueryWrapper<MovieMagnetIngestTask>()
+                .in(MovieMagnetIngestTask::getStatus, List.of("SUBMITTED", "DOWNLOADING", "ORGANIZING"))) > 0
+                || seriesTaskMapper.selectCount(new LambdaQueryWrapper<SeriesMagnetIngestTask>()
+                .in(SeriesMagnetIngestTask::getStatus, List.of("SUBMITTED", "DOWNLOADING", "ORGANIZING"))) > 0
+                || movieTaskMapper.selectCount(new LambdaQueryWrapper<MovieMagnetIngestTask>()
+                .like(MovieMagnetIngestTask::getErrorMessage, "OFFLINE_UNRESOLVED")) > 0
+                || seriesTaskMapper.selectCount(new LambdaQueryWrapper<SeriesMagnetIngestTask>()
+                .like(SeriesMagnetIngestTask::getErrorMessage, "OFFLINE_UNRESOLVED")) > 0;
+        if (unresolved) offlineScheduler.blockUnresolvedRestart("电影/剧集存在未核实的重启任务，需先核实云端状态");
         int movieInterruptedCount = movieTaskMapper.update(new LambdaUpdateWrapper<MovieMagnetIngestTask>()
                 .in(MovieMagnetIngestTask::getStatus, UNFINISHED_STATUSES)
                 .set(MovieMagnetIngestTask::getStatus, "INTERRUPTED")
                 .set(MovieMagnetIngestTask::getStage, "interrupted")
-                .set(MovieMagnetIngestTask::getErrorMessage, "服务重启，任务已中断")
+                .set(MovieMagnetIngestTask::getErrorMessage, unresolved ? "[OFFLINE_UNRESOLVED] 服务重启，任务已中断；云端状态待核实" : "服务重启，排队任务已中断")
                 .set(MovieMagnetIngestTask::getFinishedAt, LocalDateTime.now()));
         int seriesInterruptedCount = seriesTaskMapper.update(new LambdaUpdateWrapper<SeriesMagnetIngestTask>()
                 .in(SeriesMagnetIngestTask::getStatus, UNFINISHED_STATUSES)
                 .set(SeriesMagnetIngestTask::getStatus, "INTERRUPTED")
                 .set(SeriesMagnetIngestTask::getStage, "interrupted")
-                .set(SeriesMagnetIngestTask::getErrorMessage, "服务重启，任务已中断")
+                .set(SeriesMagnetIngestTask::getErrorMessage, unresolved ? "[OFFLINE_UNRESOLVED] 服务重启，任务已中断；云端状态待核实" : "服务重启，排队任务已中断")
                 .set(SeriesMagnetIngestTask::getFinishedAt, LocalDateTime.now()));
         if (movieInterruptedCount > 0 || seriesInterruptedCount > 0) {
             log.info(
@@ -701,32 +709,39 @@ public class MagnetIngestService {
     private void runMovieTask(String taskId) {
         try {
             MovieMagnetIngestTask task = getExistingMovieTask(taskId);
-            prepareMovieDownloadRoot(task);
-
-            markMovieSubmitted(task);
-            String openListTaskId = openListClient.addOfflineDownload(task.getTempPath(), task.getMagnet());
-            markMovieDownloading(taskId, openListTaskId);
-
-            waitForOfflineTask(
-                    taskId,
-                    openListTaskId,
-                    task.getTempPath(),
-                    false,
-                    (level, stage, message, detail) -> writeMovieLog(taskId, level, stage, message, detail),
-                    () -> refreshMovieTaskUpdatedAt(taskId)
-            );
-
-            markMovieOrganizing(taskId, openListTaskId, task.getTempPath());
-            OrganizeResult result = organizeMovieFiles(getExistingMovieTask(taskId));
-            if (result.videoCount() < 1) {
-                markMovieNoOrganizedFiles(taskId, openListTaskId, result);
-                return;
-            }
-
-            refreshMovieAutoSymlink(taskId);
-            markMovieSucceeded(task, openListTaskId, result);
+            offlineScheduler.enqueue(task.getSavePath(), task.getMagnetHash(),
+                    openListProperties.getOfflineTimeout(), openListProperties.getPollInterval(),
+                    new OfflineIngestScheduler.Download() {
+                        public void prepare() {
+                            prepareMovieDownloadRoot(task);
+                            markMovieSubmitted(task);
+                        }
+                        public String submit() {
+                            return openListClient.addOfflineDownload(task.getTempPath(), task.getMagnet());
+                        }
+                        public void submitted(String id) { markMovieDownloading(taskId, id); }
+                        public void progress(OpenListOfflineTaskInfo snapshot) {
+                            writeMovieLog(taskId, "INFO", "downloading", offlineProgressMessage(snapshot.progress()),
+                                    offlineProgressDetail(snapshot.id(), snapshot));
+                            refreshMovieTaskUpdatedAt(taskId);
+                        }
+                        public void organize(String id) {
+                            safeDeleteOpenListTask((level, stage, message, detail) ->
+                                    writeMovieLog(taskId, level, stage, message, detail), id);
+                            markMovieOrganizing(taskId, id, task.getTempPath());
+                            OrganizeResult result = organizeMovieFiles(getExistingMovieTask(taskId));
+                            if (result.videoCount() < 1) {
+                                markMovieNoOrganizedFiles(taskId, id, result);
+                                return;
+                            }
+                            refreshMovieAutoSymlink(taskId);
+                            markMovieSucceeded(task, id, result);
+                        }
+                        public void failed(RuntimeException failure) { markMovieFailed(taskId, safeMessage(failure)); }
+                        public void stage(String message) { writeMovieLog(taskId, "INFO", "scheduling", message, null); }
+                    });
         } catch (Exception exception) {
-            log.warn("Movie magnet ingest task failed id={}", taskId, exception);
+            log.warn("Movie magnet ingest scheduling failed id={}", taskId, exception);
             markMovieFailed(taskId, safeMessage(exception));
         }
     }
@@ -734,55 +749,43 @@ public class MagnetIngestService {
     private void runSeriesTask(String taskId) {
         try {
             SeriesMagnetIngestTask task = getExistingSeriesTask(taskId);
-            if (ANIME_PRODUCT_TYPE.equals(task.getTaskProductType())) {
-                runAnimeSeasonSeriesTask(task);
-            } else {
-                runTelevisionSeriesTask(task);
-            }
+            offlineScheduler.enqueue(task.getSavePath(), task.getMagnetHash(),
+                    openListProperties.getOfflineTimeout(), openListProperties.getPollInterval(),
+                    new OfflineIngestScheduler.Download() {
+                        public void prepare() {
+                            if (ANIME_PRODUCT_TYPE.equals(task.getTaskProductType())) prepareAnimeSeasonDownloadRoot(task);
+                            else prepareTelevisionSeriesDownloadRoot(task);
+                            markSeriesSubmitted(task);
+                        }
+                        public String submit() {
+                            return openListClient.addOfflineDownload(task.getTempPath(), task.getMagnet());
+                        }
+                        public void submitted(String id) { markSeriesDownloading(taskId, id); }
+                        public void progress(OpenListOfflineTaskInfo snapshot) {
+                            writeSeriesLog(taskId, "INFO", "downloading", offlineProgressMessage(snapshot.progress()),
+                                    offlineProgressDetail(snapshot.id(), snapshot));
+                            refreshSeriesTaskUpdatedAt(taskId);
+                        }
+                        public void organize(String id) {
+                            safeDeleteOpenListTask((level, stage, message, detail) ->
+                                    writeSeriesLog(taskId, level, stage, message, detail), id);
+                            markSeriesOrganizing(taskId, id, task.getTempPath());
+                            OrganizeResult result = organizeSeriesFiles(getExistingSeriesTask(taskId));
+                            if (result.videoCount() < 1) {
+                                markSeriesNoOrganizedFiles(taskId, id, result);
+                                return;
+                            }
+                            if (ANIME_PRODUCT_TYPE.equals(task.getTaskProductType())) refreshAnimeAutoSymlink(taskId);
+                            else refreshSeriesAutoSymlink(taskId);
+                            markSeriesSucceeded(task, id, result);
+                        }
+                        public void failed(RuntimeException failure) { markSeriesFailed(taskId, safeMessage(failure)); }
+                        public void stage(String message) { writeSeriesLog(taskId, "INFO", "scheduling", message, null); }
+                    });
         } catch (Exception exception) {
-            log.warn("Series magnet ingest task failed id={}", taskId, exception);
+            log.warn("Series magnet ingest scheduling failed id={}", taskId, exception);
             markSeriesFailed(taskId, safeMessage(exception));
         }
-    }
-
-    private void runTelevisionSeriesTask(SeriesMagnetIngestTask task) {
-        prepareTelevisionSeriesDownloadRoot(task);
-        executePreparedSeriesTask(task);
-    }
-
-    private void runAnimeSeasonSeriesTask(SeriesMagnetIngestTask task) {
-        prepareAnimeSeasonDownloadRoot(task);
-        executePreparedSeriesTask(task);
-    }
-
-    private void executePreparedSeriesTask(SeriesMagnetIngestTask task) {
-        String taskId = task.getId();
-        markSeriesSubmitted(task);
-        String openListTaskId = openListClient.addOfflineDownload(task.getTempPath(), task.getMagnet());
-        markSeriesDownloading(taskId, openListTaskId);
-
-        waitForOfflineTask(
-                taskId,
-                openListTaskId,
-                task.getTempPath(),
-                ANIME_PRODUCT_TYPE.equals(task.getTaskProductType()),
-                (level, stage, message, detail) -> writeSeriesLog(taskId, level, stage, message, detail),
-                () -> refreshSeriesTaskUpdatedAt(taskId)
-        );
-
-        markSeriesOrganizing(taskId, openListTaskId, task.getTempPath());
-        OrganizeResult result = organizeSeriesFiles(getExistingSeriesTask(taskId));
-        if (result.videoCount() < 1) {
-            markSeriesNoOrganizedFiles(taskId, openListTaskId, result);
-            return;
-        }
-
-        if (ANIME_PRODUCT_TYPE.equals(task.getTaskProductType())) {
-            refreshAnimeAutoSymlink(taskId);
-        } else {
-            refreshSeriesAutoSymlink(taskId);
-        }
-        markSeriesSucceeded(task, openListTaskId, result);
     }
 
     private void prepareMovieDownloadRoot(MovieMagnetIngestTask task) {
@@ -952,66 +955,6 @@ public class MagnetIngestService {
         updateSeriesTask(taskId, "FAILED", "failed", null, null, errorMessage);
     }
 
-    private void waitForOfflineTask(
-            String taskId,
-            String openListTaskId,
-            String tempPath,
-            boolean animePrimaryLayerOnly,
-            TaskLogWriter taskLogWriter,
-            Runnable refreshTaskUpdatedAt
-    ) {
-        Instant startedAt = Instant.now();
-        int retryCount = 0;
-        Duration timeout = openListProperties.getOfflineTimeout();
-        Duration pollInterval = openListProperties.getPollInterval();
-
-        while (Duration.between(startedAt, Instant.now()).compareTo(timeout) < 0) {
-            OpenListOfflineTaskInfo taskInfo = openListClient.offlineTaskInfo(openListTaskId);
-            Integer state = taskInfo.state();
-            if (state != null && state == 2) {
-                taskLogWriter.write("INFO", "downloading", "OpenList 离线下载完成", openListTaskId);
-                safeDeleteOpenListTask(taskLogWriter, openListTaskId);
-                return;
-            }
-            if (state != null && state == 1
-                    && Duration.between(startedAt, Instant.now()).compareTo(SAVING_FILES_VISIBLE_GRACE) >= 0
-                    && hasVideoFiles(tempPath, animePrimaryLayerOnly)) {
-                taskLogWriter.write("WARN", "downloading", "OpenList 仍显示保存中但临时目录已有视频文件，尝试继续整理", openListTaskId);
-                return;
-            }
-            if (state != null && List.of(3, 4).contains(state)) {
-                throw new OpenListClientException("OpenList 离线任务已取消");
-            }
-            if (state != null && state >= 5) {
-                if (hasVideoFiles(tempPath, animePrimaryLayerOnly)) {
-                    taskLogWriter.write("WARN", "downloading", "OpenList 状态异常但发现视频文件，尝试继续整理", taskInfo.error());
-                    safeDeleteOpenListTask(taskLogWriter, openListTaskId);
-                    return;
-                }
-                if (retryCount >= Math.max(0, openListProperties.getRetryLimit())) {
-                    throw new OpenListClientException("OpenList 离线任务失败: " + taskInfo.error());
-                }
-                retryCount++;
-                taskLogWriter.write(
-                        "WARN",
-                        "downloading",
-                        "OpenList 离线任务失败，正在重试",
-                        "retry=" + retryCount + ", error=" + taskInfo.error()
-                );
-                openListClient.retryOfflineTask(openListTaskId);
-            } else {
-                taskLogWriter.write(
-                        "INFO",
-                        "downloading",
-                        offlineProgressMessage(taskInfo.progress()),
-                        offlineProgressDetail(openListTaskId, taskInfo)
-                );
-                refreshTaskUpdatedAt.run();
-            }
-            sleep(pollInterval);
-        }
-        throw new OpenListClientException("OpenList 离线下载超时");
-    }
 
     private OrganizeResult organizeMovieFiles(MovieMagnetIngestTask task) {
         TaskLogWriter taskLogWriter = (level, stage, message, detail) ->
@@ -1054,11 +997,15 @@ public class MagnetIngestService {
             }
             if (videoCount < 1) {
                 skipped++;
-                skipFile(taskLogWriter, plan, file, "跳过无法匹配视频的字幕");
+                preserveSubtitle(taskLogWriter, task.getSavePath(), plan, file);
                 continue;
             }
 
             String sourceQuality = renameService.qualityFull(file.name());
+            if (!videoQualityByBaseName.containsKey(sourceQuality) && (videoCount != 1 || StringUtils.hasText(sourceQuality))) {
+                preserveSubtitle(taskLogWriter, task.getSavePath(), plan, file);
+                continue;
+            }
             String matchedQuality = videoQualityByBaseName.containsKey(sourceQuality) ? sourceQuality : mainVideoQuality;
             Optional<MovieSeriesFileRenameService.RenameResult> rename = renameService.movieSubtitle(
                     file.name(),
@@ -1068,10 +1015,10 @@ public class MagnetIngestService {
             );
             if (rename.isEmpty()) {
                 skipped++;
-                skipFile(taskLogWriter, plan, file, "跳过无法识别的字幕");
+                preserveSubtitle(taskLogWriter, task.getSavePath(), plan, file);
                 continue;
             }
-            if (planFile(taskLogWriter, task.getSavePath(), targetNames, plan, file, rename.get().fileName())) {
+            if (planSubtitle(taskLogWriter, task.getSavePath(), targetNames, plan, file, rename.get().baseName())) {
                 organized++;
             } else {
                 skipped++;
@@ -1223,16 +1170,22 @@ public class MagnetIngestService {
             );
             if (detected.isEmpty()) {
                 skipped++;
-                skipFile(taskLogWriter, plan, file, "跳过无法识别集数的字幕");
+                preserveSubtitle(taskLogWriter, task.getSavePath(), plan, file);
                 continue;
             }
             Integer episodeNumber = detected.get().episodeNumber();
+            if (!episodeQualityKeys.contains(episodeQualityKey(episodeNumber, sourceQuality))
+                    && (StringUtils.hasText(sourceQuality)
+                        || episodeQualityKeys.stream().filter(key -> key.startsWith(episodeNumber + "|")).count() != 1)) {
+                preserveSubtitle(taskLogWriter, task.getSavePath(), plan, file);
+                continue;
+            }
             String matchedQuality = episodeQualityKeys.contains(episodeQualityKey(episodeNumber, sourceQuality))
                     ? sourceQuality
                     : mainQualityByEpisode.get(episodeNumber);
             if (matchedQuality == null) {
                 skipped++;
-                skipFile(taskLogWriter, plan, file, "跳过无法匹配视频的字幕");
+                preserveSubtitle(taskLogWriter, task.getSavePath(), plan, file);
                 continue;
             }
             MovieSeriesFileRenameService.RenameResult result = renameService.seriesSubtitle(
@@ -1241,7 +1194,7 @@ public class MagnetIngestService {
                     task.getSeasonNumber(),
                     matchedQuality, task.getTitle()
             ).orElseThrow();
-            if (planFile(taskLogWriter, task.getSavePath(), targetNames, plan, file, result.fileName())) {
+            if (planSubtitle(taskLogWriter, task.getSavePath(), targetNames, plan, file, result.baseName())) {
                 organized++;
             } else {
                 skipped++;
@@ -1373,6 +1326,30 @@ public class MagnetIngestService {
     private boolean isKnownAnimeAuxiliaryDirectory(String name) {
         String normalized = name == null ? "" : name.trim().toLowerCase(Locale.ROOT);
         return KNOWN_ANIME_AUXILIARY_DIRECTORY_NAMES.contains(normalized);
+    }
+
+    private boolean planSubtitle(
+            TaskLogWriter writer, String savePath, Set<String> targetNames,
+            OrganizationPlan plan, OpenListFileInfo file, String videoName
+    ) {
+        Optional<String> target = SubtitleFilenamePlanner.automaticName(videoName, file.path() + "/" + file.name());
+        if (target.isEmpty() || targetNames.contains(target.get()) || plan.plannedTargetNames().contains(target.get())
+                || (!file.name().equals(target.get()) && openListClient.listFiles(file.path()).stream()
+                        .anyMatch(sibling -> sibling.name().equalsIgnoreCase(target.get())))) {
+            preserveSubtitle(writer, savePath, plan, file);
+            return false;
+        }
+        return planFile(writer, savePath, targetNames, plan, file, target.get());
+    }
+
+    private void preserveSubtitle(TaskLogWriter writer, String savePath, OrganizationPlan plan, OpenListFileInfo file) {
+        String directory = openListClient.normalizePath(file.path());
+        String root = openListClient.normalizePath(savePath);
+        while (directory.startsWith(root + "/")) {
+            plan.preservedDirectories().add(directory);
+            directory = parentPath(directory);
+        }
+        writer.write("INFO", "organizing", "保留字幕原名及目录", file.path() + "/" + file.name());
     }
 
     private boolean planFile(
@@ -1509,14 +1486,19 @@ public class MagnetIngestService {
                 "rename=" + renameCount + ", move=" + moveCount + ", delete=" + deleteCount
                         + ", organized=" + organized + ", skipped=" + skipped
         );
+        Set<String> excludedDirectories = new LinkedHashSet<>(cleanupExcludedDirectories);
+        excludedDirectories.addAll(plan.preservedDirectories());
         LibraryOrganizationPlan organizationPlan = LibraryOrganizationPlan.fromGroupedOperations(
                 savePath,
                 plan.renameByDir(),
                 plan.moveByDir(),
                 plan.deleteByDir(),
                 plan.plannedTargetNames(),
-                cleanupExcludedDirectories
-        );
+                excludedDirectories
+        ).preservingSourceFiles(openListClient.findFiles(savePath).stream()
+                .filter(file -> renameService.isSubtitle(file.name()))
+                .map(file -> openListClient.joinPath(file.path(), file.name()))
+                .collect(java.util.stream.Collectors.toSet()));
         libraryOrganizer.organize(
                 organizationPlan,
                 (message, detail) -> taskLogWriter.write("INFO", "organizing", message, detail)
@@ -1775,30 +1757,6 @@ public class MagnetIngestService {
         return String.join(", ", details);
     }
 
-    private boolean hasVideoFiles(String path, boolean animePrimaryLayerOnly) {
-        if (!animePrimaryLayerOnly) {
-            return openListClient.findFiles(path).stream().anyMatch(file -> renameService.isVideo(file.name()));
-        }
-
-        String rootPath = openListClient.normalizePath(path);
-        List<OpenListFileInfo> rootChildren = openListClient.listFiles(rootPath);
-        if (directFiles(rootChildren).stream().anyMatch(file -> renameService.isVideo(file.name()))) {
-            return true;
-        }
-
-        for (OpenListFileInfo directory : directDirectories(rootChildren)) {
-            if (isKnownAnimeAuxiliaryDirectory(directory.name())) {
-                continue;
-            }
-            String directoryPath = openListClient.joinPath(rootPath, directory.name());
-            boolean directoryHasVideo = directFiles(openListClient.listFiles(directoryPath)).stream()
-                    .anyMatch(file -> renameService.isVideo(file.name()));
-            if (directoryHasVideo) {
-                return true;
-            }
-        }
-        return false;
-    }
 
     private void safeDeleteOpenListTask(TaskLogWriter taskLogWriter, String openListTaskId) {
         try {
@@ -2235,14 +2193,6 @@ public class MagnetIngestService {
         return value.substring(0, maxLength);
     }
 
-    private void sleep(Duration duration) {
-        try {
-            Thread.sleep(duration.toMillis());
-        } catch (InterruptedException exception) {
-            Thread.currentThread().interrupt();
-            throw new OpenListClientException("任务线程被中断", exception);
-        }
-    }
 
     @FunctionalInterface
     private interface TaskLogWriter {
@@ -2278,14 +2228,15 @@ public class MagnetIngestService {
             Map<String, Map<String, String>> renameByDir,
             Map<String, List<String>> moveByDir,
             Map<String, List<String>> deleteByDir,
-            Set<String> plannedTargetNames
+            Set<String> plannedTargetNames,
+            Set<String> preservedDirectories
     ) {
         private OrganizationPlan() {
-            this(new HashMap<>(), new HashMap<>(), new LinkedHashMap<>(), new HashSet<>());
+            this(new HashMap<>(), new HashMap<>(), new LinkedHashMap<>(), new HashSet<>(), new LinkedHashSet<>());
         }
 
         private OrganizationPlan(Map<String, List<String>> deleteByDir) {
-            this(new HashMap<>(), new HashMap<>(), new LinkedHashMap<>(deleteByDir), new HashSet<>());
+            this(new HashMap<>(), new HashMap<>(), new LinkedHashMap<>(deleteByDir), new HashSet<>(), new LinkedHashSet<>());
         }
     }
 

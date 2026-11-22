@@ -30,7 +30,6 @@ import com.medianexus.orchestrator.service.settings.targets.IngestTargetRegistry
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -45,10 +44,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
 import java.util.concurrent.ThreadFactory;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -77,7 +73,6 @@ public class AdultMagnetIngestService {
     private static final List<String> TERMINAL_STATUSES = List.of("SUCCEEDED", "PARTIAL_SUCCESS", "FAILED", "INTERRUPTED");
     private static final long MIN_VIDEO_BYTES = 100L * 1024L * 1024L;
     private static final int MAX_MAGNETS_PER_BATCH = 50;
-    private static final int ORGANIZE_PARALLELISM = 3;
     private static final String MANUAL_MAGNET_SOURCE = "MANUAL_MAGNET";
     private static final String JAVDB_AUTOMATION_SOURCE = "JAVDB_AUTOMATION";
 
@@ -92,10 +87,12 @@ public class AdultMagnetIngestService {
     private final AutoSymlinkRefreshService autoSymlinkRefreshService;
     private final ObjectMapper objectMapper;
     private final ExecutorService executorService;
-    private final ExecutorService organizeExecutorService;
     private final Object countLock = new Object();
     private final Map<String, Object> promotionLocks = new ConcurrentHashMap<>();
     private volatile boolean tablesReady;
+
+    @Autowired
+    private OfflineIngestScheduler offlineScheduler;
 
     @Autowired
     public AdultMagnetIngestService(
@@ -120,8 +117,8 @@ public class AdultMagnetIngestService {
         this.authService = authService;
         this.autoSymlinkRefreshService = autoSymlinkRefreshService;
         this.objectMapper = objectMapper;
-        this.executorService = Executors.newSingleThreadExecutor(new AdultWorkerThreadFactory());
-        this.organizeExecutorService = Executors.newFixedThreadPool(ORGANIZE_PARALLELISM, new AdultOrganizeThreadFactory());
+        this.executorService = new java.util.concurrent.ThreadPoolExecutor(1, 1, 0L, java.util.concurrent.TimeUnit.MILLISECONDS,
+                new java.util.concurrent.ArrayBlockingQueue<>(128), new AdultWorkerThreadFactory());
     }
 
     AdultMagnetIngestService(
@@ -149,7 +146,6 @@ public class AdultMagnetIngestService {
         this.autoSymlinkRefreshService = autoSymlinkRefreshService;
         this.objectMapper = objectMapper;
         this.executorService = executorService;
-        this.organizeExecutorService = organizeExecutorService;
     }
 
     AdultMagnetIngestService(
@@ -209,11 +205,16 @@ public class AdultMagnetIngestService {
     @EventListener(ApplicationReadyEvent.class)
     public void markUnfinishedTasksInterrupted() {
         ensureTablesReady();
+        boolean unresolved = taskMapper.selectCount(new LambdaQueryWrapper<AdultMagnetIngestTask>()
+                .in(AdultMagnetIngestTask::getStatus, List.of("SUBMITTED", "DOWNLOADING", "ORGANIZING"))) > 0
+                || taskMapper.selectCount(new LambdaQueryWrapper<AdultMagnetIngestTask>()
+                .like(AdultMagnetIngestTask::getErrorMessage, "OFFLINE_UNRESOLVED")) > 0;
+        if (unresolved) offlineScheduler.blockUnresolvedRestart("Adult 存在未核实的重启任务，需先核实云端状态");
         int interruptedCount = taskMapper.update(new LambdaUpdateWrapper<AdultMagnetIngestTask>()
                 .in(AdultMagnetIngestTask::getStatus, UNFINISHED_STATUSES)
                 .set(AdultMagnetIngestTask::getStatus, "INTERRUPTED")
                 .set(AdultMagnetIngestTask::getStage, "interrupted")
-                .set(AdultMagnetIngestTask::getErrorMessage, "服务重启，Adult 任务已中断")
+                .set(AdultMagnetIngestTask::getErrorMessage, unresolved ? "[OFFLINE_UNRESOLVED] 服务重启，Adult 任务已中断；云端状态待核实" : "服务重启，Adult 排队任务已中断")
                 .set(AdultMagnetIngestTask::getFinishedAt, LocalDateTime.now()));
         if (interruptedCount > 0) {
             log.info("Marked unfinished adult magnet ingest tasks interrupted count={}", interruptedCount);
@@ -418,32 +419,80 @@ public class AdultMagnetIngestService {
     private void runTask(String taskId, List<AdultMagnetItem> items, String rootPath) {
         try {
             AdultMagnetIngestTask task = getExistingTask(taskId);
-            prepareTargetDirectories(task, items, rootPath);
-            submitItems(task, items);
-            if (items.stream().noneMatch(AdultMagnetItem::submitted)) {
-                persistFailedMagnets(taskId, items);
-                markFinished(taskId, "FAILED", "failed", "所有 Adult 下载链接提交失败");
-                return;
-            }
-
-            waitAndOrganizeItems(taskId, items);
+            Set<String> batchTempPaths = items.stream().map(AdultMagnetItem::tempPath)
+                    .collect(java.util.stream.Collectors.toSet());
+            items.forEach(item -> item.batchTempPaths = batchTempPaths);
+            List<OfflineIngestScheduler.DownloadRequest> requests = items.stream().map(item ->
+                    new OfflineIngestScheduler.DownloadRequest(task.getTargetPath(), item.magnetHash(),
+                            openListProperties.getAdultOfflineTimeout(), openListProperties.getPollInterval(),
+                            new OfflineIngestScheduler.Download() {
+                                public void prepare() {
+                                    prepareTargetDirectories(task, List.of(item), rootPath);
+                                    updateStatus(taskId, "SUBMITTED", "submitted", null);
+                                }
+                                public String submit() {
+                                    return openListClient.addOfflineDownload(item.tempPath(), item.magnet(), offlineToolForAdultLink(item.magnet()));
+                                }
+                                public void submitted(String id) {
+                                    item.markSubmitted(id);
+                                    persistSubmittedItem(taskId, item);
+                                }
+                                public void progress(OpenListOfflineTaskInfo snapshot) {
+                                    writeLog(taskId, "INFO", "downloading", offlineProgressMessage(snapshot.progress()), itemDetail(item, snapshot));
+                                }
+                                public void organize(String id) {
+                                    safeDeleteOpenListTask(taskId, id);
+                                    item.markOrganizing();
+                                    prepareCompletedItemSafely(taskId, item);
+                                    promotePreparedItems(taskId, List.of(item));
+                                }
+                                public void failed(RuntimeException failure) {
+                                    item.markFailed();
+                                    incrementFailed(taskId);
+                                    if (safeMessage(failure).contains("OFFLINE_UNRESOLVED")) {
+                                        updateStatus(taskId, "DOWNLOADING", "downloading", safeMessage(failure));
+                                    }
+                                    writeLog(taskId, "ERROR", "failed", "Adult 下载链接未完成", safeMessage(failure));
+                                }
+                                public void stage(String message) { writeLog(taskId, "INFO", "scheduling", message, "index=" + item.index()); }
+                            })).toList();
+            List<java.util.concurrent.CompletableFuture<Void>> completions = offlineScheduler.enqueueBatch(requests);
+            offlineScheduler.finishBatchAfter(completions, () -> finishBatch(taskId, items));
+        } catch (Exception exception) {
+            log.warn("Adult magnet ingest scheduling failed id={}", taskId, exception);
+            items.forEach(AdultMagnetItem::markFailed);
             persistFailedMagnets(taskId, items);
-            AdultMagnetIngestTask finishedTask = getExistingTask(taskId);
-            int succeededCount = safeInt(finishedTask.getSucceededCount());
-            int failedCount = safeInt(finishedTask.getFailedCount());
-            int keptCount = safeInt(finishedTask.getKeptCount());
-            if (succeededCount > 0 && failedCount == 0 && keptCount > 0) {
+            markFinished(taskId, "FAILED", "failed", safeMessage(exception));
+        }
+    }
+
+    private void finishBatch(String taskId, List<AdultMagnetItem> items) {
+        try {
+            persistFailedMagnets(taskId, items);
+            AdultMagnetIngestTask finished = getExistingTask(taskId);
+            if (safeInt(finished.getSucceededCount()) > 0 && safeInt(finished.getFailedCount()) == 0 && safeInt(finished.getKeptCount()) > 0) {
                 refreshAutoSymlink(taskId, "succeeded");
                 markFinished(taskId, "SUCCEEDED", "succeeded", null);
-            } else if (keptCount > 0) {
+            } else if (safeInt(finished.getKeptCount()) > 0) {
                 markFinished(taskId, "PARTIAL_SUCCESS", "partial_success", "部分 Adult 下载链接未成功完成");
             } else {
                 markFinished(taskId, "FAILED", "failed", "没有保留到 100MB 以上的视频文件");
             }
-        } catch (Exception exception) {
-            log.warn("Adult magnet ingest task failed id={}", taskId, exception);
-            persistFailedMagnets(taskId, items);
+        } catch (RuntimeException exception) {
+            log.warn("Adult batch finalization failed id={}", taskId, exception);
             markFinished(taskId, "FAILED", "failed", safeMessage(exception));
+        }
+    }
+
+    private void persistSubmittedItem(String taskId, AdultMagnetItem item) {
+        synchronized (countLock) {
+            AdultMagnetIngestTask task = getExistingTask(taskId);
+            String ids = StringUtils.hasText(task.getOpenlistTaskIds()) ? task.getOpenlistTaskIds() + "\n" : "";
+            updateCounts(taskId, safeInt(task.getSubmittedCount()) + 1, safeInt(task.getSucceededCount()),
+                    safeInt(task.getFailedCount()), safeInt(task.getKeptCount()), safeInt(task.getDeletedCount()),
+                    ids + item.magnetHash() + "=" + item.openListTaskId());
+            updateStatus(taskId, "DOWNLOADING", "downloading", null);
+            writeLog(taskId, "INFO", "submitted", "Adult 下载链接已提交并保存上游 ID", item.openListTaskId());
         }
     }
 
@@ -470,146 +519,6 @@ public class AdultMagnetIngestService {
         writeLog(task.getId(), "INFO", "created", "Adult 保存目录准备完成: " + task.getTargetPath(), task.getTargetPath());
     }
 
-    private void submitItems(AdultMagnetIngestTask task, List<AdultMagnetItem> items) {
-        updateStatus(task.getId(), "SUBMITTED", "submitted", null);
-        int submittedCount = 0;
-        int failedCount = 0;
-        List<String> openListTaskIds = new ArrayList<>();
-        for (AdultMagnetItem item : items) {
-            String offlineTool = offlineToolForAdultLink(item.magnet());
-            try {
-                String openListTaskId = openListClient.addOfflineDownload(item.tempPath(), item.magnet(), offlineTool);
-                item.markSubmitted(openListTaskId);
-                submittedCount++;
-                openListTaskIds.add(item.magnetHash() + "=" + openListTaskId);
-                writeLog(
-                        task.getId(),
-                        "INFO",
-                        "submitted",
-                        "Adult 下载链接已提交 OpenList",
-                        "index=" + item.index() + ", hash=" + item.magnetHash()
-                                + ", openListTaskId=" + openListTaskId
-                                + ", tool=" + offlineTool
-                                + ", submittedAt=" + item.submittedAt()
-                                + ", tempPath=" + item.tempPath()
-                );
-            } catch (RuntimeException exception) {
-                item.markFailed();
-                failedCount++;
-                writeLog(
-                        task.getId(),
-                        "ERROR",
-                        "submitted",
-                        "Adult 下载链接提交失败",
-                        "index=" + item.index() + ", hash=" + item.magnetHash()
-                                + ", tool=" + offlineTool
-                                + ", error=" + safeMessage(exception)
-                );
-            }
-        }
-        updateCounts(task.getId(), submittedCount, 0, failedCount, 0, 0, String.join("\n", openListTaskIds));
-        if (submittedCount > 0) {
-            updateStatus(task.getId(), "DOWNLOADING", "downloading", null);
-        }
-    }
-
-    private void waitAndOrganizeItems(String taskId, List<AdultMagnetItem> items) {
-        Duration timeout = openListProperties.getAdultOfflineTimeout();
-        Duration pollInterval = openListProperties.getPollInterval();
-        List<Future<?>> preparationFutures = new ArrayList<>();
-
-        while (items.stream().anyMatch(AdultMagnetItem::pending)) {
-            for (AdultMagnetItem item : items) {
-                if (!item.pending()) {
-                    continue;
-                }
-
-                OpenListOfflineTaskInfo taskInfo = openListClient.offlineTaskInfo(item.openListTaskId());
-                Integer state = taskInfo.state();
-                if (state != null && state == 2) {
-                    writeLog(taskId, "INFO", "downloading", "Adult 下载链接下载完成", itemDetail(item, taskInfo));
-                    safeDeleteOpenListTask(taskId, item.openListTaskId());
-                    submitPreparation(taskId, item, preparationFutures);
-                    continue;
-                }
-                if (state != null && List.of(3, 4).contains(state)) {
-                    item.markFailed();
-                    incrementFailed(taskId);
-                    writeLog(taskId, "ERROR", "downloading", "Adult 下载链接离线任务已取消", itemDetail(item, taskInfo));
-                    continue;
-                }
-                if (state != null && state >= 5) {
-                    if (hasQualifiedVideoFiles(item.tempPath())) {
-                        writeLog(
-                                taskId,
-                                "WARN",
-                                "downloading",
-                                "Adult 下载链接状态异常但临时目录发现合格视频，继续整理",
-                                itemDetail(item, taskInfo)
-                        );
-                        safeDeleteOpenListTask(taskId, item.openListTaskId());
-                        submitPreparation(taskId, item, preparationFutures);
-                        continue;
-                    }
-                    item.markFailed();
-                    incrementFailed(taskId);
-                    writeLog(taskId, "ERROR", "downloading", "Adult 下载链接离线任务失败", itemDetail(item, taskInfo));
-                    continue;
-                }
-                if (isTimedOut(item, timeout)) {
-                    if (hasQualifiedVideoFiles(item.tempPath())) {
-                        writeLog(
-                                taskId,
-                                "WARN",
-                                "downloading",
-                                "Adult 下载链接已达到超时阈值，但临时目录发现合格视频，继续整理",
-                                itemDetail(item, taskInfo) + ", " + timeoutDetail(item, timeout)
-                        );
-                        safeDeleteOpenListTask(taskId, item.openListTaskId());
-                        submitPreparation(taskId, item, preparationFutures);
-                        continue;
-                    }
-                    cancelTimedOutItem(taskId, item, taskInfo, timeout);
-                    item.markFailed();
-                    incrementFailed(taskId);
-                    writeLog(
-                            taskId,
-                            "WARN",
-                            "downloading",
-                            "Adult 下载链接下载超时，已取消",
-                            itemDetail(item, taskInfo) + ", " + timeoutDetail(item, timeout)
-                    );
-                    continue;
-                }
-                writeLog(taskId, "INFO", "downloading", offlineProgressMessage(taskInfo.progress()), itemDetail(item, taskInfo));
-            }
-
-            if (items.stream().anyMatch(AdultMagnetItem::pending)) {
-                sleep(pollInterval);
-            }
-        }
-        waitForPreparationFutures(taskId, preparationFutures);
-        promotePreparedItems(taskId, items);
-    }
-
-    private void submitPreparation(String taskId, AdultMagnetItem item, List<Future<?>> preparationFutures) {
-        item.markOrganizing();
-        preparationFutures.add(organizeExecutorService.submit(() -> prepareCompletedItemSafely(taskId, item)));
-    }
-
-    private void waitForPreparationFutures(String taskId, List<Future<?>> preparationFutures) {
-        for (Future<?> future : preparationFutures) {
-            try {
-                future.get();
-            } catch (InterruptedException exception) {
-                Thread.currentThread().interrupt();
-                throw new OpenListClientException("Adult preparation task interrupted", exception);
-            } catch (ExecutionException exception) {
-                writeLog(taskId, "ERROR", "organizing", "Adult 清理线程异常", safeMessage(exception));
-                throw new OpenListClientException("Adult preparation task failed", exception);
-            }
-        }
-    }
 
     private void prepareCompletedItemSafely(String taskId, AdultMagnetItem item) {
         try {
@@ -770,7 +679,7 @@ public class AdultMagnetIngestService {
                 moveByDirectory,
                 deleteByDirectory,
                 expectedTargetNames,
-                Set.of()
+                preparedItems.get(0).batchTempPaths
         );
         return new AdultPromotionBatch(plan, decisions);
     }
@@ -1023,18 +932,6 @@ public class AdultMagnetIngestService {
         return renameService.isVideo(file.name()) && file.size() != null && file.size() >= MIN_VIDEO_BYTES;
     }
 
-    private boolean hasQualifiedVideoFiles(String path) {
-        try {
-            return openListClient.findFiles(path, true).stream().anyMatch(this::isQualifiedVideo);
-        } catch (RuntimeException exception) {
-            log.warn("Failed to inspect Adult temp path before timeout fallback path={}", path, exception);
-            return false;
-        }
-    }
-
-    private boolean isTimedOut(AdultMagnetItem item, Duration timeout) {
-        return Duration.between(item.submittedAt(), Instant.now()).compareTo(timeout) >= 0;
-    }
 
     private Set<String> targetNames(String savePath) {
         return openListClient.listFiles(savePath, true).stream()
@@ -1042,36 +939,6 @@ public class AdultMagnetIngestService {
                 .collect(HashSet::new, HashSet::add, HashSet::addAll);
     }
 
-    private void cleanupEmptyDirectories(String taskId, String rootPath, String currentPath) {
-        List<OpenListFileInfo> children;
-        try {
-            children = openListClient.listFiles(currentPath);
-        } catch (RuntimeException exception) {
-            writeLog(taskId, "WARN", "organizing", "扫描空目录失败，跳过清理", currentPath);
-            return;
-        }
-
-        for (OpenListFileInfo child : children) {
-            if (Boolean.TRUE.equals(child.isDir())) {
-                cleanupEmptyDirectories(taskId, rootPath, openListClient.joinPath(currentPath, child.name()));
-            }
-        }
-        if (openListClient.normalizePath(currentPath).equals(openListClient.normalizePath(rootPath))) {
-            return;
-        }
-        removeDirectoryIfEmpty(taskId, currentPath);
-    }
-
-    private void removeDirectoryIfEmpty(String taskId, String path) {
-        try {
-            if (openListClient.listFiles(path).isEmpty()) {
-                openListClient.remove(parentPath(path), List.of(pathName(path)));
-                writeLog(taskId, "INFO", "organizing", "删除空目录", path);
-            }
-        } catch (RuntimeException exception) {
-            writeLog(taskId, "WARN", "organizing", "删除空目录失败", path);
-        }
-    }
 
     private String configuredRootPath(String configuredPath, String missingMessage) {
         String cleanedPath = cleanConfigValue(configuredPath);
@@ -1109,68 +976,6 @@ public class AdultMagnetIngestService {
         }
     }
 
-    private void cancelTimedOutItem(
-            String taskId,
-            AdultMagnetItem item,
-            OpenListOfflineTaskInfo taskInfo,
-            Duration timeout
-    ) {
-        boolean cancellationConfirmed = false;
-        try {
-            openListClient.cancelOfflineTask(item.openListTaskId());
-            cancellationConfirmed = waitForOfflineCancellation(item.openListTaskId());
-            writeLog(
-                    taskId,
-                    cancellationConfirmed ? "WARN" : "ERROR",
-                    "downloading",
-                    cancellationConfirmed
-                            ? "Adult 下载链接超过超时阈值，已取消"
-                            : "Adult 下载链接超过超时阈值，取消未确认",
-                    itemDetail(item, taskInfo) + ", " + timeoutDetail(item, timeout)
-            );
-        } catch (RuntimeException exception) {
-            writeLog(
-                    taskId,
-                    "ERROR",
-                    "downloading",
-                    "Adult 下载链接超时，但取消请求失败",
-                    itemDetail(item, taskInfo) + ", " + timeoutDetail(item, timeout)
-                            + ", error=" + safeMessage(exception)
-            );
-        }
-        if (cancellationConfirmed) {
-            cleanupCancelledTempDirectory(taskId, item.tempPath());
-        }
-    }
-
-    private boolean waitForOfflineCancellation(String openListTaskId) {
-        for (int attempt = 0; attempt < 5; attempt++) {
-            OpenListOfflineTaskInfo taskInfo = openListClient.offlineTaskInfo(openListTaskId);
-            if (taskInfo.state() != null && taskInfo.state() >= 3) {
-                return true;
-            }
-            if (attempt < 4) {
-                sleep(Duration.ofMillis(500));
-            }
-        }
-        return false;
-    }
-
-    private void cleanupCancelledTempDirectory(String taskId, String tempPath) {
-        try {
-            List<OpenListFileInfo> files = openListClient.findFiles(tempPath, true);
-            Map<String, List<String>> deleteNamesByPath = new LinkedHashMap<>();
-            for (OpenListFileInfo file : files) {
-                deleteNamesByPath.computeIfAbsent(file.path(), ignored -> new ArrayList<>()).add(file.name());
-            }
-            for (Map.Entry<String, List<String>> entry : deleteNamesByPath.entrySet()) {
-                openListClient.remove(entry.getKey(), entry.getValue());
-            }
-            cleanupEmptyDirectories(taskId, parentPath(tempPath), tempPath);
-        } catch (RuntimeException exception) {
-            writeLog(taskId, "WARN", "downloading", "Adult 超时临时目录清理失败", tempPath + ", error=" + safeMessage(exception));
-        }
-    }
 
     private void updateStatus(String taskId, String status, String stage, String errorMessage) {
         LambdaUpdateWrapper<AdultMagnetIngestTask> updateWrapper = new LambdaUpdateWrapper<AdultMagnetIngestTask>()
@@ -1236,6 +1041,8 @@ public class AdultMagnetIngestService {
     }
 
     private void markFinished(String taskId, String status, String stage, String errorMessage) {
+        String existingError = getExistingTask(taskId).getErrorMessage();
+        if (existingError != null && existingError.contains("OFFLINE_UNRESOLVED")) errorMessage = existingError;
         writeLog(
                 taskId,
                 TERMINAL_STATUSES.contains(status) && "FAILED".equals(status) ? "ERROR" : "INFO",
@@ -1375,11 +1182,6 @@ public class AdultMagnetIngestService {
         return String.join(", ", details);
     }
 
-    private String timeoutDetail(AdultMagnetItem item, Duration timeout) {
-        return "elapsed=" + Duration.between(item.submittedAt(), Instant.now())
-                + ", timeout=" + timeout
-                + ", submittedAt=" + item.submittedAt();
-    }
 
     private String parentPath(String path) {
         String normalized = openListClient.normalizePath(path);
@@ -1417,14 +1219,6 @@ public class AdultMagnetIngestService {
         return new BusinessException(ErrorCode.INTERNAL_ERROR, message, HttpStatus.SERVICE_UNAVAILABLE);
     }
 
-    private void sleep(Duration duration) {
-        try {
-            Thread.sleep(duration.toMillis());
-        } catch (InterruptedException exception) {
-            Thread.currentThread().interrupt();
-            throw new OpenListClientException("Adult magnet task interrupted");
-        }
-    }
 
     private record AdultTaskPlan(
             String category,
@@ -1488,13 +1282,14 @@ public class AdultMagnetIngestService {
         private final String magnetHash;
         private final String targetPath;
         private final String tempPath;
-        private String openListTaskId;
-        private Instant submittedAt;
-        private boolean submitted;
-        private boolean organizing;
-        private boolean succeeded;
-        private boolean failed;
-        private AdultPreparedItem preparedItem;
+        private Set<String> batchTempPaths = Set.of();
+        private volatile String openListTaskId;
+        private volatile Instant submittedAt;
+        private volatile boolean submitted;
+        private volatile boolean organizing;
+        private volatile boolean succeeded;
+        private volatile boolean failed;
+        private volatile AdultPreparedItem preparedItem;
 
         AdultMagnetItem(int index, String magnet, String magnetHash, String targetPath, String tempPath) {
             this.index = index;
@@ -1585,13 +1380,4 @@ public class AdultMagnetIngestService {
         }
     }
 
-    private static class AdultOrganizeThreadFactory implements ThreadFactory {
-        @Override
-        public Thread newThread(Runnable runnable) {
-            Thread thread = new Thread(runnable);
-            thread.setName("adult-magnet-organize-worker");
-            thread.setDaemon(true);
-            return thread;
-        }
-    }
 }

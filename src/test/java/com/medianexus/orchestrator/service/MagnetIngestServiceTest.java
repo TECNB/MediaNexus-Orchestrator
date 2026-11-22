@@ -245,6 +245,154 @@ class MagnetIngestServiceTest {
     }
 
     @Test
+    void seriesRetainsExplicitQualityConflictsAndForeignSubtitlesInChineseDirectory() {
+        OpenListClient client = mock(OpenListClient.class);
+        stubPathHelpers(client);
+        SeriesMagnetIngestTask task = animeSeriesTask();
+        task.setTaskProductType("TV");
+        String root = task.getSavePath();
+        when(client.findFiles(root)).thenReturn(List.of(
+                new OpenListFileInfo("Show.S02E01.1080p.mkv", 300L * 1024 * 1024, false, root),
+                new OpenListFileInfo("Show.S02E01.2160p.chs.srt", 100L, false, root + "/subs"),
+                new OpenListFileInfo("Show.S02E01.尝鲜版.chs.srt", 100L, false, root + "/subs"),
+                new OpenListFileInfo("Show.S02E01.jpn.srt", 100L, false, root + "/简体")));
+        RecordingLibraryOrganizer organizer = new RecordingLibraryOrganizer();
+
+        ReflectionTestUtils.invokeMethod(service(client, organizer), "organizeSeriesFiles", task);
+
+        assertThat(organizer.plan.renames()).hasSize(1);
+        assertThat(organizer.plan.deletions()).isEmpty();
+        assertThat(organizer.plan.cleanupExcludedDirectories()).contains(root + "/subs", root + "/简体");
+    }
+
+    @Test
+    void movieRetainsSubtitleWithExplicitlyConflictingVideoQuality() {
+        OpenListClient client = mock(OpenListClient.class);
+        stubPathHelpers(client);
+        String root = "/movies/Furious 7 (2015)";
+        when(client.findFiles(root)).thenReturn(List.of(
+                new OpenListFileInfo("release.1080p.mkv", 300L * 1024 * 1024, false, root),
+                new OpenListFileInfo("release.2160p.chs.srt", 100L, false, root + "/subs")));
+        RecordingLibraryOrganizer organizer = new RecordingLibraryOrganizer();
+
+        ReflectionTestUtils.invokeMethod(service(client, organizer), "organizeMovieFiles", movieTask(root));
+
+        assertThat(organizer.plan.renames()).hasSize(1);
+        assertThat(organizer.plan.deletions()).isEmpty();
+    }
+
+    @Test
+    void movieKeepsSourceDirectoryCollisionsAndPairedImageSubtitles() {
+        OpenListClient client = mock(OpenListClient.class);
+        stubPathHelpers(client);
+        String root = "/movies/Furious 7 (2015)";
+        List<OpenListFileInfo> files = List.of(
+                new OpenListFileInfo("release.mkv", 300L * 1024 * 1024, false, root),
+                new OpenListFileInfo("one.chs.srt", 100L, false, root + "/subs"),
+                new OpenListFileInfo("Furious 7 (2015).zh-CN.srt", 100L, false, root + "/subs"),
+                new OpenListFileInfo("one.chs.idx", 100L, false, root + "/subs"),
+                new OpenListFileInfo("one.chs.sub", 100L, false, root + "/subs"));
+        when(client.findFiles(root)).thenReturn(files);
+        when(client.listFiles(root + "/subs")).thenReturn(files.subList(1, files.size()));
+        RecordingLibraryOrganizer organizer = new RecordingLibraryOrganizer();
+
+        ReflectionTestUtils.invokeMethod(service(client, organizer), "organizeMovieFiles", movieTask(root));
+
+        assertThat(organizer.plan.deletions()).isEmpty();
+        assertThat(organizer.plan.renames()).hasSize(1);
+        assertThat(organizer.plan.cleanupExcludedDirectories()).contains(root + "/subs");
+    }
+
+    @Test
+    void movieDoesNotGuessVideoVersionForChineseSubtitle() {
+        OpenListClient client = mock(OpenListClient.class);
+        stubPathHelpers(client);
+        String root = "/movies/Furious 7 (2015)";
+        when(client.findFiles(root)).thenReturn(List.of(
+                new OpenListFileInfo("release.1080p.mkv", 300L * 1024 * 1024, false, root),
+                new OpenListFileInfo("release.2160p.mkv", 400L * 1024 * 1024, false, root),
+                new OpenListFileInfo("one.chs.srt", 100L, false, root + "/subs")
+        ));
+        RecordingLibraryOrganizer organizer = new RecordingLibraryOrganizer();
+
+        ReflectionTestUtils.invokeMethod(service(client, organizer), "organizeMovieFiles", movieTask(root));
+
+        assertThat(organizer.plan.renames()).hasSize(2);
+        assertThat(organizer.plan.deletions()).isEmpty();
+        assertThat(organizer.plan.cleanupExcludedDirectories()).contains(root + "/subs");
+    }
+
+    @Test
+    void movieNormalizesOnlyClearChineseAndPreservesVariantsAndCollisions() {
+        OpenListClient client = mock(OpenListClient.class);
+        stubPathHelpers(client);
+        String root = "/movies/Furious 7 (2015)";
+        when(client.findFiles(root)).thenReturn(List.of(
+                new OpenListFileInfo("release.mkv", 300L * 1024 * 1024, false, root),
+                new OpenListFileInfo("one.chs.srt", 100L, false, root + "/a"),
+                new OpenListFileInfo("two.chs.srt", 100L, false, root + "/b"),
+                new OpenListFileInfo("one.cht.srt", 100L, false, root + "/a"),
+                new OpenListFileInfo("one.chi.srt", 100L, false, root + "/a"),
+                new OpenListFileInfo("one.chs.forced.srt", 100L, false, root + "/a"),
+                new OpenListFileInfo("one.chs.cht.srt", 100L, false, root + "/a"),
+                new OpenListFileInfo("one.中英.srt", 100L, false, root + "/a")
+        ));
+        RecordingLibraryOrganizer organizer = new RecordingLibraryOrganizer();
+
+        ReflectionTestUtils.invokeMethod(service(client, organizer), "organizeMovieFiles", movieTask(root));
+
+        assertThat(organizer.plan.deletions()).isEmpty();
+        assertThat(organizer.plan.renames()).extracting(LibraryOrganizationPlan.RenameOperation::targetName)
+                .containsExactlyInAnyOrder("Furious 7 (2015).mkv", "Furious 7 (2015).zh-CN.srt",
+                        "Furious 7 (2015).zh-TW.srt", "Furious 7 (2015).zh.srt");
+        assertThat(organizer.plan.cleanupExcludedDirectories()).contains(root + "/a", root + "/b");
+    }
+
+    @Test
+    void seriesRetainsSubtitlesWithoutEpisodeOrMatchingVideo() {
+        OpenListClient client = mock(OpenListClient.class);
+        stubPathHelpers(client);
+        SeriesMagnetIngestTask task = animeSeriesTask();
+        task.setTaskProductType("TV");
+        String root = task.getSavePath();
+        when(client.findFiles(root)).thenReturn(List.of(
+                new OpenListFileInfo("Show.S02E01.mkv", 300L * 1024 * 1024, false, root),
+                new OpenListFileInfo("unknown.chs.srt", 100L, false, root + "/a"),
+                new OpenListFileInfo("Show.S02E02.chs.srt", 100L, false, root + "/b")
+        ));
+        RecordingLibraryOrganizer organizer = new RecordingLibraryOrganizer();
+
+        ReflectionTestUtils.invokeMethod(service(client, organizer), "organizeSeriesFiles", task);
+
+        assertThat(organizer.plan.deletions()).isEmpty();
+        assertThat(organizer.plan.renames()).hasSize(1);
+        assertThat(organizer.plan.cleanupExcludedDirectories()).contains(root + "/a", root + "/b");
+    }
+
+    @Test
+    void moviePreservesArbitraryNonChineseSubtitlesAndTheirDirectories() {
+        OpenListClient client = mock(OpenListClient.class);
+        stubPathHelpers(client);
+        String savePath = "/movies/Furious 7 (2015)";
+        when(client.findFiles(savePath)).thenReturn(List.of(
+                new OpenListFileInfo("release.mkv", 300L * 1024 * 1024, false, savePath + "/release"),
+                new OpenListFileInfo("arbitrary-language.srt", 100L, false, savePath + "/subs/a"),
+                new OpenListFileInfo("arbitrary-language.srt", 100L, false, savePath + "/subs/b"),
+                new OpenListFileInfo("English.srt", 100L, false, savePath + "/subs/a"),
+                new OpenListFileInfo("dan.srt", 100L, false, savePath + "/subs/a")
+        ));
+        RecordingLibraryOrganizer organizer = new RecordingLibraryOrganizer();
+
+        ReflectionTestUtils.invokeMethod(service(client, organizer), "organizeMovieFiles", movieTask(savePath));
+
+        assertThat(organizer.plan.deletions()).isEmpty();
+        assertThat(organizer.plan.renames()).hasSize(1);
+        assertThat(organizer.plan.moves()).hasSize(1);
+        assertThat(organizer.plan.cleanupExcludedDirectories()).contains(
+                savePath + "/subs", savePath + "/subs/a", savePath + "/subs/b");
+    }
+
+    @Test
     void movieOrganizeRejectsTinyFilesDisguisedAsVideos() {
         OpenListClient openListClient = mock(OpenListClient.class);
         stubPathHelpers(openListClient);
@@ -371,30 +519,6 @@ class MagnetIngestServiceTest {
         verify(openListClient, never()).listFiles("/anime/Show/Season 2/[Release]/Scans");
     }
 
-    @Test
-    void animeSeriesVideoVisibilityCheckDoesNotScanAuxiliaryDirectories() {
-        OpenListClient openListClient = mock(OpenListClient.class);
-        stubPathHelpers(openListClient);
-        when(openListClient.listFiles("/anime/Show/Season 2")).thenReturn(List.of(
-                new OpenListFileInfo("[Release]", null, true, "/anime/Show/Season 2"),
-                new OpenListFileInfo("Scans", null, true, "/anime/Show/Season 2")
-        ));
-        when(openListClient.listFiles("/anime/Show/Season 2/[Release]")).thenReturn(List.of(
-                new OpenListFileInfo("[Group] Show - S02E01 1080p.mkv", 1024L, false, "/anime/Show/Season 2/[Release]")
-        ));
-        MagnetIngestService service = service(openListClient);
-
-        Boolean hasVideoFiles = ReflectionTestUtils.invokeMethod(
-                service,
-                "hasVideoFiles",
-                "/anime/Show/Season 2",
-                true
-        );
-
-        assertThat(hasVideoFiles).isTrue();
-        verify(openListClient, never()).findFiles(anyString());
-        verify(openListClient, never()).listFiles("/anime/Show/Season 2/Scans");
-    }
 
     @Test
     void animeSeriesOrganizeSplitsLargeRenameAndMoveBatches() {

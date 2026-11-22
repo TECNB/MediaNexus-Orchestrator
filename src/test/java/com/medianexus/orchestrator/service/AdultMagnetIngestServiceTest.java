@@ -413,6 +413,89 @@ class AdultMagnetIngestServiceTest {
         assertThat(plan.expectedTargetNames()).containsExactly("Same-Release");
     }
 
+    @Test
+    void sharedSchedulerPersistsEachIdBeforeBatchEndsAndProtectsSiblingTempDirectories() throws Exception {
+        com.baomidou.mybatisplus.core.metadata.TableInfoHelper.initTableInfo(new org.apache.ibatis.builder.MapperBuilderAssistant(
+                new com.baomidou.mybatisplus.core.MybatisConfiguration(), ""), AdultMagnetIngestTask.class);
+        String target = "/adult/JAV/day";
+        String firstPath = target + "/first";
+        String secondPath = target + "/second";
+        AdultMagnetIngestTask task = new AdultMagnetIngestTask();
+        task.setId("batch"); task.setTargetPath(target); task.setOpenlistTaskIds("");
+        task.setSubmittedCount(0); task.setSucceededCount(0); task.setFailedCount(0);
+        task.setKeptCount(0); task.setDeletedCount(0);
+        insertedTask.set(task);
+        java.util.concurrent.CountDownLatch firstSaved = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch finished = new java.util.concurrent.CountDownLatch(1);
+        when(taskMapper.update(any())).thenAnswer(call -> {
+            com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<?> update = call.getArgument(0);
+            String sql = update.getSqlSet();
+            var parameters = update.getParamNameValuePairs();
+            java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("(\\w+)=#\\{ew.paramNameValuePairs.(MPGENVAL\\d+)\\}").matcher(sql);
+            while (matcher.find()) {
+                Object value = parameters.get(matcher.group(2));
+                String property = switch (matcher.group(1)) {
+                    case "openlist_task_ids" -> "openlistTaskIds";
+                    case "submitted_count" -> "submittedCount";
+                    case "succeeded_count" -> "succeededCount";
+                    case "failed_count" -> "failedCount";
+                    case "kept_count" -> "keptCount";
+                    case "deleted_count" -> "deletedCount";
+                    case "error_message" -> "errorMessage";
+                    case "status" -> "status";
+                    default -> null;
+                };
+                if (property != null) org.springframework.test.util.ReflectionTestUtils.setField(task, property, value);
+            }
+            if (task.getOpenlistTaskIds().contains("one")) firstSaved.countDown();
+            if (List.of("SUCCEEDED", "FAILED", "PARTIAL_SUCCESS").contains(task.getStatus())) finished.countDown();
+            return 1;
+        });
+        OpenListClient client = mock(OpenListClient.class);
+        when(client.normalizePath(anyString())).thenAnswer(call -> call.getArgument(0));
+        when(client.joinPath(anyString(), anyString())).thenAnswer(call -> call.getArgument(0) + "/" + call.getArgument(1));
+        when(client.offlineDirectoryForPath(anyString())).thenReturn(new OpenListClient.OfflineDirectory("account", "root", "/day"));
+        when(client.addOfflineDownload(anyString(), anyString(), anyString())).thenAnswer(call -> {
+            if (firstPath.equals(call.getArgument(0))) return "one";
+            assertThat(firstSaved.await(2, TimeUnit.SECONDS)).isTrue();
+            assertThat(task.getSubmittedCount()).isEqualTo(1);
+            return "two";
+        });
+        when(client.offlineTaskInfo(anyString())).thenAnswer(call -> new com.medianexus.orchestrator.integration.openlist.OpenListOfflineTaskInfo(
+                call.getArgument(0), 2, "done", 100, 0L, null));
+        when(client.findFiles(anyString(), any(Boolean.class))).thenAnswer(call -> List.of(
+                new OpenListFileInfo("video.mkv", 200L * 1024 * 1024, false, call.getArgument(0))));
+        when(client.listFiles(anyString(), any(Boolean.class))).thenAnswer(call -> target.equals(call.getArgument(0))
+                ? List.of() : List.of(new OpenListFileInfo("video.mkv", 200L * 1024 * 1024, false, call.getArgument(0))));
+        openListProperties.setOfflineTool("PikPak");
+        openListProperties.setAdultOfflineTimeout(Duration.ofSeconds(3));
+        openListProperties.setPollInterval(Duration.ofMillis(5));
+        List<LibraryOrganizationPlan> plans = new java.util.concurrent.CopyOnWriteArrayList<>();
+        LibraryOrganizer organizer = (plan, observer) -> plans.add(plan);
+        AutoSymlinkRefreshService refresh = mock(AutoSymlinkRefreshService.class);
+        when(refresh.refreshForPath(anyString(), anyString())).thenReturn(AutoSymlinkRefreshService.RefreshOutcome.skipped("未启用"));
+        AdultMagnetIngestService worker = new AdultMagnetIngestService(taskMapper, taskLogMapper, client,
+                openListProperties, new MovieSeriesFileRenameService(), organizer, authService, refresh,
+                objectMapper, new ControlledExecutor(), new ControlledExecutor(), IngestTargetFixtures.legacy());
+        Class<?> itemType = Class.forName(AdultMagnetIngestService.class.getName() + "$AdultMagnetItem");
+        Constructor<?> constructor = itemType.getDeclaredConstructor(int.class, String.class, String.class, String.class, String.class);
+        constructor.setAccessible(true);
+        Object first = constructor.newInstance(1, "magnet:?xt=urn:btih:one", "a", target, firstPath);
+        Object second = constructor.newInstance(2, "magnet:?xt=urn:btih:two", "b", target, secondPath);
+        try (OfflineIngestScheduler scheduler = new OfflineIngestScheduler(client)) {
+            org.springframework.test.util.ReflectionTestUtils.setField(worker, "offlineScheduler", scheduler);
+            org.springframework.test.util.ReflectionTestUtils.invokeMethod(worker, "runTask", "batch", List.of(first, second), "/adult");
+            assertThat(finished.await(3, TimeUnit.SECONDS)).isTrue();
+            assertThat(task.getOpenlistTaskIds()).contains("a=one", "b=two");
+            assertThat(task.getSubmittedCount()).isEqualTo(2);
+            assertThat(task.getSucceededCount()).isEqualTo(2);
+            assertThat(task.getFailedCount()).isZero();
+            assertThat(task.getStatus()).isEqualTo("SUCCEEDED");
+            assertThat(plans.stream().filter(plan -> plan.targetDirectory().equals(target)).toList())
+                    .hasSize(2).allSatisfy(plan -> assertThat(plan.cleanupExcludedDirectories()).contains(firstPath, secondPath));
+        }
+    }
+
     private static class TestAuthService extends AuthService {
 
         private User admin;

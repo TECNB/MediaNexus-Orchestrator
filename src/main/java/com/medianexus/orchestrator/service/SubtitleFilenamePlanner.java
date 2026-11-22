@@ -31,6 +31,34 @@ public class SubtitleFilenamePlanner {
         return new SubtitleFilenamePlan(mainName(videoFileName), "", files);
     }
 
+    /** 自动整理只规范明确中文；未知语言及版本声明保留原名，不以文件名去重。 */
+    public static java.util.Optional<String> automaticName(String videoBaseName, String originalPath) {
+        String normalized = originalPath.replace('\\', '/');
+        String name = normalized.substring(normalized.lastIndexOf('/') + 1);
+        if (name.toLowerCase(Locale.ROOT).endsWith(".sub") || name.toLowerCase(Locale.ROOT).endsWith(".idx")) {
+            return java.util.Optional.empty();
+        }
+        Set<String> languageCodes = new HashSet<>(List.of(Locale.getISOLanguages()));
+        for (String code : Locale.getISOLanguages()) languageCodes.add(Locale.forLanguageTag(code).getISO3Language());
+        languageCodes.removeAll(Set.of("zh", "chi", "zho"));
+        if (Pattern.compile("[^a-z]+", Pattern.CASE_INSENSITIVE).splitAsStream(name.toLowerCase(Locale.ROOT))
+                .anyMatch(languageCodes::contains)) return java.util.Optional.empty();
+        if (Pattern.compile("(?i)(?<![a-z])(?:forced|sdh|hi|bilingual|dual|eng)(?![a-z])|双语|雙語|双字|雙字|中英|英中|简繁|簡繁")
+                .matcher(normalized).find()) return java.util.Optional.empty();
+        String detected = detectAutomaticChinese(name);
+        if ("unknown".equals(detected)) return java.util.Optional.empty();
+        String suffix = "chs".equals(detected) ? "zh-CN" : "cht".equals(detected) ? "zh-TW" : "zh".equals(detected) ? "zh" : null;
+        if (suffix == null) return java.util.Optional.empty();
+        return java.util.Optional.of(videoBaseName + "." + suffix + name.substring(name.lastIndexOf('.')).toLowerCase(Locale.ROOT));
+    }
+
+    private static String detectAutomaticChinese(String name) {
+        String variant = detectLanguage(name);
+        if (variant != null) return variant;
+        return Pattern.compile("(?i)(?<![a-z0-9])(?:chi|zho|zh)(?![a-z0-9_-])|中文字幕")
+                .matcher(name).find() ? "zh" : null;
+    }
+
     public String finalName(String videoName, String language, String extension) {
         String suffix = switch (validateLanguage(language)) {
             case "chs" -> "zh-CN";
@@ -63,10 +91,10 @@ public class SubtitleFilenamePlanner {
         return new LanguageMatch(language, "unknown".equals(language) ? "unknown" : "user");
     }
 
-    private String detectLanguage(String name) {
-        boolean simplified = Pattern.compile("(?i)(?<![a-z])(?:chs|zh[-_]cn|gb|gb2312|gbk|simplified)(?![a-z])|简[体中]|簡[體中]")
+    private static String detectLanguage(String name) {
+        boolean simplified = Pattern.compile("(?i)(?<![a-z0-9])(?:chs|zh[-_]cn|gb|gb2312|gbk|simplified)(?![a-z0-9])|简[体中]|簡[體中]")
                 .matcher(name).find();
-        boolean traditional = Pattern.compile("(?i)(?<![a-z])(?:cht|zh[-_]tw|big5|traditional)(?![a-z])|繁[体體中]")
+        boolean traditional = Pattern.compile("(?i)(?<![a-z0-9])(?:cht|zh[-_]tw|big5|traditional)(?![a-z0-9])|繁[体體中]")
                 .matcher(name).find();
         if (simplified && traditional || name.contains("简繁") || name.contains("簡繁")) return "unknown";
         if (simplified) return "chs";

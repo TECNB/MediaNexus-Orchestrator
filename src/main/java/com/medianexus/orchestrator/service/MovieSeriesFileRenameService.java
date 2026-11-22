@@ -42,7 +42,7 @@ public class MovieSeriesFileRenameService {
             "mp4", "mkv", "avi", "mov", "wmv", "flv", "m2ts", "ts", "webm", "rmvb"
     );
     private static final List<String> SUBTITLE_EXTENSIONS = List.of(
-            "ass", "ssa", "srt", "vtt", "sub"
+            "ass", "ssa", "srt", "vtt", "sub", "idx", "sup"
     );
 
     public String movieFolderName(String title, Integer year) {
@@ -73,10 +73,8 @@ public class MovieSeriesFileRenameService {
         if (!isSubtitle(sourceName)) {
             return Optional.empty();
         }
-        String extension = extension(sourceName);
-        String language = subtitleLanguage(sourceName);
         String baseName = movieBaseName(title, year, matchedQuality);
-        String fileName = subtitleFileName(baseName, language, extension);
+        String fileName = SubtitleFilenamePlanner.automaticName(baseName, sourceName).orElse(sourceName);
         return Optional.of(new RenameResult(null, matchedQuality, baseName, fileName));
     }
 
@@ -119,7 +117,7 @@ public class MovieSeriesFileRenameService {
             return Optional.empty();
         }
         String baseName = seriesBaseName(title, seasonNumber, episode.get(), matchedQuality);
-        String fileName = subtitleFileName(baseName, subtitleLanguage(sourceName), extension(sourceName));
+        String fileName = SubtitleFilenamePlanner.automaticName(baseName, sourceName).orElse(sourceName);
         return Optional.of(new RenameResult(episode.get(), matchedQuality, baseName, fileName));
     }
 
@@ -317,15 +315,6 @@ public class MovieSeriesFileRenameService {
                 .replace("{Quality Full}", StringUtils.hasText(quality) ? quality : "");
     }
 
-    private String subtitleFileName(String baseName, String language, String extension) {
-        String suffix = StringUtils.hasText(language) ? "." + sanitizeFileName(language) : "";
-        return baseName + suffix + "." + extension;
-    }
-
-    private String subtitleLanguage(String sourceName) {
-        String language = extension(mainName(sourceName));
-        return StringUtils.hasText(language) ? language : "";
-    }
 
     private String cleanDanglingSeparators(String value) {
         String cleaned = value

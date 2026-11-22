@@ -47,7 +47,12 @@ class IngestCompletionWorkflowTest {
     private final IngestTaskNotifier notifier = mock(IngestTaskNotifier.class);
     private final AutoSymlinkRefreshService refresh = mock(AutoSymlinkRefreshService.class);
     private final OpenListProperties properties = new OpenListProperties();
-    private final List<String> savedStatuses = new ArrayList<>();
+    private final List<String> savedStatuses = new java.util.concurrent.CopyOnWriteArrayList<>();
+    private final OfflineIngestScheduler scheduler = new OfflineIngestScheduler(openList);
+    private final java.util.concurrent.CountDownLatch failed = new java.util.concurrent.CountDownLatch(1);
+
+    @org.junit.jupiter.api.AfterEach
+    void closeScheduler() { scheduler.close(); }
 
     @BeforeEach
     void configureOfflineDependencies() {
@@ -63,12 +68,15 @@ class IngestCompletionWorkflowTest {
         properties.setAnimeRenameTemplate("{title} S{seasonFormat}E{episodeFormat}");
         properties.setAnimeExcludePatterns("");
         when(openList.normalizePath(anyString())).thenAnswer(call -> call.getArgument(0));
+        when(openList.offlineDirectoryForPath(anyString())).thenAnswer(call ->
+                new OpenListClient.OfflineDirectory("account", "root", call.getArgument(0)));
         when(openList.joinPath(anyString(), anyString())).thenAnswer(call -> call.getArgument(0) + "/" + call.getArgument(1));
         when(openList.addOfflineDownload(anyString(), anyString())).thenReturn("offline-1");
         when(openList.offlineTaskInfo("offline-1")).thenReturn(new OpenListOfflineTaskInfo("offline-1", 2, "done", 100, 0L, null));
         when(refresh.refreshMovie()).thenReturn(AutoSymlinkRefreshService.RefreshOutcome.skipped("未启用"));
         when(refresh.refreshSeries()).thenReturn(AutoSymlinkRefreshService.RefreshOutcome.skipped("未启用"));
         when(refresh.refreshAnime()).thenReturn(AutoSymlinkRefreshService.RefreshOutcome.skipped("未启用"));
+        when(refresh.refreshForPath(anyString(), anyString())).thenReturn(AutoSymlinkRefreshService.RefreshOutcome.skipped("未启用"));
         when(movies.update(any())).thenAnswer(call -> recordStatus(call.getArgument(0)));
         when(series.update(any())).thenAnswer(call -> recordStatus(call.getArgument(0)));
         when(anime.update(any())).thenAnswer(call -> recordStatus(call.getArgument(0)));
@@ -85,12 +93,59 @@ class IngestCompletionWorkflowTest {
 
         ReflectionTestUtils.invokeMethod(magnetWorker(), "runMovieTask", task.getId());
 
+        verify(notifier, org.mockito.Mockito.timeout(2000)).movieCompleted(task);
         assertSavedSuccess();
-        verify(notifier).movieCompleted(task);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"MOVIE", "SERIES", "ANIME"})
+    void visibleFilesNeverReplaceConfirmedDownloadCompletion(String kind) throws Exception {
+        properties.setOfflineTimeout(Duration.ofMillis(30));
+        when(openList.offlineTaskInfo("offline-1")).thenReturn(new OpenListOfflineTaskInfo("offline-1", 3, "canceling", 99, 0L, null));
+        if (kind.equals("MOVIE")) {
+            MovieMagnetIngestTask task = movieTask();
+            when(movies.selectById(task.getId())).thenReturn(task);
+            files(task.getTempPath(), "The.Movie.2020.1080p.mkv");
+            ReflectionTestUtils.invokeMethod(magnetWorker(), "runMovieTask", task.getId());
+        } else if (kind.equals("SERIES")) {
+            SeriesMagnetIngestTask task = new SeriesMagnetIngestTask();
+            task.setId("series-1"); task.setSavePath("/media/Show"); task.setTempPath("/media/Show");
+            task.setMagnet("magnet:?xt=urn:btih:demo"); task.setTaskProductType("SERIES");
+            when(series.selectById(task.getId())).thenReturn(task);
+            files(task.getTempPath(), "Show.S01E01.mkv");
+            ReflectionTestUtils.invokeMethod(magnetWorker(), "runSeriesTask", task.getId());
+        } else {
+            AnimeMagnetIngestTask task = new AnimeMagnetIngestTask();
+            task.setId("anime-1"); task.setSavePath("/media/Show"); task.setTempPath("/media/Show");
+            task.setMagnet("magnet:?xt=urn:btih:demo");
+            when(anime.selectById(task.getId())).thenReturn(task);
+            files(task.getTempPath(), "Show - 01.mkv");
+            AnimeMagnetIngestTaskService worker = new AnimeMagnetIngestTaskService(anime,
+                    mock(AnimeMagnetIngestTaskLogMapper.class), openList, properties, new AnimeEpisodeRenameService(properties),
+                    organizer, null, null, refresh, null, IngestTargetFixtures.legacy(), notifier);
+            ReflectionTestUtils.setField(worker, "offlineScheduler", scheduler);
+            ReflectionTestUtils.invokeMethod(worker, "runTask", task.getId());
+        }
+        assertThat(failed.await(2, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+        verify(openList, org.mockito.Mockito.never()).findFiles(anyString());
+        verify(openList, org.mockito.Mockito.never()).deleteOfflineTask(anyString());
+        verifyNoInteractions(organizer);
+        assertThat(savedStatuses).doesNotContain("ORGANIZING", "SUCCEEDED");
     }
 
     @Test
-    void failedOrganizationNeverSendsCompletionNotice() {
+    void restartWithUnresolvedSubmissionBlocksNewSubmissions() {
+        when(movies.selectCount(any())).thenReturn(1L);
+        MagnetIngestService worker = magnetWorker();
+        worker.markUnfinishedTasksInterrupted();
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> scheduler.enqueue("/new", "new",
+                Duration.ofSeconds(2), Duration.ofMillis(1), mock(OfflineIngestScheduler.Download.class)))
+                .isInstanceOf(java.util.concurrent.RejectedExecutionException.class);
+        verify(openList, org.mockito.Mockito.never()).addOfflineDownload(anyString(), anyString());
+    }
+
+    @Test
+    void failedOrganizationNeverSendsCompletionNotice() throws Exception {
         MovieMagnetIngestTask task = movieTask();
         when(movies.selectById("movie-1")).thenReturn(task);
         files("/media/Movie", "The.Movie.2020.1080p.mkv");
@@ -98,8 +153,9 @@ class IngestCompletionWorkflowTest {
 
         ReflectionTestUtils.invokeMethod(magnetWorker(), "runMovieTask", task.getId());
 
+        assertThat(failed.await(2, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
         assertThat(savedStatuses).endsWith("FAILED").doesNotContain("SUCCEEDED");
-        verifyNoInteractions(notifier);
+        verify(notifier, org.mockito.Mockito.never()).movieCompleted(any());
     }
 
     @ParameterizedTest
@@ -118,8 +174,8 @@ class IngestCompletionWorkflowTest {
 
         ReflectionTestUtils.invokeMethod(magnetWorker(), "runSeriesTask", task.getId());
 
+        verify(notifier, org.mockito.Mockito.timeout(2000)).seriesCompleted(task);
         assertSavedSuccess();
-        verify(notifier).seriesCompleted(task);
     }
 
     @Test
@@ -137,10 +193,11 @@ class IngestCompletionWorkflowTest {
                 anime, mock(AnimeMagnetIngestTaskLogMapper.class), openList, properties,
                 new AnimeEpisodeRenameService(properties), organizer, null, null, refresh, null, IngestTargetFixtures.legacy(), notifier);
 
+        ReflectionTestUtils.setField(worker, "offlineScheduler", scheduler);
         ReflectionTestUtils.invokeMethod(worker, "runTask", task.getId());
 
+        verify(notifier, org.mockito.Mockito.timeout(2000)).animeCompleted(task);
         assertSavedSuccess();
-        verify(notifier).animeCompleted(task);
     }
 
     private int recordStatus(LambdaUpdateWrapper<?> update) {
@@ -148,6 +205,7 @@ class IngestCompletionWorkflowTest {
         update.getParamNameValuePairs().values().stream()
                 .filter(value -> Set.of("SUBMITTED", "DOWNLOADING", "ORGANIZING", "SUCCEEDED", "FAILED").contains(value))
                 .map(Object::toString).forEach(savedStatuses::add);
+        if (savedStatuses.contains("FAILED")) failed.countDown();
         return 1;
     }
 
@@ -173,8 +231,10 @@ class IngestCompletionWorkflowTest {
     }
 
     private MagnetIngestService magnetWorker() {
-        return new MagnetIngestService(movies, mock(MovieMagnetIngestTaskLogMapper.class),
+        MagnetIngestService worker = new MagnetIngestService(movies, mock(MovieMagnetIngestTaskLogMapper.class),
                 series, mock(SeriesMagnetIngestTaskLogMapper.class), openList, properties,
                 new MovieSeriesFileRenameService(), organizer, null, null, refresh, null, IngestTargetFixtures.legacy(), notifier);
+        ReflectionTestUtils.setField(worker, "offlineScheduler", scheduler);
+        return worker;
     }
 }

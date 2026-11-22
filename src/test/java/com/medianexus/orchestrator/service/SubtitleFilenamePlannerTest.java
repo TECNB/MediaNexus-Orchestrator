@@ -34,6 +34,20 @@ class SubtitleFilenamePlannerTest {
                 .hasMessageContaining("重复");
     }
 
+    @Test
+    void automaticNamesRequireExplicitChineseAndKeepVersionDeclarations() {
+        assertThat(SubtitleFilenamePlanner.automaticName("Video", "/subs/one.chs.srt")).contains("Video.zh-CN.srt");
+        assertThat(SubtitleFilenamePlanner.automaticName("Video", "/subs/one.cht.srt")).contains("Video.zh-TW.srt");
+        assertThat(SubtitleFilenamePlanner.automaticName("Video", "/subs/one.zho.srt")).contains("Video.zh.srt");
+        assertThat(SubtitleFilenamePlanner.automaticName("Video", "/简体/one.chi.srt")).contains("Video.zh.srt");
+        assertThat(SubtitleFilenamePlanner.automaticName("Video", "/简体/one.jpn.srt")).isEmpty();
+        assertThat(SubtitleFilenamePlanner.automaticName("Video", "/subs/one.chs.en.srt")).isEmpty();
+        for (String path : List.of("电影.srt", "random-language.srt", "one.sc.srt", "one.10GB.srt",
+                "one.chs.cht.srt", "one.chs.forced.srt", "one.chs.SDH.srt", "one.中英.srt")) {
+            assertThat(SubtitleFilenamePlanner.automaticName("Video", "/subs/" + path)).as(path).isEmpty();
+        }
+    }
+
     private ExtractedSubtitleEntry entry(String path) {
         return new ExtractedSubtitleEntry(path, path.substring(path.lastIndexOf('/') + 1), "srt", 12, "hash", Path.of("unused"));
     }

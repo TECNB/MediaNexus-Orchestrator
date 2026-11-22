@@ -58,6 +58,28 @@ public record LibraryOrganizationPlan(
         );
     }
 
+    /** 字幕源路径及祖先目录不能被整目录删除，缓存暂时不可见时也不清理这些目录。 */
+    public LibraryOrganizationPlan preservingSourceFiles(Set<String> sourcePaths) {
+        Set<String> protectedPaths = new LinkedHashSet<>();
+        Set<String> excludedDirectories = new LinkedHashSet<>(cleanupExcludedDirectories);
+        String root = normalizePath(targetDirectory);
+        for (String sourcePath : sourcePaths) {
+            String path = normalizePath(sourcePath);
+            protectedPaths.add(path);
+            String parent = parentPath(path);
+            while (parent.startsWith(root + "/")) {
+                protectedPaths.add(parent);
+                excludedDirectories.add(parent);
+                parent = parentPath(parent);
+            }
+        }
+        List<DeleteOperation> safeDeletions = deletions.stream()
+                .filter(operation -> !protectedPaths.contains(normalizePath(operation.path())))
+                .toList();
+        return new LibraryOrganizationPlan(targetDirectory, renames, moves, safeDeletions,
+                expectedTargetNames, excludedDirectories);
+    }
+
     public record RenameOperation(String sourcePath, String targetName) {
 
         public RenameOperation {

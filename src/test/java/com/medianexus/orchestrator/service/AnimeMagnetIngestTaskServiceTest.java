@@ -146,6 +146,41 @@ class AnimeMagnetIngestTaskServiceTest {
     }
 
     @Test
+    void animePreservesUnmatchedAndForeignSubtitlesEvenInsideDeletedAuxiliaryDirectory() {
+        OpenListProperties properties = new OpenListProperties();
+        properties.setAnimeRenameTemplate("{title} S{seasonFormat}E{episodeFormat}");
+        properties.setAnimeExcludePatterns("特别篇,总集");
+        OpenListClient client = mock(OpenListClient.class);
+        when(client.normalizePath(anyString())).thenAnswer(invocation -> normalizePath(invocation.getArgument(0)));
+        when(client.joinPath(anyString(), anyString())).thenAnswer(invocation ->
+                normalizePath(invocation.getArgument(0) + "/" + invocation.getArgument(1)));
+        String root = "/anime/Show/Season 01";
+        when(client.listFiles(root)).thenReturn(List.of(
+                new OpenListFileInfo("[Group] Show - 01.mkv", 1024L, false, root),
+                new OpenListFileInfo("unknown.srt", 64L, false, root),
+                new OpenListFileInfo("Scans", null, true, root)));
+        when(client.findFiles(root)).thenReturn(List.of(
+                new OpenListFileInfo("unknown.srt", 64L, false, root),
+                new OpenListFileInfo("arbitrary.srt", 64L, false, root + "/Scans/nested"),
+                new OpenListFileInfo("[Group] Show - 01.2160p.chs.srt", 64L, false, root + "/subs"),
+                new OpenListFileInfo("[Group] Show - 01.尝鲜版.chs.srt", 64L, false, root + "/subs"),
+                new OpenListFileInfo("[Group] Show - 01.jpn.srt", 64L, false, root + "/简体"),
+                new OpenListFileInfo("[Group] Show - 02.chs.srt", 64L, false, root + "/subs")));
+        java.util.concurrent.atomic.AtomicReference<com.medianexus.orchestrator.service.organization.LibraryOrganizationPlan> plan =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        AnimeMagnetIngestTaskService service = new AnimeMagnetIngestTaskService(
+                taskMapper, taskLogMapper, client, properties, new AnimeEpisodeRenameService(properties),
+                (organization, observer) -> plan.set(organization), authService, quotaService, null,
+                mediaLibraryPresenceService, taskExecutor, IngestTargetFixtures.legacy(), notifier);
+
+        ReflectionTestUtils.invokeMethod(service, "organizeFiles", animeTask());
+
+        assertThat(plan.get().deletions()).isEmpty();
+        assertThat(plan.get().renames()).hasSize(1);
+        assertThat(plan.get().cleanupExcludedDirectories()).contains(root + "/Scans", root + "/Scans/nested", root + "/subs");
+    }
+
+    @Test
     void animeOrganizeDeletesAuxiliaryDirectoriesWithoutScanningThemWhenRootHasEpisodes() {
         OpenListProperties properties = new OpenListProperties();
         properties.setAnimeRenameTemplate("{title} S{seasonFormat}E{episodeFormat}");
@@ -189,42 +224,6 @@ class AnimeMagnetIngestTaskServiceTest {
         verify(openListClient, never()).listFiles("/anime/Show/Season 01/NCOP");
     }
 
-    @Test
-    void animeVideoVisibilityCheckDoesNotScanAuxiliaryDirectories() {
-        OpenListProperties properties = new OpenListProperties();
-        OpenListClient openListClient = mock(OpenListClient.class);
-        when(openListClient.normalizePath(anyString())).thenAnswer(invocation -> normalizePath(invocation.getArgument(0)));
-        when(openListClient.joinPath(anyString(), anyString())).thenAnswer(invocation ->
-                normalizePath(invocation.getArgument(0) + "/" + invocation.getArgument(1)));
-        when(openListClient.listFiles("/anime/Show/Season 01")).thenReturn(List.of(
-                new OpenListFileInfo("Release", null, true, "/anime/Show/Season 01"),
-                new OpenListFileInfo("Scans", null, true, "/anime/Show/Season 01")
-        ));
-        when(openListClient.listFiles("/anime/Show/Season 01/Release")).thenReturn(List.of(
-                new OpenListFileInfo("[Group] Show - 01.mkv", 1024L, false, "/anime/Show/Season 01/Release")
-        ));
-
-        AnimeMagnetIngestTaskService service = new AnimeMagnetIngestTaskService(
-                taskMapper,
-                taskLogMapper,
-                openListClient,
-                properties,
-                new AnimeEpisodeRenameService(properties),
-                new OpenListLibraryOrganizer(openListClient),
-                authService,
-                quotaService,
-                null,
-                mediaLibraryPresenceService,
-                taskExecutor,
-                IngestTargetFixtures.legacy(),
-                notifier
-        );
-
-        Boolean hasVideoFiles = ReflectionTestUtils.invokeMethod(service, "hasVideoFiles", "/anime/Show/Season 01");
-
-        assertThat(hasVideoFiles).isTrue();
-        verify(openListClient, never()).listFiles("/anime/Show/Season 01/Scans");
-    }
 
     @Test
     void animeOrganizeSplitsLargeRenameAndMoveBatches() {

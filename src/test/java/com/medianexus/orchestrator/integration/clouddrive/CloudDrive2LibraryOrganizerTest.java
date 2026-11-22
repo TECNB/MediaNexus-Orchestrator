@@ -401,6 +401,28 @@ class CloudDrive2LibraryOrganizerTest {
     }
 
     @Test
+    void bothOrganizersKeepProtectedSubtitleDirectoriesEvenWhenListingLooksEmpty() {
+        String root = "/pikpak/Media/Movie/Example (2026)";
+        String cloudRoot = "/WebDAV/Media/Movie/Example (2026)";
+        FakeFileOperations files = new FakeFileOperations();
+        files.addDirectory(cloudRoot, "subs");
+        files.addFile(cloudRoot + "/subs", "sample.txt", 16L);
+        LibraryOrganizationPlan plan = new LibraryOrganizationPlan(root, List.of(), List.of(),
+                List.of(new DeleteOperation(root + "/subs/sample.txt")), Set.of(), Set.of())
+                .preservingSourceFiles(Set.of(root + "/subs/original.srt"));
+
+        new CloudDrive2LibraryOrganizer(files, properties(), IngestTargetFixtures.legacy())
+                .organize(plan, (message, detail) -> { });
+
+        assertThat(files.children(cloudRoot)).extracting(CloudDrive2FileEntry::name).contains("subs");
+        com.medianexus.orchestrator.integration.openlist.OpenListClient client =
+                org.mockito.Mockito.mock(com.medianexus.orchestrator.integration.openlist.OpenListClient.class);
+        new OpenListLibraryOrganizer(client).organize(plan, (message, detail) -> { });
+        org.mockito.Mockito.verify(client).remove(root + "/subs", List.of("sample.txt"));
+        org.mockito.Mockito.verify(client, org.mockito.Mockito.never()).remove(root, List.of("subs"));
+    }
+
+    @Test
     void confirmsDeletionSourceBeforeDeletingAndRemovesItsEmptyParent() {
         FakeFileOperations fileOperations = new FakeFileOperations();
         String target = "/WebDAV/Media/Movie/Example (2026)";

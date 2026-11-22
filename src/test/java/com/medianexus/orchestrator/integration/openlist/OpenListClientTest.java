@@ -139,6 +139,47 @@ class OpenListClientTest {
                 .isInstanceOf(OpenListClientException.class);
     }
 
+    @Test
+    void resolvesAliasesFromRealAccountAndCloudRootWithoutExposingCredentials() throws Exception {
+        server.removeContext("/api/admin/storage/list");
+        String addition = objectMapper.writeValueAsString(objectMapper.writeValueAsString(
+                java.util.Map.of("username", "account@example.test", "root_folder_id", "cloud-root", "password", "secret")));
+        server.createContext("/api/admin/storage/list", exchange -> respond(exchange,
+                "{\"code\":200,\"data\":{\"content\":["
+                        + "{\"driver\":\"PikPak\",\"mount_path\":\"/a\",\"addition\":" + addition + "},"
+                        + "{\"driver\":\"PikPak\",\"mount_path\":\"/b\",\"addition\":" + addition + "}]}}"));
+        OpenListProperties properties = new OpenListProperties();
+        properties.setBaseUrl("http://127.0.0.1:" + server.getAddress().getPort());
+        properties.setAuthorization("test-token");
+        properties.setTimeout(Duration.ofSeconds(2));
+        OpenListClient client = new OpenListClient(properties, objectMapper);
+        var first = client.offlineDirectoryForPath("/a/show");
+        assertThat(first).isEqualTo(client.offlineDirectoryForPath("/b/show"));
+        assertThat(first.rootId()).isEqualTo("cloud-root");
+        assertThat(first.relativePath()).isEqualTo("/show");
+        assertThat(first.toString()).doesNotContain("account@example.test", "secret");
+        assertThat(client.offlineDirectoryForPath("/missing").account()).isEqualTo("unknown");
+    }
+
+    @Test
+    void startupChecksDownloadAndTransferQueuesAndFailsClosedOnUnreadableResponse() {
+        server.createContext("/api/task/offline_download/undone", exchange -> {
+            assertThat(exchange.getRequestMethod()).isEqualTo("GET");
+            respond(exchange, "{\"code\":200,\"data\":[{\"id\":\"download\"}]}");
+        });
+        server.createContext("/api/task/offline_download_transfer/undone", exchange ->
+                respond(exchange, "{\"code\":200,\"data\":[{\"id\":\"transfer\"}]}"));
+        OpenListProperties properties = new OpenListProperties();
+        properties.setBaseUrl("http://127.0.0.1:" + server.getAddress().getPort());
+        properties.setAuthorization("test-token");
+        properties.setTimeout(Duration.ofSeconds(2));
+        OpenListClient client = new OpenListClient(properties, objectMapper);
+        assertThat(client.unfinishedOfflineTaskCount()).isEqualTo(2);
+        server.removeContext("/api/task/offline_download_transfer/undone");
+        server.createContext("/api/task/offline_download_transfer/undone", exchange -> respond(exchange, "{\"code\":403}"));
+        assertThatThrownBy(client::unfinishedOfflineTaskCount).isInstanceOf(OpenListClientException.class);
+    }
+
     private void respond(HttpExchange exchange, String body) throws IOException {
         byte[] response = body.getBytes(StandardCharsets.UTF_8);
         exchange.sendResponseHeaders(200, response.length);

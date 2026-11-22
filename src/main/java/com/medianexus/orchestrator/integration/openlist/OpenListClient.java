@@ -102,6 +102,17 @@ public class OpenListClient {
 
     /** 容量按实际目标路径选择存储；禁用、未知或更具体的其它驱动不会回退另一账号。 */
     public OpenListStorageStatus storageStatusForPath(String path) {
+        JsonNode selected = storageForPath(path);
+        if (selected == null || !"PikPak".equalsIgnoreCase(selected.path("driver").asText())) {
+            throw new OpenListClientException("指定入库目标没有可确认的 PikPak 存储");
+        }
+        JsonNode details = selected.path("mount_details");
+        return new OpenListStorageStatus("PikPak", !selected.path("disabled").asBoolean(false)
+                && "work".equalsIgnoreCase(selected.path("status").asText()),
+                longValue(details, "used_space"), longValue(details, "total_space"), longValue(details, "free_space"));
+    }
+
+    private JsonNode storageForPath(String path) {
         if (!StringUtils.hasText(path) || !path.startsWith("/")) {
             throw new OpenListClientException("入库目标路径无效");
         }
@@ -133,14 +144,33 @@ public class OpenListClient {
             long total = root.path("data").path("total").asLong(-1);
             if (content.size() < 100 || (total >= 0 && visited >= total)) break;
         }
-        if (selected == null || !"PikPak".equalsIgnoreCase(selected.path("driver").asText())) {
-            throw new OpenListClientException("指定入库目标没有可确认的 PikPak 存储");
-        }
-        JsonNode details = selected.path("mount_details");
-        return new OpenListStorageStatus("PikPak", !selected.path("disabled").asBoolean(false)
-                && "work".equalsIgnoreCase(selected.path("status").asText()),
-                longValue(details, "used_space"), longValue(details, "total_space"), longValue(details, "free_space"));
+        return selected;
     }
+
+    /** No credential material leaves this adapter; different cloud roots cannot be assumed disjoint. */
+    public record OfflineDirectory(String account, String rootId, String relativePath) { }
+
+    public OfflineDirectory offlineDirectoryForPath(String path) {
+        JsonNode storage = storageForPath(path);
+        if (storage == null || !"PikPak".equalsIgnoreCase(storage.path("driver").asText())
+                || storage.path("disabled").asBoolean(false)) {
+            return new OfflineDirectory("unknown", "", "/");
+        }
+        try {
+            JsonNode addition = objectMapper.readTree(storage.path("addition").asText("{}"));
+            if (addition == null || !addition.isObject()) return new OfflineDirectory("unknown", "", "/");
+            String username = addition.path("username").asText("").trim().toLowerCase(java.util.Locale.ROOT);
+            String rootId = addition.path("root_folder_id").asText("");
+            if (username.isBlank()) return new OfflineDirectory("unknown", "", "/");
+            String account = java.util.UUID.nameUUIDFromBytes(username.getBytes(StandardCharsets.UTF_8)).toString();
+            String mount = normalizePath(storage.path("mount_path").asText());
+            String relative = normalizePath(path).substring(mount.equals("/") ? 0 : mount.length());
+            return new OfflineDirectory(account, rootId, relative.isEmpty() ? "/" : relative);
+        } catch (JsonProcessingException exception) {
+            return new OfflineDirectory("unknown", "", "/");
+        }
+    }
+
 
     private OpenListStorageStatus readStorageStatus() {
         JsonNode root = getRoot("admin/storage/list?page=1&per_page=100");
@@ -167,6 +197,19 @@ public class OpenListClient {
             );
         }
         throw new OpenListClientException("OpenList PikPak storage missing");
+    }
+
+    /** Includes transfer work: a restart must not silently reset upstream capacity to zero. */
+    public int unfinishedOfflineTaskCount() {
+        int count = 0;
+        for (String manager : List.of("offline_download", "offline_download_transfer")) {
+            JsonNode root = getRoot("task/" + manager + "/undone");
+            if (!isSuccess(root) || !root.path("data").isArray()) {
+                throw new OpenListClientException("无法核实 OpenList 遗留离线任务，暂停新提交");
+            }
+            count += root.path("data").size();
+        }
+        return count;
     }
 
     /**

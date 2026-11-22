@@ -20,7 +20,7 @@ public class AnimeEpisodeRenameService {
             "mp4", "mkv", "avi", "mov", "wmv", "flv", "m2ts", "ts", "webm", "rmvb"
     );
     private static final List<String> SUBTITLE_EXTENSIONS = List.of(
-            "ass", "ssa", "srt", "vtt", "sub"
+            "ass", "ssa", "srt", "vtt", "sub", "idx", "sup"
     );
 
     private final OpenListProperties properties;
@@ -78,10 +78,8 @@ public class AnimeEpisodeRenameService {
         baseName = sanitizeFileName(baseName);
 
         if (isSubtitle(sourceName)) {
-            String language = extension(mainName(sourceName));
-            if (StringUtils.hasText(language)) {
-                baseName = baseName + "." + language;
-            }
+            return Optional.of(new RenameResult((int) episode,
+                    SubtitleFilenamePlanner.automaticName(baseName, sourceName).orElse(sourceName)));
         }
         return Optional.of(new RenameResult((int) episode, baseName + "." + extension));
     }
