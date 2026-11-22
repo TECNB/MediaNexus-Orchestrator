@@ -103,13 +103,14 @@ class PanSouClientTest {
         magnetResponse.set("""
                 {"data":{"merged_by_type":{"magnet":[{"url":"%s","note":"电影"},{"url":"%s","note":"另一电影"}]},
                   "results":[{"title":"电影 - 1080p.HD中字.mp4","content":"◎年代: 2026 ◎剧情: 1999年的故事",
-                    "links":[{"type":"magnet","url":"%s"}]},
+                    "links":[{"type":"magnet","url":"%s","work_title":"电影 2017 CAM"}]},
                     {"title":"合集","content":"◎年代: 2001","links":[{"type":"magnet","url":"%s"},{"type":"magnet","url":"%s"}]},
                     {"title":"正文另有磁力","content":"◎年代: 2002 %s","links":[{"type":"magnet","url":"%s"}]}]}}
                 """.formatted(first, second, first, first, second, second, first));
         var entries = client.searchMagnets(new PanSouSearchCommand("电影", false)).entries();
         assertThat(entries.get(0).sourceTitles()).contains("电影 - 1080p.HD中字.mp4 (2026)")
                 .noneMatch(title -> title.contains("1999") || title.contains("2001") || title.contains("2002"));
+        assertThat(entries.get(0).sourceTitles()).contains("电影 2017 CAM");
         assertThat(entries.get(1).sourceTitles()).isEmpty();
     }
 

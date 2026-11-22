@@ -225,7 +225,7 @@ public class ReleaseCandidateComparison implements AutoCloseable {
     private void searchSupplement(Comparison comparison, List<String> queries, Instant deadline, ExecutorService pool, List<Future<?>> futures)
             throws InterruptedException, ExecutionException, TimeoutException {
         executeSearchQueries(comparison, queries.stream().map(query -> new SearchQuery("补源：" + query, query,
-                () -> discovery.supplement(query))).toList(), deadline, pool, futures);
+                () -> comparison.refresh ? discovery.refreshSupplement(query) : discovery.supplement(query))).toList(), deadline, pool, futures);
     }
 
     private void executeSearchQueries(Comparison comparison, List<SearchQuery> plan, Instant deadline, ExecutorService pool, List<Future<?>> futures)
@@ -303,7 +303,9 @@ public class ReleaseCandidateComparison implements AutoCloseable {
         List<Discovered> queue;
         synchronized (comparison) {
             queue = schedule(comparison);
-            if (comparison.target.season() == null && comparison.queries.size() < 4) queue = queue.stream().limit(4).toList();
+            // 冷解析前先补齐来源，避免优选源耗完共享解析预算后才发现备用来源。
+            if (comparison.target.season() == null && comparison.queries.stream().noneMatch(query -> query.startsWith("补源："))) queue = queue.stream()
+                    .filter(candidate -> candidate.magnet != null && fileTables.cached(candidate.magnet).isPresent()).toList();
         }
         for (int i = 0; i < queue.size(); i += 2) {
             budget.remaining();

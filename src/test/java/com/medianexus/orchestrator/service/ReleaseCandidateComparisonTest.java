@@ -52,7 +52,7 @@ class ReleaseCandidateComparisonTest {
         assertThat(result.item().evidence().status()).isEqualTo("RECOMMENDABLE");
         assertThat(safety.check(magnet(1), ReleaseTarget.of("电影", null, null, 2026, null, null), ReleaseIngestMetadata.manual()))
                 .contains("RECOMMENDABLE");
-        verifyNoInteractions(prowlarr);
+        verify(prowlarr, atLeastOnce()).search(anyString());
     }
 
     @Test void movieSearchSupplementsMissingPreferredSourceWithinFourQueries() {
@@ -65,6 +65,27 @@ class ReleaseCandidateComparisonTest {
         assertThat(result.item().downloadRef()).isEqualTo(magnet(2));
         assertThat(result.comparison().searchQueries()).isLessThanOrEqualTo(4);
         verify(prowlarr).search("Arrival 2016");
+    }
+
+    @Test void disabledSupplementRemainsNormalNoRelease() {
+        when(client.searchMagnets(any())).thenReturn(new PanSouSearchResult(List.of()));
+        when(prowlarr.search(anyString())).thenThrow(new com.medianexus.orchestrator.integration.prowlarr.ProwlarrClientException(
+                com.medianexus.orchestrator.integration.prowlarr.ProwlarrClientException.Reason.CONFIGURATION, "disabled"));
+        assertThatThrownBy(() -> search.recommendMovie(new MovieReleaseRecommendationRequest(null, null, "电影", null, 2026, "1080p")))
+                .isInstanceOfSatisfying(ProwlarrReleaseIngestService.NoMatchingReleaseException.class,
+                        failure -> assertThat(failure.reasonCode()).isEqualTo("NO_RELEASE"));
+    }
+
+    @Test void refreshAlsoRefreshesSupplementBeforeColdResolution() {
+        when(client.searchMagnets(any())).thenReturn(new PanSouSearchResult(List.of(entry(1, "电影 2026 1080p", null))));
+        when(prowlarr.refreshQueries(anyList())).thenAnswer(call -> Map.of(((List<String>)call.getArgument(0)).get(0), List.of()));
+        when(guangya.resolve(eq(magnet(1)), any())).thenReturn(table(magnet(1), "电影 2026 1080p", "电影.2026.1080p.mkv"));
+        var result = search.refreshRecommendMovie(new MovieReleaseRecommendationRequest(null, null, "电影", null, 2026, "1080p"));
+        assertThat(result.item().evidence().status()).isEqualTo("RECOMMENDABLE");
+        var order = inOrder(prowlarr, guangya);
+        order.verify(prowlarr).refreshQueries(List.of("电影 2026"));
+        order.verify(guangya).resolve(eq(magnet(1)), any());
+        verify(prowlarr, never()).search(anyString());
     }
 
     @Test void sameHashConflictingSourceYearStillPreventsAutomaticMovieSubmission() {

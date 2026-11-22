@@ -70,7 +70,28 @@ public class ReleaseCandidateDiscovery {
     }
 
     public List<Found> supplement(String query) {
-        return settings.usesPanSouForMagnetSearch() ? prowlarr(prowlarr.search(query), query)
-                : panSou(panSou.searchMagnets(new PanSouSearchCommand(query, false)), query);
+        try {
+            return settings.usesPanSouForMagnetSearch() ? prowlarr(prowlarr.search(query), query)
+                    : panSou(panSou.searchMagnets(new PanSouSearchCommand(query, false)), query);
+        } catch (com.medianexus.orchestrator.integration.prowlarr.ProwlarrClientException failure) {
+            if (failure.getReason() == com.medianexus.orchestrator.integration.prowlarr.ProwlarrClientException.Reason.CONFIGURATION) return List.of();
+            throw failure;
+        } catch (PanSouClientException failure) {
+            if (failure.getReason() == PanSouClientException.Reason.CONFIGURATION) return List.of();
+            throw failure;
+        }
+    }
+
+    public List<Found> refreshSupplement(String query) {
+        try {
+            return settings.usesPanSouForMagnetSearch() ? prowlarr(prowlarr.refreshQueries(List.of(query)).get(query), query)
+                    : panSou(panSou.searchMagnets(new PanSouSearchCommand(query, true)), query);
+        } catch (com.medianexus.orchestrator.integration.prowlarr.ProwlarrClientException failure) {
+            if (failure.getReason() == com.medianexus.orchestrator.integration.prowlarr.ProwlarrClientException.Reason.CONFIGURATION) return List.of();
+            throw failure;
+        } catch (PanSouClientException failure) {
+            if (failure.getReason() == PanSouClientException.Reason.CONFIGURATION) return List.of();
+            throw failure;
+        }
     }
 }

@@ -233,12 +233,22 @@ public class PanSouClient implements AutoCloseable {
             Matcher magnets = CONTENT_MAGNET_URL.matcher(text(message, "content"));
             while (magnets.find()) PanSouMagnetIdentity.fromUrl(magnets.group()).ifPresent(identities::add);
             if (identities.size() != 1) continue;
+            Set<String> linkTitles = new java.util.LinkedHashSet<>();
+            for (JsonNode link : message.path("links")) {
+                if (PanSouMagnetIdentity.fromUrl(text(link, "url")).filter(identities.iterator().next()::equals).isEmpty()) continue;
+                for (String field : List.of("work_title", "note", "title", "name")) {
+                    String declared = text(link, field);
+                    if (StringUtils.hasText(declared)) linkTitles.add(declared);
+                }
+            }
             String title = firstText(message, "title", "name");
-            if (!StringUtils.hasText(title) || title.length() > 4096) continue;
+            if (title.length() > 4096 || linkTitles.stream().anyMatch(declared -> declared.length() > 4096))
+                throw new PanSouClientException(INVALID_RESPONSE, "磁力来源声明超出安全上限");
             Set<String> source = titles.computeIfAbsent(identities.iterator().next(), ignored -> new java.util.LinkedHashSet<>());
-            source.add(title);
+            if (StringUtils.hasText(title)) source.add(title);
+            source.addAll(linkTitles);
             var years = yearField.matcher(text(message, "content"));
-            while (years.find()) source.add(title + " (" + years.group(1) + ")");
+            while (StringUtils.hasText(title) && years.find()) source.add(title + " (" + years.group(1) + ")");
             if (source.size() > 64) throw new PanSouClientException(INVALID_RESPONSE, "同磁力发行声明超出安全上限");
         }
         Map<PanSouMagnetIdentity, List<String>> result = new HashMap<>();
