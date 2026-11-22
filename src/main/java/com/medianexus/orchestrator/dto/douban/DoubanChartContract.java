@@ -14,7 +14,8 @@ public final class DoubanChartContract {
 
     public enum ChartId {
         movie_hot_gaia("热门电影", "MOVIE", 20), tv_hot("热门电视剧", "SERIES", 20),
-        movie_weekly_best("一周口碑电影榜", "MOVIE", 0), movie_top250("豆瓣 Top250", "MOVIE", 0);
+        movie_weekly_best("一周口碑电影榜", "MOVIE", 0), movie_top250("豆瓣 Top250", "MOVIE", 0),
+        tv_chinese_best_weekly("华语口碑剧集榜", "SERIES", 0), tv_global_best_weekly("全球口碑剧集榜", "SERIES", 0);
         private final String label;
         private final String mediaType;
         private final int limit;
@@ -57,7 +58,7 @@ public final class DoubanChartContract {
     public record Board(ChartId id, String label, boolean autoEnabled, Long ownerUserId,
                         String refreshStatus, String refreshError, Instant lastAttemptAt, Instant lastSuccessAt,
                         Instant nextRunAt, List<Candidate> candidates) {}
-    @Schema(description = "四榜共享业务限额；null 表示不限制，不改变外部请求和安全预算")
+    @Schema(description = "榜单共享业务限额；null 表示不限制，不改变外部请求和安全预算")
     public record Settings(Integer dailyCheckLimit, Integer dailyCreateLimit, int checkedToday, int createdToday,
                            String scheduleTime, String timezone, Instant nextRunAt) {}
     @Schema(description = "公共榜单总览；普通成员可读，变更仅管理员")

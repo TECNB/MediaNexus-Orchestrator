@@ -85,6 +85,29 @@ class DoubanChartClientTest {
     }
 
 
+    @Test void readsBothWeeklySeriesChartsWithSourceRankYearAndProgress() {
+        for (ChartId chart : new ChartId[]{ChartId.tv_chinese_best_weekly, ChartId.tv_global_best_weekly}) {
+            var client = new DoubanChartClient(json, (url, referer) -> {
+                assertTrue(url.contains("/" + chart.name() + "/items?"));
+                var response = page(0, 10, 10, true);
+                response.withArray("subject_collection_items").forEach(item -> ((ObjectNode)item)
+                        .put("type", "tv").put("episodes_info", "12集全"));
+                return response;
+            });
+            var subjects = client.fetch(chart);
+            assertEquals(10, subjects.size());
+            assertEquals("SERIES", subjects.get(0).mediaType());
+            assertEquals("12集全", subjects.get(0).progress());
+            assertEquals(10, subjects.get(9).rank());
+            var missingRank = new DoubanChartClient(json, (url, referer) -> {
+                var response = page(0, 10, 10, false);
+                response.withArray("subject_collection_items").forEach(item -> ((ObjectNode)item).put("type", "tv"));
+                return response;
+            });
+            assertThrows(DoubanChartClient.ChartReadException.class, () -> missingRank.fetch(chart));
+        }
+    }
+
     private ObjectNode page(int offset, int total, int count, boolean ranked) {
         var root = json.createObjectNode().put("start", offset).put("count", count).put("total", total);
         var items = root.putArray("subject_collection_items");

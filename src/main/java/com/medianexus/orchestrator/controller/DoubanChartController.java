@@ -17,7 +17,7 @@ public class DoubanChartController {
     public DoubanChartController(DoubanChartService charts) { this.charts = charts; }
 
     @GetMapping
-    @io.swagger.v3.oas.annotations.Operation(summary = "读取四榜与共享业务限额")
+    @io.swagger.v3.oas.annotations.Operation(summary = "读取榜单与共享业务限额")
     public ApiResponse<Overview> overview() { return ApiResponse.success(charts.overview()); }
 
     @GetMapping("/{chartId}")
@@ -35,7 +35,7 @@ public class DoubanChartController {
     }
 
     @PutMapping("/settings")
-    @io.swagger.v3.oas.annotations.Operation(summary = "设置四榜共享每日业务限额；null 为不限制")
+    @io.swagger.v3.oas.annotations.Operation(summary = "设置榜单共享每日业务限额；null 为不限制")
     public ApiResponse<Settings> settings(@Valid @RequestBody LimitsInput input) { return ApiResponse.success(charts.settings(input)); }
 
     @PutMapping("/{chartId}/candidates/{subjectId}/exclusion")

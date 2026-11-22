@@ -235,7 +235,9 @@ public class DoubanChartService {
             if (snapshot.current() && !"SUCCESS".equals(fresh.refreshStatus())) {
                 outcome(id, subjectId, "SKIPPED", reason("SOURCE_UNAVAILABLE", "本轮榜单抓取失败，旧在榜只展示不受理")); return;
             }
-            Subject subject = snapshot.current() ? snapshot.subject() : client.refreshSubject(snapshot.subject());
+            Subject original = snapshot.subject();
+            Subject subject = !snapshot.current() || "SERIES".equals(original.mediaType())
+                    && (original.progress() == null || original.progress().isBlank()) ? client.refreshSubject(original) : original;
             if (!snapshot.current()) updateCandidate(chart, subjectId, candidate -> observed(candidate, subject, false, Instant.now()));
             Assessment assessment = eligibility.assess(subject, store.identity(subjectId));
             updateCandidate(chart, subjectId, candidate -> candidate(candidate, candidate.subject(), candidate.current(), candidate.excluded(),
@@ -251,7 +253,7 @@ public class DoubanChartService {
             if (existing == null) existing = tasks.previousTask(target);
             if (existing == null) existing = tasks.activeTask(target);
             if (existing != null) { associate(id, subjectId, existing, "ASSOCIATED", BgmWishlistTaskGateway.previousTaskReason(existing.status())); return; }
-            if (!store.reserveCheck()) { outcome(id, subjectId, "SKIPPED", reason("DAILY_CHECK_LIMIT", "四榜共享每日检查数已达上限")); return; }
+            if (!store.reserveCheck()) { outcome(id, subjectId, "SKIPPED", reason("DAILY_CHECK_LIMIT", "榜单共享每日检查数已达上限")); return; }
             updateEntry(id, subjectId, entry -> entry(entry, "SEARCHING", entry.reason()));
             List<ProwlarrReleaseItemResponse> releases;
             try {
@@ -286,7 +288,7 @@ public class DoubanChartService {
             }
             User owner = requireAdminIdentity(store.run(id).operation().actorUserId());
             String reservation = store.reserveCreate();
-            if (reservation == null) { outcome(id, subjectId, "SKIPPED", reason("DAILY_CREATE_LIMIT", "四榜共享每日创建数已达上限")); return; }
+            if (reservation == null) { outcome(id, subjectId, "SKIPPED", reason("DAILY_CREATE_LIMIT", "榜单共享每日创建数已达上限")); return; }
             Run admitted = store.updateRun(id, previous -> {
                 if (previous.stopRequested()) return previous;
                 return replaceEntry(previous, subjectId, entry -> entry(entry, "CREATING", entry.reason()));

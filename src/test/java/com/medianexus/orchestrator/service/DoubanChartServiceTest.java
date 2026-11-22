@@ -207,8 +207,37 @@ class DoubanChartServiceTest {
         verifyNoInteractions(f.tasks);
     }
 
+    @Test void currentWeeklySeriesWithoutProgressReadsFreshDetailBeforeEligibility() throws Exception {
+        Subject missing = new Subject(1,"作品1",null,null,2020,"SERIES",null,null,1,null,Instant.now());
+        Subject complete = new Subject(1,"作品1",null,null,2020,"SERIES",null,null,1,"2集全",Instant.now());
+        when(f.client.fetch(ChartId.tv_chinese_best_weekly)).thenReturn(List.of(missing));
+        when(f.client.refreshSubject(missing)).thenReturn(complete);
+        doReturn(new DoubanChartEligibility.Assessment(f.identity(missing), null, List.of(),
+                new Reason("PROGRESS_UNKNOWN", "没有明确完结信息"))).when(f.eligibility).assess(eq(missing), nullable(Identity.class));
+        Operation run = f.await(f.service.execute(ChartId.tv_chinese_best_weekly).id());
+        assertEquals("CREATED", run.entries().get(0).status());
+        verify(f.eligibility, never()).assess(eq(missing), nullable(Identity.class));
+        verify(f.client).refreshSubject(complete);
+        assertNull(f.service.board(ChartId.tv_chinese_best_weekly).candidates().get(0).subject().progress());
+    }
+
+    @Test void newWeeklySeriesBoardsStartDisabledAndKeepExistingBoardAndSharedTargetLedger() throws Exception {
+        when(f.client.fetch(ChartId.tv_hot)).thenReturn(List.of(f.subject(1, "SERIES")));
+        Operation original = f.await(f.service.execute(ChartId.tv_hot).id());
+        when(f.tasks.previousTask(any())).thenReturn(new BgmWishlistTaskGateway.ActiveTask("SERIES", "series-task", "SUCCEEDED"));
+        for (ChartId chart : List.of(ChartId.tv_chinese_best_weekly, ChartId.tv_global_best_weekly)) {
+            when(f.client.fetch(chart)).thenReturn(List.of(f.subject(1, "SERIES")));
+            assertFalse(f.service.board(chart).autoEnabled());
+            Operation run = f.await(f.service.execute(chart).id());
+            assertEquals("ASSOCIATED", run.entries().get(0).status());
+            assertEquals("series-task", run.entries().get(0).task().taskId());
+        }
+        assertEquals(original.id(), f.service.operations(ChartId.tv_hot, 1, 10).items().get(0).id());
+        verify(f.tasks, times(1)).createChartSeries(any(), any(), any());
+    }
+
     @Test void dailyRefreshRunsWithAutomationOffAndOnlyEnabledBoardCreatesWithPersistentAdmin() throws Exception {
-        CountDownLatch refreshed = new CountDownLatch(4);
+        CountDownLatch refreshed = new CountDownLatch(ChartId.values().length);
         when(f.client.fetch(any())).thenAnswer(call -> { refreshed.countDown(); ChartId chart = call.getArgument(0);
             return List.of(f.subject(chart.ordinal() + 10, chart.mediaType())); });
         f.service.daily(); assertTrue(refreshed.await(5, TimeUnit.SECONDS));

@@ -54,7 +54,7 @@ public class DoubanChartClient {
             for (JsonNode node : items) {
                 Subject subject = subject(node, chart, subjects.size() + 1);
                 if (!ids.add(subject.id())) throw invalid();
-                if ((chart == ChartId.movie_top250 || chart == ChartId.movie_weekly_best)
+                if (chart.limit() == 0
                         && (subject.rank() == null || subject.rank() != subjects.size() + 1)) throw invalid();
                 subjects.add(subject);
                 if (subjects.size() == wanted) break;
