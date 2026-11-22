@@ -69,6 +69,22 @@ class ProwlarrTorrentResolutionTest {
         assertThat(releases.toString()).doesNotContain("secret", "apikey");
     }
 
+    @Test void searchUsesConfiguredDeadlineRatherThanTorrentEightSecondLimit() throws Exception {
+        fixture = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        fixture.createContext("/api/v1/search", exchange -> {
+            try { Thread.sleep(8500); } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+            byte[] bytes = "[]".getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, bytes.length);
+            try (var output = exchange.getResponseBody()) { output.write(bytes); } catch (java.io.IOException ignored) { }
+        });
+        fixture.start();
+        var properties = new ProwlarrProperties();
+        properties.setBaseUrl("http://127.0.0.1:" + fixture.getAddress().getPort());
+        properties.setApiKey("fixture-key");
+        properties.setTimeout(Duration.ofSeconds(12));
+        assertThat(new ProwlarrClient(properties, new ObjectMapper()).search("movie")).isEmpty();
+    }
+
     @Test
     void redirectLoopSpendsAtMostSixRequests() throws Exception {
         fixture = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);

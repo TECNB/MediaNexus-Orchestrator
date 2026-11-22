@@ -149,7 +149,7 @@ public class ReleaseFileTables {
                         unavailable = originalFailure.getMessage();
                     }
                 }
-                throw new GuangyaException(GuangyaException.Reason.UNAVAILABLE, failure.getMessage() + "；另一路：" + unavailable);
+                throw new GuangyaException(failure.reason(), failure.getMessage() + "；另一路：" + unavailable);
             }
         });
     }

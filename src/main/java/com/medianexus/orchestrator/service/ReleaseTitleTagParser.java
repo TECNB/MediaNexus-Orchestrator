@@ -103,7 +103,7 @@ public class ReleaseTitleTagParser {
         return new ArrayList<>(tags);
     }
 
-    private List<String> parseSeasonTags(String title) {
+    public List<String> explicitSeasonTags(String title) {
         Set<Integer> seasons = new TreeSet<>();
         Matcher rangeMatcher = SEASON_RANGE_PATTERN.matcher(title);
         while (rangeMatcher.find()) {
@@ -120,6 +120,12 @@ public class ReleaseTitleTagParser {
         addSeasonMatches(seasons, ORDINAL_SEASON_PATTERN.matcher(title));
         addSeasonMatches(seasons, CJK_SEASON_NUMBER_PATTERN.matcher(title));
         addCjkSeasonMatches(seasons, CJK_SEASON_TEXT_PATTERN.matcher(title));
+        return seasons.stream().map(this::seasonTag).toList();
+    }
+
+    private List<String> parseSeasonTags(String title) {
+        Set<Integer> seasons = new TreeSet<>();
+        for (String tag : explicitSeasonTags(title)) seasons.add(Integer.parseInt(tag.substring(1)));
         if (seasons.isEmpty()) {
             addRepeatedAliasContinuationSeasonMatches(seasons, title);
         }

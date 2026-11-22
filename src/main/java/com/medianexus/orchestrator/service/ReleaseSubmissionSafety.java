@@ -16,15 +16,14 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
-import java.util.regex.Pattern;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 
 /** 电影/季度任务唯一的受理安全边界；在扣额、持久化和下载前完成只读补证与执行能力判断。 */
 @Component
 public class ReleaseSubmissionSafety {
-    private static final Pattern SEASON = Pattern.compile("(?i)(?:^|[^a-z0-9])s(?:eason)?[ ._-]*(\\d{1,2})(?=e\\d|[^0-9]|$)|第\\s*(\\d{1,2})\\s*[季期]");
     private final ReleaseFileAssessment assessment;
+    private final ReleaseTitleTagParser tags = new ReleaseTitleTagParser();
     private final ReleaseFileTables fileTables;
     // 重启失效、有界保留本次运行内已知证据；换入口、去掉标题或暂时断网不能洗掉安全失败。
     private final Cache<String, String> invalidTables = CacheBuilder.newBuilder().maximumSize(2048)
@@ -68,12 +67,10 @@ public class ReleaseSubmissionSafety {
             if (conflict != null) throw rejected(conflict);
             if (ReleaseVersion.isCamera(title)) throw rejected("发布存在明确枪版声明");
             if (!target.possiblyRelated(title)) throw rejected("发布标题与目标作品身份冲突");
-            if (target.season() == null && SEASON.matcher(title).find()) throw rejected("发布明确为季度内容，与目标电影身份冲突");
+            if (target.season() == null && !tags.explicitSeasonTags(title).isEmpty()) throw rejected("发布明确为季度内容，与目标电影身份冲突");
             if (target.season() != null) {
-                Set<Integer> seasons = new LinkedHashSet<>();
-                var matcher = SEASON.matcher(title);
-                while (matcher.find()) seasons.add(Integer.parseInt(matcher.group(1) == null ? matcher.group(2) : matcher.group(1)));
-                if (!seasons.isEmpty() && !seasons.contains(target.season())) throw rejected("发布季编号与目标季冲突");
+                Set<String> seasons = new LinkedHashSet<>(tags.explicitSeasonTags(title));
+                if (!seasons.isEmpty() && !seasons.contains("S%02d".formatted(target.season()))) throw rejected("发布季编号与目标季冲突");
                 if (seasons.size() > 1) throw rejected("跨季发布需要处理；现有整包整理不能安全执行");
             }
         }
@@ -96,17 +93,14 @@ public class ReleaseSubmissionSafety {
             invalidTables.put(hash, "文件表存在明确枪版声明");
             throw rejected("文件表存在明确枪版声明");
         }
-        if (target.season() == null && (SEASON.matcher(table.rootName()).find()
-                || table.files().stream().anyMatch(file -> SEASON.matcher(file.path()).find()))) {
+        if (target.season() == null && (!tags.explicitSeasonTags(table.rootName()).isEmpty()
+                || table.files().stream().anyMatch(file -> !tags.explicitSeasonTags(file.path()).isEmpty()))) {
             unsafeTargets.put(targetKey, "文件表明确为季度内容，与目标电影身份冲突");
             throw rejected("文件表明确为季度内容，与目标电影身份冲突");
         }
         if (target.season() != null) {
-            var declaredSeasons = SEASON.matcher(table.rootName());
-            Set<Integer> seasons = new LinkedHashSet<>();
-            while (declaredSeasons.find()) seasons.add(Integer.parseInt(declaredSeasons.group(1) == null
-                    ? declaredSeasons.group(2) : declaredSeasons.group(1)));
-            if (!seasons.isEmpty() && !seasons.contains(target.season())) {
+            Set<String> seasons = new LinkedHashSet<>(tags.explicitSeasonTags(table.rootName()));
+            if (!seasons.isEmpty() && !seasons.contains("S%02d".formatted(target.season()))) {
                 unsafeTargets.put(targetKey, "文件表季编号与目标季冲突");
                 throw rejected("文件表季编号与目标季冲突");
             }

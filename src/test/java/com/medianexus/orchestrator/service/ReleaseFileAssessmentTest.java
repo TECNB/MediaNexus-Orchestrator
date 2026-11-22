@@ -67,6 +67,56 @@ class ReleaseFileAssessmentTest {
         assertThat(evidence.targetBytes()).isEqualTo(100L);
     }
 
+    @Test
+    void nonFeatureFilesCannotEstablishMovieIdentity() {
+        var film = ReleaseTarget.of("Buddy", null, null, 2026, null, "1080p");
+        for (String decoy : new String[]{"Buddy.txt", "Extras/Buddy.2026.1080p.mkv", "Buddy.sample.mkv"}) {
+            assertThat(assessment.assess(film, List.of("Buddy 2026 1080p"),
+                    table("Download 2026 1080p", decoy, "Other.Movie.mkv")).evidence().status())
+                    .as(decoy).isEqualTo("UNVERIFIED");
+        }
+        var emptyDecoy = new TorrentFileTable(new PanSouMagnetIdentity("a".repeat(40)), "Download 2026 1080p",
+                List.of(new TorrentFileTable.Entry("Buddy.2026.1080p.mkv", 0L),
+                        new TorrentFileTable.Entry("Other.Movie.mkv", 100L)), 100L);
+        assertThat(assessment.assess(film, List.of("Buddy 2026 1080p"), emptyDecoy).evidence().status()).isEqualTo("UNVERIFIED");
+        assertThat(assessment.assess(film, List.of("Buddy 2026 1080p"),
+                table("Download 2026 1080p", "Buddy.2026.1080p.mkv")).evidence().status()).isEqualTo("RECOMMENDABLE");
+        assertThat(assessment.assess(film, List.of("Buddy 2026 1080p"),
+                table("Download 2026 1080p", "Buddy.2026.1080p.mkv", "Other.Movie.mkv")).evidence().status()).isEqualTo("NEEDS_PROCESSING");
+    }
+
+    @Test
+    void movieSeasonDeclarationsInSourceRootOrFeatureCannotBeRecommended() {
+        var film = ReleaseTarget.of("Buddy", null, null, 2026, null, "1080p");
+        assertThat(assessment.assess(film, List.of("Buddy 2026 S01E01 1080p"),
+                table("Buddy 2026 1080p", "Buddy.2026.1080p.mkv")).evidence().status()).isEqualTo("UNSUITABLE");
+        assertThat(assessment.assess(film, List.of("Buddy 2026 1080p"),
+                table("Buddy 2026 S01E01 1080p", "Buddy.2026.1080p.mkv")).evidence().status()).isEqualTo("UNSUITABLE");
+        assertThat(assessment.assess(film, List.of("Buddy 2026 1080p"),
+                table("Buddy 2026 1080p", "Buddy.2026.S01E01.1080p.mkv")).evidence().status()).isEqualTo("UNSUITABLE");
+        assertThat(assessment.assess(film, List.of("Buddy 2026 1080p"),
+                table("Buddy 2026 1080p", "Season 1/Buddy.2026.1080p.mkv")).evidence().status()).isEqualTo("UNSUITABLE");
+    }
+
+    @Test void explicitTextualSeasonsAndSourceSeasonConflictsAreNotRecommended() {
+        var movie = ReleaseTarget.of("Buddy", null, null, 2026, null, "1080p");
+        for (String season : new String[]{"第一季", "2nd Season", "S01E01"}) {
+            assertThat(assessment.assess(movie, List.of("Buddy 2026 " + season + " 1080p"),
+                    table("Buddy 2026 1080p", "Buddy.2026.1080p.mkv")).evidence().status()).isEqualTo("UNSUITABLE");
+        }
+        var series = ReleaseTarget.of("Show", null, null, null, 1, "1080p");
+        assertThat(assessment.assess(series, List.of("Show 第二季 1080p"),
+                table("Show S01 1080p", "Show.S01E01.mkv")).evidence().status()).isEqualTo("UNSUITABLE");
+    }
+
+    @Test void resolutionDimensionsCannotProveMovieReleaseYear() {
+        var film = ReleaseTarget.of("The Golem", null, null, 1920, null, "1080p");
+        assertThat(assessment.assess(film, List.of("The Golem 1920x1080"),
+                table("The Golem 1920x1080", "The.Golem.1080p.mkv")).evidence().status()).isEqualTo("UNVERIFIED");
+        assertThat(assessment.assess(film, List.of("The Golem 1920 1920x1080"),
+                table("The Golem 1920 1920x1080", "The.Golem.1080p.mkv")).evidence().status()).isEqualTo("RECOMMENDABLE");
+    }
+
     private TorrentFileTable table(String root, String... paths) {
         return new TorrentFileTable(new PanSouMagnetIdentity("a".repeat(40)), root,
                 java.util.Arrays.stream(paths).map(path -> new TorrentFileTable.Entry(root + "/" + path, 100L)).toList(), paths.length * 100L);

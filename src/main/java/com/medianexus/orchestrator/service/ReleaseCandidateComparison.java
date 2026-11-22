@@ -102,6 +102,7 @@ public class ReleaseCandidateComparison implements AutoCloseable {
                 comparison.deadline = Instant.now().plusSeconds(45);
                 comparison.queries.removeAll(comparison.failedQueries);
                 comparison.searchFailed = false;
+                comparison.failureCode = null;
                 enqueue(comparison);
             }
         }
@@ -134,12 +135,15 @@ public class ReleaseCandidateComparison implements AutoCloseable {
         runRound(comparison);
         var view = comparison.view();
         List<ProwlarrReleaseItemResponse> usable = view.items().stream().filter(this::automaticallySelectable).toList();
-        if (!"COMPLETE".equals(view.comparison().status())) {
-            throw new NoMatchingReleaseException("EVIDENCE_BUDGET_EXHAUSTED",
-                    view.comparison().message() + "；比较快照=" + comparison.id + "，已查=" + view.comparison().checked() + "，待查=" + view.comparison().pending(), view.items());
+        if (usable.isEmpty()) {
+            String code = comparison.failureCode != null ? comparison.failureCode
+                    : !"COMPLETE".equals(view.comparison().status()) ? "EVIDENCE_UNAVAILABLE"
+                    : view.items().isEmpty() ? "NO_RELEASE" : "EVIDENCE_UNVERIFIED";
+            String message = comparison.failureCode == null && "COMPLETE".equals(view.comparison().status())
+                    ? view.items().isEmpty() ? "本轮搜索未发现相关磁力" : "已评估片源未通过自动入库核验，可到资源搜索查看并选择其他片源"
+                    : view.comparison().message() + "；本轮未取得可安全自动入库的片源，可到资源搜索处理或稍后重新检查";
+            throw new NoMatchingReleaseException(code, message, view.items());
         }
-        if (usable.isEmpty()) throw new NoMatchingReleaseException(view.items().isEmpty() ? "NO_RELEASE" : "EVIDENCE_UNVERIFIED",
-                view.items().isEmpty() ? "本轮搜索未发现相关磁力" : "本轮已评估候选没有可安全自动提交项；可人工查看证据", view.items());
         var selected = usable.get(0);
         return new ProwlarrReleaseRecommendationResponse(view.query(), target.quality(), selected.resolutionTags().stream()
                 .filter(target.qualities()::contains).findFirst().orElse(null), selected, usable, view.comparison());
@@ -169,24 +173,27 @@ public class ReleaseCandidateComparison implements AutoCloseable {
                 searchQueries(comparison, supplement, deadline, pool, futures);
             }
             if (comparison.searchFailed) {
-                synchronized (comparison) { comparison.status = "BLOCKED"; comparison.message = "部分搜索词未取得结果；已查证据保留，不能声称本轮无资源或完成全比较"; }
+                synchronized (comparison) { comparison.status = "BLOCKED"; comparison.failureCode = "SEARCH_UNAVAILABLE"; comparison.message = "部分搜索请求失败，已取得的候选和核验结果保留"; }
                 return;
             }
             synchronized (comparison) {
                 comparison.status = "COMPLETE";
-                comparison.message = "本轮已发现候选全部评估完成；不代表穷举互联网或媒体质量实测";
+                if (comparison.failureCode == null) comparison.message = "本轮已发现候选全部评估完成；不代表穷举互联网或媒体质量实测";
             }
         } catch (TimeoutException exception) {
-            pause(comparison, "总流程或解析时间预算用尽；保留当前推荐，请明确继续比较");
+            comparison.failureCode = "EVIDENCE_BUDGET_EXHAUSTED";
+            pause(comparison, "本轮搜索或文件核验已达到时间上限，已取得的证据保留");
         } catch (GuangyaException exception) {
+            comparison.failureCode = evidenceFailureCode(exception.reason());
             if (exception.reason() == GuangyaException.Reason.BUDGET_EXHAUSTED) pause(comparison, exception.getMessage());
             else synchronized (comparison) { comparison.status = "BLOCKED"; comparison.message = exception.getMessage(); }
         } catch (InterruptedException exception) {
+            comparison.failureCode = "EVIDENCE_UNAVAILABLE";
             Thread.currentThread().interrupt(); pause(comparison, "比较已中断，已查证据保留");
         } catch (ExecutionException exception) {
-            synchronized (comparison) { comparison.status = "BLOCKED"; comparison.message = "搜索或解析暂不可用，已查证据保留"; }
+            synchronized (comparison) { comparison.status = "BLOCKED"; comparison.failureCode = "EVIDENCE_UNAVAILABLE"; comparison.message = "搜索或解析暂不可用，已查证据保留"; }
         } catch (RuntimeException exception) {
-            synchronized (comparison) { comparison.status = "BLOCKED"; comparison.message = "比较暂不可用，请检查上游或认证配置；已查证据保留"; }
+            synchronized (comparison) { comparison.status = "BLOCKED"; comparison.failureCode = "EVIDENCE_UNAVAILABLE"; comparison.message = "比较暂不可用，请检查上游或认证配置；已查证据保留"; }
         } finally {
             futures.forEach(future -> future.cancel(true)); pool.shutdownNow();
             synchronized (comparison) { if (budget != null) comparison.resolveRequests = budget.resolveRequests(); }
@@ -198,45 +205,61 @@ public class ReleaseCandidateComparison implements AutoCloseable {
         CompletionService<SearchBatch> completion = new ExecutorCompletionService<>(pool);
         int count = 0;
         Map<Future<SearchBatch>, String> queryFutures = new HashMap<>();
+        Map<String, Long> started = new HashMap<>();
         for (String query : queries) {
             synchronized (comparison) {
                 if (comparison.queries.size() >= 4 || !comparison.queries.add(query)) continue;
             }
             comparison.progress.accept(new ReleaseSearchProgress(query, "资源发现", "RUNNING", 0, null));
+            started.put(query, System.nanoTime());
             Future<SearchBatch> submitted = completion.submit(() -> new SearchBatch(query,
                     comparison.refresh ? discovery.refresh(query) : discovery.search(query)));
             futures.add(submitted);
             queryFutures.put(submitted, query);
             count++;
         }
-        for (int i = 0; i < count; i++) {
-            Future<SearchBatch> future = completion.poll(remaining(deadline), TimeUnit.NANOSECONDS);
-            if (future == null) throw new TimeoutException();
-            SearchBatch batch;
-            try { batch = future.get(); }
-            catch (ExecutionException exception) {
-                synchronized (comparison) { comparison.searchFailed = true; comparison.failedQueries.add(queryFutures.get(future)); }
-                continue;
-            }
-            synchronized (comparison) {
-                for (var entry : batch.entries) {
-                    String identity = entry.identity();
-                    comparison.discovered.computeIfAbsent(identity, ignored -> new ArrayList<>()).add(entry);
-                    if (!comparison.target.possiblyRelated(entry.item().title()) && !comparison.candidates.containsKey(identity)) continue;
-                    var candidate = comparison.candidates.get(identity);
-                    if (candidate == null) {
-                        candidate = new Discovered(entry, batch.query);
-                        comparison.candidates.put(identity, candidate);
-                        for (var previous : comparison.discovered.get(identity)) candidate.merge(previous, batch.query);
-                    } else candidate.merge(entry, batch.query);
-                    rememberTitles(candidate);
-                    for (String title : candidate.titles) {
-                        String conflict = comparison.target.conflict(title);
-                        if (conflict != null) candidate.item = candidate.item.withEvidence(new ReleaseFileEvidence("UNSUITABLE", conflict, null, null, null, false, false), candidate.item.resolutionTags());
+        Set<String> finished = new HashSet<>();
+        try {
+            for (int i = 0; i < count; i++) {
+                Future<SearchBatch> future = completion.poll(remaining(deadline), TimeUnit.NANOSECONDS);
+                if (future == null) throw new TimeoutException();
+                String query = queryFutures.get(future);
+                SearchBatch batch;
+                try { batch = future.get(); }
+                catch (ExecutionException exception) {
+                    synchronized (comparison) { comparison.searchFailed = true; comparison.failedQueries.add(query); }
+                    finished.add(query);
+                    comparison.progress.accept(new ReleaseSearchProgress(query, "资源发现", "FAILED", elapsedMillis(started.get(query)), null));
+                    continue;
+                }
+                synchronized (comparison) {
+                    for (var entry : batch.entries) {
+                        String identity = entry.identity();
+                        comparison.discovered.computeIfAbsent(identity, ignored -> new ArrayList<>()).add(entry);
+                        if (!comparison.target.possiblyRelated(entry.item().title()) && !comparison.candidates.containsKey(identity)) continue;
+                        var candidate = comparison.candidates.get(identity);
+                        if (candidate == null) {
+                            candidate = new Discovered(entry, batch.query);
+                            comparison.candidates.put(identity, candidate);
+                            for (var previous : comparison.discovered.get(identity)) candidate.merge(previous, batch.query);
+                        } else candidate.merge(entry, batch.query);
+                        rememberTitles(candidate);
+                        for (String title : candidate.titles) {
+                            String conflict = comparison.target.conflict(title);
+                            if (conflict != null) candidate.item = candidate.item.withEvidence(new ReleaseFileEvidence("UNSUITABLE", conflict, null, null, null, false, false), candidate.item.resolutionTags());
+                        }
                     }
                 }
+                finished.add(query);
+                comparison.progress.accept(new ReleaseSearchProgress(batch.query, "资源发现", "SUCCEEDED", elapsedMillis(started.get(query)), batch.entries.size()));
             }
-            comparison.progress.accept(new ReleaseSearchProgress(batch.query, "资源发现", "SUCCEEDED", 0, batch.entries.size()));
+        } finally {
+            for (var entry : queryFutures.entrySet()) {
+                if (finished.contains(entry.getValue())) continue;
+                entry.getKey().cancel(true);
+                synchronized (comparison) { comparison.searchFailed = true; comparison.failedQueries.add(entry.getValue()); }
+                comparison.progress.accept(new ReleaseSearchProgress(entry.getValue(), "资源发现", "FAILED", elapsedMillis(started.get(entry.getValue())), null));
+            }
         }
     }
 
@@ -254,16 +277,19 @@ public class ReleaseCandidateComparison implements AutoCloseable {
                 batch.add(future); futures.add(future);
             }
             for (Future<Checked> future : batch) {
-                Checked checked = future.get(Math.min(remaining(deadline), budget.remaining().toNanos()), TimeUnit.NANOSECONDS);
+                Checked checked = future.isDone() ? future.get() : future.get(remaining(deadline), TimeUnit.NANOSECONDS);
                 synchronized (comparison) {
                     checked.candidate.item = checked.item;
                     comparison.resolveRequests = budget.resolveRequests();
                     if (checked.failure == null) comparison.checkedFailures.add(checked.candidate);
                     if (checked.failure != null) {
                         switch (checked.failure.reason()) {
-                            case BUDGET_EXHAUSTED -> { pause(comparison, checked.failure.getMessage()); return; }
+                            case BUDGET_EXHAUSTED -> { comparison.failureCode = "EVIDENCE_BUDGET_EXHAUSTED"; pause(comparison, checked.failure.getMessage()); }
                             case AUTHENTICATION, ACCOUNT_BLOCKED, NOT_CONFIGURED, PERSISTENCE_FAILED -> {
-                                comparison.status = "BLOCKED"; comparison.message = checked.failure.getMessage(); return;
+                                // 一个来源缺配置不阻断其他候选的原始 torrent 补证。
+                                comparison.failureCode = evidenceFailureCode(checked.failure.reason());
+                                comparison.message = checked.failure.getMessage();
+                                comparison.checkedFailures.add(checked.candidate);
                             }
                             case INVALID_RESPONSE -> { comparison.checkedFailures.add(checked.candidate); }
                             default -> comparison.checkedFailures.add(checked.candidate);
@@ -274,6 +300,7 @@ public class ReleaseCandidateComparison implements AutoCloseable {
             synchronized (comparison) {
                 for (var candidate : List.copyOf(comparison.candidates.values()))
                     if (candidate.magnet != null && comparison.candidates.containsValue(candidate)) mergeResolvedHash(comparison, candidate);
+                if (!"RUNNING".equals(comparison.status)) return;
             }
         }
     }
@@ -372,6 +399,15 @@ public class ReleaseCandidateComparison implements AutoCloseable {
         queries.add(target.titles().get(0) + (target.season() == null ? " " + target.year() : " S%02d".formatted(target.season())));
         return queries.stream().limit(4).toList();
     }
+    private static long elapsedMillis(long started) { return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started); }
+    private static String evidenceFailureCode(GuangyaException.Reason reason) {
+        return switch (reason) {
+            case NOT_CONFIGURED -> "EVIDENCE_NOT_CONFIGURED";
+            case AUTHENTICATION, ACCOUNT_BLOCKED -> "EVIDENCE_AUTHENTICATION";
+            case BUDGET_EXHAUSTED -> "EVIDENCE_BUDGET_EXHAUSTED";
+            default -> "EVIDENCE_UNAVAILABLE";
+        };
+    }
     private ReleaseTarget movie(MovieReleaseSearchRequest request) { return ReleaseTarget.of(request.title(), request.originalTitle(), request.bangumiTitle(), request.year(), null, request.quality()); }
     private ReleaseTarget series(SeriesReleaseSearchRequest request) { return ReleaseTarget.of(request.title(), request.originalTitle(), request.bangumiTitle(), null, request.seasonNumber(), request.quality()); }
 
@@ -389,6 +425,7 @@ public class ReleaseCandidateComparison implements AutoCloseable {
         Instant deadline = Instant.now().plusSeconds(45);
         final Map<String, List<ReleaseCandidateDiscovery.Found>> discovered = new LinkedHashMap<>();
         boolean searchFailed;
+        String failureCode;
         final Set<Discovered> checkedFailures = new HashSet<>();
         String status = "RUNNING";
         String message = "正在发现候选并按文件表渐进比较";

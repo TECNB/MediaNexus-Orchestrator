@@ -61,5 +61,5 @@ public final class ResolveBudget {
     }
     void release() { concurrent.release(); }
     Duration requestTimeout() { Duration remaining = remaining(); return remaining.compareTo(Duration.ofSeconds(8)) < 0 ? remaining : Duration.ofSeconds(8); }
-    private GuangyaException exhausted() { return new GuangyaException(GuangyaException.Reason.BUDGET_EXHAUSTED, "本轮光鸭解析预算已用尽，尚未核验的候选可在下一轮继续"); }
+    private GuangyaException exhausted() { return new GuangyaException(GuangyaException.Reason.BUDGET_EXHAUSTED, "本轮文件核验已达到请求次数或耗时上限，未核验的片源暂不自动使用"); }
 }

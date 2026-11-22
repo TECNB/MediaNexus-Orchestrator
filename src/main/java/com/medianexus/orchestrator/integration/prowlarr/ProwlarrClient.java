@@ -374,7 +374,7 @@ public class ProwlarrClient {
 
     private Integer integerOrNull(JsonNode node) { return node == null || !node.isNumber() ? null : node.asInt(); }
     private Long longOrNull(JsonNode node) { return node == null || !node.isNumber() ? null : node.asLong(); }
-    private Duration timeout() { return properties.getTimeout().compareTo(REQUEST_LIMIT) < 0 ? properties.getTimeout() : REQUEST_LIMIT; }
+    private Duration timeout() { return properties.getTimeout(); }
     private String encode(String value) { return URLEncoder.encode(value, StandardCharsets.UTF_8); }
 
     private String cleanConfigValue(String value) {

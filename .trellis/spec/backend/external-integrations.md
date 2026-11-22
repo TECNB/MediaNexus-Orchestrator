@@ -81,7 +81,7 @@
 - Credentials are HOT administrator settings `guangya.accessToken/refreshToken/deviceId`, encrypted via SettingsCipher. No environment token binding. Rotation uses the existing settings transaction/CAS.
 - One round includes search in 45s, at most four search terms (concurrency two), resolution in at most 30s, at most 20 new resolve HTTP attempts (retries count), concurrency two, request timeout eight seconds, one shared authentication refresh. Cache and in-flight same-hash requests are reused.
 - Comparison states: RUNNING, COMPLETE, PAUSED, BLOCKED. Evidence states: RECOMMENDABLE, NEEDS_PROCESSING, UNSUITABLE, UNVERIFIED. Unknown counts and sizes remain null.
-- Automatic recommendation requires COMPLETE and executable evidence. Manual selection may precede completion; unknown evidence requires explicit `accept_unverified_risk`. This permission cannot override known identity/path/target conflicts or unsupported execution.
+- Automatic recommendation may select an already RECOMMENDABLE candidate while other candidates are PAUSED/BLOCKED (user-approved 2026-11-22); this is the best verified current choice, not the whole-queue optimum. Preserve comparison status, exact identity, executable file evidence, positive Prowlarr seeders and the common submission safety check. No automatic unverified-risk override.
 - Filename resolution/subtitle/version tags remain declarations, not media inspection. Normal versions precede accepted preview versions, then existing allowed resolution/subtitle priorities; target bytes are the final size comparison, separate from whole-package bytes.
 - Snapshot and evidence caches are bounded and process-local; restart/expiry requires another search. Failed searches retry only on explicit continuation. Ordinary request timeouts are not automatically retried.
 - PanSou and Prowlarr use `ReleaseCandidateComparison`. Prowlarr retains search hash, indexer/reference, backup torrent reference and peer metadata; source size is separate from file-table total/target size. Direct magnets and title-incomplete related candidates remain eligible for evidence.
@@ -94,7 +94,7 @@
 | --- | --- |
 | Invalid hash, unsafe/duplicate paths, inconsistent leaf count/size, structure limits | No success cache; reject submission even with risk permission |
 | Auth/quota/persistence failure | Try an available original torrent source; otherwise keep unavailable evidence (PanSou-only comparison may BLOCK), never call it dead/zero episodes |
-| Budget exhausted with pending queue | PAUSED; current recommendation only, no automatic submission |
+| Budget exhausted with pending queue | PAUSED; preserve pending evidence; automation may use an independently verified executable candidate, otherwise no submission |
 | Mixed seasons, unmapped absolute numbering, unknown video or duplicate main version | NEEDS_PROCESSING; never relax unknown-video deletion safety |
 | Missing credentials or unavailable metadata | UNVERIFIED; administrator setup or explicit human risk acceptance |
 
@@ -110,4 +110,4 @@
 
 ### 7. Wrong vs Correct
 - Wrong: return the first title-qualified item and call unresolved metadata `0/12`.
-- Correct: display discovered candidates immediately, compare the entire current queue, preserve unknown counts, and pause without automatic task creation when budget remains insufficient.
+- Correct: preserve full-queue progress and unknown counts; bounded comparison may pause, but unresolved alternatives do not invalidate a separately verified current choice. Missing configuration/authentication, search failures and time/request limits have distinct outcomes.

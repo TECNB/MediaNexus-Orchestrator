@@ -14,7 +14,6 @@ import org.springframework.stereotype.Component;
 @Component
 public class ReleaseFileAssessment {
     private static final Pattern AUXILIARY_DIRECTORY = Pattern.compile("(?i)(?:^|/)(?:extras?|specials?|sps?|bonus|ncop|nced|ost|特典|花絮)(?:/|$)");
-    private static final Pattern EXPLICIT_SEASON = Pattern.compile("(?i)(?:^|[^a-z0-9])(?:s(?:eason)?[ ._-]*(\\d{1,2})(?=e\\d|[^0-9]|$))|第\\s*([0-9]{1,2})\\s*[季期]");
     private final MovieSeriesFileRenameService rename;
     private final ReleaseTitleTagParser tags;
 
@@ -27,11 +26,18 @@ public class ReleaseFileAssessment {
         for (String title : sourceTitles) {
             String conflict = target.conflict(title);
             if (conflict != null) return assessment("UNSUITABLE", conflict + "；保留来源冲突证据", table, null, null, false, false, List.of());
+            List<String> declared = tags.explicitSeasonTags(title);
+            if (target.season() != null && !declared.isEmpty() && !declared.contains("S%02d".formatted(target.season())))
+                return assessment("UNSUITABLE", "发布季编号与目标季冲突", table, null, null, false, false, List.of());
         }
         String rootConflict = target.conflict(table.rootName());
         if (rootConflict != null) return assessment("UNSUITABLE", rootConflict, table, null, null, false, false, List.of());
-        boolean identity = target.matches(table.rootName()) || table.files().stream().anyMatch(file -> target.matches(file.path()));
-        if (!identity) return assessment("UNVERIFIED", "文件表尚不能确认作品身份", table, null, null, false, false, List.of());
+        if (target.season() == null && (sourceTitles.stream().anyMatch(title -> !tags.explicitSeasonTags(title).isEmpty())
+                || !tags.explicitSeasonTags(table.rootName()).isEmpty()
+                || table.files().stream().anyMatch(file -> !tags.explicitSeasonTags(file.path()).isEmpty()))) {
+            return assessment("UNSUITABLE", "来源或文件表明确为季度内容，与目标电影身份冲突", table, null, null, false, false, List.of());
+        }
+        boolean identity = target.matches(table.rootName());
         Set<Integer> rootSeasons = seasons(table.rootName());
         List<TorrentFileTable.Entry> main = new ArrayList<>();
         Set<Integer> episodes = new HashSet<>();
@@ -50,6 +56,7 @@ public class ReleaseFileAssessment {
             String relative = file.path().startsWith(table.rootName() + "/") ? file.path().substring(table.rootName().length() + 1) : file.path();
             if (isAuxiliaryVideo(relative)) continue;
             if (target.conflict(name) != null) return assessment("UNSUITABLE", "包内正片存在明确作品/年份冲突", table, null, null, false, false, List.of());
+            identity |= target.matches(name);
             Set<Integer> localSeasons = seasons(relative);
             Set<Integer> fileSeasons = localSeasons.isEmpty() ? rootSeasons : localSeasons;
             if (target.season() != null) {
@@ -72,6 +79,7 @@ public class ReleaseFileAssessment {
             else if (quality.stream().noneMatch(target.qualities()::contains)) unallowed = true;
             resolutions.addAll(quality);
         }
+        if (!identity) return assessment("UNVERIFIED", "文件表尚不能确认作品身份", table, null, null, false, false, List.of());
         if (target.season() != null && target.season() > 1 && !main.isEmpty() && !relativeNumbering) unknown = true;
         preview |= sourceTitles.stream().anyMatch(ReleaseVersion::isPreview) || ReleaseVersion.isPreview(table.rootName());
         camera |= sourceTitles.stream().anyMatch(ReleaseVersion::isCamera) || ReleaseVersion.isCamera(table.rootName());
@@ -84,9 +92,9 @@ public class ReleaseFileAssessment {
             return assessment("NEEDS_PROCESSING", "包含目标，但有未知视频、跨季或重复版本；现有整包整理不能安全执行", table, bytes, main.size(), preview, false, List.copyOf(resolutions));
         }
         if (missingQuality) return assessment("UNVERIFIED", "目标范围已识别，画质声明尚未取得", table, bytes, main.size(), preview, false, List.copyOf(resolutions));
-        if (target.season() == null && target.year() != null && !table.rootName().contains(target.year().toString())
-                && sourceTitles.stream().noneMatch(title -> title.contains(target.year().toString()))
-                && main.stream().noneMatch(file -> file.path().contains(target.year().toString()))) {
+        if (target.season() == null && target.year() != null && !target.declaresYear(table.rootName())
+                && sourceTitles.stream().noneMatch(target::declaresYear)
+                && main.stream().noneMatch(file -> target.declaresYear(file.path()))) {
             return assessment("UNVERIFIED", "目标文件已识别，发行年份待核对", table, bytes, main.size(), preview, false, List.copyOf(resolutions));
         }
         return assessment("RECOMMENDABLE", "文件表目标范围可由现有整理执行；画质/版本/字幕为名称声明，非媒体检测"
@@ -106,8 +114,7 @@ public class ReleaseFileAssessment {
 
     private Set<Integer> seasons(String text) {
         Set<Integer> result = new LinkedHashSet<>();
-        var match = EXPLICIT_SEASON.matcher(text);
-        while (match.find()) result.add(Integer.parseInt(match.group(1) == null ? match.group(2) : match.group(1)));
+        for (String tag : tags.explicitSeasonTags(text)) result.add(Integer.parseInt(tag.substring(1)));
         return result;
     }
 

@@ -102,6 +102,70 @@ class ReleaseCandidateComparisonTest {
                 });
     }
 
+    @Test void automationCanUseVerifiedReleaseWhenOtherCandidatesReachLimit() {
+        when(client.searchMagnets(any())).thenReturn(new PanSouSearchResult(List.of(
+                entry(1, "Show S01 1080p", 100L), entry(2, "Show S01 1080p", 200L))));
+        when(guangya.resolve(eq(magnet(2)), any())).thenThrow(new GuangyaException(GuangyaException.Reason.BUDGET_EXHAUSTED, "本轮解析次数达到上限"));
+        var recommendation = search.recommendSeries(new SeriesReleaseRecommendationRequest(null, null, null, "Show", null, 1, "1080p"));
+        assertThat(recommendation.item().downloadRef()).isEqualTo(magnet(1));
+        assertThat(recommendation.item().evidence().status()).isEqualTo("RECOMMENDABLE");
+        assertThat(recommendation.comparison().status()).isEqualTo("PAUSED");
+        assertThat(recommendation.comparison().pending()).isPositive();
+    }
+
+    @Test void failedSearchPublishesTerminalProgressAndDoesNotMasqueradeAsResolutionLimit() {
+        var progress = new java.util.concurrent.CopyOnWriteArrayList<ProwlarrReleaseIngestService.ReleaseSearchProgress>();
+        when(client.searchMagnets(any())).thenAnswer(call -> {
+            if (call.<PanSouSearchCommand>getArgument(0).keyword().equals("Original")) throw new IllegalStateException("offline");
+            return new PanSouSearchResult(List.of());
+        });
+        assertThatThrownBy(() -> search.recommendSeries(new SeriesReleaseRecommendationRequest(null, null, null, "Show", "Original", 1, "1080p"), progress::add))
+                .isInstanceOfSatisfying(ProwlarrReleaseIngestService.NoMatchingReleaseException.class,
+                        failure -> assertThat(failure.reasonCode()).isEqualTo("SEARCH_UNAVAILABLE"));
+        assertThat(progress).anySatisfy(item -> {
+            assertThat(item.query()).isEqualTo("Original");
+            assertThat(item.status()).isEqualTo("FAILED");
+        });
+        assertThat(progress.stream().filter(item -> item.query().equals("Original")).reduce((a, b) -> b).orElseThrow().status()).isEqualTo("FAILED");
+    }
+
+    @Test void missingFileMetadataConfigurationIsExplicitAndHasNoDeadSnapshotInstruction() {
+        when(client.searchMagnets(any())).thenReturn(new PanSouSearchResult(List.of(entry(1, "Show", null))));
+        doThrow(new GuangyaException(GuangyaException.Reason.NOT_CONFIGURED, "文件清单解析服务尚未配置")).when(guangya).resolve(anyString(), any());
+        assertThatThrownBy(() -> search.recommendSeries(new SeriesReleaseRecommendationRequest(null, null, null, "Show", null, 1, "1080p")))
+                .isInstanceOfSatisfying(ProwlarrReleaseIngestService.NoMatchingReleaseException.class, failure -> {
+                    assertThat(failure.reasonCode()).isEqualTo("EVIDENCE_NOT_CONFIGURED");
+                    assertThat(failure.getMessage()).contains("尚未配置").doesNotContain("比较快照=", "继续比较");
+                });
+    }
+
+    @Test void usableTorrentFallbackSurvivesAnotherCandidateMissingMetadataConfiguration() {
+        when(settings.usesPanSouForMagnetSearch()).thenReturn(false);
+        var missing = new com.medianexus.orchestrator.integration.prowlarr.ProwlarrRelease("Show S01 1080p", 100L, 5, null, null, "Indexer", null, 7, "missing", magnet(1));
+        var usable = new com.medianexus.orchestrator.integration.prowlarr.ProwlarrRelease("Show S01 1080p", 100L, 10, null, null, "Indexer", null, 7, "usable", magnet(2));
+        when(prowlarr.search(anyString())).thenReturn(List.of(missing, usable));
+        doThrow(new GuangyaException(GuangyaException.Reason.NOT_CONFIGURED, "文件清单解析服务尚未配置")).when(guangya).resolve(anyString(), any());
+        doReturn(new com.medianexus.orchestrator.integration.prowlarr.ResolvedTorrent(magnet(1), Optional.empty())).when(originalClient).resolveTorrent(eq(missing), any());
+        doReturn(new com.medianexus.orchestrator.integration.prowlarr.ResolvedTorrent(magnet(2), Optional.of(table(magnet(2), "Show S01 1080p", "Show.S01E01.mkv")))).when(originalClient).resolveTorrent(eq(usable), any());
+        var result = search.recommendSeries(new SeriesReleaseRecommendationRequest(null, null, null, "Show", null, 1, "1080p"));
+        assertThat(result.item().downloadRef()).isEqualTo(magnet(2));
+        assertThat(result.item().seeders()).isPositive();
+    }
+
+    @Test void verifiedMovieSurvivesEarlierFailedCandidateAndPassesCommonSubmissionSafety() {
+        when(client.searchMagnets(any())).thenReturn(new PanSouSearchResult(List.of(
+                entry(1, "Arrival 2016 1080p", 100L), entry(2, "Arrival 2016 1080p", 200L))));
+        doThrow(new GuangyaException(GuangyaException.Reason.BUDGET_EXHAUSTED, "本轮文件核验达到上限")).when(guangya).resolve(eq(magnet(1)), any());
+        doReturn(table(magnet(2), "Arrival 2016 1080p", "Arrival.2016.1080p.mkv")).when(guangya).resolve(eq(magnet(2)), any());
+        var safety = new ReleaseSubmissionSafety(tables, new ReleaseFileAssessment(new MovieSeriesFileRenameService(), tags));
+        search.shareSubmissionEvidence(safety);
+        var result = search.recommendMovie(new MovieReleaseRecommendationRequest(null, null, "Arrival", null, 2016, "1080p"));
+        assertThat(result.item().downloadRef()).isEqualTo(magnet(2));
+        assertThat(result.comparison().status()).isEqualTo("PAUSED");
+        assertThat(safety.check(magnet(2), ReleaseTarget.of("Arrival", null, null, 2016, null, "1080p"), ReleaseIngestMetadata.manual()))
+                .contains("RECOMMENDABLE");
+    }
+
     @Test void mergesHashesPreservesConflictingSourcesAndCannotWashKnownMovieIdentity() throws Exception {
         when(client.searchMagnets(any())).thenReturn(new PanSouSearchResult(List.of(
                 entry(1, "Show 1080p", 100L), entry(1, "Show Movie 1080p", 500L))));

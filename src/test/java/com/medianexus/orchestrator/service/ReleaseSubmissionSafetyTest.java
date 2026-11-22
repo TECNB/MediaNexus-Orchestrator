@@ -46,6 +46,14 @@ class ReleaseSubmissionSafetyTest {
                 .contains("UNVERIFIED").contains("显式接受");
     }
 
+    @Test void textualSeasonDeclarationsCannotPassMovieSubmission() {
+        for (String season : List.of("第一季", "2nd Season")) {
+            assertThatThrownBy(() -> safety.check(MAGNET, movie,
+                    new ReleaseIngestMetadata("MANUAL_MAGNET", "Arrival 2016 " + season + " 1080p", null, null, null, null, List.of(), List.of(), true)))
+                    .hasMessageContaining("季度");
+        }
+    }
+
     @Test
     void invalidMagnetAndInvalidResponseCannotBeAcknowledgedOrForgotten() {
         var accepted = ReleaseIngestMetadata.manual().withUnverifiedRisk(true);
