@@ -1,5 +1,10 @@
 package com.medianexus.orchestrator.integration.clouddrive;
 
+import static com.medianexus.orchestrator.service.organization.LibraryOrganizationPlan.join;
+import static com.medianexus.orchestrator.service.organization.LibraryOrganizationPlan.normalizePath;
+import static com.medianexus.orchestrator.service.organization.LibraryOrganizationPlan.parentPath;
+import static com.medianexus.orchestrator.service.organization.LibraryOrganizationPlan.fileName;
+
 import com.medianexus.orchestrator.config.CloudDrive2Properties;
 import com.medianexus.orchestrator.integration.clouddrive.proto.CloudDriveFileSrvGrpc;
 import com.medianexus.orchestrator.integration.clouddrive.proto.FileOperationResult;
@@ -19,6 +24,14 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
+import java.util.HashSet;
+import java.util.Locale;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.function.Consumer;
 import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -35,6 +48,7 @@ class CloudDrive2GrpcClient implements CloudDrive2FileOperations {
     private final CloudDrive2Properties properties;
     private final ManagedChannel channel;
     private final CloudDriveFileSrvGrpc.CloudDriveFileSrvBlockingStub blockingStub;
+    private final ExecutorService fileMutationRequests = Executors.newFixedThreadPool(2);
 
     CloudDrive2GrpcClient(CloudDrive2Properties properties) {
         this.properties = properties;
@@ -82,21 +96,24 @@ class CloudDrive2GrpcClient implements CloudDrive2FileOperations {
         if (operations.isEmpty()) {
             return;
         }
-        for (int offset = 0; offset < operations.size(); offset += 10) {
+        List<String> sources = operations.stream().map(CloudDrive2RenameOperation::sourcePath).toList();
+        List<String> targets = operations.stream()
+                .map(operation -> join(parentPath(operation.sourcePath()), operation.targetName())).toList();
+        int requestWidth = independentRenames(sources, targets) ? 2 : 1;
+        executeMutationBatches(operations, requestWidth, batch -> {
             RenameFilesRequest.Builder request = RenameFilesRequest.newBuilder();
-            operations.subList(offset, Math.min(offset + 10, operations.size())).forEach(operation ->
-                    request.addRenameFiles(RenameFileRequest.newBuilder().setTheFilePath(operation.sourcePath())
-                            .setNewName(operation.targetName()).build()));
+            batch.forEach(operation -> request.addRenameFiles(RenameFileRequest.newBuilder()
+                    .setTheFilePath(operation.sourcePath()).setNewName(operation.targetName()).build()));
             long started = System.nanoTime();
             try {
                 requireSuccess("rename", stub().renameFiles(request.build()));
             } catch (StatusRuntimeException exception) {
                 throw grpcFailure("CloudDrive2 rename failed", exception);
             } finally {
-                log.info("CD2 batch operation=rename offset={} count={} elapsedMs={}", offset,
-                        Math.min(10, operations.size() - offset), TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started));
+                log.info("CD2 batch operation=rename count={} elapsedMs={}", batch.size(),
+                        TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started));
             }
-        }
+        });
     }
 
     @Override
@@ -104,21 +121,23 @@ class CloudDrive2GrpcClient implements CloudDrive2FileOperations {
         if (sourcePaths.isEmpty()) {
             return;
         }
-        for (int offset = 0; offset < sourcePaths.size(); offset += 10) {
-            MoveFileRequest request = MoveFileRequest.newBuilder()
-                    .addAllTheFilePaths(sourcePaths.subList(offset, Math.min(offset + 10, sourcePaths.size())))
-                    .setDestPath(targetDirectory)
-                    .setConflictPolicy(MoveFileRequest.ConflictPolicy.Skip).build();
+        Set<String> targetNames = new HashSet<>();
+        boolean independent = independentPaths(sourcePaths) && sourcePaths.stream()
+                .map(CloudDrive2GrpcClient::canonicalPath).map(path -> parentPath(path)).distinct().count() == 1
+                && sourcePaths.stream().allMatch(path -> targetNames.add(fileName(path).toLowerCase(Locale.ROOT)));
+        executeMutationBatches(sourcePaths, independent ? 2 : 1, batch -> {
+            MoveFileRequest request = MoveFileRequest.newBuilder().addAllTheFilePaths(batch)
+                    .setDestPath(targetDirectory).setConflictPolicy(MoveFileRequest.ConflictPolicy.Skip).build();
             long started = System.nanoTime();
             try {
                 requireSuccess("move", stub().moveFile(request));
             } catch (StatusRuntimeException exception) {
                 throw grpcFailure("CloudDrive2 move failed", exception);
             } finally {
-                log.info("CD2 batch operation=move offset={} count={} elapsedMs={}", offset,
-                        Math.min(10, sourcePaths.size() - offset), TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started));
+                log.info("CD2 batch operation=move count={} elapsedMs={}", batch.size(),
+                        TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started));
             }
-        }
+        });
     }
 
     @Override
@@ -147,6 +166,67 @@ class CloudDrive2GrpcClient implements CloudDrive2FileOperations {
         } catch (StatusRuntimeException exception) {
             throw grpcFailure("CloudDrive2 delete failed", exception);
         }
+    }
+
+    private <T> void executeMutationBatches(List<T> operations, int requestWidth, Consumer<List<T>> submit) {
+        for (int offset = 0; offset < operations.size(); offset += 10 * requestWidth) {
+            int end = Math.min(offset + 10 * requestWidth, operations.size());
+            int batchSize = (end - offset + requestWidth - 1) / requestWidth;
+            if (requestWidth == 1 || end - offset == 1) {
+                submit.accept(operations.subList(offset, end));
+                continue;
+            }
+            List<CompletableFuture<Void>> pending = new ArrayList<>();
+            RuntimeException submissionFailure = null;
+            try {
+                for (int start = offset; start < end; start += batchSize) {
+                    List<T> batch = operations.subList(start, Math.min(start + batchSize, end));
+                    pending.add(CompletableFuture.runAsync(() -> submit.accept(batch), fileMutationRequests));
+                }
+            } catch (RuntimeException exception) {
+                submissionFailure = exception;
+            }
+            // 失败或调用线程中断都不取消已发写请求；两路全部结清后才能释放整理认领。
+            try {
+                CompletableFuture.allOf(pending.toArray(CompletableFuture[]::new)).join();
+            } catch (CompletionException exception) {
+                if (submissionFailure != null) {
+                    submissionFailure.addSuppressed(exception);
+                    throw submissionFailure;
+                }
+                if (exception.getCause() instanceof RuntimeException failure) throw failure;
+                throw exception;
+            }
+            if (submissionFailure != null) throw submissionFailure;
+        }
+    }
+
+    private boolean independentRenames(List<String> sources, List<String> targets) {
+        if (!independentPaths(sources) || !independentPaths(targets)) return false;
+        for (String source : sources) {
+            for (String target : targets) {
+                if (overlappingPaths(canonicalPath(source), canonicalPath(target))) return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean independentPaths(List<String> paths) {
+        List<String> canonical = paths.stream().map(CloudDrive2GrpcClient::canonicalPath).toList();
+        for (int i = 0; i < canonical.size(); i++) {
+            for (int j = i + 1; j < canonical.size(); j++) {
+                if (overlappingPaths(canonical.get(i), canonical.get(j))) return false;
+            }
+        }
+        return true;
+    }
+
+    private static String canonicalPath(String path) {
+        return normalizePath(path).toLowerCase(Locale.ROOT);
+    }
+
+    private static boolean overlappingPaths(String first, String second) {
+        return first.equals(second) || first.startsWith(second + "/") || second.startsWith(first + "/");
     }
 
     private CloudDriveFileSrvGrpc.CloudDriveFileSrvBlockingStub stub() {
@@ -188,6 +268,7 @@ class CloudDrive2GrpcClient implements CloudDrive2FileOperations {
 
     @PreDestroy
     void close() {
+        fileMutationRequests.shutdown();
         if (channel == null) return;
         channel.shutdown();
         try {
