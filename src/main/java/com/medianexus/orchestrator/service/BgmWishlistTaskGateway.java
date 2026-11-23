@@ -317,10 +317,30 @@ public class BgmWishlistTaskGateway {
         return new BusinessException(ErrorCode.CONFLICT, message, HttpStatus.CONFLICT);
     }
 
-    /** 当前目标最近一次 BGM 任务；操作记录保留历次创建结果。 */
+    /** 账本优先保留未知副作用；无删除历史时回补手动任务，不改变受控删除后的重入许可。 */
     public ActiveTask previousTask(Target target) {
         ensureLedger();
         ActiveTask saved = previousTasks.select(targetKey(target));
+        if (saved == null && latestDeletion(target) == null) {
+            if ("MOVIE".equals(target.mediaType())) {
+                MovieMagnetIngestTask manual = movies.selectOne(new LambdaQueryWrapper<MovieMagnetIngestTask>()
+                        .eq(MovieMagnetIngestTask::getTmdbId, target.tmdbId())
+                        .orderByDesc(MovieMagnetIngestTask::getCreatedAt).orderByAsc(MovieMagnetIngestTask::getId).last("LIMIT 1"));
+                if (manual != null) saved = new ActiveTask("MOVIE", manual.getId(), manual.getStatus());
+            } else {
+                SeriesMagnetIngestTask manual = series.selectOne(new LambdaQueryWrapper<SeriesMagnetIngestTask>()
+                        .eq(SeriesMagnetIngestTask::getTmdbId, target.tmdbId())
+                        .eq(SeriesMagnetIngestTask::getSeasonNumber, target.seasonNumber())
+                        .orderByDesc(SeriesMagnetIngestTask::getCreatedAt).orderByAsc(SeriesMagnetIngestTask::getId).last("LIMIT 1"));
+                AnimeMagnetIngestTask legacy = anime.selectOne(new LambdaQueryWrapper<AnimeMagnetIngestTask>()
+                        .eq(AnimeMagnetIngestTask::getTmdbId, target.tmdbId())
+                        .eq(AnimeMagnetIngestTask::getSeasonNumber, target.seasonNumber())
+                        .orderByDesc(AnimeMagnetIngestTask::getCreatedAt).orderByAsc(AnimeMagnetIngestTask::getId).last("LIMIT 1"));
+                if (manual != null) saved = new ActiveTask("SERIES", manual.getId(), manual.getStatus());
+                if (legacy != null && (manual == null || legacy.getCreatedAt().isAfter(manual.getCreatedAt())))
+                    saved = new ActiveTask("ANIME", legacy.getId(), legacy.getStatus());
+            }
+        }
         if (saved == null) return null;
         ActiveTask current = task(saved.taskType(), saved.taskId());
         return current == null ? new ActiveTask(saved.taskType(), saved.taskId(), "UNKNOWN") : current;

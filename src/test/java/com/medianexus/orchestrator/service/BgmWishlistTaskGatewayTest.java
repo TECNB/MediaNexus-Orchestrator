@@ -78,6 +78,77 @@ class BgmWishlistTaskGatewayTest {
         verify(f.releases,times(1)).ingestSelectedMovieForOwner(any(),eq(f.owner));
     }
 
+    @Test void manualMovieTaskIsAssociatedWhenAutomationLedgerIsAbsent() {
+        var movies = mock(MovieMagnetIngestTaskMapper.class);
+        var task = new com.medianexus.orchestrator.model.MovieMagnetIngestTask();
+        task.setId("manual-movie"); task.setTmdbId(1); task.setStatus("SUCCEEDED");
+        when(movies.selectOne(any(com.baomidou.mybatisplus.core.conditions.Wrapper.class))).thenReturn(task);
+        when(movies.selectById("manual-movie")).thenReturn(task);
+        var gateway = new BgmWishlistTaskGateway(movies, mock(SeriesMagnetIngestTaskMapper.class),
+                mock(AnimeMagnetIngestTaskMapper.class), mock(ProwlarrReleaseIngestService.class),
+                mock(MediaLibraryPresenceService.class), mock(BgmWishlistSessionLocks.class),
+                mock(BgmWishlistTargetTaskMapper.class), mock(MediaLibraryDeletionWorkflow.class));
+        assertEquals(new BgmWishlistTaskGateway.ActiveTask("MOVIE", "manual-movie", "SUCCEEDED"),
+                gateway.previousTask(new Target("MOVIE", 1, null, "作品", "Original", 2026)));
+    }
+
+    @Test void manualSeriesAssociationUsesExactSeasonAndRetainsFailedAttempt() {
+        var series = mock(SeriesMagnetIngestTaskMapper.class);
+        var task = new com.medianexus.orchestrator.model.SeriesMagnetIngestTask();
+        task.setId("manual-season"); task.setTmdbId(17); task.setSeasonNumber(2); task.setStatus("FAILED");
+        com.baomidou.mybatisplus.core.metadata.TableInfoHelper.initTableInfo(
+                new org.apache.ibatis.builder.MapperBuilderAssistant(new com.baomidou.mybatisplus.core.MybatisConfiguration(), "series"),
+                com.medianexus.orchestrator.model.SeriesMagnetIngestTask.class);
+        when(series.selectOne(any(com.baomidou.mybatisplus.core.conditions.Wrapper.class))).thenAnswer(call -> {
+            var query = call.getArgument(0, com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper.class);
+            assertTrue(query.getSqlSegment().contains("tmdb_id ="));
+            assertTrue(query.getSqlSegment().contains("season_number ="));
+            assertTrue(query.getParamNameValuePairs().containsValue(17));
+            assertTrue(query.getParamNameValuePairs().containsValue(2));
+            return task;
+        });
+        when(series.selectById("manual-season")).thenReturn(task);
+        var gateway = new BgmWishlistTaskGateway(mock(MovieMagnetIngestTaskMapper.class), series,
+                mock(AnimeMagnetIngestTaskMapper.class), mock(ProwlarrReleaseIngestService.class),
+                mock(MediaLibraryPresenceService.class), mock(BgmWishlistSessionLocks.class),
+                mock(BgmWishlistTargetTaskMapper.class), mock(MediaLibraryDeletionWorkflow.class));
+        assertEquals(new BgmWishlistTaskGateway.ActiveTask("SERIES", "manual-season", "FAILED"),
+                gateway.previousTask(new Target("SERIES", 17, 2, "作品", "Original", 2026)));
+    }
+
+    @Test void deletionHistoryDoesNotResurrectUnrecordedManualTask() {
+        for (String previous : java.util.Arrays.asList(null, "deleted-manual-task")) {
+            var movies = mock(MovieMagnetIngestTaskMapper.class);
+            var deletions = mock(MediaLibraryDeletionWorkflow.class);
+            var deleted = mock(com.medianexus.orchestrator.dto.admin.response.AdminMediaDeletionTaskResponse.class);
+            when(deleted.status()).thenReturn("SUCCEEDED");
+            when(deletions.latestBgmDeletion(anyString())).thenReturn(new MediaLibraryDeletionWorkflow.BgmDeletion(deleted, previous));
+            var gateway = new BgmWishlistTaskGateway(movies, mock(SeriesMagnetIngestTaskMapper.class),
+                    mock(AnimeMagnetIngestTaskMapper.class), mock(ProwlarrReleaseIngestService.class),
+                    mock(MediaLibraryPresenceService.class), mock(BgmWishlistSessionLocks.class),
+                    mock(BgmWishlistTargetTaskMapper.class), deletions);
+            assertNull(gateway.previousTask(new Target("MOVIE", 1, null, "作品", "Original", 2026)));
+            verifyNoInteractions(movies);
+        }
+    }
+
+    @Test void newerLegacyAnimeTaskWinsOverOlderSeriesAttempt() {
+        var series = mock(SeriesMagnetIngestTaskMapper.class);
+        var anime = mock(AnimeMagnetIngestTaskMapper.class);
+        var failed = new com.medianexus.orchestrator.model.SeriesMagnetIngestTask();
+        failed.setId("old-series"); failed.setStatus("FAILED"); failed.setCreatedAt(java.time.LocalDateTime.of(2026, 11, 1, 0, 0));
+        var succeeded = new com.medianexus.orchestrator.model.AnimeMagnetIngestTask();
+        succeeded.setId("new-anime"); succeeded.setStatus("SUCCEEDED"); succeeded.setCreatedAt(failed.getCreatedAt().plusDays(1));
+        when(series.selectOne(any(com.baomidou.mybatisplus.core.conditions.Wrapper.class))).thenReturn(failed);
+        when(anime.selectOne(any(com.baomidou.mybatisplus.core.conditions.Wrapper.class))).thenReturn(succeeded);
+        when(anime.selectById("new-anime")).thenReturn(succeeded);
+        var gateway = new BgmWishlistTaskGateway(mock(MovieMagnetIngestTaskMapper.class), series, anime,
+                mock(ProwlarrReleaseIngestService.class), mock(MediaLibraryPresenceService.class),
+                mock(BgmWishlistSessionLocks.class), mock(BgmWishlistTargetTaskMapper.class), mock(MediaLibraryDeletionWorkflow.class));
+        assertEquals(new BgmWishlistTaskGateway.ActiveTask("ANIME", "new-anime", "SUCCEEDED"),
+                gateway.previousTask(new Target("SERIES", 17, 2, "作品", "Original", 2026)));
+    }
+
     static class Fixture {
         final ProwlarrReleaseIngestService releases = mock(ProwlarrReleaseIngestService.class);
         final User owner = new User();
