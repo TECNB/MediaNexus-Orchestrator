@@ -145,16 +145,28 @@ class DoubanChartClientTest {
         assertEquals(2026, refreshed.year());
     }
 
-    @Test void movieIdentityDetailsRejectWrongIdTypeOrYearAndMissingOriginalTitle() {
+    @Test void movieIdentityDetailsRejectWrongIdTypeYearOrMissingTitle() {
         var subject = new com.medianexus.orchestrator.dto.douban.DoubanChartContract.Subject(
                 1, "罗斯", null, null, 2026, "MOVIE", null, null, 19, null, Instant.EPOCH);
-        for (String fault : List.of("id", "type", "year", "original_title")) {
+        for (String fault : List.of("id", "type", "year", "title")) {
             var node = json.createObjectNode().put("id", "1").put("type", "movie").put("title", "罗斯")
                     .put("original_title", "Rose").put("year", "2026");
             node.put(fault, switch (fault) { case "id" -> "2"; case "type" -> "tv"; case "year" -> "2025"; default -> ""; });
             var client = new DoubanChartClient(json, (url, referer) -> node);
             assertThrows(DoubanChartClient.ChartReadException.class, () -> client.refreshMovieIdentity(subject), fault);
         }
+    }
+
+    @Test void movieIdentityKeepsMissingOriginalTitleUnknownForChineseMovie() {
+        var subject = new com.medianexus.orchestrator.dto.douban.DoubanChartContract.Subject(
+                37508847, "空枪", null, null, 2026, "MOVIE", null, null, 10, null, Instant.EPOCH);
+        var client = new DoubanChartClient(json, (url, referer) -> json.createObjectNode()
+                .put("id", "37508847").put("type", "movie").put("title", "空枪")
+                .put("original_title", "").put("year", "2026"));
+        var refreshed = client.refreshMovieIdentity(subject);
+        assertEquals("空枪", refreshed.title());
+        assertEquals(2026, refreshed.year());
+        assertNull(refreshed.originalTitle());
     }
 
     @Test void individualSeriesCheckUsesFreshProgressAndDoesNotReuseOldCompletion() {

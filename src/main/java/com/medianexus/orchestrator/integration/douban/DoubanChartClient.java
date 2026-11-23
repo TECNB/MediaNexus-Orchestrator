@@ -104,7 +104,7 @@ public class DoubanChartClient {
         String title = text(node, "title"), original = text(node, "original_title");
         Integer releaseYear = year(text(node, "year"));
         if (id(node.path("id")) != previous.id() || !"movie".equals(text(node, "type")) || node.has("code")
-                || title == null || original == null || releaseYear == null
+                || title == null || releaseYear == null
                 || previous.year() != null && !previous.year().equals(releaseYear)) throw invalid();
         return new Subject(previous.id(), title, original, previous.coverUrl(), releaseYear, previous.mediaType(),
                 previous.score(), previous.votes(), previous.rank(), previous.progress(), Instant.now());
