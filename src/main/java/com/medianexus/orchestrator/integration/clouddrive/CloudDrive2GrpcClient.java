@@ -41,6 +41,7 @@ import org.springframework.util.StringUtils;
 @Component
 class CloudDrive2GrpcClient implements CloudDrive2FileOperations {
     private static final Logger log = LoggerFactory.getLogger(CloudDrive2GrpcClient.class);
+    private static final int MAX_MUTATION_REQUESTS = 6;
 
     private static final Metadata.Key<String> AUTHORIZATION =
             Metadata.Key.of("Authorization", Metadata.ASCII_STRING_MARSHALLER);
@@ -48,7 +49,7 @@ class CloudDrive2GrpcClient implements CloudDrive2FileOperations {
     private final CloudDrive2Properties properties;
     private final ManagedChannel channel;
     private final CloudDriveFileSrvGrpc.CloudDriveFileSrvBlockingStub blockingStub;
-    private final ExecutorService fileMutationRequests = Executors.newFixedThreadPool(2);
+    private final ExecutorService fileMutationRequests = Executors.newFixedThreadPool(MAX_MUTATION_REQUESTS);
 
     CloudDrive2GrpcClient(CloudDrive2Properties properties) {
         this.properties = properties;
@@ -99,7 +100,7 @@ class CloudDrive2GrpcClient implements CloudDrive2FileOperations {
         List<String> sources = operations.stream().map(CloudDrive2RenameOperation::sourcePath).toList();
         List<String> targets = operations.stream()
                 .map(operation -> join(parentPath(operation.sourcePath()), operation.targetName())).toList();
-        int requestWidth = independentRenames(sources, targets) ? 2 : 1;
+        int requestWidth = independentRenames(sources, targets) ? MAX_MUTATION_REQUESTS : 1;
         executeMutationBatches(operations, requestWidth, batch -> {
             RenameFilesRequest.Builder request = RenameFilesRequest.newBuilder();
             batch.forEach(operation -> request.addRenameFiles(RenameFileRequest.newBuilder()
@@ -125,7 +126,7 @@ class CloudDrive2GrpcClient implements CloudDrive2FileOperations {
         boolean independent = independentPaths(sourcePaths) && sourcePaths.stream()
                 .map(CloudDrive2GrpcClient::canonicalPath).map(path -> parentPath(path)).distinct().count() == 1
                 && sourcePaths.stream().allMatch(path -> targetNames.add(fileName(path).toLowerCase(Locale.ROOT)));
-        executeMutationBatches(sourcePaths, independent ? 2 : 1, batch -> {
+        executeMutationBatches(sourcePaths, independent ? MAX_MUTATION_REQUESTS : 1, batch -> {
             MoveFileRequest request = MoveFileRequest.newBuilder().addAllTheFilePaths(batch)
                     .setDestPath(targetDirectory).setConflictPolicy(MoveFileRequest.ConflictPolicy.Skip).build();
             long started = System.nanoTime();
@@ -171,7 +172,7 @@ class CloudDrive2GrpcClient implements CloudDrive2FileOperations {
     private <T> void executeMutationBatches(List<T> operations, int requestWidth, Consumer<List<T>> submit) {
         for (int offset = 0; offset < operations.size(); offset += 10 * requestWidth) {
             int end = Math.min(offset + 10 * requestWidth, operations.size());
-            int batchSize = (end - offset + requestWidth - 1) / requestWidth;
+            int groups = Math.min(requestWidth, end - offset);
             if (requestWidth == 1 || end - offset == 1) {
                 submit.accept(operations.subList(offset, end));
                 continue;
@@ -179,14 +180,16 @@ class CloudDrive2GrpcClient implements CloudDrive2FileOperations {
             List<CompletableFuture<Void>> pending = new ArrayList<>();
             RuntimeException submissionFailure = null;
             try {
-                for (int start = offset; start < end; start += batchSize) {
-                    List<T> batch = operations.subList(start, Math.min(start + batchSize, end));
+                for (int group = 0; group < groups; group++) {
+                    int start = offset + group * (end - offset) / groups;
+                    int stop = offset + (group + 1) * (end - offset) / groups;
+                    List<T> batch = operations.subList(start, stop);
                     pending.add(CompletableFuture.runAsync(() -> submit.accept(batch), fileMutationRequests));
                 }
             } catch (RuntimeException exception) {
                 submissionFailure = exception;
             }
-            // 失败或调用线程中断都不取消已发写请求；两路全部结清后才能释放整理认领。
+            // 失败或调用线程中断都不取消已发写请求；全部结清后才能释放整理认领。
             try {
                 CompletableFuture.allOf(pending.toArray(CompletableFuture[]::new)).join();
             } catch (CompletionException exception) {

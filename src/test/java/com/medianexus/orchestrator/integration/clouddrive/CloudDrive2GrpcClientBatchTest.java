@@ -27,17 +27,17 @@ class CloudDrive2GrpcClientBatchTest {
         properties.setHost("127.0.0.1"); properties.setPort(server.getPort()); properties.setApiToken("test");
         var client = new CloudDrive2GrpcClient(properties);
         try {
-            var paths = IntStream.rangeClosed(1, 25).mapToObj(i -> "/source/" + i + ".mkv").toList();
+            var paths = IntStream.rangeClosed(1, 65).mapToObj(i -> "/source/" + i + ".mkv").toList();
             client.rename(paths.stream().map(path -> new CloudDrive2RenameOperation(path, "new-" + path.substring(8))).toList());
             assertThat(renames).allMatch(count -> count <= 10);
-            assertThat(renames.stream().mapToInt(Integer::intValue).sum()).isEqualTo(25);
+            assertThat(renames.stream().mapToInt(Integer::intValue).sum()).isEqualTo(65);
             assertThatThrownBy(() -> client.move(paths, "/target")).isInstanceOf(CloudDrive2ClientException.class);
-            assertThat(moves).containsExactlyInAnyOrder(10, 10);
+            assertThat(moves).containsExactlyInAnyOrder(10, 10, 10, 10, 10, 10);
         } finally { client.close(); server.shutdownNow(); }
     }
 
-    @Test void overlapsTwoBalancedRequestsAndDrainsAcceptedWorkBeforeFailure() throws Exception {
-        var entered = new java.util.concurrent.CountDownLatch(2);
+    @Test void overlapsSixBalancedRequestsAndDrainsAcceptedWorkBeforeFailure() throws Exception {
+        var entered = new java.util.concurrent.CountDownLatch(6);
         var release = new java.util.concurrent.CountDownLatch(1);
         var firstRejected = new java.util.concurrent.CountDownLatch(1);
         var requests = new java.util.concurrent.CopyOnWriteArrayList<Integer>();
@@ -58,7 +58,7 @@ class CloudDrive2GrpcClientBatchTest {
         var client = new CloudDrive2GrpcClient(properties);
         var executor = java.util.concurrent.Executors.newSingleThreadExecutor();
         try {
-            var call = executor.submit(() -> client.move(IntStream.rangeClosed(1, 25)
+            var call = executor.submit(() -> client.move(IntStream.rangeClosed(1, 65)
                     .mapToObj(i -> "/source/" + i + ".mkv").toList(), "/target"));
             assertThat(entered.await(2, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
             assertThat(firstRejected.await(2, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
@@ -66,12 +66,12 @@ class CloudDrive2GrpcClientBatchTest {
             release.countDown();
             assertThatThrownBy(() -> call.get(2, java.util.concurrent.TimeUnit.SECONDS))
                     .hasCauseInstanceOf(CloudDrive2ClientException.class);
-            assertThat(requests).containsExactlyInAnyOrder(10, 10);
+            assertThat(requests).containsExactlyInAnyOrder(10, 10, 10, 10, 10, 10);
         } finally { release.countDown(); executor.shutdownNow(); client.close(); server.shutdownNow(); }
     }
 
-    @Test void balancesElevenIndependentRenamesAcrossTwoRequests() throws Exception {
-        var entered = new java.util.concurrent.CountDownLatch(2);
+    @Test void balancesElevenIndependentRenamesAcrossSixRequests() throws Exception {
+        var entered = new java.util.concurrent.CountDownLatch(6);
         var counts = new java.util.concurrent.CopyOnWriteArrayList<Integer>();
         var server = ServerBuilder.forPort(0).addService(new CloudDriveFileSrvGrpc.CloudDriveFileSrvImplBase() {
             @Override public void renameFiles(RenameFilesRequest request, StreamObserver<FileOperationResult> response) {
@@ -87,7 +87,7 @@ class CloudDrive2GrpcClientBatchTest {
         try {
             client.rename(IntStream.rangeClosed(1, 11).mapToObj(i ->
                     new CloudDrive2RenameOperation("/source/" + i + ".mkv", "new-" + i + ".mkv")).toList());
-            assertThat(counts).containsExactlyInAnyOrder(6, 5);
+            assertThat(counts).containsExactlyInAnyOrder(1, 2, 2, 2, 2, 2);
         } finally { client.close(); server.shutdownNow(); }
     }
 
