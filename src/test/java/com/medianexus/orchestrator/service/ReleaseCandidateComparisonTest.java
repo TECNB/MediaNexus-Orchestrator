@@ -103,6 +103,24 @@ class ReleaseCandidateComparisonTest {
         verify(prowlarr).search("Arrival 2016");
     }
 
+    @Test void seriesResolutionBudgetStartsAfterSupplementSearch() {
+        when(client.searchMagnets(any())).thenReturn(new PanSouSearchResult(List.of(entry(1, "Show S01 1080p", null))));
+        var supplementFinished = new java.util.concurrent.atomic.AtomicReference<java.time.Instant>();
+        when(prowlarr.search(anyString())).thenAnswer(call -> {
+            Thread.sleep(150);
+            supplementFinished.set(java.time.Instant.now());
+            return List.of();
+        });
+        when(guangya.resolve(eq(magnet(1)), any())).thenAnswer(call -> {
+            ResolveBudget budget = call.getArgument(1);
+            assertThat(budget.resolveDeadline()).isAfter(supplementFinished.get().plusMillis(29950));
+            return table(magnet(1), "Show S01 1080p", "Show.S01E01.1080p.mkv");
+        });
+        var result = search.recommendSeries(new SeriesReleaseRecommendationRequest(null, null, null, "Show", null, 1, "1080p"));
+        assertThat(result.item().evidence().status()).isEqualTo("RECOMMENDABLE");
+        assertThat(result.comparison().searchQueries()).isLessThanOrEqualTo(4);
+    }
+
     @Test void cachedPartialSeriesStillSearchesSupplement() {
         when(client.searchMagnets(any())).thenReturn(new PanSouSearchResult(List.of(entry(1, "Show S01 1080p", null))));
         when(guangya.cached(magnet(1))).thenReturn(Optional.of(table(magnet(1), "Show S01 1080p", "Show.S01E01.mkv")));
