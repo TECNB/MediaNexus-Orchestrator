@@ -168,8 +168,9 @@ public class ReleaseCandidateComparison implements AutoCloseable {
             else comparison.target.titles().stream().limit(2).filter(query -> !comparison.queries.contains(query)).forEach(initial::add);
             searchQueries(comparison, List.copyOf(initial), deadline, pool, futures);
             while (true) {
-                if (budget == null && (comparison.target.season() == null
-                        || comparison.queries.stream().anyMatch(query -> query.startsWith("补源："))))
+                if (budget == null && (comparison.queries.stream().anyMatch(query -> query.startsWith("补源："))
+                        || comparison.target.season() == null && comparison.candidates.values().stream()
+                                .anyMatch(candidate -> candidate.magnet != null && fileTables.cached(candidate.magnet).isPresent())))
                     budget = new ResolveBudget(deadline, Instant.now().plusSeconds(30));
                 if (budget != null) evaluateQueue(comparison, budget, deadline, pool, futures);
                 synchronized (comparison) {

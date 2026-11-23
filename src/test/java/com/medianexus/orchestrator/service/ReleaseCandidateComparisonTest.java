@@ -107,6 +107,26 @@ class ReleaseCandidateComparisonTest {
         verify(prowlarr).search("Arrival 2016");
     }
 
+    @Test void emptyMoviePrimaryDoesNotSpendResolutionBudgetDuringSupplementSearch() {
+        var supplementFinished = new java.util.concurrent.atomic.AtomicReference<java.time.Instant>();
+        var release = new com.medianexus.orchestrator.integration.prowlarr.ProwlarrRelease(
+                "Arrival 2016 1080p", 100L, 5, null, null, "Indexer", null, 7, "guid", magnet(2));
+        when(prowlarr.search(anyString())).thenAnswer(call -> {
+            Thread.sleep(150);
+            supplementFinished.set(java.time.Instant.now());
+            return List.of(release);
+        });
+        when(guangya.resolve(eq(magnet(2)), any())).thenAnswer(call -> {
+            ResolveBudget budget = call.getArgument(1);
+            assertThat(budget.resolveDeadline()).isAfter(supplementFinished.get().plusMillis(29950));
+            assertThat(java.time.Duration.between(java.time.Instant.now(), budget.totalDeadline()).toSeconds()).isBetween(40L, 45L);
+            return table(magnet(2), "Arrival 2016 1080p", "Arrival.2016.1080p.mkv");
+        });
+        var result = search.recommendMovie(new MovieReleaseRecommendationRequest(null, null, "降临", "Arrival", 2016, "1080p"));
+        assertThat(result.item().evidence().status()).isEqualTo("RECOMMENDABLE");
+        assertThat(result.comparison().searchQueries()).isLessThanOrEqualTo(4);
+    }
+
     @Test void seriesResolutionBudgetStartsAfterSupplementSearch() {
         when(client.searchMagnets(any())).thenReturn(new PanSouSearchResult(List.of(entry(1, "Show S01 1080p", null))));
         var supplementFinished = new java.util.concurrent.atomic.AtomicReference<java.time.Instant>();
