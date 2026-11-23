@@ -7,6 +7,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.*;
 
 class OfflineIngestSchedulerTest {
@@ -257,6 +258,24 @@ class OfflineIngestSchedulerTest {
                 public String submit() { return "next"; }
             }).get(2, TimeUnit.SECONDS);
             verify(client, never()).remove(anyString(), any());
+        }
+    }
+
+    @Test void cancellationReturningTerminalIncompleteNeverOrganizesAndReleasesClaims() throws Exception {
+        OpenListClient client = mappedClient();
+        var cancelRequested = new java.util.concurrent.atomic.AtomicBoolean();
+        doAnswer(call -> { cancelRequested.set(true); return null; }).when(client).cancelOfflineTask("upstream");
+        when(client.offlineTaskInfo("upstream")).thenAnswer(call -> new OpenListOfflineTaskInfo(
+                "upstream", cancelRequested.get() ? 2 : 1, "Saving", 88, null, null));
+        try (var scheduler = new OfflineIngestScheduler(client)) {
+            assertThatThrownBy(() -> scheduler.enqueue("/same", "first", Duration.ofMillis(25), Duration.ofMillis(5),
+                    new DownloadStub() { public void organize(String id) { throw new AssertionError("partial canceled task must not organize"); } })
+                    .get(2, TimeUnit.SECONDS)).hasCauseInstanceOf(com.medianexus.orchestrator.integration.openlist.OpenListClientException.class);
+            when(client.offlineTaskInfo("next")).thenReturn(snapshot("next", 2));
+            scheduler.enqueue("/same", "second", Duration.ofSeconds(2), Duration.ofMillis(5),
+                    new DownloadStub() { public String submit() { return "next"; } }).get(2, TimeUnit.SECONDS);
+            verify(client, times(1)).cancelOfflineTask("upstream");
+            verify(client, never()).retryOfflineTask(anyString());
         }
     }
 

@@ -237,7 +237,10 @@ public class OfflineIngestScheduler implements AutoCloseable {
         try {
             client.cancelOfflineTask(job.upstreamId);
             OpenListOfflineTaskInfo snapshot = client.offlineTaskInfo(job.upstreamId);
-            if (Integer.valueOf(4).equals(snapshot.state()) || Integer.valueOf(7).equals(snapshot.state())) {
+            boolean stoppedAfterCancel = job.upstreamId.equals(snapshot.id())
+                    && (Integer.valueOf(4).equals(snapshot.state()) || Integer.valueOf(7).equals(snapshot.state())
+                    || Integer.valueOf(2).equals(snapshot.state()) && snapshot.progress() != null && snapshot.progress() < 100);
+            if (stoppedAfterCancel) {
                 fail(job, new OpenListClientException("离线下载超时，已确认上游停止；源文件保留"));
                 release(job);
                 return;

@@ -266,25 +266,27 @@ public class MagnetIngestService {
     /** Only a persisted upstream identity with a terminal stop can settle a restart hold. */
     private void reconcileStoppedRestartTasks() {
         for (var task : movieTaskMapper.selectList(new LambdaQueryWrapper<MovieMagnetIngestTask>()
-                .eq(MovieMagnetIngestTask::getStatus, "INTERRUPTED")
+                .in(MovieMagnetIngestTask::getStatus, List.of("INTERRUPTED", "FAILED"))
                 .like(MovieMagnetIngestTask::getErrorMessage, "OFFLINE_UNRESOLVED"))) {
-            String failure = stoppedRestartFailure(task.getOpenlistTaskId());
+            String failure = stoppedRestartFailure(task.getOpenlistTaskId(), task.getErrorMessage());
             if (failure != null) markMovieFailed(task.getId(), failure);
         }
         for (var task : seriesTaskMapper.selectList(new LambdaQueryWrapper<SeriesMagnetIngestTask>()
-                .eq(SeriesMagnetIngestTask::getStatus, "INTERRUPTED")
+                .in(SeriesMagnetIngestTask::getStatus, List.of("INTERRUPTED", "FAILED"))
                 .like(SeriesMagnetIngestTask::getErrorMessage, "OFFLINE_UNRESOLVED"))) {
-            String failure = stoppedRestartFailure(task.getOpenlistTaskId());
+            String failure = stoppedRestartFailure(task.getOpenlistTaskId(), task.getErrorMessage());
             if (failure != null) markSeriesFailed(task.getId(), failure);
         }
     }
 
-    private String stoppedRestartFailure(String upstreamId) {
+    private String stoppedRestartFailure(String upstreamId, String priorError) {
         if (upstreamId == null || upstreamId.isBlank()) return null;
         try {
             var snapshot = openListClient.offlineTaskInfo(upstreamId);
-            if (!upstreamId.equals(snapshot.id())
-                    || !(Integer.valueOf(4).equals(snapshot.state()) || Integer.valueOf(7).equals(snapshot.state()))) return null;
+            boolean canceledIncomplete = priorError != null && priorError.contains("离线下载超时，取消未确认")
+                    && Integer.valueOf(2).equals(snapshot.state()) && snapshot.progress() != null && snapshot.progress() < 100;
+            if (!upstreamId.equals(snapshot.id()) || !(canceledIncomplete
+                    || Integer.valueOf(4).equals(snapshot.state()) || Integer.valueOf(7).equals(snapshot.state()))) return null;
             return "重启后已核实原上游停止；未重试或删除源文件；upstream=" + upstreamId
                     + "; state=" + snapshot.state() + "; error=" + snapshot.error();
         } catch (RuntimeException failure) {
