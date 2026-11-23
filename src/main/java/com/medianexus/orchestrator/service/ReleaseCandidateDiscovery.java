@@ -29,13 +29,15 @@ public class ReleaseCandidateDiscovery {
     }
 
     public List<Found> search(String query) {
-        if (settings.usesPanSouForMagnetSearch()) return panSou(panSou.searchMagnets(new PanSouSearchCommand(query, false)), query);
-        return prowlarr(prowlarr.search(query), query);
+        if (settings.usesPanSouForMagnetSearch()) return timedSearch("PanSou aggregate", query,
+                () -> panSou(panSou.searchMagnets(new PanSouSearchCommand(query, false)), query));
+        return timedSearch("Prowlarr aggregate/cache", query, () -> prowlarr(prowlarr.search(query), query));
     }
 
     public List<Found> refresh(String query) {
-        if (settings.usesPanSouForMagnetSearch()) return panSou(panSou.searchMagnets(new PanSouSearchCommand(query, true)), query);
-        return prowlarr(prowlarr.refreshQueries(List.of(query)).get(query), query);
+        if (settings.usesPanSouForMagnetSearch()) return timedSearch("PanSou aggregate refresh", query,
+                () -> panSou(panSou.searchMagnets(new PanSouSearchCommand(query, true)), query));
+        return timedSearch("Prowlarr aggregate refresh", query, () -> prowlarr(prowlarr.refreshQueries(List.of(query)).get(query), query));
     }
 
     private List<Found> panSou(PanSouSearchResult result, String query) {
@@ -75,8 +77,8 @@ public class ReleaseCandidateDiscovery {
 
     public List<Found> supplement(String query) {
         try {
-            return settings.usesPanSouForMagnetSearch() ? prowlarr(prowlarr.search(query), query)
-                    : panSou(panSou.searchMagnets(new PanSouSearchCommand(query, false)), query);
+            return settings.usesPanSouForMagnetSearch() ? timedSearch("Prowlarr aggregate/cache", query, () -> prowlarr(prowlarr.search(query), query))
+                    : timedSearch("PanSou aggregate", query, () -> panSou(panSou.searchMagnets(new PanSouSearchCommand(query, false)), query));
         } catch (com.medianexus.orchestrator.integration.prowlarr.ProwlarrClientException failure) {
             if (failure.getReason() == com.medianexus.orchestrator.integration.prowlarr.ProwlarrClientException.Reason.CONFIGURATION) return List.of();
             throw failure;
@@ -88,14 +90,28 @@ public class ReleaseCandidateDiscovery {
 
     public List<Found> refreshSupplement(String query) {
         try {
-            return settings.usesPanSouForMagnetSearch() ? prowlarr(prowlarr.refreshQueries(List.of(query)).get(query), query)
-                    : panSou(panSou.searchMagnets(new PanSouSearchCommand(query, true)), query);
+            return settings.usesPanSouForMagnetSearch() ? timedSearch("Prowlarr aggregate refresh", query,
+                    () -> prowlarr(prowlarr.refreshQueries(List.of(query)).get(query), query))
+                    : timedSearch("PanSou aggregate refresh", query, () -> panSou(panSou.searchMagnets(new PanSouSearchCommand(query, true)), query));
         } catch (com.medianexus.orchestrator.integration.prowlarr.ProwlarrClientException failure) {
             if (failure.getReason() == com.medianexus.orchestrator.integration.prowlarr.ProwlarrClientException.Reason.CONFIGURATION) return List.of();
             throw failure;
         } catch (PanSouClientException failure) {
             if (failure.getReason() == PanSouClientException.Reason.CONFIGURATION) return List.of();
             throw failure;
+        }
+    }
+    private List<Found> timedSearch(String source, String query, java.util.function.Supplier<List<Found>> search) {
+        try (var timing = IngestStageTiming.start("search_query", source, query)) {
+            try {
+                List<Found> found = search.get();
+                timing.finish("SUCCEEDED", "raw=" + found.size() + ";sources=" + found.stream()
+                        .map(entry -> entry.item().indexer()).distinct().toList() + ";cache/request counts UNKNOWN at aggregate boundary");
+                return found;
+            } catch (RuntimeException failure) {
+                timing.finish("FAILED", failure.getClass().getSimpleName());
+                throw failure;
+            }
         }
     }
 }

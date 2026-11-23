@@ -455,6 +455,9 @@ public class MagnetIngestService {
         task.setCreatedAt(now);
         task.setUpdatedAt(now);
         movieTaskMapper.insert(task);
+        try (var timing = IngestStageTiming.start("task_insert", "MOVIE", null)) {
+            timing.finish("INSERTED", "taskType=MOVIE;taskId=" + taskId + ";task record exists before worker scheduling");
+        }
         MovieMagnetIngestTaskResponse response = toMovieResponse(task);
         try {
             writeMovieLog(taskId, "INFO", "created", "已创建电影磁力任务", "savePath=" + plan.savePath());
@@ -617,6 +620,9 @@ public class MagnetIngestService {
         task.setCreatedAt(now);
         task.setUpdatedAt(now);
         seriesTaskMapper.insert(task);
+        try (var timing = IngestStageTiming.start("task_insert", "SERIES", null)) {
+            timing.finish("INSERTED", "taskType=SERIES;taskId=" + taskId + ";task record exists before worker scheduling");
+        }
         SeriesMagnetIngestTaskResponse response = toSeriesResponse(task);
         try {
             writeSeriesLog(taskId, "INFO", "created", "已创建磁力任务", "savePath=" + plan.savePath());
@@ -739,7 +745,7 @@ public class MagnetIngestService {
     }
 
     private void runMovieTask(String taskId) {
-        try {
+        try (var binding = IngestStageTiming.task("MOVIE", taskId)) {
             MovieMagnetIngestTask task = getExistingMovieTask(taskId);
             offlineScheduler.enqueue(task.getSavePath(), task.getMagnetHash(),
                     openListProperties.getOfflineTimeout(), openListProperties.getPollInterval(),
@@ -761,7 +767,13 @@ public class MagnetIngestService {
                             safeDeleteOpenListTask((level, stage, message, detail) ->
                                     writeMovieLog(taskId, level, stage, message, detail), id);
                             markMovieOrganizing(taskId, id, task.getTempPath());
-                            OrganizeResult result = organizeMovieFiles(getExistingMovieTask(taskId));
+                            OrganizeResult result;
+                            try (var timing = IngestStageTiming.start("organize", "movie library organizer", null)) {
+                                try {
+                                result = organizeMovieFiles(getExistingMovieTask(taskId));
+                                timing.finish(result.videoCount() > 0 ? "SUCCEEDED" : "FAILED", "taskId=" + taskId + ";videoCount=" + result.videoCount());
+                                } catch (RuntimeException failure) { timing.finish("FAILED", failure.getClass().getSimpleName()); throw failure; }
+                            }
                             if (result.videoCount() < 1) {
                                 markMovieNoOrganizedFiles(taskId, id, result);
                                 return;
@@ -779,7 +791,7 @@ public class MagnetIngestService {
     }
 
     private void runSeriesTask(String taskId) {
-        try {
+        try (var binding = IngestStageTiming.task("SERIES", taskId)) {
             SeriesMagnetIngestTask task = getExistingSeriesTask(taskId);
             offlineScheduler.enqueue(task.getSavePath(), task.getMagnetHash(),
                     openListProperties.getOfflineTimeout(), openListProperties.getPollInterval(),
@@ -802,7 +814,13 @@ public class MagnetIngestService {
                             safeDeleteOpenListTask((level, stage, message, detail) ->
                                     writeSeriesLog(taskId, level, stage, message, detail), id);
                             markSeriesOrganizing(taskId, id, task.getTempPath());
-                            OrganizeResult result = organizeSeriesFiles(getExistingSeriesTask(taskId));
+                            OrganizeResult result;
+                            try (var timing = IngestStageTiming.start("organize", "series library organizer", null)) {
+                                try {
+                                result = organizeSeriesFiles(getExistingSeriesTask(taskId));
+                                timing.finish(result.videoCount() > 0 ? "SUCCEEDED" : "FAILED", "taskId=" + taskId + ";videoCount=" + result.videoCount());
+                                } catch (RuntimeException failure) { timing.finish("FAILED", failure.getClass().getSimpleName()); throw failure; }
+                            }
                             if (result.videoCount() < 1) {
                                 markSeriesNoOrganizedFiles(taskId, id, result);
                                 return;
@@ -954,9 +972,10 @@ public class MagnetIngestService {
             AutoSymlinkRefreshOperation refreshOperation,
             AutoSymlinkTaskLogWriter taskLogWriter
     ) {
-        try {
+        try (var timing = IngestStageTiming.start("strm_submit", "AutoSymlink", null)) {
             taskLogWriter.write("INFO", "正在触发 AutoSymlink 刷新", null);
             AutoSymlinkRefreshService.RefreshOutcome outcome = refreshOperation.refresh();
+            timing.finish(outcome.status().name(), "taskId=" + taskId + ";refresh HTTP outcome only; STRM/Emby visibility not established");
             String level = outcome.status() == AutoSymlinkRefreshService.Status.SUBMITTED ? "INFO" : "WARN";
             taskLogWriter.write(level, outcome.message(), outcome.detail());
         } catch (Exception exception) {

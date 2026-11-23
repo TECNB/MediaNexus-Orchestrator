@@ -163,7 +163,7 @@ public class OfflineIngestScheduler implements AutoCloseable {
     }
 
     private void submit(Job job) {
-        try {
+        try (var binding = IngestStageTiming.bind(job.timingContext)) {
             job.download.stage("已取得共享下载名额；排队耗时 ms=" + elapsed(job.enqueuedAt));
             job.download.prepare();
         } catch (RuntimeException exception) {
@@ -172,11 +172,17 @@ public class OfflineIngestScheduler implements AutoCloseable {
             return;
         }
         job.startedAt = System.nanoTime();
-        try {
+        try (var binding = IngestStageTiming.bind(job.timingContext)) {
+            job.downloadTiming = IngestStageTiming.start("download", "OpenList submission-call-to-completion-observation; not pure transfer", null);
+        }
+        try (var binding = IngestStageTiming.bind(job.timingContext);
+             var timing = IngestStageTiming.start("download_submit", "OpenList", null)) {
             job.upstreamId = job.download.submit();
             if (job.upstreamId == null || job.upstreamId.isBlank()) {
                 throw new OpenListClientException("上游任务 ID 缺失");
             }
+            timing.finish("ACCEPTED", "upstreamId=" + job.upstreamId + ";not actual transfer start");
+            job.queueTiming.finish("ACCEPTED", "upstreamId=" + job.upstreamId + ";scheduler enqueue-to-upstream acceptance; task insertion event provides earlier boundary");
             // Persist before the first query; a failed persistence is an unknown lifecycle, never a retry.
             job.download.submitted(job.upstreamId);
         } catch (RuntimeException exception) {
@@ -197,11 +203,19 @@ public class OfflineIngestScheduler implements AutoCloseable {
     }
 
     private void query(Job job) {
-        try {
-            OpenListOfflineTaskInfo snapshot = client.offlineTaskInfo(job.upstreamId);
+        try (var binding = IngestStageTiming.bind(job.timingContext)) {
+            OpenListOfflineTaskInfo snapshot;
+            try (var timing = IngestStageTiming.start("download_poll", "OpenList", null)) {
+                snapshot = client.offlineTaskInfo(job.upstreamId);
+                timing.finish("OBSERVED", "upstreamId=" + job.upstreamId + ";state=" + snapshot.state()
+                        + ";progress=" + snapshot.progress() + ";totalBytes=" + snapshot.totalBytes()
+                        + ";pollIntervalMs=" + job.interval.toMillis() + ";actual transition time UNKNOWN");
+            }
             Integer state = snapshot.state();
             if (Integer.valueOf(2).equals(state)) {
                 job.downloadCompletedAt = System.nanoTime();
+                job.downloadTiming.finish("COMPLETE_OBSERVED", "upstreamId=" + job.upstreamId
+                        + ";state=2;actual transfer start/end UNKNOWN; derive observation bounds from download_poll");
                 job.download.stage("下载已确认完成，等待单路整理；下载耗时 ms=" + elapsed(job.startedAt));
                 synchronized (this) {
                     activeDownloads--;
@@ -254,7 +268,7 @@ public class OfflineIngestScheduler implements AutoCloseable {
 
     private void organize(Job job) {
         long organizationStarted = System.nanoTime();
-        try {
+        try (var binding = IngestStageTiming.bind(job.timingContext)) {
             job.download.stage("开始单路整理；下载完成后等待 ms=" + elapsed(job.downloadCompletedAt));
             job.download.organize(job.upstreamId);
             job.completion.complete(null);
@@ -273,6 +287,8 @@ public class OfflineIngestScheduler implements AutoCloseable {
     }
 
     private void fail(Job job, RuntimeException exception) {
+        job.queueTiming.finish(job.unresolved ? "UNKNOWN" : "FAILED", exception.getClass().getSimpleName());
+        if (job.downloadTiming != null) job.downloadTiming.finish(job.unresolved ? "UNKNOWN" : "FAILED", exception.getClass().getSimpleName());
         try {
             job.download.failed(exception);
         } catch (RuntimeException persistenceFailure) {
@@ -332,6 +348,9 @@ public class OfflineIngestScheduler implements AutoCloseable {
         final Duration timeout;
         final Duration interval;
         final Download download;
+        final IngestStageTiming.Context timingContext = IngestStageTiming.context();
+        final IngestStageTiming.Span queueTiming = IngestStageTiming.start("download_queue", "shared offline scheduler", null);
+        IngestStageTiming.Span downloadTiming;
         final CompletableFuture<Void> completion = new CompletableFuture<>();
         final long enqueuedAt = System.nanoTime();
         long startedAt;

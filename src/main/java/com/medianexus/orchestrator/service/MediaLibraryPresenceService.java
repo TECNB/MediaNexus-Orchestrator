@@ -98,8 +98,10 @@ public class MediaLibraryPresenceService {
 
     /** BGM 以 Emby 实际状态为准，不使用普通入库的删除中放行规则。 */
     AutomationPresence checkForAutomation(BgmWishlistTaskGateway.Target target) {
-        try {
+        try (var timing = IngestStageTiming.start("library_presence", "Emby automation identity check", null)) {
             var matches = deletionWorkflow.findBgmTargets(target);
+            timing.finish("SUCCEEDED", "tmdb=" + target.tmdbId() + ";season=" + target.seasonNumber()
+                    + ";matches=" + matches.size() + ";not three-end acceptance");
             return new AutomationPresence(true, !matches.isEmpty(), matches.size() == 1);
         } catch (EmbyClientException exception) {
             log.warn("BGM 在库检查不可用 tmdbId={} seasonNumber={} reason={}",

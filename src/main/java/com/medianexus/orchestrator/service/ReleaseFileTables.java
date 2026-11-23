@@ -176,9 +176,11 @@ public class ReleaseFileTables {
     }
 
     private ResolvedTorrent original(ProwlarrRelease release, ResolveBudget budget) {
-        try {
+        try (var timing = IngestStageTiming.start("evidence_request", "original torrent metadata", null)) {
             budget.acquireOriginalMetadata();
-            return prowlarr.resolveTorrent(release, budget.remaining());
+            var resolved = prowlarr.resolveTorrent(release, budget.remaining());
+            timing.finish("SUCCEEDED", "originalMetadataRequests=1;tablePresent=" + resolved.table().isPresent());
+            return resolved;
         } catch (ProwlarrClientException failure) {
             if (failure.getReason() == ProwlarrClientException.Reason.INVALID_RESPONSE) throw invalid("原始 torrent 文件表安全校验失败");
             throw new GuangyaException(GuangyaException.Reason.UNAVAILABLE, "原始 torrent 元数据暂不可取得");
@@ -186,13 +188,21 @@ public class ReleaseFileTables {
     }
 
     private Evidence fromGuangya(String magnet, ResolveBudget budget) {
-        return new Evidence(guangya.cached(magnet).orElseGet(() -> guangya.resolve(magnet, budget)), "光鸭文件表");
+        try (var timing = IngestStageTiming.start("evidence_request", "Guangya", null)) {
+            var cached = guangya.cached(magnet);
+            var table = cached.orElseGet(() -> guangya.resolve(magnet, budget));
+            timing.finish("SUCCEEDED", "cacheHit=" + cached.isPresent() + ";resolveMethodCalls=" + (cached.isPresent() ? 0 : 1)
+                    + ";httpRequestCount=UNKNOWN;authentication retry/shared request may differ");
+            return new Evidence(table, cached.isPresent() ? "光鸭文件表缓存" : "光鸭文件表");
+        }
     }
 
     private Evidence shared(String key, java.util.concurrent.Callable<Evidence> load) {
         rejectUnsafe(key);
-        try {
+        try (var timing = IngestStageTiming.start("evidence_cache", "shared file table cache", null)) {
+            boolean[] loaded = {false};
             Evidence evidence = tables.get(key, () -> {
+                loaded[0] = true;
                 try { return load.call(); }
                 catch (GuangyaException failure) {
                     if (failure.reason() == GuangyaException.Reason.INVALID_RESPONSE) unsafe.put(key, failure.getMessage());
@@ -200,6 +210,7 @@ public class ReleaseFileTables {
                 }
             });
             rejectUnsafe(evidence.table().identity().btih());
+            timing.finish("SUCCEEDED", "cacheHitOrSharedLoad=" + !loaded[0] + ";source=" + evidence.source());
             return evidence;
         } catch (ExecutionException | com.google.common.util.concurrent.UncheckedExecutionException failure) {
             if (failure.getCause() instanceof RuntimeException cause) throw cause;

@@ -56,8 +56,10 @@ public class ProwlarrReleaseSearchCache {
     public List<ProwlarrRelease> search(String query) {
         long startedAt = System.nanoTime();
         List<ProwlarrRelease> cachedReleases = releasesByQuery.getIfPresent(query);
+        try (var timing = IngestStageTiming.start("search_cache", "Prowlarr", query)) {
         if (cachedReleases != null) {
             logSearch("HIT", query, startedAt, cachedReleases.size());
+            timing.finish("SUCCEEDED", "cacheHit=true;requests=0;raw=" + cachedReleases.size());
             return cachedReleases;
         }
 
@@ -68,19 +70,25 @@ public class ProwlarrReleaseSearchCache {
                 return List.copyOf(prowlarrClient.search(query));
             });
             logSearch(loadedByThisCall.get() ? "MISS" : "HIT", query, startedAt, releases.size());
+            timing.finish("SUCCEEDED", "cacheHitOrSharedLoad=" + !loadedByThisCall.get() + ";requests="
+                    + (loadedByThisCall.get() ? 1 : 0) + ";raw=" + releases.size());
             return releases;
         } catch (ExecutionException exception) {
             throw propagate(exception.getCause());
         } catch (UncheckedExecutionException exception) {
             throw propagate(exception.getCause());
         }
+        }
     }
 
     public Map<String, List<ProwlarrRelease>> refreshQueries(List<String> queries) {
         List<String> distinctQueries = List.copyOf(new LinkedHashSet<>(queries));
         Map<String, CompletableFuture<List<ProwlarrRelease>>> futuresByQuery = new LinkedHashMap<>();
+        var timingContext = IngestStageTiming.context();
         for (String query : distinctQueries) {
-            futuresByQuery.put(query, CompletableFuture.supplyAsync(() -> refreshQuery(query)));
+            futuresByQuery.put(query, CompletableFuture.supplyAsync(() -> {
+                try (var binding = IngestStageTiming.bind(timingContext)) { return refreshQuery(query); }
+            }));
         }
 
         try {
@@ -97,9 +105,10 @@ public class ProwlarrReleaseSearchCache {
 
     private List<ProwlarrRelease> refreshQuery(String query) {
         long startedAt = System.nanoTime();
-        try {
+        try (var timing = IngestStageTiming.start("search_cache", "Prowlarr refresh", query)) {
             List<ProwlarrRelease> releases = List.copyOf(prowlarrClient.search(query));
             logSearch("REFRESH", query, startedAt, releases.size());
+            timing.finish("SUCCEEDED", "cacheHit=false;requests=1;raw=" + releases.size());
             return releases;
         } catch (RuntimeException exception) {
             log.warn(

@@ -86,6 +86,9 @@ public class BgmWishlistTaskGateway {
         return task == null ? null : new ActiveTask(task.taskType(), task.taskId(), task.status());
     }
 
+    /** 搜索前只读基线；创建时仍在目标锁内重新核验，不能代替三端验收。 */
+    public void observeLibraryPresence(Target target) { presence.checkForAutomation(target); }
+
     /** 无符合条件的资源返回 null；上游故障继续抛出，不能冒充无资源。 */
     public ProwlarrReleaseItemResponse recommend(Target target, String quality) {
         try {

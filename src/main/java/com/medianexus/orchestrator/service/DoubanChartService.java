@@ -245,18 +245,25 @@ public class DoubanChartService {
 
     private void process(String id, Candidate snapshot, Board fresh, Set<String> targets) {
         long subjectId = snapshot.subject().id(); ChartId chart = fresh.id();
-        try {
+        try (var timingTarget = IngestStageTiming.target(id, subjectId)) {
             if (snapshot.excluded()) { outcome(id, subjectId, "SKIPPED", snapshot.reason()); return; }
             if (snapshot.current() && !"SUCCESS".equals(fresh.refreshStatus())) {
                 outcome(id, subjectId, "SKIPPED", reason("SOURCE_UNAVAILABLE", "本轮榜单抓取失败，旧在榜只展示不受理")); return;
             }
-            Subject original = snapshot.subject();
-            Subject refreshed = !snapshot.current() || "SERIES".equals(original.mediaType())
-                    && (original.progress() == null || original.progress().isBlank()) ? client.refreshSubject(original) : original;
-            Subject subject = "MOVIE".equals(refreshed.mediaType()) && store.identity(subjectId) == null
-                    && refreshed.originalTitle() == null ? client.refreshMovieIdentity(refreshed) : refreshed;
+            Subject subject;
+            Subject refreshed;
+            Assessment assessment;
+            try (var timing = IngestStageTiming.start("catalog_identity", "Douban/TMDB", null)) {
+                Subject original = snapshot.subject();
+                refreshed = !snapshot.current() || "SERIES".equals(original.mediaType())
+                        && (original.progress() == null || original.progress().isBlank()) ? client.refreshSubject(original) : original;
+                subject = "MOVIE".equals(refreshed.mediaType()) && store.identity(subjectId) == null
+                        && refreshed.originalTitle() == null ? client.refreshMovieIdentity(refreshed) : refreshed;
+                assessment = eligibility.assess(subject, store.identity(subjectId));
+                timing.finish(assessment.reason() == null ? "SUCCEEDED" : "CATALOG_FAILED".equals(assessment.reason().code()) ? "FAILED" : "REJECTED", assessment.reason() == null
+                        ? "tmdb=" + assessment.identity().tmdbId() + ";expectedEpisodes=" + assessment.expectedEpisodes() : assessment.reason().code());
+            }
             if (!snapshot.current()) updateCandidate(chart, subjectId, candidate -> observed(candidate, refreshed, false, Instant.now()));
-            Assessment assessment = eligibility.assess(subject, store.identity(subjectId));
             updateCandidate(chart, subjectId, candidate -> candidate(candidate, candidate.subject(), candidate.current(), candidate.excluded(),
                     assessment.identity(), candidate.excluded() ? reason("EXCLUDED", "管理员已排除") : assessment.reason() == null ? inclusion(candidate) : assessment.reason()));
             updateEntry(id, subjectId, entry -> new Entry(item(subject, assessment.identity(), snapshot.reason()), "CHECKING", Instant.now(),
@@ -266,13 +273,19 @@ public class DoubanChartService {
             }
             Target target = assessment.target();
             if (!targets.add(targetKey(target))) { outcome(id, subjectId, "SKIPPED", reason("DUPLICATE_TARGET", "本轮已检查同一目录目标")); return; }
-            ActiveTask existing = store.recordedTask(targetKey(target));
-            if (existing == null) existing = tasks.previousTask(target);
-            if (existing == null) existing = tasks.activeTask(target);
+            ActiveTask existing;
+            try (var timing = IngestStageTiming.start("task_lookup", "target-ledger/tasks", null)) {
+                existing = store.recordedTask(targetKey(target));
+                if (existing == null) existing = tasks.previousTask(target);
+                if (existing == null) existing = tasks.activeTask(target);
+                timing.finish("SUCCEEDED", existing == null ? "NO_TASK; not a library absence check"
+                        : "taskId=" + existing.taskId() + ";status=" + existing.status() + ";not media proof");
+            }
             if (existing != null) { associate(id, subjectId, existing, "ASSOCIATED", BgmWishlistTaskGateway.previousTaskReason(existing.status())); return; }
             if (!store.reserveCheck()) { outcome(id, subjectId, "SKIPPED", reason("DAILY_CHECK_LIMIT", "榜单共享每日检查数已达上限")); return; }
             updateEntry(id, subjectId, entry -> entry(entry, "SEARCHING", entry.reason()));
             List<ProwlarrReleaseItemResponse> releases;
+            tasks.observeLibraryPresence(target);
             try {
                 releases = tasks.candidates(target, "1080p", progress -> updateEntry(id, subjectId, entry -> {
                     List<Search> searches = new ArrayList<>(entry.searches());
@@ -294,8 +307,14 @@ public class DoubanChartService {
             if (store.run(id).stopRequested()) return;
             Candidate latest = requireCandidate(chart, subjectId);
             if (latest.excluded()) { outcome(id, subjectId, "SKIPPED", reason("EXCLUDED", "管理员已排除")); return; }
-            Subject verifiedSubject = client.refreshSubject(subject);
-            Assessment verified = eligibility.assess(verifiedSubject, store.identity(subjectId));
+            Subject verifiedSubject;
+            Assessment verified;
+            try (var timing = IngestStageTiming.start("catalog_identity_recheck", "Douban/TMDB", null)) {
+                verifiedSubject = client.refreshSubject(subject);
+                verified = eligibility.assess(verifiedSubject, store.identity(subjectId));
+                timing.finish(verified.reason() == null ? "SUCCEEDED" : "CATALOG_FAILED".equals(verified.reason().code()) ? "FAILED" : "REJECTED", verified.reason() == null
+                        ? "tmdb=" + verified.identity().tmdbId() : verified.reason().code());
+            }
             if (verified.reason() != null || verified.target() == null || !targetKey(target).equals(targetKey(verified.target()))
                     || !eligibility.completeRelease(verified, selected.release())) {
                 outcome(id, subjectId, "SKIPPED", verified.reason() == null ? reason("TARGET_CHANGED", "最终资格或目录目标已变化") : verified.reason()); return;
@@ -317,12 +336,24 @@ public class DoubanChartService {
                 store.releaseCreate(reservation);
                 outcome(id, subjectId, "INTERRUPTED", reason("CREATE_UNCERTAIN", "同一目标曾有未核实的创建尝试，请在任务中心核实，禁止自动重放")); return;
             }
-            try {
+            try (var timing = IngestStageTiming.start("task_create", target.mediaType(), null)) {
+                try {
                 ActiveTask created = "SERIES".equals(target.mediaType()) ? tasks.createChartSeries(target, selected.release(), owner)
                         : tasks.createChartMovie(target, selected.release(), owner);
+                timing.finish("ACCEPTED", "taskId=" + created.taskId() + ";status=" + created.status() + ";not ingestion complete");
                 store.recordTask(targetKey(target), created);
                 store.resolveTarget(targetKey(target));
                 associate(id, subjectId, created, "CREATED", reason("TASK_CREATED", "已创建入库任务，不表示已入库"));
+                } catch (BgmWishlistTaskGateway.CreatedTaskRecordException failure) {
+                    timing.finish("ACCEPTED", "taskType=" + failure.task().taskType() + ";taskId=" + failure.task().taskId() + ";ledgerPending=true");
+                    throw failure;
+                } catch (BgmWishlistTaskGateway.EligibilityRefusal refusal) {
+                    timing.finish("REJECTED", refusal.reason().code());
+                    throw refusal;
+                } catch (RuntimeException failure) {
+                    timing.finish("UNKNOWN", failure.getClass().getSimpleName() + ";creation outcome must be reconciled; do not replay");
+                    throw failure;
+                }
             } catch (BgmWishlistTaskGateway.CreatedTaskRecordException exception) {
                 store.recordTask(targetKey(target), exception.task());
                 associate(id, subjectId, exception.task(), "CREATED", reason("TASK_LINK_PENDING", "任务已创建，目标账本写入异常；保留已知任务，禁止重放"));

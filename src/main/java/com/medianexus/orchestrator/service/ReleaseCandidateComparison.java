@@ -246,6 +246,7 @@ public class ReleaseCandidateComparison implements AutoCloseable {
         int count = 0;
         Map<Future<SearchBatch>, String> queryFutures = new HashMap<>();
         Map<String, Long> started = new HashMap<>();
+        var timingContext = IngestStageTiming.context();
         for (SearchQuery query : plan) {
             synchronized (comparison) {
                 if (comparison.queries.size() >= 4 || !comparison.queries.add(query.key())) continue;
@@ -253,7 +254,11 @@ public class ReleaseCandidateComparison implements AutoCloseable {
             }
             comparison.progress.accept(query.progress("RUNNING", 0, null));
             started.put(query.key(), System.nanoTime());
-            Future<SearchBatch> submitted = completion.submit(() -> new SearchBatch(query.key(), query.search().call()));
+            Future<SearchBatch> submitted = completion.submit(() -> {
+                try (var binding = IngestStageTiming.bind(timingContext)) {
+                    return new SearchBatch(query.key(), query.search().call());
+                }
+            });
             futures.add(submitted);
             queryFutures.put(submitted, query.key());
             count++;
@@ -319,11 +324,16 @@ public class ReleaseCandidateComparison implements AutoCloseable {
             if (comparison.target.season() != null && comparison.queries.stream().noneMatch(query -> query.startsWith("补源：")))
                 queue = List.of();
         }
+        var timingContext = IngestStageTiming.context();
         for (int i = 0; i < queue.size(); i += 2) {
             budget.remaining();
             List<Future<Checked>> batch = new ArrayList<>();
             for (Discovered candidate : queue.subList(i, Math.min(i + 2, queue.size()))) {
-                Future<Checked> future = pool.submit(() -> evaluate(comparison.target, candidate, budget));
+                Future<Checked> future = pool.submit(() -> {
+                    try (var binding = IngestStageTiming.bind(timingContext)) {
+                        return evaluate(comparison.target, candidate, budget);
+                    }
+                });
                 batch.add(future); futures.add(future);
             }
             for (Future<Checked> future : batch) {
@@ -356,7 +366,9 @@ public class ReleaseCandidateComparison implements AutoCloseable {
     }
 
     private Checked evaluate(ReleaseTarget target, Discovered candidate, ResolveBudget budget) {
-        try {
+        try (var timing = IngestStageTiming.start("evidence", candidate.item.indexer(), candidate.item.title());
+             var children = timing.children()) {
+            try {
             var resolved = candidate.release == null ? fileTables.resolve(candidate.item.downloadRef(), budget)
                     : fileTables.resolve(candidate.release, budget);
             candidate.magnet = "magnet:?xt=urn:btih:" + resolved.table().identity().btih();
@@ -366,7 +378,13 @@ public class ReleaseCandidateComparison implements AutoCloseable {
             var evidence = assessment.evidence();
             evidence = new ReleaseFileEvidence(evidence.status(), evidence.reason() + "；证据来源：" + resolved.source(),
                     evidence.totalBytes(), evidence.targetBytes(), evidence.targetFiles(), evidence.preview(), evidence.camera());
+            timing.finish(evidence.status(), "source=" + resolved.source() + ";targetFiles=" + evidence.targetFiles()
+                    + ";targetBytes=" + evidence.targetBytes());
             return new Checked(candidate, candidate.item.withEvidence(evidence, assessment.resolutions()), null);
+            } catch (RuntimeException failure) {
+                timing.finish("FAILED", failure instanceof GuangyaException g ? g.reason().name() : failure.getClass().getSimpleName());
+                throw failure;
+            }
         } catch (GuangyaException exception) {
             if (exception.reason() == GuangyaException.Reason.INVALID_RESPONSE && submissionSafety != null && candidate.magnet != null)
                 submissionSafety.rememberInvalidFileTable(candidate.magnet);
