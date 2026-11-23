@@ -89,6 +89,11 @@ public class TmdbClient {
 
     /** 公共榜单按类型查完整有限分页；预算不足不返回部分结果冒充唯一匹配。 */
     public JsonNode searchChartTitles(String query, String mediaType) {
+        return searchChartTitles(query, mediaType, null);
+    }
+
+    /** 豆瓣已知电影年份用于收窄召回，返回内容仍由调用方验证年份和唯一身份。 */
+    public JsonNode searchChartTitles(String query, String mediaType, Integer year) {
         String route = switch (mediaType) {
             case "MOVIE" -> "/search/movie";
             case "SERIES" -> "/search/tv";
@@ -100,7 +105,7 @@ public class TmdbClient {
         Integer totalResults = null;
         for (int page = 1; page <= 5; page++) {
             JsonNode payload = get(route, "query=" + encode(query)
-                    + "&language=zh-CN&include_adult=false&page=" + page, "chart title search");
+                    + "&language=zh-CN&include_adult=false" + (year == null ? "" : "&year=" + year) + "&page=" + page, "chart title search");
             JsonNode results = payload.path("results");
             int pages = payload.path("total_pages").asInt(-1);
             int total = payload.path("total_results").asInt(-1);

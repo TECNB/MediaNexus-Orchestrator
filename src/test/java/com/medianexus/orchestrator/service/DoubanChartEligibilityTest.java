@@ -121,8 +121,8 @@ class DoubanChartEligibilityTest {
     }
 
     @Test void numberedMovieSubtitleCanResolveOnlyToOneSameYearCatalogIdentity() throws Exception {
-        when(tmdb.searchChartTitles("老千4：别西卜之歌", "MOVIE")).thenReturn(json.readTree("[]"));
-        when(tmdb.searchChartTitles("老千：别西卜之歌", "MOVIE")).thenReturn(json.readTree("""
+        when(tmdb.searchChartTitles("老千4：别西卜之歌", "MOVIE", 2026)).thenReturn(json.readTree("[]"));
+        when(tmdb.searchChartTitles("老千：别西卜之歌", "MOVIE", 2026)).thenReturn(json.readTree("""
                 [{"id":1394740,"title":"老千：别西卜之歌","original_title":"타짜: 벨제붑의 노래","release_date":"2026-09-23"}]
                 """));
         when(tmdb.getMovieDetails(1394740, "zh-CN")).thenReturn(json.readTree("""
@@ -130,8 +130,26 @@ class DoubanChartEligibilityTest {
                 """));
         var subject = new Subject(37134880,"老千4：别西卜之歌",null,null,2026,"MOVIE",null,null,1,null,Instant.now());
         assertEquals(1394740, eligibility.resolveProgressIdentity(subject, null).tmdbId());
-        when(tmdb.searchChartTitles("老千：别西卜之歌", "MOVIE")).thenReturn(json.readTree("""
+        when(tmdb.searchChartTitles("老千：别西卜之歌", "MOVIE", 2026)).thenReturn(json.readTree("""
                 [{"id":1,"title":"老千：别西卜之歌","original_title":"Other","release_date":"2006-09-23"}]
+                """));
+        assertNull(eligibility.resolveProgressIdentity(subject, null));
+    }
+
+    @Test void doubanMovieYearNarrowsSearchButReturnedYearAndUniqueIdentityRemainRequired() throws Exception {
+        var subject = new Subject(35322132,"罗斯","Rose",null,2026,"MOVIE",null,null,19,null,Instant.now());
+        when(tmdb.searchChartTitles("罗斯", "MOVIE", 2026)).thenReturn(json.readTree("""
+                [{"id":1176962,"title":"罗斯","original_title":"Rose","release_date":"2026-04-17"},
+                 {"id":2,"title":"罗斯","original_title":"Rose","release_date":"2016-01-01"}]
+                """));
+        when(tmdb.getMovieDetails(1176962,"zh-CN")).thenReturn(json.readTree("""
+                {"id":1176962,"title":"罗斯","original_title":"Rose","release_date":"2026-04-17"}
+                """));
+        assertEquals(1176962, eligibility.resolveProgressIdentity(subject, null).tmdbId());
+        verify(tmdb, never()).searchChartTitles("罗斯", "MOVIE");
+        when(tmdb.searchChartTitles("罗斯", "MOVIE", 2026)).thenReturn(json.readTree("""
+                [{"id":1176962,"title":"罗斯","original_title":"Rose","release_date":"2026-04-17"},
+                 {"id":3,"title":"罗斯","original_title":"Rose","release_date":"2026-01-01"}]
                 """));
         assertNull(eligibility.resolveProgressIdentity(subject, null));
     }

@@ -79,7 +79,10 @@ public class DoubanChartEligibility {
     }
 
     public List<CatalogCandidate> search(String query,String mediaType) {
-        JsonNode results = tmdb.searchChartTitles(query,mediaType);
+        return catalogCandidates(tmdb.searchChartTitles(query, mediaType), mediaType);
+    }
+
+    private List<CatalogCandidate> catalogCandidates(JsonNode results, String mediaType) {
         List<CatalogCandidate> choices = new ArrayList<>();
         for (JsonNode node : results) {
             String title = text(node,"MOVIE".equals(mediaType) ? "title" : "name");
@@ -142,7 +145,10 @@ public class DoubanChartEligibility {
         }
         Map<Integer, CatalogCandidate> found = new LinkedHashMap<>();
         for (String query : queries) {
-            for (var candidate : search(query, subject.mediaType())) {
+            JsonNode results = "MOVIE".equals(subject.mediaType())
+                    ? tmdb.searchChartTitles(query, subject.mediaType(), subject.year())
+                    : tmdb.searchChartTitles(query, subject.mediaType());
+            for (var candidate : catalogCandidates(results, subject.mediaType())) {
                 if (queries.stream().noneMatch(name -> sameTitle(name, candidate.title()) || sameTitle(name, candidate.originalTitle()))) continue;
                 if ("MOVIE".equals(subject.mediaType()) && !Objects.equals(candidate.year(), subject.year())) continue;
                 found.put(candidate.tmdbId(), candidate);

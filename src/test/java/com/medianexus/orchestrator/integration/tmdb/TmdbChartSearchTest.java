@@ -36,6 +36,8 @@ class TmdbChartSearchTest {
             assertTrue(paths.stream().allMatch(path -> path.startsWith("/3/search/movie?")));
             paths.clear(); assertEquals(2,client.searchChartTitles("测试","SERIES").size());
             assertTrue(paths.stream().allMatch(path -> path.startsWith("/3/search/tv?")));
+            paths.clear(); assertEquals(2,client.searchChartTitles("罗斯", "MOVIE", 2026).size());
+            assertTrue(paths.stream().allMatch(path -> path.contains("&year=2026&")));
             mode.set("budget"); assertThrows(TmdbClientException.class,()->client.searchChartTitles("测试","SERIES"));
             mode.set("changing"); assertThrows(TmdbClientException.class,()->client.searchChartTitles("测试","MOVIE"));
         } finally { server.stop(0); }

@@ -251,9 +251,11 @@ public class DoubanChartService {
                 outcome(id, subjectId, "SKIPPED", reason("SOURCE_UNAVAILABLE", "本轮榜单抓取失败，旧在榜只展示不受理")); return;
             }
             Subject original = snapshot.subject();
-            Subject subject = !snapshot.current() || "SERIES".equals(original.mediaType())
+            Subject refreshed = !snapshot.current() || "SERIES".equals(original.mediaType())
                     && (original.progress() == null || original.progress().isBlank()) ? client.refreshSubject(original) : original;
-            if (!snapshot.current()) updateCandidate(chart, subjectId, candidate -> observed(candidate, subject, false, Instant.now()));
+            Subject subject = "MOVIE".equals(refreshed.mediaType()) && store.identity(subjectId) == null
+                    && refreshed.originalTitle() == null ? client.refreshMovieIdentity(refreshed) : refreshed;
+            if (!snapshot.current()) updateCandidate(chart, subjectId, candidate -> observed(candidate, refreshed, false, Instant.now()));
             Assessment assessment = eligibility.assess(subject, store.identity(subjectId));
             updateCandidate(chart, subjectId, candidate -> candidate(candidate, candidate.subject(), candidate.current(), candidate.excluded(),
                     assessment.identity(), candidate.excluded() ? reason("EXCLUDED", "管理员已排除") : assessment.reason() == null ? inclusion(candidate) : assessment.reason()));

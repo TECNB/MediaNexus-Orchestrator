@@ -97,6 +97,19 @@ public class DoubanChartClient {
         return result;
     }
 
+    /** 电影身份来自同一豆瓣ID的结构化详情，不从展示标题拆词或猜测原名。 */
+    public Subject refreshMovieIdentity(Subject previous) {
+        JsonNode node = read.get("https://m.douban.com/rexxar/api/v2/movie/" + previous.id(),
+                "https://m.douban.com/movie/subject/" + previous.id() + "/");
+        String title = text(node, "title"), original = text(node, "original_title");
+        Integer releaseYear = year(text(node, "year"));
+        if (id(node.path("id")) != previous.id() || !"movie".equals(text(node, "type")) || node.has("code")
+                || title == null || original == null || releaseYear == null
+                || previous.year() != null && !previous.year().equals(releaseYear)) throw invalid();
+        return new Subject(previous.id(), title, original, previous.coverUrl(), releaseYear, previous.mediaType(),
+                previous.score(), previous.votes(), previous.rank(), previous.progress(), Instant.now());
+    }
+
     /** 摘要只补目录白名单；总集数不证明完结，缺新进度时绝不复用旧完结结论。 */
     public Subject refreshSubject(Subject previous) {
         if (!"SERIES".equals(previous.mediaType())) return summary(previous);

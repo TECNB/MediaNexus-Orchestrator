@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.medianexus.orchestrator.dto.douban.DoubanChartContract.ChartId;
 import java.time.Instant;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
@@ -130,6 +131,32 @@ class DoubanChartClientTest {
         assertEquals("电影", fresh.title()); assertNull(fresh.originalTitle()); assertEquals(2020, fresh.year());
         assertNull(fresh.progress());
     }
+    @Test void movieIdentityRefreshUsesDoubanTitleOriginalAndYearWithoutReusingDisplayTitle() {
+        var client = new DoubanChartClient(json, (url, referer) -> {
+            assertEquals("https://m.douban.com/rexxar/api/v2/movie/1", url);
+            return json.createObjectNode().put("id", "1").put("type", "movie").put("title", "罗斯")
+                    .put("original_title", "Rose").put("year", "2026");
+        });
+        var subject = new com.medianexus.orchestrator.dto.douban.DoubanChartContract.Subject(
+                1, "罗斯", null, null, 2026, "MOVIE", null, null, 21, null, Instant.EPOCH);
+        var refreshed = client.refreshMovieIdentity(subject);
+        assertEquals("罗斯", refreshed.title());
+        assertEquals("Rose", refreshed.originalTitle());
+        assertEquals(2026, refreshed.year());
+    }
+
+    @Test void movieIdentityDetailsRejectWrongIdTypeOrYearAndMissingOriginalTitle() {
+        var subject = new com.medianexus.orchestrator.dto.douban.DoubanChartContract.Subject(
+                1, "罗斯", null, null, 2026, "MOVIE", null, null, 19, null, Instant.EPOCH);
+        for (String fault : List.of("id", "type", "year", "original_title")) {
+            var node = json.createObjectNode().put("id", "1").put("type", "movie").put("title", "罗斯")
+                    .put("original_title", "Rose").put("year", "2026");
+            node.put(fault, switch (fault) { case "id" -> "2"; case "type" -> "tv"; case "year" -> "2025"; default -> ""; });
+            var client = new DoubanChartClient(json, (url, referer) -> node);
+            assertThrows(DoubanChartClient.ChartReadException.class, () -> client.refreshMovieIdentity(subject), fault);
+        }
+    }
+
     @Test void individualSeriesCheckUsesFreshProgressAndDoesNotReuseOldCompletion() {
         var result = new java.util.concurrent.atomic.AtomicReference<>("更新至2集");
         var client = new DoubanChartClient(json, (url, referer) -> {

@@ -271,6 +271,24 @@ class DoubanChartServiceTest {
         verify(f.tasks, never()).createChartSeries(any(), any(), any());
     }
 
+    @Test void currentMovieWithoutOriginalTitleReadsDoubanIdentityBeforeCatalogWithoutChangingBoardSnapshot() throws Exception {
+        Subject missing = new Subject(1,"罗斯",null,null,2026,"MOVIE",null,null,1,null,Instant.now());
+        Subject detailed = new Subject(1,"罗斯","Rose",null,2026,"MOVIE",null,null,1,null,Instant.now());
+        when(f.client.fetch(ChartId.movie_hot_gaia)).thenReturn(List.of(missing));
+        when(f.client.refreshMovieIdentity(missing)).thenReturn(detailed);
+        Operation run = f.await(f.service.execute(ChartId.movie_hot_gaia).id());
+        assertEquals("CREATED", run.entries().get(0).status());
+        verify(f.eligibility, never()).assess(eq(missing), nullable(Identity.class));
+        verify(f.eligibility, times(2)).assess(eq(detailed), nullable(Identity.class));
+        assertNull(f.service.board(ChartId.movie_hot_gaia).candidates().get(0).subject().originalTitle());
+    }
+
+    @Test void movieWithOriginalTitleDoesNotRepeatDoubanIdentityLookup() throws Exception {
+        when(f.client.fetch(ChartId.movie_hot_gaia)).thenReturn(List.of(f.subject(1, "MOVIE")));
+        f.await(f.service.execute(ChartId.movie_hot_gaia).id());
+        verify(f.client, never()).refreshMovieIdentity(any());
+    }
+
     @Test void currentWeeklySeriesWithoutProgressReadsFreshDetailBeforeEligibility() throws Exception {
         Subject missing = new Subject(1,"作品1",null,null,2020,"SERIES",null,null,1,null,Instant.now());
         Subject complete = new Subject(1,"作品1",null,null,2020,"SERIES",null,null,1,"2集全",Instant.now());
@@ -338,6 +356,21 @@ class DoubanChartServiceTest {
         Operation retry = f.await(f.service.execute(ChartId.movie_hot_gaia).id());
         assertEquals("CREATED", retry.entries().get(0).status());
         verify(f.tasks, times(1)).createChartMovie(any(), any(), any());
+    }
+
+    @Test void historicalMovieIdentityDetailDoesNotOverwriteSourceSnapshot() throws Exception {
+        Subject original = new Subject(1,"罗斯",null,null,2026,"MOVIE",null,null,1,null,Instant.now());
+        Subject detailed = new Subject(1,"罗斯","Rose",null,2026,"MOVIE",null,null,1,null,Instant.now());
+        when(f.client.fetch(ChartId.movie_weekly_best)).thenReturn(List.of(original));
+        f.refresh(ChartId.movie_weekly_best);
+        when(f.client.fetch(ChartId.movie_weekly_best)).thenReturn(List.of(f.subject(2,"MOVIE")));
+        when(f.client.refreshMovieIdentity(original)).thenReturn(detailed);
+        f.await(f.service.execute(ChartId.movie_weekly_best).id());
+        var history = f.service.board(ChartId.movie_weekly_best).candidates().stream()
+                .filter(candidate -> candidate.subject().id() == 1).findFirst().orElseThrow();
+        assertFalse(history.current());
+        assertNull(history.subject().originalTitle());
+        verify(f.eligibility, times(2)).assess(eq(detailed), nullable(Identity.class));
     }
 
     @Test void historicalCompletionReasonIsDatedAndPersistsInOperation() throws Exception {
