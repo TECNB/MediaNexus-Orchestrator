@@ -34,7 +34,7 @@ public class DoubanChartClient {
         List<Subject> subjects = new ArrayList<>();
         Set<Long> ids = new HashSet<>();
         Integer expected = null;
-        int pageSize = chart.limit() > 0 ? chart.limit() : 50;
+        int pageSize = chart.limit() > 0 ? 20 : 50;
         for (int page = 0, offset = 0; page < 20; page++) {
             JsonNode root = read.get("https://m.douban.com/rexxar/api/v2/subject_collection/" + chart.name()
                     + "/items?start=" + offset + "&count=" + pageSize,
@@ -43,24 +43,29 @@ public class DoubanChartClient {
             JsonNode items = root.path("subject_collection_items");
             int total = integer(root.get("total"), -1);
             int count = integer(root.get("count"), -1);
-            if (!items.isArray() || total < 1 || total > 10000 || count < 1 || count > pageSize
+            if (!items.isArray() || total < 0 || total > 10000 || count < 0 || count > pageSize
                     || integer(root.get("start"), -1) != offset || root.has("code")
                     || (expected != null && expected != total)) throw invalid();
+            if (total == 0 && offset == 0 && items.isEmpty() && chart.limit() > 0) return List.of();
+            if (total == 0 || count == 0) throw invalid();
             expected = total;
             int wanted = chart.limit() > 0 ? Math.min(chart.limit(), total) : total;
             int slots = Math.min(count, total - offset);
             if (items.size() != slots || items.isEmpty()) throw new ChartReadException("豆瓣榜单分页不完整（偏移 " + offset
                     + "，应有 " + slots + "，实有 " + items.size() + "），保留上次成功清单");
-            for (JsonNode node : items) {
-                Subject subject = subject(node, chart, subjects.size() + 1);
-                if (!ids.add(subject.id())) throw invalid();
+            for (int index = 0; index < items.size(); index++) {
+                if (offset + index >= wanted) break;
+                Subject subject = subject(items.get(index), chart, offset + index + 1);
+                if (!ids.add(subject.id())) {
+                    if (chart.limit() == 0) throw invalid();
+                    continue;
+                }
                 if (chart.limit() == 0
                         && (subject.rank() == null || subject.rank() != subjects.size() + 1)) throw invalid();
                 subjects.add(subject);
-                if (subjects.size() == wanted) break;
             }
-            if (subjects.size() == wanted) return List.copyOf(subjects);
             offset += items.size();
+            if (offset >= wanted) return List.copyOf(subjects);
         }
         throw new ChartReadException("榜单分页超过安全上限，保留上次成功清单");
     }
@@ -80,8 +85,7 @@ public class DoubanChartClient {
         Long votes = rating.path("count").isIntegralNumber() ? rating.path("count").longValue() : null;
         if (score != null && (!Double.isFinite(score) || score < 0 || score > 10) || votes != null && votes < 0) throw invalid();
         // 热门接口没有显式 rank；保存来源列表位置，UI 按热门位置而非评分排名展示。
-        Integer rank = node.hasNonNull("rank") ? integer(node.get("rank"), -1) : null;
-        if (rank == null && chart.limit() > 0) rank = position;
+        Integer rank = chart.limit() > 0 ? Integer.valueOf(position) : node.hasNonNull("rank") ? Integer.valueOf(integer(node.get("rank"), -1)) : null;
         if (rank != null && rank < 1) throw invalid();
         Subject result = new Subject(id, title, text(node,"original_title"), cover(node), year,
                 chart.mediaType(), score, votes, rank, text(node,"episodes_info"), Instant.now());

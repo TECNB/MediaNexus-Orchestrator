@@ -61,8 +61,10 @@ public class DoubanChartController {
     public ApiResponse<List<Season>> seasons(@PathVariable int id) { return ApiResponse.success(charts.seasons(id)); }
 
     @PostMapping("/{chartId}/operations")
-    @io.swagger.v3.oas.annotations.Operation(summary = "立即持久受理本榜一轮；重复请求返回已有操作")
-    public ApiResponse<Operation> execute(@PathVariable ChartId chartId) { return ApiResponse.success(charts.execute(chartId)); }
+    @io.swagger.v3.oas.annotations.Operation(summary = "持久受理本榜一轮；热门默认检查接口前20条，可指定前1至100条；重复请求返回已有操作")
+    public ApiResponse<Operation> execute(@PathVariable ChartId chartId, @Valid @RequestBody(required = false) ExecuteInput input) {
+        return ApiResponse.success(charts.execute(chartId, input == null ? new ExecuteInput(null) : input));
+    }
 
     @GetMapping("/{chartId}/operations")
     @io.swagger.v3.oas.annotations.Operation(summary = "分页读取本榜操作及实时关联任务")

@@ -163,9 +163,13 @@ public class DoubanChartService {
         });
     }
 
-    public Operation execute(ChartId id) {
+    public Operation execute(ChartId id) { return execute(id, new ExecuteInput(null)); }
+    public Operation execute(ChartId id, ExecuteInput input) {
         User admin = auth.requireAdminUser(); requireAdminIdentity(admin.getId());
-        Run run = store.submit(id, admin.getId(), "MANUAL"); enqueue(run.operation().id()); return run.operation();
+        if (id.limit() == 0 && input.candidateLimit() != null) throw bad("仅热门电影和近期热门剧集可指定接口范围");
+        Integer candidateLimit = id.limit() > 0 ? input.candidateLimit() == null ? 20 : input.candidateLimit() : null;
+        if (candidateLimit != null && !Set.of(20, 40, 60, 80, 100).contains(candidateLimit)) throw bad("热门榜范围只能是20、40、60、80或100");
+        Run run = store.submit(id, admin.getId(), "MANUAL", candidateLimit); enqueue(run.operation().id()); return run.operation();
     }
     public Operation get(String id) { auth.requireCurrentUser(); return live(store.run(id).operation()); }
     public Operations operations(ChartId id, int page, int size) {
@@ -208,7 +212,15 @@ public class DoubanChartService {
                     previous.operation().entries(), null), previous.scope(), previous.scopeCaptured(), previous.stopRequested()));
             requireAdminIdentity(initial.operation().actorUserId());
             Board fresh = refreshBoard(initial.operation().chartId());
-            List<Candidate> scope = fresh.candidates().stream().map(candidate -> candidate(candidate, candidate.subject(), candidate.current(),
+            Integer requestedLimit = initial.operation().candidateLimit();
+            int candidateLimit = requestedLimit == null ? 20 : requestedLimit;
+            List<Candidate> candidates = fresh.candidates();
+            if (requestedLimit != null) candidates = candidates.stream()
+                    .filter(candidate -> candidate.current() && candidate.subject().rank() != null && candidate.subject().rank() <= candidateLimit)
+                    .sorted(Comparator.comparing(candidate -> candidate.subject().rank())).toList();
+            else if (initial.operation().chartId().limit() > 0) candidates = candidates.stream()
+                    .filter(candidate -> !candidate.current() || candidate.subject().rank() != null && candidate.subject().rank() <= 20).toList();
+            List<Candidate> scope = candidates.stream().map(candidate -> candidate(candidate, candidate.subject(), candidate.current(),
                     candidate.excluded(), candidate.identity(), candidate.excluded() ? reason("EXCLUDED", "管理员已排除") : inclusion(candidate))).toList();
             store.updateRun(id, previous -> new Run(operation(previous.operation(), previous.operation().status(), scope.stream()
                     .map(candidate -> new Entry(item(candidate.subject(), candidate.identity(), candidate.reason()), "QUEUED", null, List.of(), List.of(), null, null,
@@ -419,7 +431,7 @@ public class DoubanChartService {
             return entry;
         }).toList();
         return chartReadOutcome(new Operation(operation.id(), operation.chartId(), operation.chartLabel(), operation.triggerType(), operation.actorUserId(),
-                operation.startedAt(), operation.updatedAt(), operation.status(), entries, operation.reason()));
+                operation.startedAt(), operation.updatedAt(), operation.status(), entries, operation.reason(), operation.candidateLimit()));
     }
     /** 兼容旧记录的错误成功汇总；不改写持久条目、执行时间或触发重放。 */
     private static Operation chartReadOutcome(Operation operation) {
@@ -432,7 +444,7 @@ public class DoubanChartService {
         Reason failure = operation.reason() != null && "CHART_REFRESH_FAILED".equals(operation.reason().code()) ? operation.reason()
                 : reason("CHART_REFRESH_FAILED", "本轮榜单抓取失败，当前在榜作品未搜索资源、未创建任务。来源恢复后可手动发起新一轮；本记录不会自动重跑。");
         return new Operation(operation.id(), operation.chartId(), operation.chartLabel(), operation.triggerType(), operation.actorUserId(),
-                operation.startedAt(), operation.updatedAt(), processed ? "PARTIAL_SUCCESS" : "FAILED", operation.entries(), failure);
+                operation.startedAt(), operation.updatedAt(), processed ? "PARTIAL_SUCCESS" : "FAILED", operation.entries(), failure, operation.candidateLimit());
     }
     private void associate(String id, long subjectId, ActiveTask task, String status, Reason reason) {
         updateEntry(id, subjectId, entry -> new Entry(entry.item(), status, entry.startedAt(), entry.searches(), entry.candidates(), entry.selected(),
@@ -470,7 +482,7 @@ public class DoubanChartService {
         return new Board(old.id(), old.label(), old.autoEnabled(), old.ownerUserId(), old.refreshStatus(), old.refreshError(), old.lastAttemptAt(), old.lastSuccessAt(), next, candidates);
     }
     private static Operation operation(Operation old, String status, List<Entry> entries, Reason reason) {
-        return new Operation(old.id(), old.chartId(), old.chartLabel(), old.triggerType(), old.actorUserId(), old.startedAt(), Instant.now(), status, entries, reason);
+        return new Operation(old.id(), old.chartId(), old.chartLabel(), old.triggerType(), old.actorUserId(), old.startedAt(), Instant.now(), status, entries, reason, old.candidateLimit());
     }
     private static Entry entry(Entry old, String status, Reason reason) { return new Entry(old.item(), status, old.startedAt(), old.searches(), old.candidates(), old.selected(), old.task(), reason, old.notification()); }
     private static Item item(Subject subject, Identity identity, Reason inclusion) {

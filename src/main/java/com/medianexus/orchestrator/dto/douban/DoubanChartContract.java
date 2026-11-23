@@ -3,6 +3,8 @@ package com.medianexus.orchestrator.dto.douban;
 import com.medianexus.orchestrator.dto.bgm.BgmWishlistContract.*;
 import com.medianexus.orchestrator.dto.bgm.BgmWishlistOperationContract.Entry;
 import io.swagger.v3.oas.annotations.media.Schema;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Positive;
 import java.time.Instant;
@@ -13,7 +15,7 @@ public final class DoubanChartContract {
     private DoubanChartContract() {}
 
     public enum ChartId {
-        movie_hot_gaia("热门电影", "MOVIE", 20), tv_hot("热门电视剧", "SERIES", 20),
+        movie_hot_gaia("热门电影", "MOVIE", 100), tv_hot("近期热门剧集", "SERIES", 100),
         movie_weekly_best("一周口碑电影榜", "MOVIE", 0), movie_top250("豆瓣 Top250", "MOVIE", 0),
         tv_chinese_best_weekly("华语口碑剧集榜", "SERIES", 0), tv_global_best_weekly("全球口碑剧集榜", "SERIES", 0);
         private final String label;
@@ -69,9 +71,18 @@ public final class DoubanChartContract {
     public record LimitsInput(@Positive Integer dailyCheckLimit, @Positive Integer dailyCreateLimit) {}
     @Schema(description = "候选排除或解除，不更改既有操作证据")
     public record ExclusionInput(@NotNull Boolean excluded) {}
+    @Schema(description = "手动检查热门接口前20/40/60/80/100个位置；未传时热门榜默认20，其他榜保持原范围。不是下载数量，不包含掉榜历史")
+    public record ExecuteInput(@Min(1) @Max(100) Integer candidateLimit) {}
     @Schema(description = "公共单榜异步操作；创建任务不等于已入库，记录持久保留当轮范围和原因")
     public record Operation(String id, ChartId chartId, String chartLabel, String triggerType, Long actorUserId,
-                            Instant startedAt, Instant updatedAt, String status, List<Entry> entries, Reason reason) {}
+                            Instant startedAt, Instant updatedAt, String status, List<Entry> entries, Reason reason,
+                            @Schema(description = "本轮热门接口位置上限；旧记录与其他榜为null；新热门定时操作固定20", nullable = true)
+                            Integer candidateLimit) {
+        public Operation(String id, ChartId chartId, String chartLabel, String triggerType, Long actorUserId,
+                         Instant startedAt, Instant updatedAt, String status, List<Entry> entries, Reason reason) {
+            this(id, chartId, chartLabel, triggerType, actorUserId, startedAt, updatedAt, status, entries, reason, null);
+        }
+    }
     @Schema(description = "按时间倒序分页的公共榜单操作")
     public record Operations(List<Operation> items, long total, int page, int pageSize) {}
 }

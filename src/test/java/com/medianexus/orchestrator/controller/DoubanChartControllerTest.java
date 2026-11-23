@@ -39,4 +39,22 @@ class DoubanChartControllerTest {
             verifyNoInteractions(store);
         } finally { service.close(); }
     }
+    @Test void validatesCandidateLimitAtRequestBoundaryAndForwardsOptionalInput() throws Exception {
+        var service = mock(DoubanChartService.class);
+        var mvc = MockMvcBuilders.standaloneSetup(new DoubanChartController(service))
+                .setControllerAdvice(new GlobalExceptionHandler()).build();
+        String url = "/api/v1/douban-charts/movie_hot_gaia/operations";
+        for (String value : List.of("0", "101", "-1", "\"not-a-number\"")) {
+            mvc.perform(post(url).contentType(MediaType.APPLICATION_JSON).content("{\"candidateLimit\":" + value + "}"))
+                    .andExpect(status().isBadRequest());
+        }
+        verifyNoInteractions(service);
+        for (int limit : List.of(20, 80, 100)) {
+            mvc.perform(post(url).contentType(MediaType.APPLICATION_JSON).content("{\"candidateLimit\":" + limit + "}"))
+                    .andExpect(status().isOk());
+            verify(service).execute(ChartId.movie_hot_gaia, new ExecuteInput(limit));
+        }
+        mvc.perform(post(url)).andExpect(status().isOk());
+        verify(service).execute(ChartId.movie_hot_gaia, new ExecuteInput(null));
+    }
 }

@@ -48,6 +48,60 @@ class DoubanChartServiceTest {
         assertTrue(f.service.overview().boards().stream().noneMatch(Board::autoEnabled));
     }
 
+    @Test void hotManualLimitsPersistAndFollowFreshPositionsWithoutIncludingHistory() throws Exception {
+        when(f.tasks.candidates(any(), anyString(), any())).thenReturn(List.of());
+        when(f.client.fetch(ChartId.movie_hot_gaia)).thenReturn(List.of(f.subject(999, "MOVIE"), f.subject(80, "MOVIE")));
+        f.refresh(ChartId.movie_hot_gaia);
+        var fresh = java.util.stream.LongStream.rangeClosed(1, 100).mapToObj(id -> f.subject(id, "MOVIE")).toList();
+        when(f.client.fetch(ChartId.movie_hot_gaia)).thenReturn(fresh);
+        for (int limit : List.of(20, 80, 100)) {
+            Operation done = f.await(f.service.execute(ChartId.movie_hot_gaia, new ExecuteInput(limit)).id());
+            assertEquals(limit, done.entries().size());
+            assertFalse(done.entries().stream().anyMatch(entry -> entry.item().subjectId() == 999));
+            assertTrue(done.entries().stream().filter(entry -> entry.item().subjectId() >= 1 && entry.item().subjectId() <= 100)
+                    .map(entry -> entry.item().subjectId()).collect(java.util.stream.Collectors.toSet())
+                    .containsAll(java.util.stream.LongStream.rangeClosed(1, limit).boxed().toList()));
+            assertFalse(done.entries().stream().anyMatch(entry -> entry.item().subjectId() >= 1 && entry.item().subjectId() <= 100
+                    && entry.item().subjectId() > limit));
+            var reloaded = new DoubanChartStore(f.mapper, f.json, f.transactions);
+            assertEquals(limit, reloaded.run(done.id()).operation().candidateLimit());
+            assertEquals(limit, f.service.get(done.id()).candidateLimit());
+            assertEquals(limit, f.service.operations(ChartId.movie_hot_gaia, 1, 10).items().stream()
+                    .filter(operation -> operation.id().equals(done.id())).findFirst().orElseThrow().candidateLimit());
+        }
+        assertTrue(f.service.board(ChartId.movie_hot_gaia).candidates().stream().anyMatch(c -> c.subject().id() == 999 && !c.current()));
+        assertFalse(f.service.board(ChartId.movie_hot_gaia).autoEnabled());
+        verify(f.tasks, never()).createChartMovie(any(), any(), any());
+        assertThrows(BusinessException.class, () -> f.service.execute(ChartId.tv_hot, new ExecuteInput(21)));
+
+    }
+    @Test void hotLimitUsesSourcePositionRatherThanUniqueCountAndKeepsSharedBudget() throws Exception {
+        when(f.client.fetch(ChartId.tv_hot)).thenReturn(List.of(f.subject(1, "SERIES"), f.subject(20, "SERIES"), f.subject(22, "SERIES")));
+        f.service.settings(new LimitsInput(1, 1));
+        when(f.tasks.candidates(any(), anyString(), any())).thenReturn(List.of());
+        Operation done = f.await(f.service.execute(ChartId.tv_hot, new ExecuteInput(20)).id());
+        assertEquals(List.of(1L, 20L), done.entries().stream().map(entry -> entry.item().subjectId()).toList());
+        assertEquals("DAILY_CHECK_LIMIT", done.entries().get(1).reason().code());
+        verify(f.tasks, times(1)).candidates(any(), anyString(), any());
+        verify(f.tasks, never()).createChartSeries(any(), any(), any());
+    }
+
+    @Test void duplicateHotRequestKeepsOriginalLimitAndLegacyRecordsRemainReadable() throws Exception {
+        when(f.client.fetch(ChartId.tv_hot)).thenAnswer(call -> {
+            f.entered.countDown(); assertTrue(f.release.await(5, TimeUnit.SECONDS)); return List.of();
+        });
+        Operation first = f.service.execute(ChartId.tv_hot, new ExecuteInput(20));
+        assertTrue(f.entered.await(5, TimeUnit.SECONDS));
+        Operation duplicate = f.service.execute(ChartId.tv_hot, new ExecuteInput(100));
+        assertEquals(first.id(), duplicate.id()); assertEquals(20, duplicate.candidateLimit());
+        f.release.countDown(); assertEquals(20, f.await(first.id()).candidateLimit());
+        var raw = f.json.valueToTree(f.store.run(first.id()));
+        ((com.fasterxml.jackson.databind.node.ObjectNode)raw.path("operation")).remove("candidateLimit");
+        assertNull(f.json.treeToValue(raw, Run.class).operation().candidateLimit());
+        assertThrows(BusinessException.class, () -> f.service.execute(ChartId.movie_weekly_best, new ExecuteInput(20)));
+        assertEquals(0, f.store.operations(ChartId.movie_weekly_best, 1, 10).total());
+    }
+
     @Test void asynchronousDuplicateReturnsSamePersistedOperationAndStopPreventsFurtherCreates() throws Exception {
         when(f.client.fetch(ChartId.movie_hot_gaia)).thenReturn(List.of(f.subject(1, "MOVIE"), f.subject(2, "MOVIE")));
         when(f.tasks.candidates(any(), anyString(), any())).thenAnswer(call -> {
@@ -89,12 +143,12 @@ class DoubanChartServiceTest {
     }
 
     @Test void failedCurrentBoardCannotCreateButIndependentlyVerifiedHistoryUsesRegularSeriesPath() throws Exception {
-        when(f.client.fetch(ChartId.tv_hot)).thenReturn(List.of(f.subject(1, "SERIES"), f.subject(2, "SERIES")));
-        f.refresh(ChartId.tv_hot);
-        when(f.client.fetch(ChartId.tv_hot)).thenReturn(List.of(f.subject(2, "SERIES")));
-        f.refresh(ChartId.tv_hot);
-        when(f.client.fetch(ChartId.tv_hot)).thenThrow(new IllegalStateException("source failed"));
-        Operation accepted = f.service.execute(ChartId.tv_hot); Operation done = f.await(accepted.id());
+        when(f.client.fetch(ChartId.tv_chinese_best_weekly)).thenReturn(List.of(f.subject(1, "SERIES"), f.subject(2, "SERIES")));
+        f.refresh(ChartId.tv_chinese_best_weekly);
+        when(f.client.fetch(ChartId.tv_chinese_best_weekly)).thenReturn(List.of(f.subject(2, "SERIES")));
+        f.refresh(ChartId.tv_chinese_best_weekly);
+        when(f.client.fetch(ChartId.tv_chinese_best_weekly)).thenThrow(new IllegalStateException("source failed"));
+        Operation accepted = f.service.execute(ChartId.tv_chinese_best_weekly); Operation done = f.await(accepted.id());
         Entry historical = done.entries().stream().filter(e -> e.item().subjectId() == 1).findFirst().orElseThrow();
         Entry current = done.entries().stream().filter(e -> e.item().subjectId() == 2).findFirst().orElseThrow();
         assertEquals("CREATED", historical.status()); assertEquals("HISTORICAL_CANDIDATE", historical.item().reasons().get(0).code());
@@ -104,7 +158,7 @@ class DoubanChartServiceTest {
         assertEquals("CHART_REFRESH_FAILED", done.reason().code());
         verify(f.tasks).createChartSeries(argThat(target -> target.tmdbId() == 1), any(), eq(f.admin));
         verify(f.tasks, never()).createChartMovie(any(), any(), any());
-        f.service.exclusion(ChartId.tv_hot, 1, new ExclusionInput(true));
+        f.service.exclusion(ChartId.tv_chinese_best_weekly, 1, new ExclusionInput(true));
         assertEquals("HISTORICAL_CANDIDATE", f.service.get(done.id()).entries().get(0).item().reasons().get(0).code());
     }
 
@@ -259,7 +313,7 @@ class DoubanChartServiceTest {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(6);
         while (f.store.operations(ChartId.tv_hot, 1, 10).items().isEmpty() && System.nanoTime() < deadline) Thread.sleep(10);
         Operation scheduled = f.await(f.store.operations(ChartId.tv_hot, 1, 10).items().get(0).id());
-        assertEquals("SCHEDULED", scheduled.triggerType()); assertEquals(7L, scheduled.actorUserId());
+        assertEquals("SCHEDULED", scheduled.triggerType()); assertEquals(7L, scheduled.actorUserId()); assertEquals(20, scheduled.candidateLimit());
         verify(f.tasks).createChartSeries(any(), any(), eq(f.admin));
         verify(f.tasks, never()).createChartMovie(any(), any(), any());
         assertFalse(f.store.board(ChartId.movie_hot_gaia).autoEnabled());
@@ -289,15 +343,15 @@ class DoubanChartServiceTest {
     @Test void historicalCompletionReasonIsDatedAndPersistsInOperation() throws Exception {
         Subject airing=new Subject(1,"作品1",null,null,2020,"SERIES",null,null,1,"更新至1集",Instant.now());
         Subject complete=new Subject(1,"作品1",null,null,2020,"SERIES",null,null,1,"2集全",Instant.now());
-        when(f.client.fetch(ChartId.tv_hot)).thenReturn(List.of(airing)); f.refresh(ChartId.tv_hot);
-        when(f.client.fetch(ChartId.tv_hot)).thenReturn(List.of(f.subject(2,"SERIES")));
+        when(f.client.fetch(ChartId.tv_chinese_best_weekly)).thenReturn(List.of(airing)); f.refresh(ChartId.tv_chinese_best_weekly);
+        when(f.client.fetch(ChartId.tv_chinese_best_weekly)).thenReturn(List.of(f.subject(2,"SERIES")));
         when(f.client.refreshSubject(airing)).thenReturn(complete);
-        Operation done=f.await(f.service.execute(ChartId.tv_hot).id());
+        Operation done=f.await(f.service.execute(ChartId.tv_chinese_best_weekly).id());
         Entry history=done.entries().stream().filter(entry->entry.item().subjectId()==1).findFirst().orElseThrow();
         assertEquals("历史连载现已确认完结",history.item().reasons().get(0).message());
-        assertEquals("历史连载现已确认完结",f.service.board(ChartId.tv_hot).candidates().stream()
+        assertEquals("历史连载现已确认完结",f.service.board(ChartId.tv_chinese_best_weekly).candidates().stream()
                 .filter(candidate->candidate.subject().id()==1).findFirst().orElseThrow().reason().message());
-        f.service.exclusion(ChartId.tv_hot,1,new ExclusionInput(true));
+        f.service.exclusion(ChartId.tv_chinese_best_weekly,1,new ExclusionInput(true));
         assertEquals("历史连载现已确认完结",f.service.get(done.id()).entries().stream()
                 .filter(entry->entry.item().subjectId()==1).findFirst().orElseThrow().item().reasons().get(0).message());
     }

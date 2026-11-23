@@ -82,6 +82,9 @@ public class DoubanChartStore {
 
     /** 本榜行锁将手动和定时的查找/创建收敛到同一个持久操作。 */
     public Run submit(ChartId chart, Long actor, String trigger) {
+        return submit(chart, actor, trigger, null);
+    }
+    public Run submit(ChartId chart, Long actor, String trigger, Integer candidateLimit) {
         initialize();
         return transactions.execute(tx -> {
             BoardState state = decode(mapper.lock(boardKey(chart)), BoardState.class);
@@ -91,7 +94,7 @@ public class DoubanChartStore {
             }
             Instant now = Instant.now();
             Operation operation = new Operation(UUID.randomUUID().toString(), chart, chart.label(), trigger, actor,
-                    now, now, "QUEUED", List.of(), null);
+                    now, now, "QUEUED", List.of(), null, candidateLimit);
             Run run = new Run(operation, List.of(), false, false);
             mapper.insert("operation:" + operation.id(), "OPERATION", chart.name(), encode(run));
             mapper.update(boardKey(chart), encode(new BoardState(state.board(), operation.id())));
@@ -182,7 +185,7 @@ public class DoubanChartStore {
         return transactions.execute(tx -> {
             BoardState state = decode(mapper.lock(boardKey(id)), BoardState.class);
             if (!claimDaily(id, date)) return null;
-            Run run = state.board().autoEnabled() ? submit(id, state.board().ownerUserId(), "SCHEDULED") : null;
+            Run run = state.board().autoEnabled() ? submit(id, state.board().ownerUserId(), "SCHEDULED", id.limit() > 0 ? 20 : null) : null;
             return new DailyWork(run);
         });
     }
