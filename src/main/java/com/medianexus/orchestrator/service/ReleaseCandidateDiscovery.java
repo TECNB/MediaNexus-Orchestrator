@@ -24,6 +24,10 @@ public class ReleaseCandidateDiscovery {
         this.tables = tables;
     }
 
+    public String moviePrimaryQuery(String title, Integer year) {
+        return settings.usesPanSouForMagnetSearch() ? title : title + " " + year;
+    }
+
     public List<Found> search(String query) {
         if (settings.usesPanSouForMagnetSearch()) return panSou(panSou.searchMagnets(new PanSouSearchCommand(query, false)), query);
         return prowlarr(prowlarr.search(query), query);

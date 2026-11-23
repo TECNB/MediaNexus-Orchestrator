@@ -107,6 +107,28 @@ class ReleaseCandidateComparisonTest {
         verify(prowlarr).search("Arrival 2016");
     }
 
+    @Test void moviePrimaryUsesPlainPanSouTitleButKeepsYearForSupplementAndIdentity() {
+        when(client.searchMagnets(any())).thenAnswer(call -> new PanSouSearchResult(
+                call.<PanSouSearchCommand>getArgument(0).keyword().equals("狗狗的完美圣诞节")
+                        ? List.of(entry(1, "狗狗的完美圣诞节 2026 1080p", null)) : List.of()));
+        when(guangya.resolve(eq(magnet(1)), any())).thenReturn(table(magnet(1),
+                "狗狗的完美圣诞节 2026 1080p", "狗狗的完美圣诞节.2026.1080p.mkv"));
+        var result = search.recommendMovie(new MovieReleaseRecommendationRequest(null, null,
+                "狗狗的完美圣诞节", "A Dog's Perfect Christmas", 2026, "1080p"));
+        assertThat(result.item().evidence().status()).isEqualTo("RECOMMENDABLE");
+        verify(client).searchMagnets(new PanSouSearchCommand("狗狗的完美圣诞节", false));
+        verifyNoInteractions(prowlarr);
+        assertThat(result.comparison().searchQueries()).isLessThanOrEqualTo(4);
+    }
+
+    @Test void verifiedMoviePrimaryDoesNotWaitForUnneededSupplement() {
+        when(client.searchMagnets(any())).thenReturn(new PanSouSearchResult(List.of(entry(1, "Arrival 2016 1080p", null))));
+        when(guangya.resolve(eq(magnet(1)), any())).thenReturn(table(magnet(1), "Arrival 2016 1080p", "Arrival.2016.1080p.mkv"));
+        var result = search.recommendMovie(new MovieReleaseRecommendationRequest(null, null, "Arrival", null, 2016, "1080p"));
+        assertThat(result.item().evidence().status()).isEqualTo("RECOMMENDABLE");
+        verifyNoInteractions(prowlarr);
+    }
+
     @Test void emptyMoviePrimaryDoesNotSpendResolutionBudgetDuringSupplementSearch() {
         var supplementFinished = new java.util.concurrent.atomic.AtomicReference<java.time.Instant>();
         var release = new com.medianexus.orchestrator.integration.prowlarr.ProwlarrRelease(

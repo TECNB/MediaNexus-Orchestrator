@@ -163,14 +163,14 @@ public class ReleaseCandidateComparison implements AutoCloseable {
             synchronized (comparison) { comparison.resolveRequests = 0; }
             LinkedHashSet<String> initial = new LinkedHashSet<>(comparison.failedQueries);
             comparison.failedQueries.clear();
-            if (comparison.target.season() == null) movieQueries(comparison.target).stream().limit(2)
+            if (comparison.target.season() == null) movieTitles(comparison.target).stream().limit(2)
+                    .map(title -> discovery.moviePrimaryQuery(title, comparison.target.year()))
                     .filter(query -> !comparison.queries.contains(query)).forEach(initial::add);
             else comparison.target.titles().stream().limit(2).filter(query -> !comparison.queries.contains(query)).forEach(initial::add);
             searchQueries(comparison, List.copyOf(initial), deadline, pool, futures);
             while (true) {
                 if (budget == null && (comparison.queries.stream().anyMatch(query -> query.startsWith("补源："))
-                        || comparison.target.season() == null && comparison.candidates.values().stream()
-                                .anyMatch(candidate -> candidate.magnet != null && fileTables.cached(candidate.magnet).isPresent())))
+                        || comparison.target.season() == null && !comparison.candidates.isEmpty()))
                     budget = new ResolveBudget(deadline, Instant.now().plusSeconds(30));
                 if (budget != null) evaluateQueue(comparison, budget, deadline, pool, futures);
                 synchronized (comparison) {
@@ -179,7 +179,7 @@ public class ReleaseCandidateComparison implements AutoCloseable {
                             && comparison.candidates.values().stream().anyMatch(candidate -> automaticallySelectable(candidate.item))) break;
                 }
                 if (comparison.target.season() == null) {
-                    List<String> supplement = movieQueries(comparison.target).stream()
+                    List<String> supplement = movieTitles(comparison.target).stream().map(title -> title + " " + comparison.target.year())
                             .sorted(Comparator.comparingInt(query -> query.equals(comparison.target.titles().get(0) + " " + comparison.target.year()) ? 1 : 0))
                             .filter(query -> !comparison.queries.contains("补源：" + query)).limit(4 - comparison.queries.size()).toList();
                     if (supplement.isEmpty()) break;
@@ -315,11 +315,9 @@ public class ReleaseCandidateComparison implements AutoCloseable {
         List<Discovered> queue;
         synchronized (comparison) {
             queue = schedule(comparison);
-            // 冷解析前先补齐来源，避免优选源耗完共享解析预算后才发现备用来源。
-            if (comparison.queries.stream().noneMatch(query -> query.startsWith("补源："))) {
-                if (comparison.target.season() != null) queue = List.of();
-                else queue = queue.stream().filter(candidate -> candidate.magnet != null && fileTables.cached(candidate.magnet).isPresent()).toList();
-            }
+            // 剧集先补齐整季来源；电影主源已可安全受理时不等待无收益的慢补源。
+            if (comparison.target.season() != null && comparison.queries.stream().noneMatch(query -> query.startsWith("补源：")))
+                queue = List.of();
         }
         for (int i = 0; i < queue.size(); i += 2) {
             budget.remaining();
@@ -463,12 +461,12 @@ public class ReleaseCandidateComparison implements AutoCloseable {
         return id == null ? target : movieAliases.enrich(id, target);
     }
 
-    private List<String> movieQueries(ReleaseTarget target) {
+    private List<String> movieTitles(ReleaseTarget target) {
         LinkedHashSet<String> result = new LinkedHashSet<>();
-        result.add(target.titles().get(0) + " " + target.year());
+        result.add(target.titles().get(0));
         target.titles().stream().filter(title -> title.matches("[\\p{IsLatin}\\p{P}\\p{Z}0-9]+") && title.length() > 2)
-                .limit(2).forEach(title -> result.add(title + " " + target.year()));
-        for (String title : target.titles()) if (result.size() < 3) result.add(title + " " + target.year());
+                .limit(2).forEach(result::add);
+        for (String title : target.titles()) if (result.size() < 3) result.add(title);
         return List.copyOf(result);
     }
     private ReleaseTarget series(SeriesReleaseSearchRequest request) { return seriesTarget(request.tmdbId(), ReleaseTarget.of(request.title(), request.originalTitle(), request.bangumiTitle(), null, request.seasonNumber(), request.quality())); }
