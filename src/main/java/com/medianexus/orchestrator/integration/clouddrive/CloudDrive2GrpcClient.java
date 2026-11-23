@@ -20,11 +20,14 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
 @Component
 class CloudDrive2GrpcClient implements CloudDrive2FileOperations {
+    private static final Logger log = LoggerFactory.getLogger(CloudDrive2GrpcClient.class);
 
     private static final Metadata.Key<String> AUTHORIZATION =
             Metadata.Key.of("Authorization", Metadata.ASCII_STRING_MARSHALLER);
@@ -84,10 +87,14 @@ class CloudDrive2GrpcClient implements CloudDrive2FileOperations {
             operations.subList(offset, Math.min(offset + 10, operations.size())).forEach(operation ->
                     request.addRenameFiles(RenameFileRequest.newBuilder().setTheFilePath(operation.sourcePath())
                             .setNewName(operation.targetName()).build()));
+            long started = System.nanoTime();
             try {
                 requireSuccess("rename", stub().renameFiles(request.build()));
             } catch (StatusRuntimeException exception) {
                 throw grpcFailure("CloudDrive2 rename failed", exception);
+            } finally {
+                log.info("CD2 batch operation=rename offset={} count={} elapsedMs={}", offset,
+                        Math.min(10, operations.size() - offset), TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started));
             }
         }
     }
@@ -102,10 +109,14 @@ class CloudDrive2GrpcClient implements CloudDrive2FileOperations {
                     .addAllTheFilePaths(sourcePaths.subList(offset, Math.min(offset + 10, sourcePaths.size())))
                     .setDestPath(targetDirectory)
                     .setConflictPolicy(MoveFileRequest.ConflictPolicy.Skip).build();
+            long started = System.nanoTime();
             try {
                 requireSuccess("move", stub().moveFile(request));
             } catch (StatusRuntimeException exception) {
                 throw grpcFailure("CloudDrive2 move failed", exception);
+            } finally {
+                log.info("CD2 batch operation=move offset={} count={} elapsedMs={}", offset,
+                        Math.min(10, sourcePaths.size() - offset), TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started));
             }
         }
     }

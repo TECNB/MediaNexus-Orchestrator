@@ -103,7 +103,7 @@ public class ReleaseCandidateComparison implements AutoCloseable {
             if (!"RUNNING".equals(comparison.status) && !"COMPLETE".equals(comparison.status)) {
                 comparison.message = "正在继续比较，复用已查文件表与证据";
                 comparison.status = "RUNNING";
-                comparison.deadline = Instant.now().plusSeconds(45);
+                comparison.resetDeadline();
                 comparison.queries.removeAll(comparison.failedQueries);
                 comparison.searchFailed = false;
                 comparison.failureCode = null;
@@ -487,7 +487,7 @@ public class ReleaseCandidateComparison implements AutoCloseable {
         final Set<String> failedQueries = new LinkedHashSet<>();
         final Map<String, SearchQuery> searchPlans = new LinkedHashMap<>();
         final Map<String, Discovered> candidates = new LinkedHashMap<>();
-        Instant deadline = Instant.now().plusSeconds(45);
+        Instant deadline;
         final Map<String, List<ReleaseCandidateDiscovery.Found>> discovered = new LinkedHashMap<>();
         boolean searchFailed;
         String failureCode;
@@ -497,7 +497,10 @@ public class ReleaseCandidateComparison implements AutoCloseable {
         int resolveRequests;
         Future<?> round;
         Consumer<ReleaseSearchProgress> progress = NO_PROGRESS;
-        Comparison(ReleaseTarget target, boolean refresh, Long owner) { this.target = target; this.refresh = refresh; this.owner = owner; }
+        Comparison(ReleaseTarget target, boolean refresh, Long owner) {
+            this.target = target; this.refresh = refresh; this.owner = owner; resetDeadline();
+        }
+        void resetDeadline() { deadline = Instant.now().plusSeconds(target.season() == null ? 45 : 75); }
         synchronized ProwlarrReleaseSearchResponse view() {
             List<ProwlarrReleaseItemResponse> items = candidates.values().stream().map(candidate -> candidate.item).sorted(
                     Comparator.comparingInt((ProwlarrReleaseItemResponse item) -> switch (item.evidence().status()) {

@@ -96,7 +96,11 @@ class ReleaseCandidateComparisonTest {
         var release = new com.medianexus.orchestrator.integration.prowlarr.ProwlarrRelease(
                 "Arrival 2016 1080p", 100L, 5, null, null, "Indexer", null, 7, "guid", magnet(2));
         when(prowlarr.search("Arrival 2016")).thenReturn(List.of(release));
-        when(guangya.resolve(eq(magnet(2)), any())).thenReturn(table(magnet(2), "Arrival 2016 1080p", "Arrival.2016.1080p.mkv"));
+        when(guangya.resolve(eq(magnet(2)), any())).thenAnswer(call -> {
+            ResolveBudget budget = call.getArgument(1);
+            assertThat(java.time.Duration.between(java.time.Instant.now(), budget.totalDeadline()).toSeconds()).isBetween(40L, 45L);
+            return table(magnet(2), "Arrival 2016 1080p", "Arrival.2016.1080p.mkv");
+        });
         var result = search.recommendMovie(new MovieReleaseRecommendationRequest(null, null, "降临", "Arrival", 2016, "1080p"));
         assertThat(result.item().downloadRef()).isEqualTo(magnet(2));
         assertThat(result.comparison().searchQueries()).isLessThanOrEqualTo(4);
@@ -113,6 +117,7 @@ class ReleaseCandidateComparisonTest {
         });
         when(guangya.resolve(eq(magnet(1)), any())).thenAnswer(call -> {
             ResolveBudget budget = call.getArgument(1);
+            assertThat(java.time.Duration.between(java.time.Instant.now(), budget.totalDeadline()).toSeconds()).isBetween(70L, 75L);
             assertThat(budget.resolveDeadline()).isAfter(supplementFinished.get().plusMillis(29950));
             return table(magnet(1), "Show S01 1080p", "Show.S01E01.1080p.mkv");
         });
@@ -220,6 +225,19 @@ class ReleaseCandidateComparisonTest {
         } finally { release.countDown(); }
     }
 
+    @Test void movieContinuationResetsExpiredDeadlineToFortyFiveSeconds() throws Exception {
+        var initial = search.searchMovie(new MovieReleaseSearchRequest(null, null, "Arrival", null, 2016, "1080p"));
+        await(initial.comparison().id());
+        var cache = (com.google.common.cache.Cache<?, ?>) org.springframework.test.util.ReflectionTestUtils.getField(search, "comparisons");
+        Object comparison = cache.getIfPresent(initial.comparison().id());
+        org.springframework.test.util.ReflectionTestUtils.setField(comparison, "status", "PAUSED");
+        org.springframework.test.util.ReflectionTestUtils.setField(comparison, "deadline", java.time.Instant.EPOCH);
+        search.continueComparison(initial.comparison().id());
+        java.time.Instant deadline = (java.time.Instant) org.springframework.test.util.ReflectionTestUtils.getField(comparison, "deadline");
+        assertThat(java.time.Duration.between(java.time.Instant.now(), deadline).toSeconds()).isBetween(40L, 45L);
+        await(initial.comparison().id());
+    }
+
     @Test void budgetPauseRetainsCurrentChoiceAndOnlyExplicitContinueEvaluatesRemaining() throws Exception {
         when(client.searchMagnets(any())).thenReturn(new PanSouSearchResult(List.of(entry(1, "Show Complete 1080p", 100L), entry(2, "Show", null), entry(3, "Show S1-S4", null))));
         when(guangya.resolve(eq(magnet(2)), any())).thenThrow(new GuangyaException(GuangyaException.Reason.BUDGET_EXHAUSTED, "预算暂停"));
@@ -231,7 +249,13 @@ class ReleaseCandidateComparisonTest {
         verify(guangya, never()).resolve(eq(magnet(3)), any());
         search.comparison(initial.comparison().id());
         verify(guangya, never()).resolve(eq(magnet(3)), any());
-        when(guangya.resolve(eq(magnet(2)), any())).thenReturn(table(magnet(2), "Show Season 1 1080p", "Show.S01E01.mkv"));
+        when(guangya.resolve(eq(magnet(2)), any())).thenAnswer(call -> {
+            ResolveBudget budget = call.getArgument(1);
+            assertThat(java.time.Duration.between(java.time.Instant.now(), budget.totalDeadline()).toSeconds()).isBetween(70L, 75L);
+            return table(magnet(2), "Show Season 1 1080p", "Show.S01E01.mkv");
+        });
+        var cache = (com.google.common.cache.Cache<?, ?>) org.springframework.test.util.ReflectionTestUtils.getField(search, "comparisons");
+        org.springframework.test.util.ReflectionTestUtils.setField(cache.getIfPresent(initial.comparison().id()), "deadline", java.time.Instant.EPOCH);
         search.continueComparison(initial.comparison().id());
         assertThat(await(initial.comparison().id()).comparison().status()).isEqualTo("COMPLETE");
         verify(guangya, times(1)).resolve(eq(magnet(1)), any());

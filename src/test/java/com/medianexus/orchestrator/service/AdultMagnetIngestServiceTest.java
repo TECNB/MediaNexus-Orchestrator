@@ -82,6 +82,14 @@ class AdultMagnetIngestServiceTest {
         when(taskMapper.selectById(anyString())).thenAnswer(invocation -> insertedTask.get());
     }
 
+    @Test void javCleanupSharesStandalonePromotionRuleInsteadOfTrustingLargeSize() {
+        String ad = "【更多高品质资源请访问 www.Butailing.com】.MKV";
+        assertThat((Boolean) org.springframework.test.util.ReflectionTestUtils.invokeMethod(service, "isQualifiedVideo",
+                new OpenListFileInfo(ad, 500L * 1024 * 1024, false, "/adult"))).isFalse();
+        assertThat((Boolean) org.springframework.test.util.ReflectionTestUtils.invokeMethod(service, "isQualifiedVideo",
+                new OpenListFileInfo("ABC-123 " + ad, 500L * 1024 * 1024, false, "/adult"))).isTrue();
+    }
+
     @Test
     void recentTasksQueryFiltersManualSourcesBeforeLimit() {
         com.baomidou.mybatisplus.core.metadata.TableInfoHelper.initTableInfo(

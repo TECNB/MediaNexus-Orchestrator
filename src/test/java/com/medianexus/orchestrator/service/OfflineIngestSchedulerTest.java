@@ -69,6 +69,39 @@ class OfflineIngestSchedulerTest {
     }
 
     @Test
+    void accountRootAllowsTwoDownloadsButOrganizationsRemainSerial() throws Exception {
+        var client = mappedClient();
+        var submitted = new CountDownLatch(2);
+        var organizing = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var active = new java.util.concurrent.atomic.AtomicInteger();
+        var maximum = new java.util.concurrent.atomic.AtomicInteger();
+        var completed = new java.util.concurrent.atomic.AtomicInteger();
+        when(client.offlineTaskInfo(anyString())).thenReturn(snapshot("finished", 2));
+        try (var scheduler = new OfflineIngestScheduler(client)) {
+            java.util.function.Consumer<String> organize = ignored -> {
+                maximum.accumulateAndGet(active.incrementAndGet(), Math::max);
+                organizing.countDown(); await(release);
+                completed.incrementAndGet(); active.decrementAndGet();
+            };
+            var first = scheduler.enqueue("/one", "one-hash", Duration.ofSeconds(5), Duration.ofMillis(5), new DownloadStub() {
+                public String submit() { submitted.countDown(); await(submitted); return "one"; }
+                public void organize(String id) { organize.accept(id); }
+            });
+            var second = scheduler.enqueue("/two", "two-hash", Duration.ofSeconds(5), Duration.ofMillis(5), new DownloadStub() {
+                public String submit() { submitted.countDown(); await(submitted); return "two"; }
+                public void organize(String id) { organize.accept(id); }
+            });
+            assertThat(submitted.await(2, TimeUnit.SECONDS)).isTrue();
+            assertThat(organizing.await(2, TimeUnit.SECONDS)).isTrue();
+            Thread.sleep(50);
+            assertThat(active.get()).isEqualTo(1);
+            release.countDown(); first.get(2, TimeUnit.SECONDS); second.get(2, TimeUnit.SECONDS);
+            assertThat(maximum.get()).isEqualTo(1); assertThat(completed.get()).isEqualTo(2);
+        } finally { release.countDown(); }
+    }
+
+    @Test
     void periodicQueriesNeverOverlapAndOnlyConfirmedCompletionOrganizes() throws Exception {
         OpenListClient client = mappedClient();
         java.util.concurrent.atomic.AtomicInteger active = new java.util.concurrent.atomic.AtomicInteger();
@@ -148,18 +181,26 @@ class OfflineIngestSchedulerTest {
         when(client.offlineDirectoryForPath("/mount-a/show")).thenReturn(new OpenListClient.OfflineDirectory("same", "root", "/show"));
         when(client.offlineDirectoryForPath("/mount-b/show")).thenReturn(new OpenListClient.OfflineDirectory("same", "root", "/show"));
         when(client.offlineDirectoryForPath("/unknown")).thenReturn(new OpenListClient.OfflineDirectory("unknown", "", "/"));
+        when(client.offlineDirectoryForPath("/different-root")).thenReturn(new OpenListClient.OfflineDirectory("same", "another-root", "/other"));
+        when(client.offlineDirectoryForPath("/blank-root")).thenReturn(new OpenListClient.OfflineDirectory("same", "", "/other"));
         when(client.offlineTaskInfo("first")).thenReturn(snapshot("first", 1));
         CountDownLatch first = new CountDownLatch(1);
         CountDownLatch alias = new CountDownLatch(1);
         CountDownLatch unknown = new CountDownLatch(1);
+        CountDownLatch differentRoot = new CountDownLatch(1);
+        CountDownLatch blankRoot = new CountDownLatch(1);
         try (OfflineIngestScheduler scheduler = new OfflineIngestScheduler(client)) {
             scheduler.enqueue("/mount-a/show", "a", Duration.ofSeconds(5), Duration.ofMillis(5), submission("first", first));
             assertThat(first.await(2, TimeUnit.SECONDS)).isTrue();
             scheduler.enqueue("/mount-b/show", "b", Duration.ofSeconds(5), Duration.ofMillis(5), submission("alias", alias));
             scheduler.enqueue("/unknown", "c", Duration.ofSeconds(5), Duration.ofMillis(5), submission("unknown", unknown));
+            scheduler.enqueue("/different-root", "d", Duration.ofSeconds(5), Duration.ofMillis(5), submission("different", differentRoot));
+            scheduler.enqueue("/blank-root", "e", Duration.ofSeconds(5), Duration.ofMillis(5), submission("blank", blankRoot));
             verify(client, timeout(2000).atLeast(2)).offlineTaskInfo("first");
             assertThat(alias.getCount()).isEqualTo(1);
             assertThat(unknown.getCount()).isEqualTo(1);
+            assertThat(differentRoot.getCount()).isEqualTo(1);
+            assertThat(blankRoot.getCount()).isEqualTo(1);
         }
     }
 
@@ -222,7 +263,7 @@ class OfflineIngestSchedulerTest {
     private static OpenListClient mappedClient() {
         OpenListClient client = mock(OpenListClient.class);
         when(client.offlineDirectoryForPath(anyString())).thenAnswer(call ->
-                new OpenListClient.OfflineDirectory("account", "root", call.getArgument(0)));
+                new OpenListClient.OfflineDirectory("account", "/", call.getArgument(0)));
         return client;
     }
 

@@ -162,6 +162,40 @@ class OpenListClientTest {
     }
 
     @Test
+    void explicitHealthyPikPakAccountRootIsDistinctFromMissingOrInvalidRoot() throws Exception {
+        server.removeContext("/api/admin/storage/list");
+        var storages = objectMapper.createArrayNode();
+        for (String mount : List.of("/root-a", "/root-b", "/missing", "/invalid", "/unhealthy")) {
+            var addition = objectMapper.createObjectNode().put("username", "account@example.test");
+            if (!mount.equals("/missing")) addition.put("root_folder_id", "");
+            if (mount.equals("/invalid")) addition.putNull("root_folder_id");
+            storages.addObject().put("driver", "PikPak").put("mount_path", mount)
+                    .put("status", mount.equals("/unhealthy") ? "failed" : "work")
+                    .put("addition", addition.toString());
+        }
+        String body = objectMapper.createObjectNode().put("code", 200).set("data",
+                objectMapper.createObjectNode().set("content", storages)).toString();
+        server.createContext("/api/admin/storage/list", exchange -> respond(exchange, body));
+        OpenListProperties properties = new OpenListProperties();
+        properties.setBaseUrl("http://127.0.0.1:" + server.getAddress().getPort());
+        properties.setAuthorization("test-token"); properties.setTimeout(Duration.ofSeconds(2));
+        var client = new OpenListClient(properties, objectMapper);
+        var root = client.offlineDirectoryForPath("/root-a/show");
+        assertThat(root.rootId()).isEqualTo("/");
+        assertThat(root).isEqualTo(client.offlineDirectoryForPath("/root-b/show"));
+        for (String mount : List.of("/missing", "/invalid", "/unhealthy"))
+            assertThat(client.offlineDirectoryForPath(mount + "/show").rootId()).isBlank();
+        for (String malformed : List.of("null", "{}", "{\"content\":{}}")) {
+            server.removeContext("/api/fs/list");
+            server.createContext("/api/fs/list", exchange -> respond(exchange, "{\"code\":200,\"data\":" + malformed + "}"));
+            assertThatThrownBy(() -> client.offlineDirectoryForPath("/root-a/show")).isInstanceOf(OpenListClientException.class);
+        }
+        server.removeContext("/api/fs/list");
+        server.createContext("/api/fs/list", exchange -> respond(exchange, "{\"code\":500,\"message\":\"authorization unavailable\"}"));
+        assertThatThrownBy(() -> client.offlineDirectoryForPath("/root-a/show")).isInstanceOf(OpenListClientException.class);
+    }
+
+    @Test
     void startupChecksDownloadAndTransferQueuesAndFailsClosedOnUnreadableResponse() {
         server.createContext("/api/task/offline_download/undone", exchange -> {
             assertThat(exchange.getRequestMethod()).isEqualTo("GET");

@@ -160,7 +160,16 @@ public class OpenListClient {
             JsonNode addition = objectMapper.readTree(storage.path("addition").asText("{}"));
             if (addition == null || !addition.isObject()) return new OfflineDirectory("unknown", "", "/");
             String username = addition.path("username").asText("").trim().toLowerCase(java.util.Locale.ROOT);
-            String rootId = addition.path("root_folder_id").asText("");
+            JsonNode configuredRoot = addition.path("root_folder_id");
+            String rootId = configuredRoot.isTextual() ? configuredRoot.textValue() : "";
+            // PikPak 的显式空 root 是账号根；缺失/错误类型/非健康存储仍不证明目录可分离。
+            if (configuredRoot.isTextual() && rootId.isEmpty() && "work".equalsIgnoreCase(storage.path("status").asText())) {
+                JsonNode rootListing = post("fs/list", Map.of("path", normalizePath(storage.path("mount_path").asText()),
+                        "page", 1, "per_page", 1, "refresh", true));
+                if (!rootListing.isObject() || !rootListing.path("content").isArray())
+                    throw new OpenListClientException("PikPak 账号根目录响应不可确认，保留目录互斥");
+                rootId = "/";
+            }
             if (username.isBlank()) return new OfflineDirectory("unknown", "", "/");
             String account = java.util.UUID.nameUUIDFromBytes(username.getBytes(StandardCharsets.UTF_8)).toString();
             String mount = normalizePath(storage.path("mount_path").asText());

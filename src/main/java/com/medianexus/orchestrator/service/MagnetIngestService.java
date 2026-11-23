@@ -1084,7 +1084,7 @@ public class MagnetIngestService {
                         taskLogWriter,
                         plan,
                         file,
-                        "跳过小于 100 MiB 的视频文件（size=" + file.size() + "）"
+                        "跳过不足 100 MiB 或名称明确为独立推广附件的视频（size=" + file.size() + "）"
                 );
                 continue;
             }
@@ -1149,7 +1149,7 @@ public class MagnetIngestService {
             }
             if (renameService.isPromotionalVideo(file.name(), file.size())) {
                 skipped++;
-                skipFile(taskLogWriter, plan, file, "跳过小体积且明确推广文案的辅助视频");
+                skipFile(taskLogWriter, plan, file, "跳过文件名完全由明确推广文案组成的辅助视频");
                 continue;
             }
             Optional<MovieSeriesFileRenameService.RenameResult> rename = renameService.seriesVideo(

@@ -13,6 +13,13 @@ import org.springframework.util.StringUtils;
 public class MovieSeriesFileRenameService {
 
     private static final long MIN_MOVIE_VIDEO_BYTES = 100L * 1024L * 1024L;
+    private static final String PROMOTIONAL_NAME = "更多(?:无水印)?高品质资源请访问\\s*www\\.[a-z0-9-]+(?:\\.[a-z0-9-]+)+";
+    private static final Pattern STANDALONE_PROMOTION = Pattern.compile(
+            "(?i)(?:\\s*(?:【" + PROMOTIONAL_NAME + "】|\\[" + PROMOTIONAL_NAME + "\\]|" + PROMOTIONAL_NAME + "))+\\s*");
+    private static final long MAX_PROMOTIONAL_ATTACHMENT_BYTES = 50L * 1024L * 1024L;
+    private static final String SMALL_PROMOTIONAL_NAME = "更多(?:无水印)?(?:高清|高品质)资源请访问\\s*www\\.[a-z0-9-]+(?:\\.[a-z0-9-]+)+";
+    private static final Pattern SMALL_STANDALONE_PROMOTION = Pattern.compile(
+            "(?i)(?:\\s*(?:【" + SMALL_PROMOTIONAL_NAME + "】|\\[" + SMALL_PROMOTIONAL_NAME + "\\]|" + SMALL_PROMOTIONAL_NAME + "))+\\s*");
 
     private static final String MOVIE_STANDARD_FILE_FORMAT = "{Movie Title} ({Release Year}) {Quality Full}";
     private static final String MOVIE_FOLDER_FORMAT = "{Movie Title} ({Release Year})";
@@ -131,7 +138,7 @@ public class MovieSeriesFileRenameService {
 
     /** 电影落地的大小资格：恰好 100 MiB 仍保留；大小须已由文件表或 OpenList 边界验证。 */
     public boolean isMovieFeatureVideo(String name, long sizeBytes) {
-        return isVideo(name) && sizeBytes >= MIN_MOVIE_VIDEO_BYTES;
+        return isVideo(name) && sizeBytes >= MIN_MOVIE_VIDEO_BYTES && !isPromotionalVideo(name, sizeBytes);
     }
 
     public boolean isSubtitle(String name) {
@@ -142,10 +149,12 @@ public class MovieSeriesFileRenameService {
         return isVideo(sourceName) && NON_FEATURE_EPISODE.matcher(mainName(sourceName)).find();
     }
 
-    /** 小体积且明确推广文案的伪视频；不能将普通未知视频或真实短集按大小忽略。 */
+    /** 只识别名称完全由明确推广文案组成的附件；填充体积不能变成正片，夹带片名的文件不自动删除。 */
     public boolean isPromotionalVideo(String name, long sizeBytes) {
-        return isVideo(name) && sizeBytes > 0 && sizeBytes < 1024 * 1024
-                && mainName(name).matches(".*更多(?:无水印)?高品质资源请访问.*www\\.[A-Za-z0-9.-]+.*");
+        if (!isVideo(name) || sizeBytes <= 0) return false;
+        String basename = mainName(name);
+        return STANDALONE_PROMOTION.matcher(basename).matches()
+                || sizeBytes <= MAX_PROMOTIONAL_ATTACHMENT_BYTES && SMALL_STANDALONE_PROMOTION.matcher(basename).matches();
     }
 
     public String qualityFull(String name) {

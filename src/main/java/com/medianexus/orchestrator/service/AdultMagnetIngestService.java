@@ -71,7 +71,6 @@ public class AdultMagnetIngestService {
     private static final DateTimeFormatter DATE_FOLDER_FORMATTER = DateTimeFormatter.ofPattern("M.d");
     private static final List<String> UNFINISHED_STATUSES = List.of("PENDING", "SUBMITTED", "DOWNLOADING", "ORGANIZING");
     private static final List<String> TERMINAL_STATUSES = List.of("SUCCEEDED", "PARTIAL_SUCCESS", "FAILED", "INTERRUPTED");
-    private static final long MIN_VIDEO_BYTES = 100L * 1024L * 1024L;
     private static final int MAX_MAGNETS_PER_BATCH = 50;
     private static final String MANUAL_MAGNET_SOURCE = "MANUAL_MAGNET";
     private static final String JAVDB_AUTOMATION_SOURCE = "JAVDB_AUTOMATION";
@@ -971,7 +970,7 @@ public class AdultMagnetIngestService {
     }
 
     private boolean isQualifiedVideo(OpenListFileInfo file) {
-        return renameService.isVideo(file.name()) && file.size() != null && file.size() >= MIN_VIDEO_BYTES;
+        return file.size() != null && renameService.isMovieFeatureVideo(file.name(), file.size());
     }
 
 

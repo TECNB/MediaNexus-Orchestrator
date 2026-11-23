@@ -15,6 +15,32 @@ class MovieSeriesFileRenameServiceTest {
         assertThat(renameService.isMovieFeatureVideo("unknown.txt", 2000000000L)).isFalse();
     }
 
+    @Test void standalonePromotionalVideoCannotBecomeAFeatureByPaddingItsSize() {
+        String ad = "【更多无水印高品质资源请访问 www.Butailing.com】";
+        for (long bytes : java.util.List.of(636976L, 1048576L, 500L * 1024 * 1024)) {
+            assertThat(renameService.isPromotionalVideo(ad + ad + ".MKV", bytes)).isTrue();
+            assertThat(renameService.isMovieFeatureVideo(ad + ".MKV", bytes)).isFalse();
+            assertThat(renameService.isPromotionalVideo("Show.S01E01." + ad + ".mkv", bytes)).isFalse();
+            assertThat(renameService.isPromotionalVideo("电影名称 " + ad + ".mkv", bytes)).isFalse();
+            assertThat(renameService.isPromotionalVideo(ad + "【Show.S01E01】.mkv", bytes)).isFalse();
+            assertThat(renameService.isPromotionalVideo(ad + "[ABC-123].mkv", bytes)).isFalse();
+            assertThat(renameService.isPromotionalVideo("unknown.mkv", bytes)).isFalse();
+        }
+        assertThat(renameService.isPromotionalVideo(ad + ".srt", 500000000)).isFalse();
+    }
+
+    @Test void additionalStandalonePromotionWordingHasFiftyMiBBoundary() {
+        String ad = "【更多高清资源请访问 www.example.com】";
+        for (long bytes : java.util.List.of(10L * 1024 * 1024, 50L * 1024 * 1024)) {
+            assertThat(renameService.isPromotionalVideo(ad + ".mp4", bytes)).isTrue();
+            assertThat(renameService.isPromotionalVideo("Show.S01E01." + ad + ".mp4", bytes)).isFalse();
+            assertThat(renameService.isPromotionalVideo(ad + "[Show.S01E01].mp4", bytes)).isFalse();
+            assertThat(renameService.isPromotionalVideo("unknown.mp4", bytes)).isFalse();
+        }
+        assertThat(renameService.isPromotionalVideo(ad + ".mp4", 50L * 1024 * 1024 + 1)).isFalse();
+        assertThat(renameService.isPromotionalVideo(ad + ".mp4", 0)).isFalse();
+    }
+
     @Test void recognizesLeadingEpisodeOnlyWithExplicitReleaseQuality() {
         for (int episode = 1; episode <= 60; episode++) {
             String name = "%02d.1080p.HD国语中字无水印[最新电影www.dyg7.com].mkv".formatted(episode);
