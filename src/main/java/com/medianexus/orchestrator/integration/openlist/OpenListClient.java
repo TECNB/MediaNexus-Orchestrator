@@ -518,8 +518,9 @@ public class OpenListClient {
         if (!isSuccess(root)) {
             String error = message(root).toLowerCase(java.util.Locale.ROOT);
             if (root != null && (root.path("code").asInt() == 404
-                    || root.path("code").asInt() == 500 && error.contains("failed get")
-                    && (error.contains("object not found") || error.contains("file not found")))) return null;
+                    || root.path("code").asInt() == 500 && (error.equals("object not found")
+                    || error.equals("file not found") || error.contains("failed get")
+                    && (error.contains("object not found") || error.contains("file not found"))))) return null;
             throw new OpenListClientException("文件身份读取失败");
         }
         return parseIdentity(path, root.path("data"));

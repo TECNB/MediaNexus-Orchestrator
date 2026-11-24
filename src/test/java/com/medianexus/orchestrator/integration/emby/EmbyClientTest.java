@@ -33,6 +33,29 @@ class EmbyClientTest {
         server.stop(0);
     }
 
+    @Test void organizationIdentityUsesItemsIdsContractAndRejectsWrongProvider() {
+        AtomicReference<String> provider = new AtomicReference<>("1171145");
+        server.createContext("/Items", exchange -> {
+            if (!exchange.getRequestURI().getPath().equals("/Items")) { exchange.sendResponseHeaders(404, -1); exchange.close(); return; }
+            String ids = Arrays.stream(exchange.getRequestURI().getRawQuery().split("&"))
+                    .filter(p -> p.startsWith("Ids=")).findFirst().orElse("").substring(4);
+            String body = ids.equals("season")
+                    ? "{\"Items\":[{\"Id\":\"season\",\"Type\":\"Season\",\"IndexNumber\":1,\"ParentId\":\"series\"}]}"
+                    : "{\"Items\":[{\"Id\":\"" + ids + "\",\"Type\":\"" + (ids.equals("series") ? "Series" : "Movie") + "\",\"ProviderIds\":{\"Tmdb\":\"" + provider.get() + "\"}}]}";
+            byte[] bytes = body.getBytes(StandardCharsets.UTF_8); exchange.sendResponseHeaders(200, bytes.length);
+            exchange.getResponseBody().write(bytes); exchange.close();
+        });
+        server.start();
+        var properties = new EmbyProperties(); properties.setBaseUrl("http://127.0.0.1:" + server.getAddress().getPort());
+        properties.setApiKey("test"); properties.setTimeout(Duration.ofSeconds(2));
+        var client = new EmbyClient(properties, new ObjectMapper());
+        client.requireOrganizationIdentity("movie", 1171145, null);
+        client.requireOrganizationIdentity("season", 1171145, 1);
+        provider.set("999");
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> client.requireOrganizationIdentity("movie", 1171145, null))
+                .isInstanceOf(EmbyClientException.class);
+    }
+
     @Test
     void refreshesOnlyTheSelectedLibraryRecursively() {
         AtomicReference<String> method = new AtomicReference<>();

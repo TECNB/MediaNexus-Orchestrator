@@ -331,18 +331,25 @@ public class EmbyClient {
 
     /** Read-only exact provider and season proof; never trusts a filtered search result alone. */
     public void requireOrganizationIdentity(String itemId, int tmdbId, Integer season) {
-        JsonNode item = get("/Items/" + encodePath(itemId), Map.of("Fields", "ProviderIds,Path,ParentId"));
+        JsonNode item = organizationItem(itemId);
         JsonNode identity = item;
         if (season != null) {
             if (!"Season".equals(item.path("Type").asText()) || !item.path("IndexNumber").isInt()
                     || item.path("IndexNumber").intValue() != season) throw new EmbyClientException("季度身份冲突");
             String parent = item.path("ParentId").asText("");
             if (parent.isBlank()) throw new EmbyClientException("缺少剧集父身份");
-            identity = get("/Items/" + encodePath(parent), Map.of("Fields", "ProviderIds"));
+            identity = organizationItem(parent);
         }
         if (!(season == null ? "Movie" : "Series").equals(identity.path("Type").asText())
                 || !Integer.toString(tmdbId).equals(identity.path("ProviderIds").path("Tmdb").asText()))
             throw new EmbyClientException("Emby 身份冲突；禁止自动覆盖");
+    }
+
+    private JsonNode organizationItem(String id) {
+        JsonNode items = get("/Items", Map.of("Ids", id, "Fields", "ProviderIds,Path,ParentId", "Limit", "2")).path("Items");
+        if (!items.isArray() || items.size() != 1 || !id.equals(items.get(0).path("Id").asText()))
+            throw new EmbyClientException("Emby 单项身份读取未唯一匹配");
+        return items.get(0);
     }
 
     public List<EmbyCatalogItem> findMoviesByTmdbId(int tmdbId) {

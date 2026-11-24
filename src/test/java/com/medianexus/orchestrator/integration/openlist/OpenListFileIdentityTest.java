@@ -38,4 +38,24 @@ class OpenListFileIdentityTest {
         ObjectNode directory = file("https://dl.mypikpak.com/x?fileid=id").put("is_dir", true);
         assertThatThrownBy(() -> OpenListClient.parseIdentity("/media/video.mkv", directory)).isInstanceOf(OpenListClientException.class);
     }
+    @Test void exactProductionAbsenceIsNullButOtherFailuresRemainUnknown() throws Exception {
+        var response = new java.util.concurrent.atomic.AtomicReference<>("{\"code\":500,\"message\":\"object not found\"}");
+        var server = com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/api/fs/get", exchange -> {
+            byte[] body = response.get().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, body.length); exchange.getResponseBody().write(body); exchange.close();
+        });
+        server.start();
+        try {
+            var properties = new com.medianexus.orchestrator.config.OpenListProperties();
+            properties.setBaseUrl("http://127.0.0.1:" + server.getAddress().getPort());
+            properties.setAuthorization("test"); properties.setTimeout(java.time.Duration.ofSeconds(2));
+            var client = new OpenListClient(properties, json);
+            assertThat(client.readIdentity("/media/missing.mkv")).isNull();
+            for (String error : new String[]{"{\"code\":500,\"message\":\"database unavailable\"}", "{\"code\":401,\"message\":\"object not found\"}"}) {
+                response.set(error);
+                assertThatThrownBy(() -> client.readIdentity("/media/missing.mkv")).isInstanceOf(OpenListClientException.class);
+            }
+        } finally { server.stop(0); }
+    }
 }
