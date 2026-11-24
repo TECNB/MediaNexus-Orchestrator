@@ -38,6 +38,81 @@ class ReleaseSubmissionSafetyTest {
                 .when(client).resolve(anyString(), any());
     }
 
+    private static final String HASH = "0123456789abcdef0123456789abcdef01234567";
+
+    private String originalMovieEvidence() {
+        return "RECOMMENDABLE; reason=原提交已核实; preview=false; camera=false; root=Arrival 2016 1080p; sourceTitles=[Arrival 2016 1080p]; file_table_source=光鸭文件表"
+                + "\noriginal_file=Arrival.2016.1080p.mkv; bytes=2000000000; preview=false; camera=false";
+    }
+
+    @Test void organizationUsesReassessedOriginalTableWhenLiveSourceUnavailableWithoutDownloading() {
+        doThrow(new GuangyaException(GuangyaException.Reason.UNAVAILABLE, "temporary" )).when(client).resolve(anyString(), any());
+        String record = safety.checkMovieOrganizationRecovery(null, MAGNET, HASH, movie, ReleaseIngestMetadata.manual(), originalMovieEvidence());
+        assertThat(record).contains("RECOMMENDABLE", "原任务持久文件表", "live=UNAVAILABLE", "bytes=2000000000");
+        verify(client, times(1)).resolve(anyString(), any());
+        // Normal admission still refuses missing current evidence, with no risk override introduced.
+        assertThatThrownBy(() -> safety.check(MAGNET, movie, ReleaseIngestMetadata.manual())).hasMessageContaining("accept_unverified_risk");
+    }
+
+    @Test void freshConflictingOrInvalidTableNeverFallsBackToAcceptedHistoricalTable() {
+        cacheTable("Arrival 2017 1080p", "Arrival 2017 1080p.mkv");
+        assertThatThrownBy(() -> safety.checkMovieOrganizationRecovery(null, MAGNET, HASH, movie, ReleaseIngestMetadata.manual(), originalMovieEvidence()))
+                .hasMessageContaining("年份");
+        setUp();
+        doThrow(new GuangyaException(GuangyaException.Reason.INVALID_RESPONSE, "invalid")).when(client).resolve(anyString(), any());
+        assertThatThrownBy(() -> safety.checkMovieOrganizationRecovery(null, MAGNET, HASH, movie, ReleaseIngestMetadata.manual(), originalMovieEvidence()))
+                .hasMessageContaining("RECOVERY_LIVE_INVALID_RESPONSE");
+        doThrow(new GuangyaException(GuangyaException.Reason.UNAVAILABLE, "temporary")).when(client).resolve(anyString(), any());
+        assertThatThrownBy(() -> safety.checkMovieOrganizationRecovery(null, MAGNET, HASH, movie, ReleaseIngestMetadata.manual(), originalMovieEvidence()))
+                .hasMessageContaining("INVALID_RESPONSE");
+    }
+
+    @Test void historicalTableMustBeRecommendableCompleteAndBoundToStoredTaskHash() {
+        for (String record : List.of("UNVERIFIED; root=Arrival", "RECOMMENDABLE; root=Arrival", originalMovieEvidence().replace("bytes=2000000000", "bytes=-1"),
+                originalMovieEvidence().replace("Arrival.2016.1080p.mkv", "../Arrival.2016.1080p.mkv"))) {
+            setUp();
+            assertThatThrownBy(() -> safety.checkMovieOrganizationRecovery(null, MAGNET, HASH, movie, ReleaseIngestMetadata.manual(), record))
+                    .hasMessageContaining("RECOVERY_ORIGINAL");
+        }
+        assertThatThrownBy(() -> safety.checkMovieOrganizationRecovery(null, MAGNET, "f".repeat(40), movie, ReleaseIngestMetadata.manual(), originalMovieEvidence()))
+                .hasMessageContaining("HASH_MISMATCH");
+        setUp();
+        assertThatThrownBy(() -> safety.checkMovieOrganizationRecovery(null, MAGNET, HASH, movie, ReleaseIngestMetadata.manual(),
+                originalMovieEvidence().replace("Arrival 2016", "Arrival 2017"))).hasMessageContaining("年份");
+    }
+
+    @Test void historicalAcceptanceCannotWashCachedCameraOrFreshUnverifiedIdentity() {
+        safety.rememberInvalidFileTable(MAGNET);
+        assertThatThrownBy(() -> safety.checkMovieOrganizationRecovery(null, MAGNET, HASH, movie, ReleaseIngestMetadata.manual(), originalMovieEvidence()))
+                .hasMessageContaining("文件表安全校验失败");
+        setUp();
+        cacheTable("Arrival 2016 CAM 1080p", "Arrival.2016.CAM.1080p.mkv");
+        assertThatThrownBy(() -> safety.checkMovieOrganizationRecovery(null, MAGNET, HASH, movie, ReleaseIngestMetadata.manual(), originalMovieEvidence()))
+                .hasMessageContaining("枪版");
+        setUp();
+        cacheTable("Unrelated 2016 1080p", "Unrelated.2016.1080p.mkv");
+        assertThatThrownBy(() -> safety.checkMovieOrganizationRecovery(null, MAGNET, HASH, movie, ReleaseIngestMetadata.manual(), originalMovieEvidence()))
+                .hasMessageContaining("未核验");
+    }
+
+    @Test void organizationSeriesReassessesAllOriginalEpisodeFiles() {
+        StringBuilder record = new StringBuilder("RECOMMENDABLE; reason=已核实; preview=false; camera=false; root=Show S01 1080p; sourceTitles=[Show S01 1080p]; file_table_source=光鸭文件表");
+        for (int episode = 1; episode <= 30; episode++) record.append("\noriginal_file=%02d.1080p.mkv; bytes=%d; preview=false; camera=false".formatted(episode, 200000000L + episode));
+        assertThat(safety.checkSeriesOrganizationRecovery(null, MAGNET, HASH, series, ReleaseIngestMetadata.manual(), record.toString()))
+                .contains("RECOMMENDABLE", "original_file=30.1080p.mkv");
+        setUp();
+        assertThatThrownBy(() -> safety.checkSeriesOrganizationRecovery(null, MAGNET, HASH, series, ReleaseIngestMetadata.manual(),
+                record.toString().replace("30.1080p.mkv", "S02E30.1080p.mkv"))).hasMessageContaining("不能安全执行");
+    }
+
+    @Test void safeRecoveryDiagnosticContainsReasonButNeverSignedUrlsOrTokens() {
+        var rejection = new com.medianexus.orchestrator.common.exception.BusinessException(com.medianexus.orchestrator.common.exception.ErrorCode.BAD_REQUEST,
+                "SOURCE_UNAVAILABLE https://dl.mypikpak.net/f?sign=TOPSECRET magnet:?xt=SECRET token=HIDDEN", org.springframework.http.HttpStatus.BAD_REQUEST);
+        String safe = ReleaseSubmissionSafety.organizationRejectionReason(rejection);
+        assertThat(safe).contains("SAFETY_REJECTED", "SOURCE_UNAVAILABLE").doesNotContain("https://", "magnet:", "TOPSECRET", "HIDDEN", "xt=SECRET");
+        assertThat(safe.length()).isLessThan(280);
+    }
+
     @Test
     void unknownRequiresExplicitPermissionAndNeverFabricatesFiles() {
         assertThatThrownBy(() -> safety.check(MAGNET, movie, ReleaseIngestMetadata.manual()))

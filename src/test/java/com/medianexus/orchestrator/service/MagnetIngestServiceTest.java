@@ -55,6 +55,41 @@ class MagnetIngestServiceTest {
         org.mockito.Mockito.verifyNoInteractions(organizer);
     }
 
+    @Test void recoveryHttpAndLogExposeSanitizedSafetyReasonFromExactOriginalTaskEvidence() {
+        var client = mock(OpenListClient.class); stubPathHelpers(client);
+        var organizer = mock(com.medianexus.orchestrator.integration.clouddrive.CloudDrive2LibraryOrganizer.class);
+        var service = service(client, organizer);
+        var task = movieTask("/movie/Title"); task.setStatus("FAILED"); task.setMagnet("magnet:?xt=urn:btih:" + "a".repeat(40)); task.setMagnetHash("a".repeat(40));
+        var tasks = mock(MovieMagnetIngestTaskMapper.class); when(tasks.selectById(task.getId())).thenReturn(task);
+        var logs = mock(MovieMagnetIngestTaskLogMapper.class); when(logs.selectCount(org.mockito.ArgumentMatchers.any())).thenReturn(1L);
+        var original = new com.medianexus.orchestrator.model.MovieMagnetIngestTaskLog();
+        original.setTaskId(task.getId()); original.setStage("submission_safety"); original.setDetail("EXACT_ORIGINAL_RECORD");
+        when(logs.selectList(org.mockito.ArgumentMatchers.any())).thenReturn(List.of(original));
+        var registry = mock(com.medianexus.orchestrator.service.settings.targets.IngestTargetRegistry.class);
+        when(registry.bindingForPath("MOVIE", task.getSavePath())).thenReturn(java.util.Optional.of(
+                new com.medianexus.orchestrator.service.settings.targets.IngestTargetRegistry.CategoryBinding("id", "B", "MOVIE", "/movie", "as", "{}", "/strm", "library")));
+        var safety = mock(ReleaseSubmissionSafety.class);
+        org.mockito.Mockito.doThrow(new com.medianexus.orchestrator.common.exception.BusinessException(
+                com.medianexus.orchestrator.common.exception.ErrorCode.BAD_REQUEST,
+                "RECOVERY_ORIGINAL_TABLE_MALFORMED https://dl.mypikpak.net/x?sign=SECRET token=HIDDEN",
+                org.springframework.http.HttpStatus.BAD_REQUEST)).when(safety).checkMovieOrganizationRecovery(
+                org.mockito.ArgumentMatchers.isNull(), eq(task.getMagnet()), eq(task.getMagnetHash()), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(), eq("EXACT_ORIGINAL_RECORD"));
+        var journal = mock(OrganizationRecoveryJournal.class); var scheduler = mock(OfflineIngestScheduler.class);
+        ReflectionTestUtils.setField(service, "movieTaskMapper", tasks); ReflectionTestUtils.setField(service, "movieTaskLogMapper", logs);
+        ReflectionTestUtils.setField(service, "targetRegistry", registry); ReflectionTestUtils.setField(service, "submissionSafety", safety);
+        ReflectionTestUtils.setField(service, "organizationJournal", journal); ReflectionTestUtils.setField(service, "offlineScheduler", scheduler);
+        org.mockito.Mockito.doAnswer(call -> { ((Runnable) call.getArgument(4)).run(); return null; }).when(scheduler)
+                .enqueueOrganizationRecovery(anyString(), anyString(), anyString(), anyString(), org.mockito.ArgumentMatchers.any());
+        assertThatThrownBy(() -> service.recoverOrganization("movie", task.getId()))
+                .hasMessageContaining("SAFETY_REJECTED").hasMessageContaining("RECOVERY_ORIGINAL_TABLE_MALFORMED")
+                .hasMessageNotContaining("SECRET").hasMessageNotContaining("HIDDEN").hasMessageNotContaining("https://");
+        var captured = ArgumentCaptor.forClass(com.medianexus.orchestrator.model.MovieMagnetIngestTaskLog.class);
+        verify(logs).insert(captured.capture());
+        assertThat(captured.getValue().getDetail()).contains("RECOVERY_ORIGINAL_TABLE_MALFORMED").doesNotContain("SECRET", "HIDDEN", "https://");
+        org.mockito.Mockito.verifyNoInteractions(organizer);
+        assertThat(task.getStatus()).isEqualTo("FAILED");
+    }
+
     @Test void legacyMovieSameBytesUnrelatedNameIsRejected() {
         var client = mock(OpenListClient.class); stubPathHelpers(client);
         var task = movieTask("/movie");

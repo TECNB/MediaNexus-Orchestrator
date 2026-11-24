@@ -864,11 +864,12 @@ public class MagnetIngestService {
                     // A positively absent committed plan proves no durable file mutation was possible.
                     var persisted = organizationJournal.status(type, id);
                     if (persisted == null) offlineScheduler.refuseOrganizationAdmission(type + ":" + id, path, hash);
-                    if ("movie".equals(type)) writeMovieLog(id, "WARN", "organization_recovery", "整理接管未完成，未改写原任务", failure.getClass().getSimpleName());
-                    else writeSeriesLog(id, "WARN", "organization_recovery", "整理接管未完成，未改写原任务", failure.getClass().getSimpleName());
+                    String reason = ReleaseSubmissionSafety.organizationRejectionReason(failure);
+                    if ("movie".equals(type)) writeMovieLog(id, "WARN", "organization_recovery", "整理接管未完成，未改写原任务", reason);
+                    else writeSeriesLog(id, "WARN", "organization_recovery", "整理接管未完成，未改写原任务", reason);
                     if (persisted != null) { admission.complete(persisted); return; }
                     admission.completeExceptionally(new BusinessException(ErrorCode.CONFLICT,
-                            "整理接管校验未通过；未接受整理计划，请查看原任务恢复日志", HttpStatus.CONFLICT));
+                            "整理接管校验未通过；未接受整理计划；" + reason, HttpStatus.CONFLICT));
                 } catch (RuntimeException unavailable) { admission.completeExceptionally(unavailable); }
             }
         });
@@ -897,8 +898,13 @@ public class MagnetIngestService {
         targetRegistry.bindingForPath("MOVIE", task.getSavePath()).orElseThrow(() -> new IllegalStateException("目标绑定未登记"));
         var metadata = new ReleaseIngestMetadata(task.getSourceType(), task.getReleaseTitle(), task.getReleaseIndexer(),
                 task.getReleaseSize(), task.getReleaseIndexerId(), task.getReleaseGuid(), List.of(), List.of());
-        String evidence = submissionSafety.checkMovie(task.getTmdbId(), task.getMagnet(),
-                ReleaseTarget.of(task.getTitle(), task.getOriginalTitle(), null, task.getYear(), null, null), metadata);
+        String originalEvidence = movieTaskLogMapper.selectList(new LambdaQueryWrapper<MovieMagnetIngestTaskLog>()
+                .eq(MovieMagnetIngestTaskLog::getTaskId, task.getId()).eq(MovieMagnetIngestTaskLog::getStage, "submission_safety")
+                .orderByDesc(MovieMagnetIngestTaskLog::getId).last("LIMIT 1")).stream()
+                .filter(log -> task.getId().equals(log.getTaskId()) && "submission_safety".equals(log.getStage()))
+                .map(MovieMagnetIngestTaskLog::getDetail).findFirst().orElse(null);
+        String evidence = submissionSafety.checkMovieOrganizationRecovery(task.getTmdbId(), task.getMagnet(), task.getMagnetHash(),
+                ReleaseTarget.of(task.getTitle(), task.getOriginalTitle(), null, task.getYear(), null, null), metadata, originalEvidence);
         requireLegacyMovieCompleteness(task, evidence);
         writeMovieLog(task.getId(), "INFO", "organization_recovery_evidence", "已复核原发布身份和完整文件表", evidence);
     }
@@ -907,8 +913,13 @@ public class MagnetIngestService {
         targetRegistry.bindingForPath("TV", task.getSavePath()).orElseThrow(() -> new IllegalStateException("目标绑定未登记"));
         var metadata = new ReleaseIngestMetadata(task.getSourceType(), task.getReleaseTitle(), task.getReleaseIndexer(),
                 task.getReleaseSize(), task.getReleaseIndexerId(), task.getReleaseGuid(), List.of(), List.of());
-        String evidence = submissionSafety.checkSeries(task.getTmdbId(), task.getMagnet(),
-                ReleaseTarget.of(task.getTitle(), task.getOriginalTitle(), null, null, task.getSeasonNumber(), null), metadata);
+        String originalEvidence = seriesTaskLogMapper.selectList(new LambdaQueryWrapper<SeriesMagnetIngestTaskLog>()
+                .eq(SeriesMagnetIngestTaskLog::getTaskId, task.getId()).eq(SeriesMagnetIngestTaskLog::getStage, "submission_safety")
+                .orderByDesc(SeriesMagnetIngestTaskLog::getId).last("LIMIT 1")).stream()
+                .filter(log -> task.getId().equals(log.getTaskId()) && "submission_safety".equals(log.getStage()))
+                .map(SeriesMagnetIngestTaskLog::getDetail).findFirst().orElse(null);
+        String evidence = submissionSafety.checkSeriesOrganizationRecovery(task.getTmdbId(), task.getMagnet(), task.getMagnetHash(),
+                ReleaseTarget.of(task.getTitle(), task.getOriginalTitle(), null, null, task.getSeasonNumber(), null), metadata, originalEvidence);
         requireLegacySeriesCompleteness(task, evidence);
         writeSeriesLog(task.getId(), "INFO", "organization_recovery_evidence", "已复核原发布身份、季度和完整文件表", evidence);
     }
