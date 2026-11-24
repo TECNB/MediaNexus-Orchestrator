@@ -99,6 +99,63 @@ class MagnetRestartReconciliationTest {
         verify(series, never()).insert(any(SeriesMagnetIngestTask.class));
     }
 
+    @Test void completedAfterKnownCancellationRetainsLocalClaimsWithoutGlobalPauseOrWrites() {
+        TableInfoHelper.initTableInfo(new MapperBuilderAssistant(new MybatisConfiguration(), "movie"), MovieMagnetIngestTask.class);
+        TableInfoHelper.initTableInfo(new MapperBuilderAssistant(new MybatisConfiguration(), "series"), SeriesMagnetIngestTask.class);
+        var movies = mock(MovieMagnetIngestTaskMapper.class);
+        var series = mock(SeriesMagnetIngestTaskMapper.class);
+        var movieLogs = mock(MovieMagnetIngestTaskLogMapper.class);
+        var seriesLogs = mock(SeriesMagnetIngestTaskLogMapper.class);
+        var client = mock(OpenListClient.class);
+        var scheduler = mock(OfflineIngestScheduler.class);
+        var executor = mock(ExecutorService.class);
+        var service = new MagnetIngestService(movies, movieLogs, series, seriesLogs,
+                client, new OpenListProperties(), new MovieSeriesFileRenameService(), null, null, null,
+                null, null, null, null, IngestTargetFixtures.legacy(), executor, mock(IngestTaskNotifier.class));
+        ReflectionTestUtils.setField(service, "offlineScheduler", scheduler);
+        var movie = new MovieMagnetIngestTask();
+        movie.setId("original-movie"); movie.setStatus("FAILED"); movie.setOpenlistTaskId("movie-upstream");
+        movie.setSavePath("/movie"); movie.setMagnetHash("movie-hash");
+        movie.setErrorMessage("[OFFLINE_UNRESOLVED] 离线下载超时，取消未确认；原始失败");
+        var show = task("original-series", "series-upstream"); show.setStatus("FAILED");
+        show.setSavePath("/series"); show.setMagnetHash("series-hash");
+        show.setErrorMessage("[OFFLINE_UNRESOLVED] 离线下载超时，取消请求结果未知；原始失败");
+        when(movies.selectList(any())).thenReturn(List.of(movie));
+        when(series.selectList(any())).thenReturn(List.of(show));
+        when(movies.selectById(movie.getId())).thenReturn(movie);
+        when(series.selectById(show.getId())).thenReturn(show);
+        when(client.offlineTaskInfo("movie-upstream")).thenReturn(new OpenListOfflineTaskInfo("movie-upstream", 2, "Complete", 100, null, null));
+        when(client.offlineTaskInfo("series-upstream")).thenReturn(new OpenListOfflineTaskInfo("series-upstream", 2, "Complete", 100, null, null));
+        var movieUpdates = new java.util.ArrayList<com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper>();
+        var seriesUpdates = new java.util.ArrayList<com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper>();
+        when(movies.update(any(com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper.class))).thenAnswer(call -> {
+            var update = (com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper) call.getArgument(0);
+            update.getSqlSegment(); movieUpdates.add(update); return 1;
+        });
+        when(series.update(any(com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper.class))).thenAnswer(call -> {
+            var update = (com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper) call.getArgument(0);
+            update.getSqlSegment(); seriesUpdates.add(update); return 1;
+        });
+        service.markUnfinishedTasksInterrupted();
+        var order = inOrder(scheduler, movies, series);
+        order.verify(scheduler).retainOrganizationRecovery("/movie", "movie-hash");
+        order.verify(movies).update(any(com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper.class));
+        order.verify(scheduler).retainOrganizationRecovery("/series", "series-hash");
+        order.verify(series).update(any(com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper.class));
+        assertThat(movieUpdates.get(0).getParamNameValuePairs().values()).anyMatch(value -> value.toString().contains("[ORGANIZATION_UNRESOLVED]"));
+        assertThat(seriesUpdates.get(0).getParamNameValuePairs().values()).anyMatch(value -> value.toString().contains("[ORGANIZATION_UNRESOLVED]"));
+        var movieLog = org.mockito.ArgumentCaptor.forClass(MovieMagnetIngestTaskLog.class);
+        var seriesLog = org.mockito.ArgumentCaptor.forClass(SeriesMagnetIngestTaskLog.class);
+        verify(movieLogs).insert(movieLog.capture()); verify(seriesLogs).insert(seriesLog.capture());
+        assertThat(movieLog.getValue().getDetail()).contains(movie.getErrorMessage());
+        assertThat(seriesLog.getValue().getDetail()).contains(show.getErrorMessage());
+        verify(scheduler, never()).blockUnresolvedRestart(anyString());
+        verify(client, times(1)).offlineTaskInfo("movie-upstream");
+        verify(client, times(1)).offlineTaskInfo("series-upstream");
+        verifyNoMoreInteractions(client);
+        verifyNoInteractions(executor);
+    }
+
     private static SeriesMagnetIngestTask task(String id, String upstream) {
         var task = new SeriesMagnetIngestTask();
         task.setId(id); task.setStatus("INTERRUPTED"); task.setOpenlistTaskId(upstream);

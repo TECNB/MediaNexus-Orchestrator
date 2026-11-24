@@ -64,6 +64,43 @@ class PendingIngestRecoveryTest {
                 .isInstanceOf(IllegalStateException.class).hasMessageContaining("保留认领");
     }
 
+    @Test void completedCancellationPersistsOrganizationMarkerAndOriginalFailureForBothMedia() {
+        TableInfoHelper.initTableInfo(new MapperBuilderAssistant(new MybatisConfiguration(), "movie"), MovieMagnetIngestTask.class);
+        TableInfoHelper.initTableInfo(new MapperBuilderAssistant(new MybatisConfiguration(), "series"), SeriesMagnetIngestTask.class);
+        var movies = mock(MovieMagnetIngestTaskMapper.class);
+        var series = mock(SeriesMagnetIngestTaskMapper.class);
+        var movieLogs = mock(MovieMagnetIngestTaskLogMapper.class);
+        var seriesLogs = mock(SeriesMagnetIngestTaskLogMapper.class);
+        var client = mock(OpenListClient.class);
+        var service = new MagnetIngestService(movies, movieLogs, series, seriesLogs, client, new OpenListProperties(),
+                new MovieSeriesFileRenameService(), null, null, null, null, null, null, null,
+                IngestTargetFixtures.legacy(), mock(ExecutorService.class), mock(IngestTaskNotifier.class));
+        var movie = new MovieMagnetIngestTask(); movie.setId("movie"); movie.setStatus("FAILED");
+        var show = new SeriesMagnetIngestTask(); show.setId("series"); show.setStatus("FAILED");
+        String original = "[OFFLINE_UNRESOLVED] 离线下载超时，取消未确认；database outage";
+        movie.setErrorMessage(original); show.setErrorMessage(original);
+        when(movies.selectById("movie")).thenReturn(movie); when(series.selectById("series")).thenReturn(show);
+        when(movies.update(any(LambdaUpdateWrapper.class))).thenReturn(1);
+        when(series.update(any(LambdaUpdateWrapper.class))).thenReturn(1);
+        var completed = new OpenListOfflineTaskInfo("upstream", 2, "Complete", 100, null, null);
+        ReflectionTestUtils.invokeMethod(service, "settleMovieCancellation", "movie", completed);
+        ReflectionTestUtils.invokeMethod(service, "settleSeriesCancellation", "series", completed);
+        var movieUpdate = ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
+        var seriesUpdate = ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
+        verify(movies).update(movieUpdate.capture()); verify(series).update(seriesUpdate.capture());
+        for (var update : java.util.List.of(movieUpdate.getValue(), seriesUpdate.getValue())) {
+            update.getSqlSegment();
+            assertThat(update.getParamNameValuePairs().values()).contains("FAILED")
+                    .anyMatch(value -> value.toString().contains("[ORGANIZATION_UNRESOLVED]"));
+        }
+        var movieLog = ArgumentCaptor.forClass(MovieMagnetIngestTaskLog.class);
+        var seriesLog = ArgumentCaptor.forClass(SeriesMagnetIngestTaskLog.class);
+        verify(movieLogs).insert(movieLog.capture()); verify(seriesLogs).insert(seriesLog.capture());
+        assertThat(movieLog.getValue().getDetail()).isEqualTo(original);
+        assertThat(seriesLog.getValue().getDetail()).isEqualTo(original);
+        verifyNoInteractions(client);
+    }
+
     private MagnetIngestService service(MovieMagnetIngestTaskMapper movies, SeriesMagnetIngestTaskMapper series,
             OpenListClient client, MediaLibraryPresenceService presence) {
         return new MagnetIngestService(movies, mock(MovieMagnetIngestTaskLogMapper.class), series,

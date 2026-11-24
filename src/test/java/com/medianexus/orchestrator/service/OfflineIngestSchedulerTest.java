@@ -359,6 +359,90 @@ class OfflineIngestSchedulerTest {
         }
     }
 
+    @Test
+    void heldCancellationCompletingLateRetainsRecoveryClaimsUntilDurableSettlement() throws Exception {
+        var client = mappedClient();
+        var observed = new java.util.concurrent.atomic.AtomicReference<OpenListOfflineTaskInfo>(snapshot("upstream", 3));
+        var persisted = new java.util.concurrent.atomic.AtomicBoolean();
+        var settlementAttempted = new CountDownLatch(1);
+        var settled = new CountDownLatch(1);
+        when(client.offlineTaskInfo("upstream")).thenAnswer(call -> observed.get());
+        when(client.offlineTaskInfo("one")).thenReturn(snapshot("one", 1));
+        when(client.offlineTaskInfo("two")).thenReturn(snapshot("two", 1));
+        var one = new CountDownLatch(1);
+        var two = new CountDownLatch(1);
+        var blocked = new CountDownLatch(1);
+        var original = new DownloadStub() {
+            public void organize(String id) { throw new AssertionError("canceled completion must not organize"); }
+            public void cancellationSettled(OpenListOfflineTaskInfo snapshot) {
+                assertThat(snapshot.state()).isEqualTo(2);
+                assertThat(snapshot.progress()).isEqualTo(100);
+                settlementAttempted.countDown();
+                if (!persisted.get()) throw new IllegalStateException("database unavailable");
+                settled.countDown();
+            }
+        };
+        try (var scheduler = new OfflineIngestScheduler(client)) {
+            assertThatThrownBy(() -> scheduler.enqueue("/old", "old-hash", Duration.ofMillis(20), Duration.ofMillis(5), original)
+                    .get(2, TimeUnit.SECONDS)).hasCauseInstanceOf(com.medianexus.orchestrator.integration.openlist.OpenListClientException.class);
+            scheduler.enqueue("/old/child", "other", Duration.ofSeconds(5), Duration.ofMillis(5), submission("blocked", blocked));
+            scheduler.enqueue("/alias", "old-hash", Duration.ofSeconds(5), Duration.ofMillis(5), submission("blocked", blocked));
+            scheduler.enqueue("/one", "one", Duration.ofSeconds(5), Duration.ofMillis(5), submission("one", one));
+            scheduler.enqueue("/two", "two", Duration.ofSeconds(5), Duration.ofMillis(5), submission("two", two));
+            assertThat(one.await(2, TimeUnit.SECONDS)).isTrue();
+            for (var invalid : java.util.Arrays.asList(null, snapshot("another-id", 2),
+                    new OpenListOfflineTaskInfo("upstream", null, "unknown", 100, null, null),
+                    new OpenListOfflineTaskInfo("upstream", 2, "unknown", null, null, null),
+                    snapshot("upstream", 1))) {
+                observed.set(invalid);
+                assertThat(settlementAttempted.await(40, TimeUnit.MILLISECONDS)).isFalse();
+                assertThat(two.getCount()).isEqualTo(1);
+            }
+            observed.set(snapshot("upstream", 2));
+            assertThat(settlementAttempted.await(2, TimeUnit.SECONDS)).isTrue();
+            assertThat(two.await(80, TimeUnit.MILLISECONDS)).isFalse();
+            persisted.set(true);
+            assertThat(settled.await(2, TimeUnit.SECONDS)).isTrue();
+            assertThat(two.await(2, TimeUnit.SECONDS)).isTrue();
+            assertThat(blocked.await(80, TimeUnit.MILLISECONDS)).isFalse();
+            verify(client, times(1)).offlineDirectoryForPath("/old");
+            verify(client, times(1)).cancelOfflineTask("upstream");
+            verify(client, never()).retryOfflineTask(anyString());
+            verify(client, never()).remove(anyString(), any());
+        }
+    }
+
+    @Test
+    void immediateCancelCompletionUsesDurableCallbackBeforeReleasingSlot() throws Exception {
+        var client = mappedClient();
+        var canceled = new java.util.concurrent.atomic.AtomicBoolean();
+        var persisted = new java.util.concurrent.atomic.AtomicBoolean();
+        var callback = new CountDownLatch(1);
+        doAnswer(call -> { canceled.set(true); return null; }).when(client).cancelOfflineTask("upstream");
+        when(client.offlineTaskInfo("upstream")).thenAnswer(call -> snapshot("upstream", canceled.get() ? 2 : 1));
+        when(client.offlineTaskInfo("one")).thenReturn(snapshot("one", 1));
+        when(client.offlineTaskInfo("two")).thenReturn(snapshot("two", 1));
+        var one = new CountDownLatch(1);
+        var two = new CountDownLatch(1);
+        try (var scheduler = new OfflineIngestScheduler(client)) {
+            assertThatThrownBy(() -> scheduler.enqueue("/old", "old", Duration.ofMillis(20), Duration.ofMillis(5), new DownloadStub() {
+                public void organize(String id) { throw new AssertionError("must not organize"); }
+                public void cancellationSettled(OpenListOfflineTaskInfo snapshot) {
+                    callback.countDown();
+                    if (!persisted.get()) throw new IllegalStateException("database unavailable");
+                }
+            }).get(2, TimeUnit.SECONDS)).hasCauseInstanceOf(com.medianexus.orchestrator.integration.openlist.OpenListClientException.class);
+            assertThat(callback.await(2, TimeUnit.SECONDS)).isTrue();
+            scheduler.enqueue("/one", "one", Duration.ofSeconds(5), Duration.ofMillis(5), submission("one", one));
+            scheduler.enqueue("/two", "two", Duration.ofSeconds(5), Duration.ofMillis(5), submission("two", two));
+            assertThat(one.await(2, TimeUnit.SECONDS)).isTrue();
+            assertThat(two.await(80, TimeUnit.MILLISECONDS)).isFalse();
+            persisted.set(true);
+            assertThat(two.await(2, TimeUnit.SECONDS)).isTrue();
+            verify(client, times(1)).cancelOfflineTask("upstream");
+        }
+    }
+
     private static OpenListClient mappedClient() {
         OpenListClient client = mock(OpenListClient.class);
         when(client.offlineDirectoryForPath(anyString())).thenAnswer(call ->

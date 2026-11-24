@@ -348,32 +348,48 @@ public class MagnetIngestService {
         for (var task : movieTaskMapper.selectList(new LambdaQueryWrapper<MovieMagnetIngestTask>()
                 .in(MovieMagnetIngestTask::getStatus, List.of("INTERRUPTED", "FAILED"))
                 .like(MovieMagnetIngestTask::getErrorMessage, "OFFLINE_UNRESOLVED"))) {
-            String failure = stoppedRestartFailure(task.getOpenlistTaskId(), task.getErrorMessage());
-            if (failure != null) markMovieFailed(task.getId(), failure);
+            var snapshot = stoppedRestartSnapshot(task.getOpenlistTaskId(), task.getErrorMessage());
+            if (snapshot == null) continue;
+            if (Integer.valueOf(2).equals(snapshot.state()) && Integer.valueOf(100).equals(snapshot.progress())) {
+                offlineScheduler.retainOrganizationRecovery(task.getSavePath(), task.getMagnetHash());
+                settleMovieCancellation(task.getId(), snapshot);
+            } else {
+                markMovieFailed(task.getId(), stoppedRestartFailure(snapshot));
+            }
         }
         for (var task : seriesTaskMapper.selectList(new LambdaQueryWrapper<SeriesMagnetIngestTask>()
                 .in(SeriesMagnetIngestTask::getStatus, List.of("INTERRUPTED", "FAILED"))
                 .like(SeriesMagnetIngestTask::getErrorMessage, "OFFLINE_UNRESOLVED"))) {
-            String failure = stoppedRestartFailure(task.getOpenlistTaskId(), task.getErrorMessage());
-            if (failure != null) markSeriesFailed(task.getId(), failure);
+            var snapshot = stoppedRestartSnapshot(task.getOpenlistTaskId(), task.getErrorMessage());
+            if (snapshot == null) continue;
+            if (Integer.valueOf(2).equals(snapshot.state()) && Integer.valueOf(100).equals(snapshot.progress())) {
+                offlineScheduler.retainOrganizationRecovery(task.getSavePath(), task.getMagnetHash());
+                settleSeriesCancellation(task.getId(), snapshot);
+            } else {
+                markSeriesFailed(task.getId(), stoppedRestartFailure(snapshot));
+            }
         }
     }
 
-    private String stoppedRestartFailure(String upstreamId, String priorError) {
+    private OpenListOfflineTaskInfo stoppedRestartSnapshot(String upstreamId, String priorError) {
         if (upstreamId == null || upstreamId.isBlank()) return null;
         try {
             var snapshot = openListClient.offlineTaskInfo(upstreamId);
-            boolean canceledIncomplete = priorError != null && (priorError.contains("离线下载超时，取消未确认")
+            if (snapshot == null || !upstreamId.equals(snapshot.id())) return null;
+            boolean canceledTerminal = priorError != null && (priorError.contains("离线下载超时，取消未确认")
                     || priorError.contains("离线下载超时，取消请求结果未知"))
-                    && Integer.valueOf(2).equals(snapshot.state()) && snapshot.progress() != null && snapshot.progress() < 100;
-            if (!upstreamId.equals(snapshot.id()) || !(canceledIncomplete
-                    || Integer.valueOf(4).equals(snapshot.state()) || Integer.valueOf(7).equals(snapshot.state()))) return null;
-            return "重启后已核实原上游停止；未重试或删除源文件；upstream=" + upstreamId
-                    + "; state=" + snapshot.state() + "; error=" + snapshot.error();
+                    && Integer.valueOf(2).equals(snapshot.state()) && snapshot.progress() != null && snapshot.progress() <= 100;
+            if (!(canceledTerminal || Integer.valueOf(4).equals(snapshot.state()) || Integer.valueOf(7).equals(snapshot.state()))) return null;
+            return snapshot;
         } catch (RuntimeException failure) {
             log.warn("Restart task remains unresolved; upstream read failed id={}", upstreamId);
             return null;
         }
+    }
+
+    private String stoppedRestartFailure(OpenListOfflineTaskInfo snapshot) {
+        return "重启后已核实原上游停止；未重试或删除源文件；upstream=" + snapshot.id()
+                + "; state=" + snapshot.state() + "; error=" + snapshot.error();
     }
 
     public MovieMagnetIngestTaskResponse createMovieTask(MovieMagnetIngestRequest request) {
@@ -1090,12 +1106,11 @@ public class MagnetIngestService {
     }
 
     private void settleMovieCancellation(String taskId, OpenListOfflineTaskInfo snapshot) {
-        String evidence = "已核实取消后上游停止；保留原 FAILED 和源文件，未重试或整理；upstream=" + snapshot.id()
-                + ";state=" + snapshot.state() + ";progress=" + snapshot.progress();
+        String evidence = cancellationEvidence(snapshot);
         writeMovieLog(taskId, "INFO", "offline_reconciled", evidence, getExistingMovieTask(taskId).getErrorMessage());
         int updated = movieTaskMapper.update(new LambdaUpdateWrapper<MovieMagnetIngestTask>()
                 .eq(MovieMagnetIngestTask::getId, taskId).eq(MovieMagnetIngestTask::getOpenlistTaskId, snapshot.id())
-                .in(MovieMagnetIngestTask::getStatus, List.of("FAILED", "SUBMITTED", "DOWNLOADING"))
+                .in(MovieMagnetIngestTask::getStatus, List.of("FAILED", "SUBMITTED", "DOWNLOADING", "INTERRUPTED"))
                 .set(MovieMagnetIngestTask::getStatus, "FAILED")
                 .set(MovieMagnetIngestTask::getStage, "failed")
                 .set(MovieMagnetIngestTask::getFinishedAt, LocalDateTime.now())
@@ -1104,17 +1119,23 @@ public class MagnetIngestService {
     }
 
     private void settleSeriesCancellation(String taskId, OpenListOfflineTaskInfo snapshot) {
-        String evidence = "已核实取消后上游停止；保留原 FAILED 和源文件，未重试或整理；upstream=" + snapshot.id()
-                + ";state=" + snapshot.state() + ";progress=" + snapshot.progress();
+        String evidence = cancellationEvidence(snapshot);
         writeSeriesLog(taskId, "INFO", "offline_reconciled", evidence, getExistingSeriesTask(taskId).getErrorMessage());
         int updated = seriesTaskMapper.update(new LambdaUpdateWrapper<SeriesMagnetIngestTask>()
                 .eq(SeriesMagnetIngestTask::getId, taskId).eq(SeriesMagnetIngestTask::getOpenlistTaskId, snapshot.id())
-                .in(SeriesMagnetIngestTask::getStatus, List.of("FAILED", "SUBMITTED", "DOWNLOADING"))
+                .in(SeriesMagnetIngestTask::getStatus, List.of("FAILED", "SUBMITTED", "DOWNLOADING", "INTERRUPTED"))
                 .set(SeriesMagnetIngestTask::getStatus, "FAILED")
                 .set(SeriesMagnetIngestTask::getStage, "failed")
                 .set(SeriesMagnetIngestTask::getFinishedAt, LocalDateTime.now())
                 .set(SeriesMagnetIngestTask::getErrorMessage, evidence));
         if (updated != 1) throw new IllegalStateException("剧集取消结清未持久化，保留认领");
+    }
+
+    private String cancellationEvidence(OpenListOfflineTaskInfo snapshot) {
+        String marker = Integer.valueOf(2).equals(snapshot.state()) && Integer.valueOf(100).equals(snapshot.progress())
+                ? "[ORGANIZATION_UNRESOLVED] " : "";
+        return marker + "已核实取消后上游停止；保留原 FAILED 和源文件，未重试或整理；upstream=" + snapshot.id()
+                + ";state=" + snapshot.state() + ";progress=" + snapshot.progress();
     }
 
 

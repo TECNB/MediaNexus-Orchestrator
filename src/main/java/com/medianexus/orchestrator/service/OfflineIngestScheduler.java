@@ -279,8 +279,8 @@ public class OfflineIngestScheduler implements AutoCloseable {
         try {
             OpenListOfflineTaskInfo snapshot = client.offlineTaskInfo(job.upstreamId);
             if (stoppedAfterCancellation(job, snapshot)) {
-                fail(job, new OpenListClientException("离线下载超时，已确认上游停止；源文件保留"));
-                release(job);
+                hold(job, "离线下载超时，取消未确认；保留源文件、下载额度及目录/hash 认领", null);
+                settleCancellation(job, snapshot);
                 return;
             }
         } catch (RuntimeException exception) {
@@ -293,9 +293,9 @@ public class OfflineIngestScheduler implements AutoCloseable {
     }
 
     private boolean stoppedAfterCancellation(Job job, OpenListOfflineTaskInfo snapshot) {
-        return job.cancelRequested && job.upstreamId.equals(snapshot.id())
+        return job.cancelRequested && snapshot != null && job.upstreamId.equals(snapshot.id())
                 && (Integer.valueOf(4).equals(snapshot.state()) || Integer.valueOf(7).equals(snapshot.state())
-                || Integer.valueOf(2).equals(snapshot.state()) && snapshot.progress() != null && snapshot.progress() < 100);
+                || Integer.valueOf(2).equals(snapshot.state()) && snapshot.progress() != null && snapshot.progress() <= 100);
     }
 
     private synchronized void scheduleHeldRecheck(Job job) {
@@ -312,9 +312,7 @@ public class OfflineIngestScheduler implements AutoCloseable {
         try {
             OpenListOfflineTaskInfo snapshot = client.offlineTaskInfo(job.upstreamId);
             if (stoppedAfterCancellation(job, snapshot)) {
-                job.download.cancellationSettled(snapshot);
-                synchronized (this) { job.unresolved = false; }
-                release(job);
+                settleCancellation(job, snapshot);
                 return;
             }
         } catch (RuntimeException exception) {
@@ -322,6 +320,20 @@ public class OfflineIngestScheduler implements AutoCloseable {
         }
         scheduleHeldRecheck(job);
     }
+
+    private void settleCancellation(Job job, OpenListOfflineTaskInfo snapshot) {
+        if (Integer.valueOf(2).equals(snapshot.state()) && Integer.valueOf(100).equals(snapshot.progress())) {
+            synchronized (this) {
+                // Reuse the resolved directory; no upstream calls while holding scheduler capacity locks.
+                var claim = new RecoveryClaim(job.hash, job.directory);
+                if (!organizationRecoveryClaims.contains(claim)) organizationRecoveryClaims.add(claim);
+            }
+        }
+        job.download.cancellationSettled(snapshot);
+        synchronized (this) { job.unresolved = false; }
+        release(job);
+    }
+
     private void organize(Job job) {
         long organizationStarted = System.nanoTime();
         try (var binding = IngestStageTiming.bind(job.timingContext)) {
