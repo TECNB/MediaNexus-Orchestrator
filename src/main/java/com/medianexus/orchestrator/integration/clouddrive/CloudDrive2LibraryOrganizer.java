@@ -62,27 +62,27 @@ public class CloudDrive2LibraryOrganizer implements LibraryOrganizer {
             progressObserver.record("CD2 批量重命名完成", "count=" + plan.renames().size());
         }
 
-        Map<MoveRequestGroup, List<String>> movePathsByRequestGroup = new LinkedHashMap<>();
+        Map<MoveRequestGroup, List<MoveOperation>> moveOperationsByRequestGroup = new LinkedHashMap<>();
         for (MoveOperation operation : plan.moves()) {
-            MoveRequestGroup requestGroup = new MoveRequestGroup(
-                    parentPath(operation.sourcePath()),
-                    operation.targetDirectory()
-            );
-            movePathsByRequestGroup.computeIfAbsent(requestGroup, ignored -> new ArrayList<>())
-                    .add(operation.sourcePath());
+            MoveRequestGroup requestGroup = new MoveRequestGroup(parentPath(operation.sourcePath()), operation.targetDirectory());
+            moveOperationsByRequestGroup.computeIfAbsent(requestGroup, ignored -> new ArrayList<>()).add(operation);
         }
-        for (Map.Entry<MoveRequestGroup, List<String>> entry : movePathsByRequestGroup.entrySet()) {
-            progressObserver.record(
-                    "正在通过 CD2 批量移动文件到目标目录",
-                    "srcDir=" + entry.getKey().sourceDirectory()
-                            + ", dstDir=" + entry.getKey().targetDirectory()
-                            + ", count=" + entry.getValue().size()
-            );
-            fileOperations.move(
-                    entry.getValue().stream().map(this::toCloudDrivePath).toList(),
-                    toCloudDrivePath(entry.getKey().targetDirectory())
-            );
-            progressObserver.record("CD2 批量移动完成", "count=" + entry.getValue().size());
+        for (Map.Entry<MoveRequestGroup, List<MoveOperation>> entry : moveOperationsByRequestGroup.entrySet()) {
+            MoveRequestGroup requestGroup = entry.getKey();
+            List<MoveOperation> operations = entry.getValue();
+            List<MoveEvidence> evidence = captureMoveEvidence(operations, requestGroup.targetDirectory());
+            String batchDetail = "srcDir=" + requestGroup.sourceDirectory()
+                    + ", dstDir=" + requestGroup.targetDirectory() + ", count=" + operations.size();
+            progressObserver.record("正在通过 CD2 批量移动文件到目标目录", batchDetail);
+            try {
+                fileOperations.move(operations.stream().map(operation -> toCloudDrivePath(operation.sourcePath())).toList(),
+                        toCloudDrivePath(requestGroup.targetDirectory()));
+            } catch (CloudDrive2ClientException failure) {
+                progressObserver.record("CD2 批量移动请求失败，正在保留原始异常并核对已接受操作",
+                        moveFailureDetail(failure, evidence));
+                reconcileMoveFailure(evidence, failure, progressObserver);
+            }
+            progressObserver.record("CD2 批量移动完成", batchDetail);
         }
         if (!plan.moves().isEmpty()) {
             progressObserver.record("正在确认 CD2 移动源路径已消失", "count=" + plan.moves().size());
@@ -406,6 +406,153 @@ public class CloudDrive2LibraryOrganizer implements LibraryOrganizer {
     private String toCloudDrivePath(String ingestPath) {
         return targetRegistry.toCloudDrivePath(ingestPath,
                 properties.getIngestPathPrefix(), properties.getCloudDrivePathPrefix());
+    }
+
+    private List<MoveEvidence> captureMoveEvidence(List<MoveOperation> operations, String targetDirectory) {
+        String sourceDirectory = toCloudDrivePath(parentPath(operations.get(0).sourcePath()));
+        String cloudTargetDirectory = toCloudDrivePath(targetDirectory);
+        Map<String, CloudDrive2FileEntry> sources = entriesByName(fileOperations.list(sourceDirectory, true));
+        Map<String, CloudDrive2FileEntry> targets = entriesByName(fileOperations.list(cloudTargetDirectory, true));
+        List<MoveEvidence> evidence = new ArrayList<>();
+        for (MoveOperation operation : operations) {
+            String name = fileName(operation.sourcePath());
+            CloudDrive2FileEntry source = entryByName(sources, name);
+            if (source == null || source.size() < 0) {
+                throw new CloudDrive2ClientException("CD2 移动源身份或字节不可见，拒绝写入: " + operation.sourcePath());
+            }
+            if (containsNameIgnoreCase(targets, name)) {
+                throw new CloudDrive2ClientException("CD2 移动目标存在冲突，拒绝写入: " + join(targetDirectory, name));
+            }
+            evidence.add(new MoveEvidence(toCloudDrivePath(operation.sourcePath()), cloudTargetDirectory,
+                    name, source.size(), source.id(), source.directory()));
+        }
+        return List.copyOf(evidence);
+    }
+
+    private boolean containsNameIgnoreCase(Map<String, CloudDrive2FileEntry> entries, String name) {
+        return entries.keySet().stream().anyMatch(existing -> existing.equalsIgnoreCase(name));
+    }
+
+    private CloudDrive2FileEntry entryByName(Map<String, CloudDrive2FileEntry> entries, String name) {
+        return entries.entrySet().stream().filter(entry -> entry.getKey().equalsIgnoreCase(name))
+                .map(Map.Entry::getValue).findFirst().orElse(null);
+    }
+
+    private void reconcileMoveFailure(List<MoveEvidence> evidence, CloudDrive2ClientException originalFailure,
+                                      LibraryOrganizationProgressObserver progressObserver) {
+        Instant deadline = Instant.now().plus(properties.getVisibilityTimeout());
+        if (evidence.stream().anyMatch(move -> move.directory() || move.size() <= 0 || move.id().isBlank())) {
+            originalFailure.addSuppressed(new CloudDrive2ClientException("CD2 移动前缺少精确文件字节或稳定身份，禁止补发"));
+            throw originalFailure;
+        }
+        try {
+            while (true) {
+                MoveObservation observation = observeMoveEvidence(evidence);
+                progressObserver.record("CD2 移动失败后的只读核对", moveFailureEvidence(evidence, observation));
+                if (allMovesCompleted(evidence, observation)) return;
+                if (!Instant.now().isBefore(deadline)) {
+                    List<MoveEvidence> residual = positivelyProvenResiduals(evidence, observation);
+                    if (originalFailure.getStatusCode() != Status.Code.INTERNAL || residual.isEmpty()
+                            || residual.size() != incompleteMoveCount(evidence, observation)) {
+                        throw new CloudDrive2ClientException("CD2 移动失败后结果不确定，禁止补发: "
+                                + moveFailureEvidence(evidence, observation));
+                    }
+                    // 已接受的并行请求由客户端结清；再等待完整可见性窗口，避免把延迟结果当作残余。
+                    for (MoveEvidence move : residual) {
+                        MoveObservation fresh = observeMoveEvidence(evidence);
+                        if (allMovesCompleted(evidence, fresh)) return;
+                        if (!positivelyProvenResiduals(evidence, fresh).contains(move)
+                                || positivelyProvenResiduals(evidence, fresh).size() != incompleteMoveCount(evidence, fresh)) {
+                            throw new CloudDrive2ClientException("CD2 残余移动身份或目标发生变化，禁止补发");
+                        }
+                        progressObserver.record("CD2 正在安全补偿单个残余移动", move.toString());
+                        fileOperations.move(List.of(move.sourcePath()), move.targetDirectory());
+                        awaitMoveEvidenceFinal(List.of(move));
+                    }
+                    awaitMoveEvidenceFinal(evidence);
+                    return;
+                }
+                sleep(properties.getVisibilityPollInterval());
+            }
+        } catch (CloudDrive2ClientException verificationFailure) {
+            if (verificationFailure != originalFailure) originalFailure.addSuppressed(verificationFailure);
+            throw originalFailure;
+        }
+    }
+
+    private MoveObservation observeMoveEvidence(List<MoveEvidence> evidence) {
+        MoveEvidence first = evidence.get(0);
+        return new MoveObservation(
+                entriesByName(fileOperations.list(parentPath(first.sourcePath()), true)),
+                entriesByName(fileOperations.list(first.targetDirectory(), true)));
+    }
+
+    private void awaitMoveEvidenceFinal(List<MoveEvidence> evidence) {
+        if (evidence.isEmpty()) return;
+        Instant deadline = Instant.now().plus(properties.getVisibilityTimeout());
+        while (true) {
+            MoveObservation observation = observeMoveEvidence(evidence);
+            if (allMovesCompleted(evidence, observation)) return;
+            if (!Instant.now().isBefore(deadline)) {
+                throw new CloudDrive2ClientException("CD2 移动结果未达到源消失及目标字节校验: "
+                        + moveFailureEvidence(evidence, observation));
+            }
+            sleep(properties.getVisibilityPollInterval());
+        }
+    }
+
+    private List<MoveEvidence> positivelyProvenResiduals(List<MoveEvidence> evidence, MoveObservation observation) {
+        return evidence.stream()
+                .filter(move -> entryByName(observation.targets(), move.name()) == null)
+                .filter(move -> matchesEvidence(entryByName(observation.sources(), move.name()), move))
+                .filter(move -> !move.directory() && move.size() > 0 && !move.id().isBlank())
+                .toList();
+    }
+
+    private boolean allMovesCompleted(List<MoveEvidence> evidence, MoveObservation observation) {
+        return evidence.stream().allMatch(move -> entryByName(observation.sources(), move.name()) == null
+                && matchesEvidence(entryByName(observation.targets(), move.name()), move));
+    }
+
+    private long incompleteMoveCount(List<MoveEvidence> evidence, MoveObservation observation) {
+        return evidence.stream().filter(move -> !(entryByName(observation.sources(), move.name()) == null
+                && matchesEvidence(entryByName(observation.targets(), move.name()), move))).count();
+    }
+
+    private boolean matchesEvidence(CloudDrive2FileEntry entry, MoveEvidence evidence) {
+        return entry != null && !entry.directory() && entry.size() == evidence.size()
+                && evidence.id().equals(entry.id()) && evidence.name().equals(entry.name());
+    }
+
+    // 大小写别名、重复项或路径不一致的上游目录不能作为残余写入的证据。
+    private Map<String, CloudDrive2FileEntry> entriesByName(List<CloudDrive2FileEntry> entries) {
+        Map<String, CloudDrive2FileEntry> result = new LinkedHashMap<>();
+        for (CloudDrive2FileEntry entry : entries) {
+            if (containsNameIgnoreCase(result, entry.name())) {
+                throw new CloudDrive2ClientException("CD2 目录清单存在重名冲突: " + entry.name());
+            }
+            result.put(entry.name(), entry);
+        }
+        return result;
+    }
+
+    private String moveFailureDetail(CloudDrive2ClientException failure, List<MoveEvidence> evidence) {
+        return "status=" + failure.getStatusCode() + ", error=" + failure.getMessage()
+                + ", evidence=" + evidence.stream().map(move -> move.name() + "(" + move.size() + "," + move.id() + ")").toList();
+    }
+
+    private String moveFailureEvidence(List<MoveEvidence> evidence, MoveObservation observation) {
+        return evidence.stream().map(move -> move.name() + " source="
+                + (observation.sources().containsKey(move.name()) ? "present" : "absent")
+                + " target=" + (observation.targets().containsKey(move.name()) ? "present" : "absent")).toList().toString();
+    }
+
+    private record MoveEvidence(String sourcePath, String targetDirectory, String name, long size, String id,
+                                boolean directory) {
+    }
+
+    private record MoveObservation(Map<String, CloudDrive2FileEntry> sources,
+                                   Map<String, CloudDrive2FileEntry> targets) {
     }
 
     private record MoveRequestGroup(String sourceDirectory, String targetDirectory) {

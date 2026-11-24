@@ -349,7 +349,8 @@ class CloudDrive2LibraryOrganizerTest {
         organizer.organize(plan, (message, detail) -> { });
 
         assertThat(fileOperations.cachedListedPaths).contains(target);
-        assertThat(fileOperations.forcedListedPaths).doesNotContain(target);
+        // 移动前强制读取目标清单用于冲突检查，最终完整性仍允许读取 CD2 移动缓存。
+        assertThat(fileOperations.forcedListedPaths.stream().filter(target::equals)).hasSize(1);
     }
 
     @Test
@@ -593,6 +594,194 @@ class CloudDrive2LibraryOrganizerTest {
     }
 
     @Test
+    void reconcilesPartialMoveWithOnlyIndividualProvenResidualsBeforeDeletion() {
+        FakeFileOperations files = new FakeFileOperations();
+        LibraryOrganizationPlan plan = residualMovePlan(files);
+        files.movesBeforeFailure = 1;
+        files.moveFailure = new CloudDrive2ClientException("partial INTERNAL", Status.Code.INTERNAL, null);
+        List<String> progress = new ArrayList<>();
+
+        residualOrganizer(files).organize(plan, (message, detail) -> progress.add(message + ":" + detail));
+
+        assertThat(files.moveCalls).hasSize(3);
+        assertThat(files.moveCalls.get(1).sourcePaths()).containsExactly("/WebDAV/Media/Movie/Recovery/Release/two.mkv");
+        assertThat(files.moveCalls.get(2).sourcePaths()).containsExactly("/WebDAV/Media/Movie/Recovery/Release/three.mkv");
+        assertThat(files.children("/WebDAV/Media/Movie/Recovery"))
+                .extracting(CloudDrive2FileEntry::name).containsExactlyInAnyOrder("one.mkv", "two.mkv", "three.mkv");
+        assertThat(progress).anySatisfy(line -> assertThat(line).contains("partial INTERNAL", "INTERNAL"));
+        assertThat(files.deleteCalls).isNotEmpty();
+    }
+
+    @Test
+    void observesAllMovedDespiteInternalFailureWithoutReplaying() {
+        FakeFileOperations files = new FakeFileOperations();
+        LibraryOrganizationPlan plan = residualMovePlan(files);
+        files.moveFailure = new CloudDrive2ClientException("response lost", Status.Code.INTERNAL, null);
+
+        residualOrganizer(files).organize(plan, (message, detail) -> { });
+
+        assertThat(files.moveCalls).hasSize(1);
+    }
+
+    @Test
+    void observesInternalResponseWithDelayedVisibilityBeforeConsideringResiduals() {
+        FakeFileOperations files = new FakeFileOperations();
+        LibraryOrganizationPlan plan = residualMovePlan(files);
+        files.moveFailure = new CloudDrive2ClientException("late INTERNAL", Status.Code.INTERNAL, null);
+        files.targetListingsUntilMoveVisible = 3;
+
+        residualOrganizer(files).organize(plan, (message, detail) -> { });
+
+        assertThat(files.moveCalls).hasSize(1);
+    }
+
+    @Test
+    void preservesOriginalMoveFailureWhenFreshListingIsUnavailable() {
+        FakeFileOperations files = new FakeFileOperations();
+        LibraryOrganizationPlan plan = residualMovePlan(files);
+        files.movesBeforeFailure = 1;
+        files.moveFailure = new CloudDrive2ClientException("partial", Status.Code.INTERNAL, null);
+        files.listFailureAfterMove = new CloudDrive2ClientException("list unavailable", Status.Code.UNAVAILABLE, null);
+
+        assertThatThrownBy(() -> residualOrganizer(files).organize(plan, (message, detail) -> { }))
+                .isSameAs(files.moveFailure)
+                .satisfies(failure -> assertThat(failure.getSuppressed()).contains(files.listFailureAfterMove));
+        assertThat(files.moveCalls).hasSize(1);
+        assertThat(files.deleteCalls).isEmpty();
+    }
+
+    @Test
+    void neverReplaysUnknownOutcomeEvenWhenSourceStillLooksPresent() {
+        FakeFileOperations files = new FakeFileOperations();
+        LibraryOrganizationPlan plan = residualMovePlan(files);
+        files.movesBeforeFailure = 0;
+        files.moveFailure = new CloudDrive2ClientException("unknown", Status.Code.DEADLINE_EXCEEDED, null);
+
+        assertThatThrownBy(() -> residualOrganizer(files).organize(plan, (message, detail) -> { }))
+                .isSameAs(files.moveFailure);
+        assertThat(files.moveCalls).hasSize(1);
+        assertThat(files.deleteCalls).isEmpty();
+    }
+
+    @Test
+    void neverReplaysReplacedSourceOrNewCollisionAfterPartialMove() {
+        for (boolean collision : List.of(false, true)) {
+            FakeFileOperations files = new FakeFileOperations();
+            LibraryOrganizationPlan plan = residualMovePlan(files);
+            files.movesBeforeFailure = 1;
+            files.moveFailure = new CloudDrive2ClientException("partial", Status.Code.INTERNAL, null);
+            files.afterFirstMove = () -> {
+                String parent = "/WebDAV/Media/Movie/Recovery" + (collision ? "" : "/Release");
+                files.entries.get(parent).put("two.mkv",
+                        new CloudDrive2FileEntry("two.mkv", parent + "/two.mkv", 100L, false, "replacement"));
+            };
+
+            assertThatThrownBy(() -> residualOrganizer(files).organize(plan, (message, detail) -> { }))
+                    .isSameAs(files.moveFailure);
+            assertThat(files.moveCalls).hasSize(1);
+            assertThat(files.deleteCalls).isEmpty();
+        }
+    }
+
+    @Test
+    void waitsForUnknownMoveOutcomeToBecomeVisibleWithoutDuplicateWrites() {
+        FakeFileOperations files = new FakeFileOperations();
+        LibraryOrganizationPlan plan = residualMovePlan(files);
+        files.moveFailure = new CloudDrive2ClientException("response unknown", Status.Code.DEADLINE_EXCEEDED, null);
+        files.targetListingsUntilMoveVisible = 3;
+
+        residualOrganizer(files).organize(plan, (message, detail) -> { });
+
+        assertThat(files.moveCalls).hasSize(1);
+        assertThat(files.targetListingsUntilMoveVisible).isZero();
+    }
+
+    @Test
+    void doesNotReplayResidualWhenMovedTargetBytesOrIdentityConflict() {
+        for (boolean wrongIdentity : List.of(false, true)) {
+            FakeFileOperations files = new FakeFileOperations();
+            LibraryOrganizationPlan plan = residualMovePlan(files);
+            files.movesBeforeFailure = 1;
+            files.moveFailure = new CloudDrive2ClientException("partial", Status.Code.INTERNAL, null);
+            files.afterFirstMove = () -> files.entries.get("/WebDAV/Media/Movie/Recovery").put("one.mkv",
+                    new CloudDrive2FileEntry("one.mkv", "/WebDAV/Media/Movie/Recovery/one.mkv",
+                            wrongIdentity ? 100L : 99L, false, wrongIdentity ? "foreign-id" : "id-one.mkv"));
+
+            assertThatThrownBy(() -> residualOrganizer(files).organize(plan, (message, detail) -> { }))
+                    .isSameAs(files.moveFailure);
+            assertThat(files.moveCalls).hasSize(1);
+            assertThat(files.deleteCalls).isEmpty();
+        }
+    }
+
+    @Test
+    void rejectsPreexistingTargetCollisionBeforeMoving() {
+        FakeFileOperations files = new FakeFileOperations();
+        LibraryOrganizationPlan plan = residualMovePlan(files);
+        files.addFile("/WebDAV/Media/Movie/Recovery", "TWO.mkv", 100L);
+
+        assertThatThrownBy(() -> residualOrganizer(files).organize(plan, (message, detail) -> { }))
+                .hasMessageContaining("冲突");
+        assertThat(files.moveCalls).isEmpty();
+        assertThat(files.deleteCalls).isEmpty();
+    }
+
+    @Test
+    void preservesOriginalFailureAndStopsAfterSecondResidualFailure() {
+        FakeFileOperations files = new FakeFileOperations();
+        LibraryOrganizationPlan plan = residualMovePlan(files);
+        files.movesBeforeFailure = 1;
+        files.moveFailure = new CloudDrive2ClientException("original partial", Status.Code.INTERNAL, null);
+        files.residualMoveFailure = new CloudDrive2ClientException("residual failed", Status.Code.INTERNAL, null);
+
+        assertThatThrownBy(() -> residualOrganizer(files).organize(plan, (message, detail) -> { }))
+                .isSameAs(files.moveFailure)
+                .satisfies(failure -> assertThat(failure.getSuppressed()).contains(files.residualMoveFailure));
+        assertThat(files.moveCalls).hasSize(2);
+        assertThat(files.deleteCalls).isEmpty();
+    }
+
+    @Test
+    void doesNotReplayWithoutPositiveBytesOrStableIdentity() {
+        for (boolean missingId : List.of(false, true)) {
+            FakeFileOperations files = new FakeFileOperations();
+            LibraryOrganizationPlan plan = residualMovePlan(files);
+            files.entries.get("/WebDAV/Media/Movie/Recovery/Release").put("two.mkv",
+                    new CloudDrive2FileEntry("two.mkv", "/WebDAV/Media/Movie/Recovery/Release/two.mkv",
+                            missingId ? 100L : 0L, false, missingId ? "" : "id-two.mkv"));
+            files.movesBeforeFailure = 1;
+            files.moveFailure = new CloudDrive2ClientException("partial", Status.Code.INTERNAL, null);
+
+            assertThatThrownBy(() -> residualOrganizer(files).organize(plan, (message, detail) -> { }))
+                    .isSameAs(files.moveFailure);
+            assertThat(files.moveCalls).hasSize(1);
+            assertThat(files.deleteCalls).isEmpty();
+        }
+    }
+
+    private CloudDrive2LibraryOrganizer residualOrganizer(FakeFileOperations files) {
+        CloudDrive2Properties config = properties();
+        config.setVisibilityTimeout(Duration.ofMillis(15));
+        return new CloudDrive2LibraryOrganizer(files, config, IngestTargetFixtures.legacy());
+    }
+
+    private LibraryOrganizationPlan residualMovePlan(FakeFileOperations files) {
+        String target = "/pikpak/Media/Movie/Recovery";
+        String cloudTarget = "/WebDAV/Media/Movie/Recovery";
+        files.addDirectory(cloudTarget, "Release");
+        for (String name : List.of("one.mkv", "two.mkv", "three.mkv")) {
+            files.entries.get(cloudTarget + "/Release").put(name,
+                    new CloudDrive2FileEntry(name, cloudTarget + "/Release/" + name, 100L, false, "id-" + name));
+        }
+        files.addFile(cloudTarget + "/Release", "junk.txt", 1L);
+        return new LibraryOrganizationPlan(target, List.of(),
+                List.of("one.mkv", "two.mkv", "three.mkv").stream()
+                        .map(name -> new MoveOperation(target + "/Release/" + name, target)).toList(),
+                List.of(new DeleteOperation(target + "/Release/junk.txt")),
+                Set.of("one.mkv", "two.mkv", "three.mkv"), Set.of());
+    }
+
+    @Test
     void selectsCloudDrivePerProductAndKeepsIndependentOpenListFallback() {
         CloudDrive2Properties properties = properties();
         properties.setOrganizationEnabled(true);
@@ -670,6 +859,13 @@ class CloudDrive2LibraryOrganizerTest {
         private final List<String> forcedListedPaths = new ArrayList<>();
         private final List<String> events = new ArrayList<>();
         private final List<List<String>> deleteCalls = new ArrayList<>();
+        private CloudDrive2ClientException moveFailure;
+        private CloudDrive2ClientException listFailureAfterMove;
+        private CloudDrive2ClientException residualMoveFailure;
+        private int movesBeforeFailure = Integer.MAX_VALUE;
+        private int targetListingsUntilMoveVisible;
+        private Runnable afterFirstMove;
+        private final Map<String, List<CloudDrive2FileEntry>> preMoveListings = new LinkedHashMap<>();
         private CloudDrive2ClientException deleteFailure;
         private CloudDrive2ClientException listFailureAfterDelete;
         private int deletesBeforeFailure = Integer.MAX_VALUE;
@@ -687,10 +883,17 @@ class CloudDrive2LibraryOrganizerTest {
             if (!deleteCalls.isEmpty() && listFailureAfterDelete != null) {
                 throw listFailureAfterDelete;
             }
+            if (!moveCalls.isEmpty() && listFailureAfterMove != null) throw listFailureAfterMove;
             int notFoundCalls = notFoundCallsRemaining.getOrDefault(path, 0);
             if (notFoundCalls > 0) {
                 notFoundCallsRemaining.put(path, notFoundCalls - 1);
                 throw new CloudDrive2ClientException("not found: " + path, Status.Code.NOT_FOUND, null);
+            }
+            if (!moveCalls.isEmpty() && targetListingsUntilMoveVisible > 0) {
+                if (path.equals(moveCalls.get(0).targetDirectory())) {
+                    targetListingsUntilMoveVisible--;
+                }
+                return preMoveListings.getOrDefault(path, List.of());
             }
             Map<String, Set<String>> hiddenNamesByPath = forceRefresh
                     ? hiddenNamesFromForcedListings
@@ -722,16 +925,26 @@ class CloudDrive2LibraryOrganizerTest {
                 throw new CloudDrive2ClientException("CloudDrive2 move failed");
             }
             moveCalls.add(new MoveCall(List.copyOf(sourcePaths), targetDirectory));
+            if (moveCalls.size() > 1 && residualMoveFailure != null) {
+                throw residualMoveFailure;
+            }
+            entries.forEach((path, children) -> preMoveListings.putIfAbsent(path, List.copyOf(children.values())));
             entries.computeIfAbsent(targetDirectory, ignored -> new LinkedHashMap<>());
-            for (String sourcePath : sourcePaths) {
+            List<String> appliedPaths = moveFailure != null && moveCalls.size() == 1
+                    ? sourcePaths.subList(0, Math.min(movesBeforeFailure, sourcePaths.size())) : sourcePaths;
+            for (String sourcePath : appliedPaths) {
                 String sourceParent = parent(sourcePath);
                 CloudDrive2FileEntry source = entries.get(sourceParent).remove(name(sourcePath));
                 entries.get(targetDirectory).put(source.name(), new CloudDrive2FileEntry(
                         source.name(),
                         targetDirectory + "/" + source.name(),
                         source.size(),
-                        source.directory()
+                        source.directory(), source.id()
                 ));
+            }
+            if (moveFailure != null && moveCalls.size() == 1) {
+                if (afterFirstMove != null) afterFirstMove.run();
+                throw moveFailure;
             }
         }
 
