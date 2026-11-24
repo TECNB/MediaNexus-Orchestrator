@@ -46,6 +46,8 @@ class IngestCompletionWorkflowTest {
     private final LibraryOrganizer organizer = mock(LibraryOrganizer.class);
     private final IngestTaskNotifier notifier = mock(IngestTaskNotifier.class);
     private final AutoSymlinkRefreshService refresh = mock(AutoSymlinkRefreshService.class);
+    private final MovieMagnetIngestTaskLogMapper movieLogs = mock(MovieMagnetIngestTaskLogMapper.class);
+    private final SeriesMagnetIngestTaskLogMapper seriesLogs = mock(SeriesMagnetIngestTaskLogMapper.class);
     private final OpenListProperties properties = new OpenListProperties();
     private final List<String> savedStatuses = new java.util.concurrent.CopyOnWriteArrayList<>();
     private final OfflineIngestScheduler scheduler = new OfflineIngestScheduler(openList);
@@ -200,6 +202,136 @@ class IngestCompletionWorkflowTest {
         assertSavedSuccess();
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"MOVIE", "SERIES"})
+    void acceptedIdentityLogConnectionFailureDoesNotStrandDurableDownload(String kind) {
+        if (kind.equals("MOVIE")) {
+            var task = movieTask();
+            when(movies.selectById(task.getId())).thenReturn(task);
+            files(task.getTempPath(), "The.Movie.2020.1080p.mkv");
+            when(movieLogs.insert(any(com.medianexus.orchestrator.model.MovieMagnetIngestTaskLog.class))).thenAnswer(call -> {
+                com.medianexus.orchestrator.model.MovieMagnetIngestTaskLog entry = call.getArgument(0);
+                if ("OpenList 离线任务已创建".equals(entry.getMessage())) throw jdbcUnavailable();
+                return 1;
+            });
+            ReflectionTestUtils.invokeMethod(magnetWorker(), "runMovieTask", task.getId());
+            verify(notifier, org.mockito.Mockito.timeout(2000)).movieCompleted(task);
+            verify(movies, org.mockito.Mockito.times(4)).update(any());
+        } else {
+            var task = new SeriesMagnetIngestTask();
+            task.setId("series-1"); task.setTitle("Show"); task.setSeasonNumber(1);
+            task.setTaskProductType("SERIES"); task.setSavePath("/media/Show"); task.setTempPath("/media/Show");
+            task.setMagnet("magnet:?xt=urn:btih:demo");
+            when(series.selectById(task.getId())).thenReturn(task);
+            files(task.getTempPath(), "Show.S01E01.mkv");
+            when(seriesLogs.insert(any(com.medianexus.orchestrator.model.SeriesMagnetIngestTaskLog.class))).thenAnswer(call -> {
+                com.medianexus.orchestrator.model.SeriesMagnetIngestTaskLog entry = call.getArgument(0);
+                if ("OpenList 离线任务已创建".equals(entry.getMessage())) throw jdbcUnavailable();
+                return 1;
+            });
+            ReflectionTestUtils.invokeMethod(magnetWorker(), "runSeriesTask", task.getId());
+            verify(notifier, org.mockito.Mockito.timeout(2000)).seriesCompleted(task);
+            verify(series, org.mockito.Mockito.times(4)).update(any());
+        }
+        assertSavedSuccess();
+        verify(openList, org.mockito.Mockito.times(1)).addOfflineDownload(anyString(), anyString());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"MOVIE", "SERIES"})
+    void requiredOrganizingCheckpointPrecedesUpstreamRecordDeletion(String kind) throws Exception {
+        var checkpointFailed = new java.util.concurrent.CountDownLatch(1);
+        if (kind.equals("MOVIE")) {
+            var task = movieTask();
+            when(movies.selectById(task.getId())).thenReturn(task);
+            doAnswer(call -> {
+                LambdaUpdateWrapper<?> update = call.getArgument(0); update.getSqlSet();
+                if (update.getParamNameValuePairs().containsValue("ORGANIZING")) { checkpointFailed.countDown(); throw jdbcUnavailable(); }
+                return recordStatus(call.getArgument(0));
+            }).when(movies).update(any());
+            ReflectionTestUtils.invokeMethod(magnetWorker(), "runMovieTask", task.getId());
+        } else {
+            var task = new SeriesMagnetIngestTask();
+            task.setId("series-1"); task.setTaskProductType("SERIES");
+            task.setSavePath("/media/Show"); task.setTempPath("/media/Show"); task.setMagnet("magnet:?xt=urn:btih:demo");
+            when(series.selectById(task.getId())).thenReturn(task);
+            doAnswer(call -> {
+                LambdaUpdateWrapper<?> update = call.getArgument(0); update.getSqlSet();
+                if (update.getParamNameValuePairs().containsValue("ORGANIZING")) { checkpointFailed.countDown(); throw jdbcUnavailable(); }
+                return recordStatus(call.getArgument(0));
+            }).when(series).update(any());
+            ReflectionTestUtils.invokeMethod(magnetWorker(), "runSeriesTask", task.getId());
+        }
+        assertThat(checkpointFailed.await(2, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+        assertThat(failed.await(2, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+        verify(openList, org.mockito.Mockito.never()).deleteOfflineTask(anyString());
+        verifyNoInteractions(organizer);
+    }
+
+    @Test
+    void failureStatusIsDurableBeforeOptionalFailureLogConnectionError() throws Exception {
+        var task = movieTask();
+        when(movies.selectById(task.getId())).thenReturn(task);
+        when(movieLogs.insert(any(com.medianexus.orchestrator.model.MovieMagnetIngestTaskLog.class))).thenAnswer(call -> {
+            com.medianexus.orchestrator.model.MovieMagnetIngestTaskLog entry = call.getArgument(0);
+            if ("failed".equals(entry.getStage())) throw jdbcUnavailable();
+            return 1;
+        });
+        ReflectionTestUtils.invokeMethod(magnetWorker(), "markMovieFailed", task.getId(), "captured original failure");
+        assertThat(savedStatuses).endsWith("FAILED");
+        verify(notifier).failed("movie", task.getId(), null, task.getTitle(), null, "captured original failure");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"MOVIE", "SERIES"})
+    void explicitCheckpointRecoveryUpdatesTaskRowsWithoutReplayingCallbackLogs(String kind) {
+        var download = new java.util.concurrent.atomic.AtomicReference<OfflineIngestScheduler.Download>();
+        var captureScheduler = mock(OfflineIngestScheduler.class);
+        when(captureScheduler.enqueue(anyString(), org.mockito.ArgumentMatchers.nullable(String.class), any(), any(), any()))
+                .thenAnswer(call -> {
+                    download.set(call.getArgument(4));
+                    return new java.util.concurrent.CompletableFuture<Void>();
+                });
+        var worker = magnetWorker();
+        ReflectionTestUtils.setField(worker, "offlineScheduler", captureScheduler);
+        var attempts = new java.util.concurrent.ConcurrentHashMap<String, Integer>();
+        org.mockito.stubbing.Answer<Integer> checkpoint = call -> {
+            LambdaUpdateWrapper<?> update = call.getArgument(0); update.getSqlSet();
+            String status = update.getParamNameValuePairs().values().stream()
+                    .filter(value -> Set.of("DOWNLOADING", "FAILED").contains(value))
+                    .map(Object::toString).findFirst().orElseThrow();
+            if (attempts.merge(status, 1, Integer::sum) == 1) throw jdbcUnavailable();
+            return recordStatus(call.getArgument(0));
+        };
+        if (kind.equals("MOVIE")) {
+            var task = movieTask();
+            when(movies.selectById(task.getId())).thenReturn(task);
+            doAnswer(checkpoint).when(movies).update(any());
+            ReflectionTestUtils.invokeMethod(worker, "runMovieTask", task.getId());
+        } else {
+            var task = new SeriesMagnetIngestTask();
+            task.setId("series-1"); task.setSavePath("/media/Show");
+            when(series.selectById(task.getId())).thenReturn(task);
+            doAnswer(checkpoint).when(series).update(any());
+            ReflectionTestUtils.invokeMethod(worker, "runSeriesTask", task.getId());
+        }
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> download.get().submitted("offline-1"))
+                .isInstanceOf(org.springframework.jdbc.CannotGetJdbcConnectionException.class);
+        download.get().recoverSubmittedCheckpoint("offline-1");
+        var failure = new IllegalStateException("captured failure");
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> download.get().failed(failure))
+                .isInstanceOf(org.springframework.jdbc.CannotGetJdbcConnectionException.class);
+        download.get().recoverFailureCheckpoint(failure);
+        assertThat(savedStatuses).containsExactly("DOWNLOADING", "FAILED");
+        assertThat(attempts).containsEntry("DOWNLOADING", 2).containsEntry("FAILED", 2);
+        verifyNoInteractions(movieLogs, seriesLogs);
+        verifyNoInteractions(openList);
+    }
+
+    private static org.springframework.jdbc.CannotGetJdbcConnectionException jdbcUnavailable() {
+        return new org.springframework.jdbc.CannotGetJdbcConnectionException("test connection unavailable");
+    }
+
     private int recordStatus(LambdaUpdateWrapper<?> update) {
         update.getSqlSet();
         update.getParamNameValuePairs().values().stream()
@@ -231,8 +363,8 @@ class IngestCompletionWorkflowTest {
     }
 
     private MagnetIngestService magnetWorker() {
-        MagnetIngestService worker = new MagnetIngestService(movies, mock(MovieMagnetIngestTaskLogMapper.class),
-                series, mock(SeriesMagnetIngestTaskLogMapper.class), openList, properties,
+        MagnetIngestService worker = new MagnetIngestService(movies, movieLogs,
+                series, seriesLogs, openList, properties,
                 new MovieSeriesFileRenameService(), organizer, null, null, refresh, null, IngestTargetFixtures.legacy(), notifier);
         ReflectionTestUtils.setField(worker, "offlineScheduler", scheduler);
         return worker;

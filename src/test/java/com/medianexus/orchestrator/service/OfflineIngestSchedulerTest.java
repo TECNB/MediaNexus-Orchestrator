@@ -443,6 +443,288 @@ class OfflineIngestSchedulerTest {
         }
     }
 
+    @Test
+    void acceptedIdCheckpointRetriesWithoutResubmissionPollingOrReleasingClaims() throws Exception {
+        var client = mappedClient();
+        var checkpointEntered = new CountDownLatch(1);
+        var allowCheckpoint = new CountDownLatch(1);
+        var attempts = new java.util.concurrent.atomic.AtomicInteger();
+        var submits = new java.util.concurrent.atomic.AtomicInteger();
+        var blocked = new CountDownLatch(1);
+        when(client.offlineTaskInfo("upstream")).thenReturn(snapshot("upstream", 2));
+        try (var scheduler = new OfflineIngestScheduler(client)) {
+            var completion = scheduler.enqueue("/old", "old-hash", Duration.ofSeconds(5), Duration.ofMillis(5), new DownloadStub() {
+                public String submit() { submits.incrementAndGet(); return "upstream"; }
+                public void submitted(String id) {
+                    assertThat(id).isEqualTo("upstream");
+                    if (attempts.incrementAndGet() == 1) {
+                        checkpointEntered.countDown(); await(allowCheckpoint);
+                        throw new org.mybatis.spring.MyBatisSystemException(jdbcUnavailable());
+                    }
+                }
+            });
+            assertThat(checkpointEntered.await(2, TimeUnit.SECONDS)).isTrue();
+            scheduler.enqueue("/old/child", "other", Duration.ofSeconds(5), Duration.ofMillis(5), submission("blocked", blocked));
+            scheduler.enqueue("/alias", "old-hash", Duration.ofSeconds(5), Duration.ofMillis(5), submission("blocked", blocked));
+            assertThat(blocked.await(60, TimeUnit.MILLISECONDS)).isFalse();
+            verify(client, never()).offlineTaskInfo(anyString());
+            allowCheckpoint.countDown();
+            completion.get(2, TimeUnit.SECONDS);
+            assertThat(submits.get()).isEqualTo(1);
+            assertThat(attempts.get()).isEqualTo(2);
+        } finally { allowCheckpoint.countDown(); }
+    }
+
+    @Test
+    void exhaustedAcceptedCheckpointHoldsClaimsAndNeverPolls() throws Exception {
+        var client = mappedClient();
+        var attempts = new java.util.concurrent.atomic.AtomicInteger();
+        var submits = new java.util.concurrent.atomic.AtomicInteger();
+        var blocked = new CountDownLatch(1);
+        try (var scheduler = new OfflineIngestScheduler(client)) {
+            assertThatThrownBy(() -> scheduler.enqueue("/old", "old-hash", Duration.ofSeconds(5), Duration.ofMillis(5), new DownloadStub() {
+                public String submit() { submits.incrementAndGet(); return "upstream"; }
+                public void submitted(String id) { attempts.incrementAndGet(); throw jdbcUnavailable(); }
+            }).get(2, TimeUnit.SECONDS)).hasCauseInstanceOf(com.medianexus.orchestrator.integration.openlist.OpenListClientException.class);
+            scheduler.enqueue("/old/child", "other", Duration.ofSeconds(5), Duration.ofMillis(5), submission("blocked", blocked));
+            scheduler.enqueue("/alias", "old-hash", Duration.ofSeconds(5), Duration.ofMillis(5), submission("blocked", blocked));
+            assertThat(blocked.await(150, TimeUnit.MILLISECONDS)).isFalse();
+            assertThat(attempts.get()).isEqualTo(3);
+            assertThat(submits.get()).isEqualTo(1);
+            verify(client, never()).offlineTaskInfo(anyString());
+            verify(client, never()).cancelOfflineTask(anyString());
+        }
+    }
+
+    @Test
+    void nonTransientAcceptedCheckpointIsNotRetried() throws Exception {
+        var client = mappedClient();
+        var attempts = new java.util.concurrent.atomic.AtomicInteger();
+        try (var scheduler = new OfflineIngestScheduler(client)) {
+            assertThatThrownBy(() -> scheduler.enqueue("/old", "a", Duration.ofSeconds(5), Duration.ofMillis(5), new DownloadStub() {
+                public void submitted(String id) { attempts.incrementAndGet(); throw new IllegalArgumentException("bad SQL"); }
+            }).get(2, TimeUnit.SECONDS)).hasCauseInstanceOf(com.medianexus.orchestrator.integration.openlist.OpenListClientException.class);
+            assertThat(attempts.get()).isEqualTo(1);
+            verify(client, never()).offlineTaskInfo(anyString());
+        }
+    }
+
+    @Test
+    void completedSnapshotAfterDeadlineSurvivesStageConnectionFailureAndOrganizesOnce() throws Exception {
+        var client = mappedClient();
+        var organizes = new java.util.concurrent.atomic.AtomicInteger();
+        when(client.offlineTaskInfo("upstream")).thenReturn(snapshot("upstream", 2));
+        try (var scheduler = new OfflineIngestScheduler(client)) {
+            scheduler.enqueue("/old", "a", Duration.ofMillis(1), Duration.ofMillis(15), new DownloadStub() {
+                public void stage(String message) {
+                    if (message.startsWith("下载已确认完成")) throw jdbcUnavailable();
+                }
+                public void organize(String id) { organizes.incrementAndGet(); }
+            }).get(2, TimeUnit.SECONDS);
+            assertThat(organizes.get()).isEqualTo(1);
+            verify(client, never()).cancelOfflineTask(anyString());
+            verify(client, times(1)).offlineTaskInfo("upstream");
+        }
+    }
+
+    @Test
+    void progressConnectionFailureDoesNotDisableActiveDeadline() throws Exception {
+        var client = mappedClient();
+        var canceled = new java.util.concurrent.atomic.AtomicBoolean();
+        var progresses = new java.util.concurrent.atomic.AtomicInteger();
+        when(client.offlineTaskInfo("upstream")).thenAnswer(call -> snapshot("upstream", canceled.get() ? 4 : 1));
+        doAnswer(call -> { canceled.set(true); return null; }).when(client).cancelOfflineTask("upstream");
+        try (var scheduler = new OfflineIngestScheduler(client)) {
+            assertThatThrownBy(() -> scheduler.enqueue("/old", "a", Duration.ofMillis(50), Duration.ofMillis(5), new DownloadStub() {
+                public void progress(OpenListOfflineTaskInfo snapshot) { progresses.incrementAndGet(); throw jdbcUnavailable(); }
+                public void organize(String id) { throw new AssertionError("active timeout must not organize"); }
+            }).get(2, TimeUnit.SECONDS)).hasCauseInstanceOf(com.medianexus.orchestrator.integration.openlist.OpenListClientException.class);
+            assertThat(progresses.get()).isPositive();
+            verify(client, times(1)).cancelOfflineTask("upstream");
+        }
+    }
+
+    @Test
+    void failureCheckpointRetriesKeepPathAndHashUntilDurableWithoutReplay() throws Exception {
+        var client = mappedClient();
+        var failedEntered = new CountDownLatch(1);
+        var allowRetry = new CountDownLatch(1);
+        var failedAttempts = new java.util.concurrent.atomic.AtomicInteger();
+        var prepares = new java.util.concurrent.atomic.AtomicInteger();
+        var submits = new java.util.concurrent.atomic.AtomicInteger();
+        var blocked = new CountDownLatch(2);
+        when(client.offlineTaskInfo("next")).thenReturn(snapshot("next", 2));
+        try (var scheduler = new OfflineIngestScheduler(client)) {
+            var completion = scheduler.enqueue("/old", "old-hash", Duration.ofSeconds(5), Duration.ofMillis(5), new DownloadStub() {
+                public void prepare() { prepares.incrementAndGet(); throw new IllegalStateException("preparation failed"); }
+                public String submit() { submits.incrementAndGet(); return "upstream"; }
+                public void failed(RuntimeException failure) {
+                    assertThat(failure).hasMessage("preparation failed");
+                    if (failedAttempts.incrementAndGet() == 1) { failedEntered.countDown(); throw jdbcUnavailable(); }
+                    await(allowRetry);
+                }
+            });
+            assertThat(failedEntered.await(2, TimeUnit.SECONDS)).isTrue();
+            scheduler.enqueue("/old/child", "other", Duration.ofSeconds(5), Duration.ofMillis(5), submission("next", blocked));
+            scheduler.enqueue("/alias", "old-hash", Duration.ofSeconds(5), Duration.ofMillis(5), submission("next", blocked));
+            assertThat(blocked.await(80, TimeUnit.MILLISECONDS)).isFalse();
+            assertThat(blocked.getCount()).isEqualTo(2);
+            allowRetry.countDown();
+            assertThatThrownBy(() -> completion.get(2, TimeUnit.SECONDS)).hasCauseInstanceOf(IllegalStateException.class);
+            assertThat(blocked.await(2, TimeUnit.SECONDS)).isTrue();
+            assertThat(failedAttempts.get()).isEqualTo(2);
+            assertThat(prepares.get()).isEqualTo(1);
+            assertThat(submits.get()).isZero();
+        } finally { allowRetry.countDown(); }
+    }
+
+    @Test
+    void organizationDatabaseFailurePersistsRecoveryMarkerAndNeverReplaysOrReleasesExclusions() throws Exception {
+        var client = mappedClient();
+        var organizes = new java.util.concurrent.atomic.AtomicInteger();
+        var failures = new java.util.concurrent.atomic.AtomicInteger();
+        var blocked = new CountDownLatch(1);
+        when(client.offlineTaskInfo("upstream")).thenReturn(snapshot("upstream", 2));
+        try (var scheduler = new OfflineIngestScheduler(client)) {
+            assertThatThrownBy(() -> scheduler.enqueue("/old", "old-hash", Duration.ofSeconds(5), Duration.ofMillis(5), new DownloadStub() {
+                public void organize(String id) { organizes.incrementAndGet(); throw jdbcUnavailable(); }
+                public void failed(RuntimeException failure) {
+                    assertThat(failure).hasMessageContaining("[ORGANIZATION_UNRESOLVED]");
+                    if (failures.incrementAndGet() < 2) throw jdbcUnavailable();
+                }
+            }).get(2, TimeUnit.SECONDS)).hasCauseInstanceOf(com.medianexus.orchestrator.integration.openlist.OpenListClientException.class);
+            scheduler.enqueue("/old/child", "other", Duration.ofSeconds(5), Duration.ofMillis(5), submission("blocked", blocked));
+            scheduler.enqueue("/alias", "old-hash", Duration.ofSeconds(5), Duration.ofMillis(5), submission("blocked", blocked));
+            assertThat(blocked.await(120, TimeUnit.MILLISECONDS)).isFalse();
+            assertThat(organizes.get()).isEqualTo(1);
+            assertThat(failures.get()).isEqualTo(2);
+        }
+    }
+
+    @Test
+    void exhaustedFailureCheckpointRetainsClaims() throws Exception {
+        var client = mappedClient();
+        var failures = new java.util.concurrent.atomic.AtomicInteger();
+        var blocked = new CountDownLatch(1);
+        try (var scheduler = new OfflineIngestScheduler(client)) {
+            assertThatThrownBy(() -> scheduler.enqueue("/old", "old-hash", Duration.ofSeconds(5), Duration.ofMillis(5), new DownloadStub() {
+                public void prepare() { throw new IllegalStateException("prepare failed"); }
+                public void failed(RuntimeException failure) { failures.incrementAndGet(); throw jdbcUnavailable(); }
+            }).get(2, TimeUnit.SECONDS)).hasCauseInstanceOf(IllegalStateException.class);
+            scheduler.enqueue("/old/child", "other", Duration.ofSeconds(5), Duration.ofMillis(5), submission("blocked", blocked));
+            scheduler.enqueue("/alias", "old-hash", Duration.ofSeconds(5), Duration.ofMillis(5), submission("blocked", blocked));
+            assertThat(blocked.await(120, TimeUnit.MILLISECONDS)).isFalse();
+            assertThat(failures.get()).isEqualTo(3);
+        }
+    }
+
+    @Test
+    void organizationRuntimeFailureCapturesOriginalCauseWhenFailureCheckpointNeedsRecovery() throws Exception {
+        var client = mappedClient();
+        var organizes = new java.util.concurrent.atomic.AtomicInteger();
+        var failures = new java.util.concurrent.atomic.AtomicInteger();
+        var original = new IllegalStateException("organization may have written");
+        var blocked = new CountDownLatch(1);
+        when(client.offlineTaskInfo("upstream")).thenReturn(snapshot("upstream", 2));
+        try (var scheduler = new OfflineIngestScheduler(client)) {
+            assertThatThrownBy(() -> scheduler.enqueue("/old", "old-hash", Duration.ofSeconds(5), Duration.ofMillis(5), new DownloadStub() {
+                public void organize(String id) { organizes.incrementAndGet(); throw original; }
+                public void failed(RuntimeException failure) {
+                    if (failures.incrementAndGet() == 1) {
+                        assertThat(failure).isSameAs(original);
+                        throw jdbcUnavailable();
+                    }
+                    assertThat(failure).hasMessageContaining("[ORGANIZATION_UNRESOLVED]").hasCause(original);
+                }
+            }).get(2, TimeUnit.SECONDS)).hasCauseInstanceOf(com.medianexus.orchestrator.integration.openlist.OpenListClientException.class);
+            scheduler.enqueue("/old/child", "other", Duration.ofSeconds(5), Duration.ofMillis(5), submission("blocked", blocked));
+            scheduler.enqueue("/alias", "old-hash", Duration.ofSeconds(5), Duration.ofMillis(5), submission("blocked", blocked));
+            assertThat(blocked.await(120, TimeUnit.MILLISECONDS)).isFalse();
+            assertThat(organizes.get()).isEqualTo(1);
+            assertThat(failures.get()).isEqualTo(2);
+        }
+    }
+
+    @Test
+    void batchSiblingCannotReleaseExhaustedFailureCheckpointClaims() throws Exception {
+        var client = mappedClient();
+        var failures = new java.util.concurrent.atomic.AtomicInteger();
+        var releaseSibling = new CountDownLatch(1);
+        var blocked = new CountDownLatch(1);
+        when(client.offlineTaskInfo("sibling")).thenAnswer(call -> {
+            await(releaseSibling); return snapshot("sibling", 2);
+        });
+        try (var scheduler = new OfflineIngestScheduler(client)) {
+            var batch = scheduler.enqueueBatch(java.util.List.of(
+                    new OfflineIngestScheduler.DownloadRequest("/old", "old-hash", Duration.ofSeconds(5), Duration.ofMillis(5), new DownloadStub() {
+                        public void prepare() { throw new IllegalStateException("prepare failed"); }
+                        public void failed(RuntimeException failure) { failures.incrementAndGet(); throw jdbcUnavailable(); }
+                    }),
+                    new OfflineIngestScheduler.DownloadRequest("/old", "sibling-hash", Duration.ofSeconds(5), Duration.ofMillis(5), new DownloadStub() {
+                        public String submit() { return "sibling"; }
+                    })));
+            assertThatThrownBy(() -> batch.get(0).get(2, TimeUnit.SECONDS)).hasCauseInstanceOf(IllegalStateException.class);
+            releaseSibling.countDown(); batch.get(1).get(2, TimeUnit.SECONDS);
+            scheduler.enqueue("/old/child", "other", Duration.ofSeconds(5), Duration.ofMillis(5), submission("blocked", blocked));
+            scheduler.enqueue("/alias", "old-hash", Duration.ofSeconds(5), Duration.ofMillis(5), submission("blocked", blocked));
+            assertThat(blocked.await(120, TimeUnit.MILLISECONDS)).isFalse();
+            assertThat(failures.get()).isEqualTo(3);
+        } finally { releaseSibling.countDown(); }
+    }
+
+    @Test
+    void unsupportedSubmittedRecoveryNeverReplaysNonIdempotentCallbacks() throws Exception {
+        var client = mappedClient();
+        var download = new NonIdempotentDownload();
+        var blocked = new CountDownLatch(1);
+        try (var scheduler = new OfflineIngestScheduler(client)) {
+            assertThatThrownBy(() -> scheduler.enqueue("/old", "old-hash", Duration.ofSeconds(5), Duration.ofMillis(5), download)
+                    .get(2, TimeUnit.SECONDS)).hasCauseInstanceOf(com.medianexus.orchestrator.integration.openlist.OpenListClientException.class);
+            scheduler.enqueue("/old/child", "other", Duration.ofSeconds(5), Duration.ofMillis(5), submission("blocked", blocked));
+            scheduler.enqueue("/alias", "old-hash", Duration.ofSeconds(5), Duration.ofMillis(5), submission("blocked", blocked));
+            assertThat(blocked.await(120, TimeUnit.MILLISECONDS)).isFalse();
+            assertThat(download.submitted.get()).isEqualTo(1);
+            assertThat(download.failed.get()).isEqualTo(1);
+            verify(client, never()).offlineTaskInfo(anyString());
+        }
+    }
+
+    @Test
+    void unsupportedFailureRecoveryNeverReplaysNonIdempotentFailureOrReleasesClaims() throws Exception {
+        var client = mappedClient();
+        var download = new NonIdempotentDownload() {
+            public void prepare() { throw new IllegalStateException("prepare failed"); }
+        };
+        var blocked = new CountDownLatch(1);
+        try (var scheduler = new OfflineIngestScheduler(client)) {
+            assertThatThrownBy(() -> scheduler.enqueue("/old", "old-hash", Duration.ofSeconds(5), Duration.ofMillis(5), download)
+                    .get(2, TimeUnit.SECONDS)).hasCauseInstanceOf(IllegalStateException.class);
+            scheduler.enqueue("/old/child", "other", Duration.ofSeconds(5), Duration.ofMillis(5), submission("blocked", blocked));
+            scheduler.enqueue("/alias", "old-hash", Duration.ofSeconds(5), Duration.ofMillis(5), submission("blocked", blocked));
+            assertThat(blocked.await(120, TimeUnit.MILLISECONDS)).isFalse();
+            assertThat(download.submitted.get()).isZero();
+            assertThat(download.failed.get()).isEqualTo(1);
+            verify(client, never()).offlineTaskInfo(anyString());
+        }
+    }
+
+    // Models owners whose callback mutates counters before a trailing JDBC log failure.
+    private static class NonIdempotentDownload implements OfflineIngestScheduler.Download {
+        final java.util.concurrent.atomic.AtomicInteger submitted = new java.util.concurrent.atomic.AtomicInteger();
+        final java.util.concurrent.atomic.AtomicInteger failed = new java.util.concurrent.atomic.AtomicInteger();
+        public void prepare() { }
+        public String submit() { return "upstream"; }
+        public void submitted(String id) { submitted.incrementAndGet(); throw jdbcUnavailable(); }
+        public void progress(OpenListOfflineTaskInfo snapshot) { }
+        public void organize(String id) { throw new AssertionError("unknown checkpoint must not organize"); }
+        public void failed(RuntimeException failure) { failed.incrementAndGet(); throw jdbcUnavailable(); }
+        public void stage(String message) { }
+    }
+
+    private static org.springframework.jdbc.CannotGetJdbcConnectionException jdbcUnavailable() {
+        return new org.springframework.jdbc.CannotGetJdbcConnectionException("test connection unavailable");
+    }
+
     private static OpenListClient mappedClient() {
         OpenListClient client = mock(OpenListClient.class);
         when(client.offlineDirectoryForPath(anyString())).thenAnswer(call ->
@@ -473,6 +755,9 @@ class OfflineIngestSchedulerTest {
         public void prepare() { }
         public String submit() { return "upstream"; }
         public void submitted(String id) { }
+        // This fixture explicitly models verified idempotent checkpoints; unverified owners use interface defaults.
+        public void recoverSubmittedCheckpoint(String id) { submitted(id); }
+        public void recoverFailureCheckpoint(RuntimeException failure) { failed(failure); }
         public void progress(OpenListOfflineTaskInfo snapshot) { }
         public void organize(String id) { }
         public void failed(RuntimeException failure) { }

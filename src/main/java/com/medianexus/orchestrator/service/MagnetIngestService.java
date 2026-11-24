@@ -855,15 +855,18 @@ public class MagnetIngestService {
                             return openListClient.addOfflineDownload(task.getTempPath(), task.getMagnet());
                         }
                         public void submitted(String id) { markMovieDownloading(taskId, id); }
+                        public void recoverSubmittedCheckpoint(String id) {
+                            updateMovieTask(taskId, "DOWNLOADING", "downloading", id, null, null);
+                        }
                         public void progress(OpenListOfflineTaskInfo snapshot) {
                             writeMovieLog(taskId, "INFO", "downloading", offlineProgressMessage(snapshot.progress()),
                                     offlineProgressDetail(snapshot.id(), snapshot));
                             refreshMovieTaskUpdatedAt(taskId);
                         }
                         public void organize(String id) {
+                            markMovieOrganizing(taskId, id, task.getTempPath());
                             safeDeleteOpenListTask((level, stage, message, detail) ->
                                     writeMovieLog(taskId, level, stage, message, detail), id);
-                            markMovieOrganizing(taskId, id, task.getTempPath());
                             OrganizeResult result;
                             try (var timing = IngestStageTiming.start("organize", "movie library organizer", null)) {
                                 try {
@@ -879,6 +882,9 @@ public class MagnetIngestService {
                             markMovieSucceeded(task, id, result);
                         }
                         public void failed(RuntimeException failure) { markMovieFailed(taskId, safeMessage(failure)); }
+                        public void recoverFailureCheckpoint(RuntimeException failure) {
+                            updateMovieTask(taskId, "FAILED", "failed", null, null, safeMessage(failure));
+                        }
                         public void cancellationSettled(OpenListOfflineTaskInfo snapshot) { settleMovieCancellation(taskId, snapshot); }
                         public void stage(String message) { writeMovieLog(taskId, "INFO", "scheduling", message, null); }
                     });
@@ -903,15 +909,18 @@ public class MagnetIngestService {
                             return openListClient.addOfflineDownload(task.getTempPath(), task.getMagnet());
                         }
                         public void submitted(String id) { markSeriesDownloading(taskId, id); }
+                        public void recoverSubmittedCheckpoint(String id) {
+                            updateSeriesTask(taskId, "DOWNLOADING", "downloading", id, null, null);
+                        }
                         public void progress(OpenListOfflineTaskInfo snapshot) {
                             writeSeriesLog(taskId, "INFO", "downloading", offlineProgressMessage(snapshot.progress()),
                                     offlineProgressDetail(snapshot.id(), snapshot));
                             refreshSeriesTaskUpdatedAt(taskId);
                         }
                         public void organize(String id) {
+                            markSeriesOrganizing(taskId, id, task.getTempPath());
                             safeDeleteOpenListTask((level, stage, message, detail) ->
                                     writeSeriesLog(taskId, level, stage, message, detail), id);
-                            markSeriesOrganizing(taskId, id, task.getTempPath());
                             OrganizeResult result;
                             try (var timing = IngestStageTiming.start("organize", "series library organizer", null)) {
                                 try {
@@ -928,6 +937,9 @@ public class MagnetIngestService {
                             markSeriesSucceeded(task, id, result);
                         }
                         public void failed(RuntimeException failure) { markSeriesFailed(taskId, safeMessage(failure)); }
+                        public void recoverFailureCheckpoint(RuntimeException failure) {
+                            updateSeriesTask(taskId, "FAILED", "failed", null, null, safeMessage(failure));
+                        }
                         public void cancellationSettled(OpenListOfflineTaskInfo snapshot) { settleSeriesCancellation(taskId, snapshot); }
                         public void stage(String message) { writeSeriesLog(taskId, "INFO", "scheduling", message, null); }
                     });
@@ -970,32 +982,32 @@ public class MagnetIngestService {
 
     private void markMovieSubmitted(MovieMagnetIngestTask task) {
         updateMovieTask(task.getId(), "SUBMITTED", "submitted", null, null, null);
-        writeMovieLog(task.getId(), "INFO", "submitted", "正在提交 OpenList 离线下载", task.getTempPath());
+        writeMovieCheckpointLog(task.getId(), "INFO", "submitted", "正在提交 OpenList 离线下载", task.getTempPath());
     }
 
     private void markSeriesSubmitted(SeriesMagnetIngestTask task) {
         updateSeriesTask(task.getId(), "SUBMITTED", "submitted", null, null, null);
-        writeSeriesLog(task.getId(), "INFO", "submitted", "正在提交 OpenList 离线下载", task.getTempPath());
+        writeSeriesCheckpointLog(task.getId(), "INFO", "submitted", "正在提交 OpenList 离线下载", task.getTempPath());
     }
 
     private void markMovieDownloading(String taskId, String openListTaskId) {
         updateMovieTask(taskId, "DOWNLOADING", "downloading", openListTaskId, null, null);
-        writeMovieLog(taskId, "INFO", "downloading", "OpenList 离线任务已创建", openListTaskId);
+        writeMovieCheckpointLog(taskId, "INFO", "downloading", "OpenList 离线任务已创建", openListTaskId);
     }
 
     private void markSeriesDownloading(String taskId, String openListTaskId) {
         updateSeriesTask(taskId, "DOWNLOADING", "downloading", openListTaskId, null, null);
-        writeSeriesLog(taskId, "INFO", "downloading", "OpenList 离线任务已创建", openListTaskId);
+        writeSeriesCheckpointLog(taskId, "INFO", "downloading", "OpenList 离线任务已创建", openListTaskId);
     }
 
     private void markMovieOrganizing(String taskId, String openListTaskId, String tempPath) {
         updateMovieTask(taskId, "ORGANIZING", "organizing", openListTaskId, null, null);
-        writeMovieLog(taskId, "INFO", "organizing", "离线下载完成，开始整理文件", tempPath);
+        writeMovieCheckpointLog(taskId, "INFO", "organizing", "离线下载完成，开始整理文件", tempPath);
     }
 
     private void markSeriesOrganizing(String taskId, String openListTaskId, String tempPath) {
         updateSeriesTask(taskId, "ORGANIZING", "organizing", openListTaskId, null, null);
-        writeSeriesLog(taskId, "INFO", "organizing", "离线下载完成，开始整理文件", tempPath);
+        writeSeriesCheckpointLog(taskId, "INFO", "organizing", "离线下载完成，开始整理文件", tempPath);
     }
 
     private void markMovieNoOrganizedFiles(String taskId, String openListTaskId, OrganizeResult result) {
@@ -1096,13 +1108,32 @@ public class MagnetIngestService {
     }
 
     private void markMovieFailed(String taskId, String errorMessage) {
-        writeMovieLog(taskId, "ERROR", "failed", "任务失败", errorMessage);
         updateMovieTask(taskId, "FAILED", "failed", null, null, errorMessage);
+        writeMovieCheckpointLog(taskId, "ERROR", "failed", "任务失败", errorMessage);
     }
 
     private void markSeriesFailed(String taskId, String errorMessage) {
-        writeSeriesLog(taskId, "ERROR", "failed", "任务失败", errorMessage);
         updateSeriesTask(taskId, "FAILED", "failed", null, null, errorMessage);
+        writeSeriesCheckpointLog(taskId, "ERROR", "failed", "任务失败", errorMessage);
+    }
+
+    // The task row is authoritative. Never replay a log insert whose commit outcome may be unknown.
+    private void writeMovieCheckpointLog(String taskId, String level, String stage, String message, String detail) {
+        try {
+            writeMovieLog(taskId, level, stage, message, detail);
+        } catch (RuntimeException failure) {
+            if (!OfflineIngestScheduler.isTransientJdbcFailure(failure)) throw failure;
+            log.warn("Movie checkpoint log unavailable; durable task checkpoint retained id={}", taskId);
+        }
+    }
+
+    private void writeSeriesCheckpointLog(String taskId, String level, String stage, String message, String detail) {
+        try {
+            writeSeriesLog(taskId, level, stage, message, detail);
+        } catch (RuntimeException failure) {
+            if (!OfflineIngestScheduler.isTransientJdbcFailure(failure)) throw failure;
+            log.warn("Series checkpoint log unavailable; durable task checkpoint retained id={}", taskId);
+        }
     }
 
     private void settleMovieCancellation(String taskId, OpenListOfflineTaskInfo snapshot) {
@@ -2052,7 +2083,7 @@ public class MagnetIngestService {
         if (TERMINAL_STATUSES.contains(status)) {
             updateWrapper.set(MovieMagnetIngestTask::getFinishedAt, LocalDateTime.now());
         }
-        movieTaskMapper.update(updateWrapper);
+        if (movieTaskMapper.update(updateWrapper) != 1) throw new IllegalStateException("电影任务检查点未持久化，保留认领");
         if (failedTask != null) {
             taskNotifier.failed("movie", taskId, failedTask.getCreatedByUserId(), failedTask.getTitle(), failedTask.getStage(), errorMessage);
         }
@@ -2085,7 +2116,7 @@ public class MagnetIngestService {
         if (TERMINAL_STATUSES.contains(status)) {
             updateWrapper.set(SeriesMagnetIngestTask::getFinishedAt, LocalDateTime.now());
         }
-        seriesTaskMapper.update(updateWrapper);
+        if (seriesTaskMapper.update(updateWrapper) != 1) throw new IllegalStateException("剧集任务检查点未持久化，保留认领");
         if (failedTask != null) {
             taskNotifier.failed("series", taskId, failedTask.getCreatedByUserId(), failedTask.getTitle(), failedTask.getStage(), errorMessage);
         }
@@ -2370,6 +2401,8 @@ public class MagnetIngestService {
     }
 
     private String safeMessage(Exception exception) {
+        if (OfflineIngestScheduler.isTransientJdbcFailure(exception)
+                && !(exception instanceof OpenListClientException)) return "数据库连接暂不可用，任务检查点待核实";
         String message = exception.getMessage();
         return StringUtils.hasText(message) ? truncate(message, 1000) : "任务执行失败";
     }

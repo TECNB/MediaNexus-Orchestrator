@@ -25,6 +25,7 @@ public class OfflineIngestScheduler implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(OfflineIngestScheduler.class);
     private static final int CAPACITY = 2;
     private static final int QUEUE_LIMIT = 128;
+    private static final int CHECKPOINT_ATTEMPTS = 3;
     private final OpenListClient client;
     private final ExecutorService submissions = Executors.newFixedThreadPool(2, threads("offline-submit"));
     private final ExecutorService queries = Executors.newFixedThreadPool(2, threads("offline-query"));
@@ -46,9 +47,16 @@ public class OfflineIngestScheduler implements AutoCloseable {
         void prepare();
         String submit();
         void submitted(String upstreamId);
+        /** Recovery must be an idempotent task checkpoint only, without counters or log-insert replay. */
+        default void recoverSubmittedCheckpoint(String upstreamId) {
+            throw new IllegalStateException("该入口尚未支持恢复提交检查点，继续保留认领");
+        }
         void progress(OpenListOfflineTaskInfo snapshot);
         void organize(String upstreamId);
         void failed(RuntimeException failure);
+        default void recoverFailureCheckpoint(RuntimeException failure) {
+            throw new IllegalStateException("该入口尚未支持恢复失败检查点，继续保留认领");
+        }
         void stage(String message);
         default void cancellationSettled(OpenListOfflineTaskInfo snapshot) {
             throw new IllegalStateException("该入口尚未支持持久化取消结清，继续保留认领");
@@ -77,7 +85,7 @@ public class OfflineIngestScheduler implements AutoCloseable {
                 request.hash() == null ? "" : request.hash().toLowerCase(Locale.ROOT),
                 request.timeout(), request.interval(), request.download(), directoryOwner)).toList();
         for (Job job : jobs) {
-            job.download.stage("等待共享下载名额（全局/保守账号桶各 2），并认领目录和 hash");
+            recordStage(job, "等待共享下载名额（全局/保守账号桶各 2），并认领目录和 hash");
         }
         waiting.addAll(jobs);
         if (!upstreamChecked && !checking) {
@@ -169,6 +177,7 @@ public class OfflineIngestScheduler implements AutoCloseable {
     private boolean conflicts(Job left, Job right) {
         if (!left.hash.isBlank() && left.hash.equals(right.hash)) return true;
         if (left.directoryOwner == right.directoryOwner) return false;
+        if (left.directory == null || right.directory == null) return true;
         return directoriesConflict(left.directory, right.directory);
     }
 
@@ -183,7 +192,7 @@ public class OfflineIngestScheduler implements AutoCloseable {
 
     private void submit(Job job) {
         try (var binding = IngestStageTiming.bind(job.timingContext)) {
-            job.download.stage("已取得共享下载名额；排队耗时 ms=" + elapsed(job.enqueuedAt));
+            recordStage(job, "已取得共享下载名额；排队耗时 ms=" + elapsed(job.enqueuedAt));
             job.download.prepare();
         } catch (RuntimeException exception) {
             fail(job, exception);
@@ -202,13 +211,35 @@ public class OfflineIngestScheduler implements AutoCloseable {
             }
             timing.finish("ACCEPTED", "upstreamId=" + job.upstreamId + ";not actual transfer start");
             job.queueTiming.finish("ACCEPTED", "upstreamId=" + job.upstreamId + ";scheduler enqueue-to-upstream acceptance; task insertion event provides earlier boundary");
-            // Persist before the first query; a failed persistence is an unknown lifecycle, never a retry.
-            job.download.submitted(job.upstreamId);
         } catch (RuntimeException exception) {
             hold(job, "提交结果未知，保留下载额度及目录/hash 认领；禁止自动重发", exception);
             return;
         }
+        checkpointSubmitted(job);
+    }
+
+    private void checkpointSubmitted(Job job) {
+        job.submittedAttempts++;
+        try {
+            // Original callbacks may mutate counters or append logs; only explicit recovery operations may replay.
+            if (job.submittedAttempts == 1) job.download.submitted(job.upstreamId);
+            else job.download.recoverSubmittedCheckpoint(job.upstreamId);
+        } catch (RuntimeException exception) {
+            if (isTransientJdbcFailure(exception) && job.submittedAttempts < CHECKPOINT_ATTEMPTS) {
+                log.warn("Accepted offline identity checkpoint unavailable; retrying checkpoint only attempt={}", job.submittedAttempts);
+                scheduleCheckpoint(job, () -> checkpointSubmitted(job), job.submittedAttempts);
+            } else {
+                hold(job, "上游已受理但身份检查点未确认；保留下载额度及目录/hash，禁止重发或轮询", exception);
+            }
+            return;
+        }
         scheduleQuery(job);
+    }
+
+    private synchronized void scheduleCheckpoint(Job job, Runnable checkpoint, int attempt) {
+        if (!closed) timer.schedule(() -> {
+            if (!closed) submissions.execute(checkpoint);
+        }, Math.max(10, job.interval.toMillis()) * attempt, TimeUnit.MILLISECONDS);
     }
 
     private synchronized void scheduleQuery(Job job) {
@@ -222,49 +253,61 @@ public class OfflineIngestScheduler implements AutoCloseable {
     }
 
     private void query(Job job) {
-        try (var binding = IngestStageTiming.bind(job.timingContext)) {
-            OpenListOfflineTaskInfo snapshot;
-            try (var timing = IngestStageTiming.start("download_poll", "OpenList", null)) {
-                snapshot = client.offlineTaskInfo(job.upstreamId);
-                timing.finish("OBSERVED", "upstreamId=" + job.upstreamId + ";state=" + snapshot.state()
-                        + ";progress=" + snapshot.progress() + ";totalBytes=" + snapshot.totalBytes()
-                        + ";pollIntervalMs=" + job.interval.toMillis() + ";actual transition time UNKNOWN");
-            }
+        OpenListOfflineTaskInfo snapshot;
+        try (var binding = IngestStageTiming.bind(job.timingContext);
+             var timing = IngestStageTiming.start("download_poll", "OpenList", null)) {
+            snapshot = client.offlineTaskInfo(job.upstreamId);
             if (!job.upstreamId.equals(snapshot.id())) throw new OpenListClientException("上游任务 ID 不匹配");
-            Integer state = snapshot.state();
-            if (Integer.valueOf(2).equals(state) && Integer.valueOf(100).equals(snapshot.progress())) {
-                job.downloadCompletedAt = System.nanoTime();
-                job.downloadTiming.finish("COMPLETE_OBSERVED", "upstreamId=" + job.upstreamId
-                        + ";state=2;actual transfer start/end UNKNOWN; derive observation bounds from download_poll");
-                job.download.stage("下载已确认完成，等待单路整理；下载耗时 ms=" + elapsed(job.startedAt));
-                synchronized (this) {
-                    activeDownloads--;
-                    job.downloadSlot = false;
-                    drain();
-                }
-                organizations.execute(() -> organize(job));
-                return;
-            }
-            // tache: 3=canceling, 4=canceled, 5/6/8/9 can still retry; only 7 is terminal failure.
-            if (Integer.valueOf(4).equals(state) || Integer.valueOf(7).equals(state)) {
-                fail(job, new OpenListClientException("OpenList 离线任务终止: state=" + state + ", " + snapshot.error()));
-                release(job);
-                return;
-            }
-            job.download.progress(snapshot);
-            if (System.nanoTime() - job.startedAt >= job.timeout.toNanos()) {
-                cancelTimedOut(job);
-                return;
-            }
+            timing.finish("OBSERVED", "upstreamId=" + job.upstreamId + ";state=" + snapshot.state()
+                    + ";progress=" + snapshot.progress() + ";totalBytes=" + snapshot.totalBytes()
+                    + ";pollIntervalMs=" + job.interval.toMillis() + ";actual transition time UNKNOWN");
         } catch (RuntimeException exception) {
-            if (System.nanoTime() - job.startedAt >= job.timeout.toNanos()) {
-                cancelTimedOut(job);
+            if (System.nanoTime() - job.startedAt >= job.timeout.toNanos()) cancelTimedOut(job);
+            else {
+                log.warn("Offline query failed; retrying query only id={}", job.upstreamId);
+                scheduleQuery(job);
+            }
+            return;
+        }
+        Integer state = snapshot.state();
+        if (Integer.valueOf(2).equals(state) && Integer.valueOf(100).equals(snapshot.progress())) {
+            job.downloadCompletedAt = System.nanoTime();
+            job.downloadTiming.finish("COMPLETE_OBSERVED", "upstreamId=" + job.upstreamId
+                    + ";state=2;actual transfer start/end UNKNOWN; derive observation bounds from download_poll");
+            synchronized (this) {
+                activeDownloads--;
+                job.downloadSlot = false;
+                drain();
+            }
+            // Completion is authoritative even after the deadline; telemetry cannot route it into cancellation.
+            organizations.execute(() -> {
+                try {
+                    recordStage(job, "下载已确认完成，等待单路整理；下载耗时 ms=" + elapsed(job.startedAt));
+                } catch (RuntimeException failure) {
+                    holdOrganization(job, failure);
+                    return;
+                }
+                organize(job);
+            });
+            return;
+        }
+        // tache: 3=canceling, 4=canceled, 5/6/8/9 can still retry; only 7 is terminal failure.
+        if (Integer.valueOf(4).equals(state) || Integer.valueOf(7).equals(state)) {
+            fail(job, new OpenListClientException("OpenList 离线任务终止: state=" + state + ", " + snapshot.error()));
+            release(job);
+            return;
+        }
+        try {
+            job.download.progress(snapshot);
+        } catch (RuntimeException exception) {
+            if (!isTransientJdbcFailure(exception)) {
+                hold(job, "进度检查点异常，保留认领待核实", exception);
                 return;
             }
-            log.warn("Offline query failed; retrying query only id={}", job.upstreamId, exception);
+            log.warn("Offline progress telemetry unavailable; continuing deadline and polling");
         }
-        // Scheduled only after this query returns: no same-job overlap or sleeping query workers.
-        scheduleQuery(job);
+        if (System.nanoTime() - job.startedAt >= job.timeout.toNanos()) cancelTimedOut(job);
+        else scheduleQuery(job);
     }
 
     private void cancelTimedOut(Job job) {
@@ -322,6 +365,10 @@ public class OfflineIngestScheduler implements AutoCloseable {
     }
 
     private void settleCancellation(Job job, OpenListOfflineTaskInfo snapshot) {
+        if (job.failureCheckpointPending) {
+            scheduleHeldRecheck(job);
+            return;
+        }
         if (Integer.valueOf(2).equals(snapshot.state()) && Integer.valueOf(100).equals(snapshot.progress())) {
             synchronized (this) {
                 // Reuse the resolved directory; no upstream calls while holding scheduler capacity locks.
@@ -337,16 +384,48 @@ public class OfflineIngestScheduler implements AutoCloseable {
     private void organize(Job job) {
         long organizationStarted = System.nanoTime();
         try (var binding = IngestStageTiming.bind(job.timingContext)) {
-            job.download.stage("开始单路整理；下载完成后等待 ms=" + elapsed(job.downloadCompletedAt));
+            recordStage(job, "开始单路整理；下载完成后等待 ms=" + elapsed(job.downloadCompletedAt));
+            job.organizationStarted = true;
             job.download.organize(job.upstreamId);
             job.completion.complete(null);
         } catch (RuntimeException exception) {
-            fail(job, exception);
+            if (isTransientJdbcFailure(exception)) holdOrganization(job, exception);
+            else fail(job, exception);
         } finally {
             log.info("Offline organization/refresh settled id={} organizationMs={} lifecycleMs={}",
                     job.upstreamId, elapsed(organizationStarted), elapsed(job.enqueuedAt));
             release(job);
         }
+    }
+
+    private void holdOrganization(Job job, RuntimeException cause) {
+        synchronized (this) {
+            job.unresolved = true;
+            var claim = new RecoveryClaim(job.hash, job.directory);
+            if (!organizationRecoveryClaims.contains(claim)) organizationRecoveryClaims.add(claim);
+        }
+        fail(job, new OpenListClientException("[ORGANIZATION_UNRESOLVED] 整理结果未结清；保留目录/hash，禁止自动重放整理或下载", cause));
+    }
+
+    private void recordStage(Job job, String message) {
+        try {
+            job.download.stage(message);
+        } catch (RuntimeException exception) {
+            if (!isTransientJdbcFailure(exception)) throw exception;
+            log.warn("Offline scheduling telemetry unavailable; log insert not replayed");
+        }
+    }
+
+    /** Connection failures may be wrapped by MyBatis; syntax, constraints and generic runtime errors are not retryable. */
+    static boolean isTransientJdbcFailure(Throwable failure) {
+        for (int depth = 0; failure != null && depth < 16; depth++, failure = failure.getCause()) {
+            if (failure instanceof org.springframework.jdbc.CannotGetJdbcConnectionException
+                    || failure instanceof org.springframework.dao.RecoverableDataAccessException
+                    || failure instanceof org.springframework.dao.TransientDataAccessResourceException
+                    || failure instanceof java.sql.SQLTransientConnectionException
+                    || failure instanceof java.sql.SQLRecoverableException) return true;
+        }
+        return false;
     }
 
     private void hold(Job job, String message, RuntimeException cause) {
@@ -357,23 +436,50 @@ public class OfflineIngestScheduler implements AutoCloseable {
     private void fail(Job job, RuntimeException exception) {
         job.queueTiming.finish(job.unresolved ? "UNKNOWN" : "FAILED", exception.getClass().getSimpleName());
         if (job.downloadTiming != null) job.downloadTiming.finish(job.unresolved ? "UNKNOWN" : "FAILED", exception.getClass().getSimpleName());
-        try {
-            job.download.failed(exception);
-        } catch (RuntimeException persistenceFailure) {
-            log.error("Offline failure persistence failed", persistenceFailure);
-        } finally {
-            job.completion.completeExceptionally(exception);
+        synchronized (this) {
+            job.failureCheckpointPending = true;
+            if (!claimed.contains(job)) claimed.add(job);
         }
+        checkpointFailure(job, exception);
+    }
+
+    private void checkpointFailure(Job job, RuntimeException failure) {
+        job.failedAttempts++;
+        try {
+            if (job.failedAttempts == 1) job.download.failed(failure);
+            else job.download.recoverFailureCheckpoint(failure);
+        } catch (RuntimeException persistenceFailure) {
+            if (job.organizationStarted && !job.unresolved) {
+                synchronized (this) {
+                    job.unresolved = true;
+                    var claim = new RecoveryClaim(job.hash, job.directory);
+                    if (!organizationRecoveryClaims.contains(claim)) organizationRecoveryClaims.add(claim);
+                }
+                failure = new OpenListClientException("[ORGANIZATION_UNRESOLVED] 整理失败且结清未持久化；保留目录/hash，禁止重放", failure);
+            }
+            log.warn("Offline failure checkpoint unavailable; retaining lifecycle claims attempt={}", job.failedAttempts);
+            if (isTransientJdbcFailure(persistenceFailure) && job.failedAttempts < CHECKPOINT_ATTEMPTS) {
+                RuntimeException capturedFailure = failure;
+                scheduleCheckpoint(job, () -> checkpointFailure(job, capturedFailure), job.failedAttempts);
+            } else {
+                job.completion.completeExceptionally(failure);
+            }
+            return;
+        }
+        synchronized (this) { job.failureCheckpointPending = false; }
+        job.completion.completeExceptionally(failure);
+        release(job);
     }
 
     private synchronized void release(Job job) {
+        if (job.failureCheckpointPending || job.unresolved) return;
         if (job.downloadSlot) {
             activeDownloads--;
             job.downloadSlot = false;
         }
         boolean batchWaiting = waiting.stream().anyMatch(other -> other.directoryOwner == job.directoryOwner);
         boolean batchUnfinished = claimed.stream().anyMatch(other -> other.directoryOwner == job.directoryOwner
-                && (!other.completion.isDone() || other.unresolved));
+                && (!other.completion.isDone() || other.unresolved || other.failureCheckpointPending));
         if (!batchWaiting && !batchUnfinished) claimed.removeIf(other -> other.directoryOwner == job.directoryOwner);
         drain();
     }
@@ -428,6 +534,10 @@ public class OfflineIngestScheduler implements AutoCloseable {
         boolean unresolved;
         boolean cancelRequested;
         boolean recheckScheduled;
+        volatile boolean failureCheckpointPending;
+        boolean organizationStarted;
+        int submittedAttempts;
+        int failedAttempts;
         boolean directoryResolved;
         OpenListClient.OfflineDirectory directory;
         Job(String path, String hash, Duration timeout, Duration interval, Download download, Object directoryOwner) {
