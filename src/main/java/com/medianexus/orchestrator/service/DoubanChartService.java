@@ -151,6 +151,7 @@ public class DoubanChartService {
             // 掉榜进度独立核验，不以整榜故障或自动开关停止历史治理。
             for (Candidate old : store.board(id).candidates()) {
                 if (old.current()) continue;
+                if ("MOVIE".equals(old.subject().mediaType())) continue; // 电影无连载进度；身份由受理时的目录与发行证据核实。
                 try {
                     Subject fresh = client.refreshSubject(old.subject());
                     updateCandidate(id, old.subject().id(), candidate -> observed(candidate, fresh, false, Instant.now()));
@@ -242,6 +243,23 @@ public class DoubanChartService {
             reconcile(id);
         }
     }
+    private record CheckedSubject(Subject subject, Assessment assessment) {}
+
+    /** 先使用现有证据；只在身份仍缺证时补详情，详情失败或显式身份冲突绝不放行。 */
+    private CheckedSubject assessSubject(Subject subject, Identity corrected) {
+        Assessment assessed = eligibility.assess(subject, corrected);
+        if (!"MOVIE".equals(subject.mediaType()) || corrected != null || assessed.reason() == null
+                || !"IDENTITY_AMBIGUOUS".equals(assessed.reason().code())
+                || subject.year() != null && subject.originalTitle() != null
+                    && subject.title() != null && !subject.title().isBlank())
+            return new CheckedSubject(subject, assessed);
+        Subject detail = client.refreshMovieIdentity(subject);
+        if (detail.id() != subject.id() || !Objects.equals(detail.mediaType(), subject.mediaType())
+                || subject.year() != null && !Objects.equals(subject.year(), detail.year()))
+            throw bad("豆瓣详情返回身份冲突，拒绝继续受理");
+        return new CheckedSubject(detail, eligibility.assess(detail, null));
+    }
+
 
     private void process(String id, Candidate snapshot, Board fresh, Set<String> targets) {
         long subjectId = snapshot.subject().id(); ChartId chart = fresh.id();
@@ -255,15 +273,17 @@ public class DoubanChartService {
             Assessment assessment;
             try (var timing = IngestStageTiming.start("catalog_identity", "Douban/TMDB", null)) {
                 Subject original = snapshot.subject();
-                refreshed = !snapshot.current() || "SERIES".equals(original.mediaType())
-                        && (original.progress() == null || original.progress().isBlank()) ? client.refreshSubject(original) : original;
-                subject = "MOVIE".equals(refreshed.mediaType()) && store.identity(subjectId) == null
-                        && refreshed.originalTitle() == null ? client.refreshMovieIdentity(refreshed) : refreshed;
-                assessment = eligibility.assess(subject, store.identity(subjectId));
+                refreshed = "SERIES".equals(original.mediaType())
+                        && (!snapshot.current() || original.progress() == null || original.progress().isBlank())
+                        ? client.refreshSubject(original) : original;
+                CheckedSubject checked = assessSubject(refreshed, store.identity(subjectId));
+                subject = checked.subject();
+                assessment = checked.assessment();
                 timing.finish(assessment.reason() == null ? "SUCCEEDED" : "CATALOG_FAILED".equals(assessment.reason().code()) ? "FAILED" : "REJECTED", assessment.reason() == null
                         ? "tmdb=" + assessment.identity().tmdbId() + ";expectedEpisodes=" + assessment.expectedEpisodes() : assessment.reason().code());
             }
-            if (!snapshot.current()) updateCandidate(chart, subjectId, candidate -> observed(candidate, refreshed, false, Instant.now()));
+            if (!snapshot.current() && "SERIES".equals(subject.mediaType()))
+                updateCandidate(chart, subjectId, candidate -> observed(candidate, refreshed, false, Instant.now()));
             updateCandidate(chart, subjectId, candidate -> candidate(candidate, candidate.subject(), candidate.current(), candidate.excluded(),
                     assessment.identity(), candidate.excluded() ? reason("EXCLUDED", "管理员已排除") : assessment.reason() == null ? inclusion(candidate) : assessment.reason()));
             updateEntry(id, subjectId, entry -> new Entry(item(subject, assessment.identity(), snapshot.reason()), "CHECKING", Instant.now(),
@@ -310,7 +330,7 @@ public class DoubanChartService {
             Subject verifiedSubject;
             Assessment verified;
             try (var timing = IngestStageTiming.start("catalog_identity_recheck", "Douban/TMDB", null)) {
-                verifiedSubject = client.refreshSubject(subject);
+                verifiedSubject = "SERIES".equals(subject.mediaType()) ? client.refreshSubject(subject) : subject;
                 verified = eligibility.assess(verifiedSubject, store.identity(subjectId));
                 timing.finish(verified.reason() == null ? "SUCCEEDED" : "CATALOG_FAILED".equals(verified.reason().code()) ? "FAILED" : "REJECTED", verified.reason() == null
                         ? "tmdb=" + verified.identity().tmdbId() : verified.reason().code());

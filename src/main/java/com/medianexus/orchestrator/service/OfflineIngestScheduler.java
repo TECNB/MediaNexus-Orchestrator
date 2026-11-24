@@ -32,6 +32,9 @@ public class OfflineIngestScheduler implements AutoCloseable {
     private final ScheduledExecutorService timer = Executors.newSingleThreadScheduledExecutor(threads("offline-timer"));
     private final List<Job> waiting = new ArrayList<>();
     private final List<Job> claimed = new ArrayList<>();
+    private final List<RecoveryClaim> organizationRecoveryClaims = new ArrayList<>();
+
+    private record RecoveryClaim(String hash, OpenListClient.OfflineDirectory directory) {}
     private int activeDownloads;
     private boolean upstreamChecked;
     private boolean checking;
@@ -47,6 +50,9 @@ public class OfflineIngestScheduler implements AutoCloseable {
         void organize(String upstreamId);
         void failed(RuntimeException failure);
         void stage(String message);
+        default void cancellationSettled(OpenListOfflineTaskInfo snapshot) {
+            throw new IllegalStateException("该入口尚未支持持久化取消结清，继续保留认领");
+        }
     }
 
     public OfflineIngestScheduler(OpenListClient client) {
@@ -111,6 +117,15 @@ public class OfflineIngestScheduler implements AutoCloseable {
 
     public synchronized String submissionPauseReason() { return restartBlock; }
 
+    /** Retains a stopped process's organization exclusions without claiming a download slot or replaying writes. */
+    public void retainOrganizationRecovery(String path, String hash) {
+        var directory = client.offlineDirectoryForPath(normalizePath(path));
+        synchronized (this) {
+            var claim = new RecoveryClaim(hash == null ? "" : hash.toLowerCase(Locale.ROOT), directory);
+            if (!organizationRecoveryClaims.contains(claim)) organizationRecoveryClaims.add(claim);
+        }
+    }
+
     private void checkUpstream() {
         try {
             if (client.unfinishedOfflineTaskCount() != 0) {
@@ -137,7 +152,9 @@ public class OfflineIngestScheduler implements AutoCloseable {
         // ponytail: all accounts share the conservative bucket; mount/category IDs prove no account separation.
         for (int i = 0; i < waiting.size() && activeDownloads < CAPACITY;) {
             Job job = waiting.get(i);
-            if (!job.directoryResolved || claimed.stream().anyMatch(other -> conflicts(job, other))) {
+            if (!job.directoryResolved || claimed.stream().anyMatch(other -> conflicts(job, other))
+                    || organizationRecoveryClaims.stream().anyMatch(other ->
+                    !job.hash.isBlank() && job.hash.equals(other.hash()) || directoriesConflict(job.directory, other.directory()))) {
                 i++;
                 continue;
             }
@@ -152,8 +169,10 @@ public class OfflineIngestScheduler implements AutoCloseable {
     private boolean conflicts(Job left, Job right) {
         if (!left.hash.isBlank() && left.hash.equals(right.hash)) return true;
         if (left.directoryOwner == right.directoryOwner) return false;
-        var a = left.directory;
-        var b = right.directory;
+        return directoriesConflict(left.directory, right.directory);
+    }
+
+    private boolean directoriesConflict(OpenListClient.OfflineDirectory a, OpenListClient.OfflineDirectory b) {
         if (a.account().equals("unknown") || b.account().equals("unknown")) return true;
         if (!a.account().equals(b.account())) return false;
         if (a.rootId().isBlank() || b.rootId().isBlank() || !a.rootId().equals(b.rootId())) return true;
@@ -211,8 +230,9 @@ public class OfflineIngestScheduler implements AutoCloseable {
                         + ";progress=" + snapshot.progress() + ";totalBytes=" + snapshot.totalBytes()
                         + ";pollIntervalMs=" + job.interval.toMillis() + ";actual transition time UNKNOWN");
             }
+            if (!job.upstreamId.equals(snapshot.id())) throw new OpenListClientException("上游任务 ID 不匹配");
             Integer state = snapshot.state();
-            if (Integer.valueOf(2).equals(state)) {
+            if (Integer.valueOf(2).equals(state) && Integer.valueOf(100).equals(snapshot.progress())) {
                 job.downloadCompletedAt = System.nanoTime();
                 job.downloadTiming.finish("COMPLETE_OBSERVED", "upstreamId=" + job.upstreamId
                         + ";state=2;actual transfer start/end UNKNOWN; derive observation bounds from download_poll");
@@ -248,24 +268,60 @@ public class OfflineIngestScheduler implements AutoCloseable {
     }
 
     private void cancelTimedOut(Job job) {
+        job.cancelRequested = true;
         try {
             client.cancelOfflineTask(job.upstreamId);
+        } catch (RuntimeException exception) {
+            hold(job, "离线下载超时，取消请求结果未知；保留源文件、下载额度及目录/hash 认领", exception);
+            scheduleHeldRecheck(job);
+            return;
+        }
+        try {
             OpenListOfflineTaskInfo snapshot = client.offlineTaskInfo(job.upstreamId);
-            boolean stoppedAfterCancel = job.upstreamId.equals(snapshot.id())
-                    && (Integer.valueOf(4).equals(snapshot.state()) || Integer.valueOf(7).equals(snapshot.state())
-                    || Integer.valueOf(2).equals(snapshot.state()) && snapshot.progress() != null && snapshot.progress() < 100);
-            if (stoppedAfterCancel) {
+            if (stoppedAfterCancellation(job, snapshot)) {
                 fail(job, new OpenListClientException("离线下载超时，已确认上游停止；源文件保留"));
                 release(job);
                 return;
             }
         } catch (RuntimeException exception) {
             hold(job, "离线下载超时，取消未确认；保留源文件、下载额度及目录/hash 认领", exception);
+            scheduleHeldRecheck(job);
             return;
         }
         hold(job, "离线下载超时，取消未确认；保留源文件、下载额度及目录/hash 认领", null);
+        scheduleHeldRecheck(job);
     }
 
+    private boolean stoppedAfterCancellation(Job job, OpenListOfflineTaskInfo snapshot) {
+        return job.cancelRequested && job.upstreamId.equals(snapshot.id())
+                && (Integer.valueOf(4).equals(snapshot.state()) || Integer.valueOf(7).equals(snapshot.state())
+                || Integer.valueOf(2).equals(snapshot.state()) && snapshot.progress() != null && snapshot.progress() < 100);
+    }
+
+    private synchronized void scheduleHeldRecheck(Job job) {
+        if (closed || job.recheckScheduled || !job.unresolved) return;
+        job.recheckScheduled = true;
+        timer.schedule(() -> {
+            synchronized (OfflineIngestScheduler.this) { job.recheckScheduled = false; }
+            if (!closed) queries.execute(() -> recheckHeld(job));
+        }, Math.max(10, job.interval.toMillis()), TimeUnit.MILLISECONDS);
+    }
+
+    private void recheckHeld(Job job) {
+        if (!job.unresolved || job.upstreamId == null) return;
+        try {
+            OpenListOfflineTaskInfo snapshot = client.offlineTaskInfo(job.upstreamId);
+            if (stoppedAfterCancellation(job, snapshot)) {
+                job.download.cancellationSettled(snapshot);
+                synchronized (this) { job.unresolved = false; }
+                release(job);
+                return;
+            }
+        } catch (RuntimeException exception) {
+            log.warn("Held offline task recheck failed; retaining claims id={}", job.upstreamId);
+        }
+        scheduleHeldRecheck(job);
+    }
     private void organize(Job job) {
         long organizationStarted = System.nanoTime();
         try (var binding = IngestStageTiming.bind(job.timingContext)) {
@@ -358,6 +414,8 @@ public class OfflineIngestScheduler implements AutoCloseable {
         String upstreamId;
         boolean downloadSlot;
         boolean unresolved;
+        boolean cancelRequested;
+        boolean recheckScheduled;
         boolean directoryResolved;
         OpenListClient.OfflineDirectory directory;
         Job(String path, String hash, Duration timeout, Duration interval, Download download, Object directoryOwner) {

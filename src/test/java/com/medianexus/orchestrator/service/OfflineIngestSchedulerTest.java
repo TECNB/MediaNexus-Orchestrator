@@ -78,7 +78,7 @@ class OfflineIngestSchedulerTest {
         var active = new java.util.concurrent.atomic.AtomicInteger();
         var maximum = new java.util.concurrent.atomic.AtomicInteger();
         var completed = new java.util.concurrent.atomic.AtomicInteger();
-        when(client.offlineTaskInfo(anyString())).thenReturn(snapshot("finished", 2));
+        when(client.offlineTaskInfo(anyString())).thenAnswer(call -> snapshot(call.getArgument(0), 2));
         try (var scheduler = new OfflineIngestScheduler(client)) {
             java.util.function.Consumer<String> organize = ignored -> {
                 maximum.accumulateAndGet(active.incrementAndGet(), Math::max);
@@ -279,6 +279,86 @@ class OfflineIngestSchedulerTest {
         }
     }
 
+    @Test
+    void cancellationResponseFailureStillRechecksAndReleasesExactlyOnce() throws Exception {
+        var client = mappedClient();
+        var stopped = new java.util.concurrent.atomic.AtomicBoolean();
+        doThrow(new IllegalStateException("response lost")).when(client).cancelOfflineTask("upstream");
+        when(client.offlineTaskInfo("upstream")).thenAnswer(call -> snapshot("upstream", stopped.get() ? 4 : 1));
+        var next = new CountDownLatch(1);
+        try (var scheduler = new OfflineIngestScheduler(client)) {
+            assertThatThrownBy(() -> scheduler.enqueue("/same", "same", Duration.ofMillis(20), Duration.ofMillis(5),
+                    new DownloadStub() { public void organize(String id) { throw new AssertionError("must not organize canceled job"); } })
+                    .get(2, TimeUnit.SECONDS)).hasCauseInstanceOf(com.medianexus.orchestrator.integration.openlist.OpenListClientException.class);
+            scheduler.enqueue("/same", "same", Duration.ofSeconds(5), Duration.ofMillis(5), submission("next", next));
+            assertThat(next.await(80, TimeUnit.MILLISECONDS)).isFalse();
+            stopped.set(true);
+            assertThat(next.await(2, TimeUnit.SECONDS)).isTrue();
+            verify(client, times(1)).cancelOfflineTask("upstream");
+            verify(client, never()).retryOfflineTask(anyString());
+        }
+    }
+
+    @Test
+    void failedSettlementPersistenceKeepsClaimsUntilItSucceeds() throws Exception {
+        var client = mappedClient();
+        var canceled = new java.util.concurrent.atomic.AtomicBoolean();
+        var persisted = new java.util.concurrent.atomic.AtomicBoolean();
+        doAnswer(call -> { canceled.set(true); return null; }).when(client).cancelOfflineTask("upstream");
+        var reads = new java.util.concurrent.atomic.AtomicInteger();
+        when(client.offlineTaskInfo("upstream")).thenAnswer(call -> {
+            if (canceled.get() && reads.incrementAndGet() == 1) throw new IllegalStateException("read unavailable");
+            return snapshot("upstream", canceled.get() ? 4 : 1);
+        });
+        var next = new CountDownLatch(1);
+        try (var scheduler = new OfflineIngestScheduler(client)) {
+            assertThatThrownBy(() -> scheduler.enqueue("/same", "same", Duration.ofMillis(20), Duration.ofMillis(5), new DownloadStub() {
+                public void cancellationSettled(OpenListOfflineTaskInfo snapshot) {
+                    if (!persisted.get()) throw new IllegalStateException("database unavailable");
+                }
+            }).get(2, TimeUnit.SECONDS)).hasCauseInstanceOf(com.medianexus.orchestrator.integration.openlist.OpenListClientException.class);
+            scheduler.enqueue("/same", "same", Duration.ofSeconds(5), Duration.ofMillis(5), submission("next", next));
+            assertThat(next.await(80, TimeUnit.MILLISECONDS)).isFalse();
+            persisted.set(true);
+            assertThat(next.await(2, TimeUnit.SECONDS)).isTrue();
+        }
+    }
+
+    @Test
+    void terminalIncompleteNeverOrganizesWithoutCancellationAndMismatchedIdCannotRelease() throws Exception {
+        var client = mappedClient();
+        var canceled = new java.util.concurrent.atomic.AtomicBoolean();
+        doAnswer(call -> { canceled.set(true); return null; }).when(client).cancelOfflineTask("upstream");
+        when(client.offlineTaskInfo("upstream")).thenAnswer(call -> new OpenListOfflineTaskInfo(
+                canceled.get() ? "another-id" : "upstream", 2, "Saving", 1, null, null));
+        var next = new CountDownLatch(1);
+        try (var scheduler = new OfflineIngestScheduler(client)) {
+            assertThatThrownBy(() -> scheduler.enqueue("/same", "same", Duration.ofMillis(20), Duration.ofMillis(5),
+                    new DownloadStub() { public void organize(String id) { throw new AssertionError("incomplete task must not organize"); } })
+                    .get(2, TimeUnit.SECONDS)).hasCauseInstanceOf(com.medianexus.orchestrator.integration.openlist.OpenListClientException.class);
+            scheduler.enqueue("/same", "same", Duration.ofSeconds(5), Duration.ofMillis(5), submission("next", next));
+            assertThat(next.await(100, TimeUnit.MILLISECONDS)).isFalse();
+        }
+    }
+
+    @Test
+    void recoveredOrganizationRetainsPathAndHashButConsumesNoDownloadSlot() throws Exception {
+        var client = mappedClient();
+        var independent = new CountDownLatch(2);
+        var blocked = new CountDownLatch(1);
+        try (var scheduler = new OfflineIngestScheduler(client)) {
+            scheduler.retainOrganizationRecovery("/old", "old-hash");
+            scheduler.retainOrganizationRecovery("/old", "old-hash");
+            scheduler.enqueue("/old/season", "new-hash", Duration.ofSeconds(5), Duration.ofMillis(10), submission("blocked", blocked));
+            scheduler.enqueue("/alias", "old-hash", Duration.ofSeconds(5), Duration.ofMillis(10), submission("blocked", blocked));
+            scheduler.enqueue("/one", "one", Duration.ofSeconds(5), Duration.ofMillis(10), submission("one", independent));
+            scheduler.enqueue("/two", "two", Duration.ofSeconds(5), Duration.ofMillis(10), submission("two", independent));
+            assertThat(independent.await(2, TimeUnit.SECONDS)).isTrue();
+            assertThat(blocked.getCount()).isEqualTo(1);
+            verify(client, never()).retryOfflineTask(anyString());
+        }
+    }
+
     private static OpenListClient mappedClient() {
         OpenListClient client = mock(OpenListClient.class);
         when(client.offlineDirectoryForPath(anyString())).thenAnswer(call ->
@@ -293,7 +373,7 @@ class OfflineIngestSchedulerTest {
     }
 
     private static OpenListOfflineTaskInfo snapshot(String id, int state) {
-        return new OpenListOfflineTaskInfo(id, state, "status", 10, 100L, null);
+        return new OpenListOfflineTaskInfo(id, state, "status", state == 2 ? 100 : 10, 100L, null);
     }
 
     private static void await(CountDownLatch latch) {
@@ -312,6 +392,7 @@ class OfflineIngestSchedulerTest {
         public void progress(OpenListOfflineTaskInfo snapshot) { }
         public void organize(String id) { }
         public void failed(RuntimeException failure) { }
+        public void cancellationSettled(OpenListOfflineTaskInfo snapshot) { }
         public void stage(String message) { }
     }
 }

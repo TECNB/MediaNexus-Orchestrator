@@ -50,7 +50,8 @@ final class CatalogSeasonProgress {
         String seriesStatus = series.path("status").asText(null);
         String status = "UNKNOWN", message = "目录日期或结束证据不足，不能确认目标季进度";
         if (undated == 0 && future == total) { status = "NOT_AIRED"; message = "目标季目录日期均在未来，尚未到目录播出日期"; }
-        else if (future > 0 && past + today > 0) { status = "AIRING"; message = "目标季目录同时有已到日期与未来集日期"; }
+        else if (future > 0) { status = "AIRING"; message = "目标季仍有未来集日期，不能确认整季已播完"; }
+        else if (today > 0) { message = "目标季包含今日目录播出日期，尚不能确认已播出或完结"; }
         else if (past == total && (finale || "Ended".equals(seriesStatus))) { status = "COMPLETE"; message = "目标季全部正集日期已过去，且目录有结束证据"; }
         Integer nextNumber = null; String nextDate = null;
         JsonNode next = series.path("next_episode_to_air");

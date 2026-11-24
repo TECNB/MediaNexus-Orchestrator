@@ -106,6 +106,12 @@ class DoubanChartProgressTest {
         assertEquals("2026-11-26",visible(1).catalog().nextAirDate());
         verifyNoInteractions(douban);
         checkSeason("Ended","2026-11-24","2026-11-25",null,"UNKNOWN");
+        assertEquals(1, visible(1).catalog().pastEpisodes());
+        assertEquals(1, visible(1).catalog().todayEpisodes());
+        assertTrue(visible(1).catalog().message().contains("今日"));
+        checkSeason("Returning Series","2026-11-24","2026-11-25","finale","UNKNOWN");
+        assertEquals(1, visible(1).catalog().pastEpisodes());
+        assertTrue(visible(1).catalog().message().contains("今日"));
         checkSeason("Ended","2026-11-24","2026-11-24",null,"COMPLETE");
         checkSeason("Returning Series","2026-11-23","2026-11-24",null,"UNKNOWN");
         checkSeason("Returning Series","2026-11-23","2026-11-24","finale","COMPLETE");

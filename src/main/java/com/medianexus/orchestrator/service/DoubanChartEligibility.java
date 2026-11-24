@@ -55,8 +55,11 @@ public class DoubanChartEligibility {
             JsonNode episodes = season.path("episodes");
             var catalog = CatalogSeasonProgress.inspect(series, season, identity, clock);
             if (!sourceComplete && !"COMPLETE".equals(catalog.seasonStatus()))
-                return refusal(identity, "CONFLICT".equals(catalog.seasonStatus()) ? "PROGRESS_CONFLICT" : "PROGRESS_UNKNOWN",
-                        "目录完结证据不足：" + catalog.message());
+                return refusal(identity, "CONFLICT".equals(catalog.seasonStatus()) ? "PROGRESS_CONFLICT"
+                                : "AIRING".equals(catalog.seasonStatus()) ? "AIRING" : "PROGRESS_UNKNOWN",
+                        "目录完结证据：" + catalog.message());
+            if (sourceComplete && catalog.todayEpisodes() != null && catalog.todayEpisodes() > 0)
+                return refusal(identity,"PROGRESS_CONFLICT","豆瓣完结声明与目录今日播出日期矛盾，尚不能确认已播出");
             if (sourceComplete && Set.of("AIRING", "NOT_AIRED", "CONFLICT").contains(catalog.seasonStatus()))
                 return refusal(identity, "PROGRESS_CONFLICT", "豆瓣完结声明与目标季目录日期或后续安排矛盾，等待核实");
             int expected = sourceComplete ? Integer.parseInt(completion.group(1)) : catalog.totalEpisodes();
@@ -124,9 +127,12 @@ public class DoubanChartEligibility {
         requireCatalog(details,input.tmdbId());
         String title = text(details,"MOVIE".equals(input.mediaType()) ? "title" : "name");
         String original = text(details,"MOVIE".equals(input.mediaType()) ? "original_title" : "original_name");
-        if (title == null || original == null) throw bad("目录缺少必要片名或原名");
-        return new Identity(input.mediaType(),input.tmdbId(),input.seasonNumber(),title,original,
-                year(text(details,"MOVIE".equals(input.mediaType()) ? "release_date" : "first_air_date")));
+        boolean movie = "MOVIE".equals(input.mediaType());
+        Integer releaseYear = year(text(details, movie ? "release_date" : "first_air_date"));
+        if (title == null || !movie && original == null) throw bad("目录缺少必要片名或原名");
+        if (movie && (releaseYear == null || subject.year() != null && !Objects.equals(subject.year(), releaseYear)))
+            throw bad("目录电影年份缺失或与来源矛盾");
+        return new Identity(input.mediaType(),input.tmdbId(),input.seasonNumber(),title,original,releaseYear);
     }
 
     /** 只读目录身份完整操作；null 表示身份待确认，异常表示目录读取失败；不调用受理资格。 */
@@ -136,7 +142,7 @@ public class DoubanChartEligibility {
     }
 
     private Identity match(Subject subject) {
-        if (subject.year() == null) return null;
+        if (subject.year() == null || subject.title() == null || subject.title().isBlank()) return null;
         LinkedHashSet<String> queries = new LinkedHashSet<>();
         queries.add(subject.title());
         if (subject.originalTitle() != null) queries.add(subject.originalTitle());
@@ -165,7 +171,11 @@ public class DoubanChartEligibility {
             if (seasons.size() != 1 || !Objects.equals(year(seasons.get(0).airDate()),subject.year())) return null;
             season = seasons.get(0).seasonNumber();
         }
-        return correct(subject,new IdentityInput(subject.mediaType(),candidate.tmdbId(),season));
+        Identity resolved = correct(subject,new IdentityInput(subject.mediaType(),candidate.tmdbId(),season));
+        if ("MOVIE".equals(subject.mediaType()) && queries.stream().noneMatch(name ->
+                sameTitle(name, resolved.title()) || sameTitle(name, resolved.originalTitle())))
+            throw bad("目录详情片名与搜索身份矛盾");
+        return resolved;
     }
 
     /** 必须有本轮共享比较缓存的安全文件表；数出独立集号且无错季、未知或重复正片。 */

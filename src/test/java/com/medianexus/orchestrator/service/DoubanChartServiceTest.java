@@ -271,16 +271,106 @@ class DoubanChartServiceTest {
         verify(f.tasks, never()).createChartSeries(any(), any(), any());
     }
 
-    @Test void currentMovieWithoutOriginalTitleReadsDoubanIdentityBeforeCatalogWithoutChangingBoardSnapshot() throws Exception {
+    @Test void currentMovieWithSufficientTitleYearSkipsUnavailableOptionalDetails() throws Exception {
         Subject missing = new Subject(1,"罗斯",null,null,2026,"MOVIE",null,null,1,null,Instant.now());
-        Subject detailed = new Subject(1,"罗斯","Rose",null,2026,"MOVIE",null,null,1,null,Instant.now());
+        f.useMovieCatalog();
+        when(f.client.fetch(ChartId.movie_hot_gaia)).thenReturn(List.of(missing));
+        when(f.client.refreshMovieIdentity(any())).thenThrow(new DoubanChartClient.ChartReadException("HTTP 400"));
+        when(f.client.refreshSubject(any())).thenThrow(new DoubanChartClient.ChartReadException("HTTP 400"));
+        Operation run = f.await(f.service.execute(ChartId.movie_hot_gaia).id());
+        assertEquals("CREATED", run.entries().get(0).status());
+        assertNull(run.entries().get(0).item().originalTitle());
+        verify(f.client, never()).refreshMovieIdentity(any());
+        verify(f.client, never()).refreshSubject(any());
+        verify(f.tmdb, times(2)).getMovieReleaseDates(123);
+        verify(f.tasks).createChartMovie(argThat(target -> target.tmdbId() == 123), any(), eq(f.admin));
+        assertNull(f.service.board(ChartId.movie_hot_gaia).candidates().get(0).subject().originalTitle());
+    }
+
+    @Test void insufficientMovieEvidenceStillRequiresReadableDetailAndNeverSearchesReleases() throws Exception {
+        f.useMovieCatalog();
+        Subject missing = new Subject(1,"罗斯",null,null,null,"MOVIE",null,null,1,null,Instant.now());
+        when(f.client.fetch(ChartId.movie_hot_gaia)).thenReturn(List.of(missing));
+        when(f.client.refreshMovieIdentity(any())).thenThrow(new DoubanChartClient.ChartReadException("HTTP 400"));
+        Operation run = f.await(f.service.execute(ChartId.movie_hot_gaia).id());
+        assertEquals("FAILED", run.entries().get(0).status());
+        verify(f.client).refreshMovieIdentity(missing);
+        verifyNoInteractions(f.tasks);
+    }
+
+    @Test void necessaryMovieDetailMaySupplyYearWithoutOriginalButCannotChangeSourceIdentity() throws Exception {
+        f.useMovieCatalog();
+        Subject missing = new Subject(1,"罗斯",null,null,null,"MOVIE",null,null,1,null,Instant.now());
+        Subject detailed = new Subject(1,"罗斯",null,null,2026,"MOVIE",null,null,1,null,Instant.now());
         when(f.client.fetch(ChartId.movie_hot_gaia)).thenReturn(List.of(missing));
         when(f.client.refreshMovieIdentity(missing)).thenReturn(detailed);
         Operation run = f.await(f.service.execute(ChartId.movie_hot_gaia).id());
         assertEquals("CREATED", run.entries().get(0).status());
-        verify(f.eligibility, never()).assess(eq(missing), nullable(Identity.class));
-        verify(f.eligibility, times(2)).assess(eq(detailed), nullable(Identity.class));
-        assertNull(f.service.board(ChartId.movie_hot_gaia).candidates().get(0).subject().originalTitle());
+        assertNull(f.service.board(ChartId.movie_hot_gaia).candidates().get(0).subject().year());
+        verify(f.client).refreshMovieIdentity(missing);
+    }
+
+    @Test void necessaryMovieDetailIdentityConflictRefusesAdmission() throws Exception {
+        f.useMovieCatalog();
+        Subject missing = new Subject(1,"罗斯",null,null,null,"MOVIE",null,null,1,null,Instant.now());
+        when(f.client.fetch(ChartId.movie_hot_gaia)).thenReturn(List.of(missing));
+        when(f.client.refreshMovieIdentity(missing)).thenReturn(
+                new Subject(2,"罗斯",null,null,2026,"MOVIE",null,null,1,null,Instant.now()));
+        Operation run = f.await(f.service.execute(ChartId.movie_hot_gaia).id());
+        assertEquals("FAILED", run.entries().get(0).status());
+        verifyNoInteractions(f.tasks);
+    }
+
+    @Test void sufficientMovieEvidenceDoesNotBypassFinalReleaseRecheck() throws Exception {
+        f.useMovieCatalog();
+        Subject movie = new Subject(1,"罗斯",null,null,2026,"MOVIE",null,null,1,null,Instant.now());
+        when(f.client.fetch(ChartId.movie_hot_gaia)).thenReturn(List.of(movie));
+        when(f.tasks.candidates(any(), anyString(), any())).thenAnswer(call -> {
+            when(f.tmdb.getMovieReleaseDates(123)).thenReturn(f.json.readTree("{\"results\":[]}"));
+            return List.of(f.release());
+        });
+        Operation run = f.await(f.service.execute(ChartId.movie_hot_gaia).id());
+        assertEquals("RELEASE_UNKNOWN", run.entries().get(0).reason().code());
+        verify(f.tasks, never()).createChartMovie(any(), any(), any());
+        assertEquals(0, f.store.counts().created());
+    }
+
+    @Test void sufficientMovieEvidenceStillRefusesAmbiguousCatalog() throws Exception {
+        f.useMovieCatalog();
+        Subject movie = new Subject(1,"罗斯","Rose",null,2026,"MOVIE",null,null,1,null,Instant.now());
+        when(f.client.fetch(ChartId.movie_hot_gaia)).thenReturn(List.of(movie));
+        when(f.tmdb.searchChartTitles("罗斯","MOVIE",2026)).thenReturn(f.json.readTree("""
+                [{"id":123,"title":"罗斯","release_date":"2026-04-17"},
+                 {"id":124,"title":"罗斯","release_date":"2026-05-17"}]
+                """));
+        Operation run = f.await(f.service.execute(ChartId.movie_hot_gaia).id());
+        assertEquals("IDENTITY_AMBIGUOUS", run.entries().get(0).reason().code());
+        verifyNoInteractions(f.tasks);
+    }
+
+    @Test void finalFileEvidenceChangeStillRefusesMovieAdmission() throws Exception {
+        when(f.client.fetch(ChartId.movie_hot_gaia)).thenReturn(List.of(f.subject(1,"MOVIE")));
+        when(f.eligibility.completeRelease(any(), any())).thenReturn(true, false);
+        Operation run = f.await(f.service.execute(ChartId.movie_hot_gaia).id());
+        assertEquals("TARGET_CHANGED", run.entries().get(0).reason().code());
+        verify(f.eligibility, times(2)).completeRelease(any(), any());
+        verify(f.tasks, never()).createChartMovie(any(), any(), any());
+    }
+
+    @Test void movieTargetChangeDuringSearchStillRefusesFinalAdmission() throws Exception {
+        when(f.client.fetch(ChartId.movie_hot_gaia)).thenReturn(List.of(f.subject(1,"MOVIE")));
+        doAnswer(call -> {
+            int id = f.store.identity(1) == null ? 1 : 2;
+            Identity identity = new Identity("MOVIE", id, null, "作品1", null, 2020);
+            return new DoubanChartEligibility.Assessment(identity, BgmWishlistService.target(identity), List.of(), null);
+        }).when(f.eligibility).assess(any(), nullable(Identity.class));
+        when(f.tasks.candidates(any(), anyString(), any())).thenAnswer(call -> {
+            f.store.identity(1, new Identity("MOVIE", 2, null, "作品1", null, 2020));
+            return List.of(f.release());
+        });
+        Operation run = f.await(f.service.execute(ChartId.movie_hot_gaia).id());
+        assertEquals("TARGET_CHANGED", run.entries().get(0).reason().code());
+        verify(f.tasks, never()).createChartMovie(any(), any(), any());
     }
 
     @Test void movieWithOriginalTitleDoesNotRepeatDoubanIdentityLookup() throws Exception {
@@ -358,19 +448,23 @@ class DoubanChartServiceTest {
         verify(f.tasks, times(1)).createChartMovie(any(), any(), any());
     }
 
-    @Test void historicalMovieIdentityDetailDoesNotOverwriteSourceSnapshot() throws Exception {
-        Subject original = new Subject(1,"罗斯",null,null,2026,"MOVIE",null,null,1,null,Instant.now());
-        Subject detailed = new Subject(1,"罗斯","Rose",null,2026,"MOVIE",null,null,1,null,Instant.now());
+    @Test void historicalMovieAndPersistedIdentityDoNotRequireOptionalDetail() throws Exception {
+        f.useMovieCatalog();
+        Subject original = new Subject(1,"罗斯",null,null,null,"MOVIE",null,null,1,null,Instant.now());
         when(f.client.fetch(ChartId.movie_weekly_best)).thenReturn(List.of(original));
         f.refresh(ChartId.movie_weekly_best);
-        when(f.client.fetch(ChartId.movie_weekly_best)).thenReturn(List.of(f.subject(2,"MOVIE")));
-        when(f.client.refreshMovieIdentity(original)).thenReturn(detailed);
-        f.await(f.service.execute(ChartId.movie_weekly_best).id());
-        var history = f.service.board(ChartId.movie_weekly_best).candidates().stream()
-                .filter(candidate -> candidate.subject().id() == 1).findFirst().orElseThrow();
+        // 持久目录身份也可核实缺少来源年份的作品，不再把历史电影详情作为硬前置。
+        f.store.identity(1, new Identity("MOVIE",123,null,"罗斯",null,2026));
+        when(f.client.fetch(ChartId.movie_weekly_best)).thenReturn(List.of());
+        when(f.client.refreshMovieIdentity(any())).thenThrow(new DoubanChartClient.ChartReadException("HTTP 400"));
+        when(f.client.refreshSubject(any())).thenThrow(new DoubanChartClient.ChartReadException("HTTP 400"));
+        Operation run = f.await(f.service.execute(ChartId.movie_weekly_best).id());
+        assertEquals("CREATED", run.entries().get(0).status());
+        var history = f.service.board(ChartId.movie_weekly_best).candidates().get(0);
         assertFalse(history.current());
         assertNull(history.subject().originalTitle());
-        verify(f.eligibility, times(2)).assess(eq(detailed), nullable(Identity.class));
+        verify(f.client, never()).refreshSubject(any());
+        verify(f.client, never()).refreshMovieIdentity(any());
     }
 
     @Test void historicalCompletionReasonIsDatedAndPersistsInOperation() throws Exception {
@@ -391,10 +485,12 @@ class DoubanChartServiceTest {
 
     @Test void exclusionDuringFinalNetworkVerificationPreventsAdmission() throws Exception {
         when(f.client.fetch(ChartId.movie_hot_gaia)).thenReturn(List.of(f.subject(1,"MOVIE")));
-        when(f.client.refreshSubject(any())).thenAnswer(call -> {
-            f.service.exclusion(ChartId.movie_hot_gaia,1,new ExclusionInput(true));
-            return call.getArgument(0);
-        });
+        doAnswer(call -> {
+            if (f.entered.getCount() == 0) f.service.exclusion(ChartId.movie_hot_gaia,1,new ExclusionInput(true));
+            f.entered.countDown();
+            Identity identity = f.identity(call.getArgument(0));
+            return new DoubanChartEligibility.Assessment(identity, BgmWishlistService.target(identity), List.of(), null);
+        }).when(f.eligibility).assess(any(), nullable(Identity.class));
         Operation done = f.await(f.service.execute(ChartId.movie_hot_gaia).id());
         assertEquals("EXCLUDED",done.entries().get(0).reason().code());
         verify(f.tasks,never()).createChartMovie(any(),any(),any());
@@ -436,6 +532,7 @@ class DoubanChartServiceTest {
         final PlatformTransactionManager transactions = mock(PlatformTransactionManager.class);
         final DoubanChartClient client = mock(DoubanChartClient.class);
         final DoubanChartEligibility eligibility = mock(DoubanChartEligibility.class);
+        final com.medianexus.orchestrator.integration.tmdb.TmdbClient tmdb = mock(com.medianexus.orchestrator.integration.tmdb.TmdbClient.class);
         final BgmWishlistTaskGateway tasks = mock(BgmWishlistTaskGateway.class);
         final BgmWishlistSessionLocks locks = mock(BgmWishlistSessionLocks.class);
         final AuthService auth = mock(AuthService.class);
@@ -478,6 +575,22 @@ class DoubanChartServiceTest {
             when(tasks.createChartSeries(any(), any(), any())).thenReturn(new BgmWishlistTaskGateway.ActiveTask("SERIES", "series-task", "PENDING"));
             store = new DoubanChartStore(mapper, json, transactions);
             service = new DoubanChartService(store, client, eligibility, tasks, locks, auth, users, downloads);
+        }
+        void useMovieCatalog() throws Exception {
+            var real = new DoubanChartEligibility(tmdb, mock(ReleaseFileTables.class), new MovieSeriesFileRenameService());
+            doAnswer(call -> real.assess(call.getArgument(0), call.getArgument(1)))
+                    .when(eligibility).assess(any(), nullable(Identity.class));
+            doAnswer(call -> real.completeRelease(call.getArgument(0), call.getArgument(1)))
+                    .when(eligibility).completeRelease(any(), any());
+            when(tmdb.searchChartTitles(anyString(), eq("MOVIE"), eq(2026))).thenReturn(json.readTree("""
+                    [{"id":123,"title":"罗斯","release_date":"2026-04-17"}]
+                    """));
+            when(tmdb.getMovieDetails(123,"zh-CN")).thenReturn(json.readTree("""
+                    {"id":123,"title":"罗斯","release_date":"2026-04-17"}
+                    """));
+            when(tmdb.getMovieReleaseDates(123)).thenReturn(json.readTree("""
+                    {"results":[{"release_dates":[{"type":4,"release_date":"2020-01-01T00:00:00Z"}]}]}
+                    """));
         }
         List<String> operationRows(String chart) { return rows.entrySet().stream().filter(row -> "OPERATION".equals(kinds.get(row.getKey()))
                 && chart.equals(charts.get(row.getKey()))).map(Map.Entry::getValue).toList(); }

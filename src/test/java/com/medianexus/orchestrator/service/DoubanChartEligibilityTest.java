@@ -76,6 +76,63 @@ class DoubanChartEligibilityTest {
         assertEquals("PROGRESS_CONFLICT", checked.assess(subject("1集全"), identity).reason().code());
     }
 
+    @Test void catalogAiringIsReportedAsAiringAndSameDayFinaleRemainsPending() throws Exception {
+        var checked = new DoubanChartEligibility(tmdb, tables, new MovieSeriesFileRenameService(),
+                java.time.Clock.fixed(Instant.parse("2026-11-22T04:00:00Z"), DoubanChartStore.ZONE));
+        var series = json.readTree("""
+                {"id":123,"name":"测试剧","original_name":"Series","status":"Returning Series",
+                 "seasons":[{"season_number":2,"episode_count":2}]}
+                """);
+        var season = json.readTree("""
+                {"id":22,"season_number":2,"episodes":[
+                 {"episode_number":1,"season_number":2,"air_date":"2026-11-21"},
+                 {"episode_number":2,"season_number":2,"air_date":"2026-11-23","episode_type":"finale"}]}
+                """);
+        when(tmdb.getTvDetails(123,"zh-CN")).thenReturn(series);
+        when(tmdb.getTvSeasonDetails(123,2,"zh-CN")).thenReturn(season);
+        assertEquals("AIRING", checked.assess(subject(null), identity).reason().code());
+        var first = (com.fasterxml.jackson.databind.node.ObjectNode) season.path("episodes").get(0);
+        first.remove("air_date");
+        assertEquals("AIRING", checked.assess(subject(null), identity).reason().code());
+        assertEquals("PROGRESS_CONFLICT", checked.assess(subject("2集全"), identity).reason().code());
+        first.put("air_date", "2026-11-21");
+        var last = (com.fasterxml.jackson.databind.node.ObjectNode) season.path("episodes").get(1);
+        last.put("air_date", "2026-11-22");
+        var pending = checked.assess(subject(null), identity).reason();
+        assertNotNull(pending);
+        assertTrue(pending.message().contains("今日"), pending.message());
+        assertNotNull(checked.assess(subject("2集全"), identity).reason(), "同日目录日期不能证明已播出");
+        last.put("air_date", "2026-11-21");
+        assertNull(checked.assess(subject(null), identity).reason(), "续订系列的目标季可已完结");
+        last.remove("air_date");
+        assertEquals("PROGRESS_UNKNOWN", checked.assess(subject(null), identity).reason().code());
+    }
+
+    @Test void movieOriginalTitleIsOptionalButCatalogTitleYearAndIdentityConflictsAreNot() throws Exception {
+        var subject = new Subject(1,"罗斯",null,null,2026,"MOVIE",null,null,1,null,Instant.now());
+        when(tmdb.searchChartTitles("罗斯","MOVIE",2026)).thenReturn(json.readTree("""
+                [{"id":123,"title":"罗斯","release_date":"2026-04-17"}]
+                """));
+        var details = json.readTree("{\"id\":123,\"title\":\"罗斯\",\"release_date\":\"2026-04-17\"}");
+        when(tmdb.getMovieDetails(123,"zh-CN")).thenReturn(details);
+        when(tmdb.getMovieReleaseDates(123)).thenReturn(json.readTree("""
+                {"results":[{"release_dates":[{"type":4,"release_date":"2020-01-01T00:00:00Z"}]}]}
+                """));
+        assertNull(eligibility.assess(subject,null).reason());
+        var node = (com.fasterxml.jackson.databind.node.ObjectNode)details;
+        node.put("release_date","2025-04-17");
+        assertNotNull(eligibility.assess(subject,null).reason());
+        node.put("release_date","2026-04-17");
+        node.put("title","不同作品");
+        assertNotNull(eligibility.assess(subject,null).reason());
+        node.put("title","罗斯");
+        node.put("id",124);
+        assertNotNull(eligibility.assess(subject,null).reason());
+        node.put("id",123);
+        node.remove("release_date");
+        assertNotNull(eligibility.assess(subject,null).reason());
+    }
+
     @Test void fullSeasonRequiresDistinctExactEpisodeSetAndSafeKnownFileTable() {
         var assessed = new DoubanChartEligibility.Assessment(identity,
                 BgmWishlistService.target(identity), List.of(1,2,3), null);
