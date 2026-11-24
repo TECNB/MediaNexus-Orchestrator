@@ -54,6 +54,13 @@ class ReleaseSubmissionSafetyTest {
         assertThatThrownBy(() -> safety.check(MAGNET, movie, ReleaseIngestMetadata.manual())).hasMessageContaining("accept_unverified_risk");
     }
 
+    @Test void recoveryCombinesOriginalYearDeclarationWithFreshUndatedTable() {
+        cacheTable("Arrival 1080p", "Arrival 1080p.mkv");
+        String record = safety.checkMovieOrganizationRecovery(null, MAGNET, HASH, movie,
+                ReleaseIngestMetadata.manual(), originalMovieEvidence());
+        assertThat(record).startsWith("RECOMMENDABLE;").contains("Arrival 2016 1080p");
+    }
+
     @Test void freshConflictingOrInvalidTableNeverFallsBackToAcceptedHistoricalTable() {
         cacheTable("Arrival 2017 1080p", "Arrival 2017 1080p.mkv");
         assertThatThrownBy(() -> safety.checkMovieOrganizationRecovery(null, MAGNET, HASH, movie, ReleaseIngestMetadata.manual(), originalMovieEvidence()))

@@ -166,6 +166,14 @@ public class ReleaseSubmissionSafety {
             ReleaseIngestMetadata metadata, String originalSubmissionEvidence) {
         var identity = PanSouMagnetIdentity.fromUrl(magnet).orElseThrow(() -> rejected("RECOVERY_HASH_INVALID"));
         if (storedHash == null || !identity.btih().equalsIgnoreCase(storedHash)) throw rejected("RECOVERY_TASK_HASH_MISMATCH");
+        if (originalSubmissionEvidence != null) {
+            originalSubmissionTable(identity, originalSubmissionEvidence);
+            var originalTitles = java.util.regex.Pattern.compile("; sourceTitles=\\[(.*)]; file_table_source=")
+                    .matcher(originalSubmissionEvidence.lines().findFirst().orElse(""));
+            if (!originalTitles.find()) throw rejected("RECOVERY_ORIGINAL_TABLE_MALFORMED");
+            if (!originalTitles.group(1).isBlank())
+                rememberSourceTitles(magnet, List.of(originalTitles.group(1).split(", ", -1)));
+        }
         List<String> titles = checkedSourceTitles(magnet, target, metadata);
         TorrentFileTable table;
         String source;
