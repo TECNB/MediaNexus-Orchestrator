@@ -594,22 +594,17 @@ class CloudDrive2LibraryOrganizerTest {
     }
 
     @Test
-    void reconcilesPartialMoveWithOnlyIndividualProvenResidualsBeforeDeletion() {
+    void legacyPartialMoveNeverCompensatesUsingPathDerivedIds() {
         FakeFileOperations files = new FakeFileOperations();
         LibraryOrganizationPlan plan = residualMovePlan(files);
         files.movesBeforeFailure = 1;
         files.moveFailure = new CloudDrive2ClientException("partial INTERNAL", Status.Code.INTERNAL, null);
         List<String> progress = new ArrayList<>();
 
-        residualOrganizer(files).organize(plan, (message, detail) -> progress.add(message + ":" + detail));
-
-        assertThat(files.moveCalls).hasSize(3);
-        assertThat(files.moveCalls.get(1).sourcePaths()).containsExactly("/WebDAV/Media/Movie/Recovery/Release/two.mkv");
-        assertThat(files.moveCalls.get(2).sourcePaths()).containsExactly("/WebDAV/Media/Movie/Recovery/Release/three.mkv");
-        assertThat(files.children("/WebDAV/Media/Movie/Recovery"))
-                .extracting(CloudDrive2FileEntry::name).containsExactlyInAnyOrder("one.mkv", "two.mkv", "three.mkv");
-        assertThat(progress).anySatisfy(line -> assertThat(line).contains("partial INTERNAL", "INTERNAL"));
-        assertThat(files.deleteCalls).isNotEmpty();
+        assertThatThrownBy(() -> residualOrganizer(files).organize(plan, (message, detail) -> progress.add(message + ":" + detail)))
+                .isSameAs(files.moveFailure);
+        assertThat(files.moveCalls).hasSize(1);
+        assertThat(files.deleteCalls).isEmpty();
     }
 
     @Test
@@ -618,7 +613,7 @@ class CloudDrive2LibraryOrganizerTest {
         LibraryOrganizationPlan plan = residualMovePlan(files);
         files.moveFailure = new CloudDrive2ClientException("response lost", Status.Code.INTERNAL, null);
 
-        residualOrganizer(files).organize(plan, (message, detail) -> { });
+        assertThatThrownBy(() -> residualOrganizer(files).organize(plan, (message, detail) -> {})).isSameAs(files.moveFailure);
 
         assertThat(files.moveCalls).hasSize(1);
     }
@@ -630,7 +625,7 @@ class CloudDrive2LibraryOrganizerTest {
         files.moveFailure = new CloudDrive2ClientException("late INTERNAL", Status.Code.INTERNAL, null);
         files.targetListingsUntilMoveVisible = 3;
 
-        residualOrganizer(files).organize(plan, (message, detail) -> { });
+        assertThatThrownBy(() -> residualOrganizer(files).organize(plan, (message, detail) -> {})).isSameAs(files.moveFailure);
 
         assertThat(files.moveCalls).hasSize(1);
     }
@@ -644,8 +639,7 @@ class CloudDrive2LibraryOrganizerTest {
         files.listFailureAfterMove = new CloudDrive2ClientException("list unavailable", Status.Code.UNAVAILABLE, null);
 
         assertThatThrownBy(() -> residualOrganizer(files).organize(plan, (message, detail) -> { }))
-                .isSameAs(files.moveFailure)
-                .satisfies(failure -> assertThat(failure.getSuppressed()).contains(files.listFailureAfterMove));
+                .isSameAs(files.moveFailure);
         assertThat(files.moveCalls).hasSize(1);
         assertThat(files.deleteCalls).isEmpty();
     }
@@ -690,10 +684,9 @@ class CloudDrive2LibraryOrganizerTest {
         files.moveFailure = new CloudDrive2ClientException("response unknown", Status.Code.DEADLINE_EXCEEDED, null);
         files.targetListingsUntilMoveVisible = 3;
 
-        residualOrganizer(files).organize(plan, (message, detail) -> { });
+        assertThatThrownBy(() -> residualOrganizer(files).organize(plan, (message, detail) -> {})).isSameAs(files.moveFailure);
 
         assertThat(files.moveCalls).hasSize(1);
-        assertThat(files.targetListingsUntilMoveVisible).isZero();
     }
 
     @Test
@@ -735,9 +728,8 @@ class CloudDrive2LibraryOrganizerTest {
         files.residualMoveFailure = new CloudDrive2ClientException("residual failed", Status.Code.INTERNAL, null);
 
         assertThatThrownBy(() -> residualOrganizer(files).organize(plan, (message, detail) -> { }))
-                .isSameAs(files.moveFailure)
-                .satisfies(failure -> assertThat(failure.getSuppressed()).contains(files.residualMoveFailure));
-        assertThat(files.moveCalls).hasSize(2);
+                .isSameAs(files.moveFailure);
+        assertThat(files.moveCalls).hasSize(1);
         assertThat(files.deleteCalls).isEmpty();
     }
 
@@ -873,6 +865,9 @@ class CloudDrive2LibraryOrganizerTest {
         private final Map<String, Set<String>> hiddenNamesFromForcedListings = new LinkedHashMap<>();
         private int listCalls;
         private boolean rejectMixedSourceParents;
+
+        @Override
+        public void requireWritersQuiet() { }
 
         @Override
         public List<CloudDrive2FileEntry> list(String path, boolean forceRefresh) {

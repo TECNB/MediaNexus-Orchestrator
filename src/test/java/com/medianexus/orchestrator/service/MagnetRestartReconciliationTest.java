@@ -138,9 +138,9 @@ class MagnetRestartReconciliationTest {
         });
         service.markUnfinishedTasksInterrupted();
         var order = inOrder(scheduler, movies, series);
-        order.verify(scheduler).retainOrganizationRecovery("/movie", "movie-hash");
+        order.verify(scheduler).retainOrganizationRecovery("movie:original-movie", "/movie", "movie-hash");
         order.verify(movies).update(any(com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper.class));
-        order.verify(scheduler).retainOrganizationRecovery("/series", "series-hash");
+        order.verify(scheduler).retainOrganizationRecovery("series:original-series", "/series", "series-hash");
         order.verify(series).update(any(com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper.class));
         assertThat(movieUpdates.get(0).getParamNameValuePairs().values()).anyMatch(value -> value.toString().contains("[ORGANIZATION_UNRESOLVED]"));
         assertThat(seriesUpdates.get(0).getParamNameValuePairs().values()).anyMatch(value -> value.toString().contains("[ORGANIZATION_UNRESOLVED]"));

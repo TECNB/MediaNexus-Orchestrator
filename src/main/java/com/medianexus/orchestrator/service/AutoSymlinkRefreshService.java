@@ -86,6 +86,34 @@ public class AutoSymlinkRefreshService {
         };
     }
 
+    /** One POST only. FAILED means outcome unknown; SKIPPED proves no POST was issued. */
+    public RefreshOutcome submitOrganizationRefresh(String category, String savePath) {
+        var binding = targetRegistry.bindingForPath(category, savePath)
+                .orElseThrow(() -> new IllegalStateException("持久整理刷新需要登记的目标绑定"));
+        var task = new AutoSymlinkProperties.SyncTask();
+        task.setUuid(binding.asUuid());
+        task.setRequestBodyJson(binding.asRequestBodyJson());
+        if (incompleteConfigurationMessage(category, task) != null) return RefreshOutcome.skipped("刷新配置不完整，未提交");
+        JsonNode body;
+        try {
+            body = objectMapper.readTree(task.getRequestBodyJson());
+            if (!body.isObject()) return RefreshOutcome.skipped("刷新配置无效，未提交");
+            String relative = savePath.substring(binding.rootPath().length());
+            String media = body.path("media_dir").asText("");
+            if (!media.startsWith("/") || java.util.Arrays.stream(relative.split("/")).anyMatch(p -> p.equals("..")))
+                return RefreshOutcome.skipped("播放路径无效，未提交");
+            cloudDrive.refreshMountedDirectory(cloudDriveProperties, media.replaceAll("/+$", "") + relative);
+        } catch (RuntimeException | JsonProcessingException unavailable) {
+            return RefreshOutcome.skipped("刷新准备不可用，未提交");
+        }
+        try {
+            autoSymlinkClient.submitSyncTask(task.getUuid(), body);
+            return RefreshOutcome.submitted("持久整理刷新已提交");
+        } catch (AutoSymlinkClientException unknown) {
+            return RefreshOutcome.failed("刷新结果未知，仅允许观察");
+        }
+    }
+
     /** 手动指定稳定目标 ID；不通过当前默认或任意服务器路径选择目标。 */
     public RefreshOutcome refreshForTarget(String category, String targetId) {
         for (String root : targetRegistry.rootsForExistingMedia(category, null)) {

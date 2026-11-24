@@ -173,6 +173,17 @@ public class IngestTargetRegistry {
     public record CategoryBinding(String targetId, String targetName, String category, String rootPath,
                                   String asUuid, String asRequestBodyJson, String strmRootPath, String embyLibraryId) {}
 
+    /** Opaque proof includes all bindings, without persisting protected refresh forms. */
+    public String organizationNamespaceProof() {
+        try {
+            String value = objectMapper.writeValueAsString(readState());
+            return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        } catch (java.security.NoSuchAlgorithmException | JsonProcessingException failure) {
+            throw new IllegalStateException("目标映射证明生成失败");
+        }
+    }
+
     IngestTargetState readState() {
         return decodeState(mapper.selectSettingValue(SETTING_KEY));
     }

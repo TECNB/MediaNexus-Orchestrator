@@ -24,6 +24,7 @@ service CloudDriveFileSrv {
   rpc RenameFiles(RenameFilesRequest) returns (FileOperationResult) {}
   rpc MoveFile(MoveFileRequest) returns (FileOperationResult) {}
   rpc DeleteFiles(MultiFileRequest) returns (FileOperationResult) {}
+  rpc GetAllTasksCount(google.protobuf.Empty) returns (GetAllTasksCountResult) {}
 }
 
 message CloudAPI {
@@ -142,4 +143,11 @@ message SetCloudAPIConfigRequest {
   string cloudName = 1;
   string userName = 2;
   CloudAPIConfig config = 3;
+}
+
+// Official field numbers; omitted push/status fields are irrelevant to the quiet-writer precondition.
+message GetAllTasksCountResult {
+  uint32 downloadCount = 1;
+  uint32 uploadCount = 2;
+  uint32 copyTaskCount = 6;
 }

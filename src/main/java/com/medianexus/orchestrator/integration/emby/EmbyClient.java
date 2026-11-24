@@ -320,6 +320,31 @@ public class EmbyClient {
         ));
     }
 
+    /** Existing path occupants must agree before adopting a historical organization plan. Absence is not proof of completion. */
+    public void requireOrganizationPathUnconflicted(String libraryId, String path, int tmdbId, Integer season) {
+        for (var item : catalogItems(Map.of("ParentId", libraryId, "Recursive", "true", "Path", path,
+                "IncludeItemTypes", season == null ? "Movie" : "Season", "Fields", "Path", "Limit", "10000"))) {
+            if (item.path() == null || !(item.path().equals(path) || item.path().startsWith(path + "/"))) continue;
+            requireOrganizationIdentity(item.id(), tmdbId, season);
+        }
+    }
+
+    /** Read-only exact provider and season proof; never trusts a filtered search result alone. */
+    public void requireOrganizationIdentity(String itemId, int tmdbId, Integer season) {
+        JsonNode item = get("/Items/" + encodePath(itemId), Map.of("Fields", "ProviderIds,Path,ParentId"));
+        JsonNode identity = item;
+        if (season != null) {
+            if (!"Season".equals(item.path("Type").asText()) || !item.path("IndexNumber").isInt()
+                    || item.path("IndexNumber").intValue() != season) throw new EmbyClientException("季度身份冲突");
+            String parent = item.path("ParentId").asText("");
+            if (parent.isBlank()) throw new EmbyClientException("缺少剧集父身份");
+            identity = get("/Items/" + encodePath(parent), Map.of("Fields", "ProviderIds"));
+        }
+        if (!(season == null ? "Movie" : "Series").equals(identity.path("Type").asText())
+                || !Integer.toString(tmdbId).equals(identity.path("ProviderIds").path("Tmdb").asText()))
+            throw new EmbyClientException("Emby 身份冲突；禁止自动覆盖");
+    }
+
     public List<EmbyCatalogItem> findMoviesByTmdbId(int tmdbId) {
         return catalogItems(Map.of(
                 "Recursive", "true",

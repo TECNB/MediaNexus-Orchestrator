@@ -11,6 +11,91 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.*;
 
 class OfflineIngestSchedulerTest {
+    @Test void prewriteRefusalCannotReleaseOldOrDurableOwners() throws Exception {
+        var client = mappedClient();
+        try (var scheduler = new OfflineIngestScheduler(client)) {
+            scheduler.retainOrganizationRecovery("movie:old", "/old", "hash");
+            scheduler.refuseOrganizationAdmission("movie:old", "/old", "hash");
+            assertThatThrownBy(() -> scheduler.enqueueOrganizationRecovery("movie:other", "other", "/old", "hash", () -> {}))
+                    .isInstanceOf(java.util.concurrent.RejectedExecutionException.class);
+            var refused = new CountDownLatch(1);
+            scheduler.enqueueOrganizationRecovery("movie:new", "new", "/new", "newhash", () -> {
+                scheduler.refuseOrganizationAdmission("movie:new", "/new", "newhash"); refused.countDown();
+            });
+            assertThat(refused.await(2, TimeUnit.SECONDS)).isTrue();
+            var accepted = new CountDownLatch(1);
+            scheduler.enqueueOrganizationRecovery("movie:next", "next", "/new", "newhash", accepted::countDown);
+            assertThat(accepted.await(2, TimeUnit.SECONDS)).isTrue();
+        }
+    }
+
+    @Test void exactLateCompletedOwnerCanResumeItsRetainedClaim() throws Exception {
+        try (var scheduler = new OfflineIngestScheduler(mappedClient())) {
+            scheduler.retainOrganizationRecovery("movie:original", "/old", "hash");
+            var ran = new CountDownLatch(1);
+            scheduler.enqueueOrganizationRecovery("movie:original", "original", "/old", "hash", ran::countDown);
+            assertThat(ran.await(2, TimeUnit.SECONDS)).isTrue();
+        }
+    }
+
+    @Test void quiescenceNeverProvesRetirementOrInterruptsAnActiveWriter() throws Exception {
+        var scheduler = new OfflineIngestScheduler(mappedClient());
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var interrupted = new java.util.concurrent.atomic.AtomicBoolean();
+        scheduler.enqueueOrganizationRecovery("movie:one", "one", "/one", "hash", () -> {
+            entered.countDown();
+            try { release.await(); }
+            catch (InterruptedException unexpected) { interrupted.set(true); Thread.currentThread().interrupt(); }
+        });
+        try {
+            assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue();
+            assertThat(scheduler.quiesceOrganizationRecovery()).isFalse();
+            assertThat(interrupted.get()).isFalse();
+            assertThatThrownBy(() -> scheduler.enqueueOrganizationRecovery("movie:two", "two", "/two", "other", () -> {}))
+                    .isInstanceOf(java.util.concurrent.RejectedExecutionException.class);
+            release.countDown();
+            assertThat(scheduler.quiesceOrganizationRecovery()).isTrue();
+        } finally { release.countDown(); scheduler.close(); }
+    }
+
+    @Test void idleQuiescenceClosesAdmissionWithoutConsumingShutdownGrace() {
+        try (var scheduler = new OfflineIngestScheduler(mappedClient())) {
+            long started = System.nanoTime();
+            assertThat(scheduler.quiesceOrganizationRecovery()).isTrue();
+            assertThat(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started)).isLessThan(1000);
+            assertThatThrownBy(() -> scheduler.enqueue("/one", "hash", Duration.ofSeconds(1), Duration.ofMillis(10), new DownloadStub()))
+                    .isInstanceOf(java.util.concurrent.RejectedExecutionException.class);
+        }
+    }
+
+    @Test void durableRecoveryTicksCoalesceAndKeepOtherOwnerClaims() throws Exception {
+        OpenListClient client = mappedClient();
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        try (OfflineIngestScheduler scheduler = new OfflineIngestScheduler(client)) {
+            scheduler.enqueueOrganizationRecovery("movie:one", "one", "/one", "hash", () -> {
+                entered.countDown(); await(release);
+            });
+            assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue();
+            assertThatThrownBy(() -> scheduler.enqueueOrganizationRecovery("movie:one", "one", "/one", "hash", () -> {}))
+                    .isInstanceOf(java.util.concurrent.RejectedExecutionException.class);
+            scheduler.completeOrganizationRecovery("movie:other", "/one", "hash");
+            assertThatThrownBy(() -> scheduler.enqueueOrganizationRecovery("movie:two", "two", "/one", "hash", () -> {}))
+                    .isInstanceOf(java.util.concurrent.RejectedExecutionException.class);
+            release.countDown();
+        } finally { release.countDown(); }
+    }
+
+    @Test void durableRecoveryCannotBypassUnknownRestartPause() {
+        try (OfflineIngestScheduler scheduler = new OfflineIngestScheduler(mappedClient())) {
+            scheduler.blockUnresolvedRestart("UNKNOWN");
+            assertThatThrownBy(() -> scheduler.enqueueOrganizationRecovery("movie:one", "one", "/one", "hash", () -> {
+                throw new AssertionError("paused writer");
+            })).isInstanceOf(java.util.concurrent.RejectedExecutionException.class);
+        }
+    }
+
     @Test
     void blockedFirstSubmissionDoesNotBlockSecondDistinctDirectory() throws Exception {
         OpenListClient client = mappedClient();

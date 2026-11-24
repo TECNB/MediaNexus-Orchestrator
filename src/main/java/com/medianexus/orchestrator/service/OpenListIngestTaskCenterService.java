@@ -253,6 +253,23 @@ public class OpenListIngestTaskCenterService {
         };
     }
 
+    public OrganizationRecoveryJournal.RecoveryStatus recoverOrganization(String taskType, String taskId) {
+        User user = authService.requireCurrentUser();
+        String type = normalizeTaskType(taskType);
+        if (MOVIE_TASK_TYPE.equals(type)) getAccessibleMovieTask(taskId, user);
+        else if (SERIES_TASK_TYPE.equals(type)) {
+            var task = getAccessibleSeriesTask(taskId, user);
+            if ("ANIME".equals(task.getTaskProductType())) throw badRequest("整理恢复首版仅支持电影和剧集");
+        } else throw badRequest("整理恢复首版仅支持电影和剧集");
+        return magnetIngestService.recoverOrganization(type.toLowerCase(Locale.ROOT), taskId);
+    }
+
+    public OrganizationRecoveryJournal.RecoveryStatus organizationRecoveryStatus(String taskType, String taskId) {
+        // Reuse exactly the same owner/admin visibility policy as task detail, not journal existence as authorization.
+        getOpenListIngestTaskDetail(taskType, taskId, 0);
+        return magnetIngestService.organizationRecoveryStatus(normalizeTaskType(taskType), taskId);
+    }
+
     public OpenListIngestTaskCenterLogsResponse getOpenListIngestTaskLogs(
             String taskType,
             String taskId,

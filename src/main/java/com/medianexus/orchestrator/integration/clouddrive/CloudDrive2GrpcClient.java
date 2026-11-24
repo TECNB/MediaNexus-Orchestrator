@@ -69,6 +69,17 @@ class CloudDrive2GrpcClient implements CloudDrive2FileOperations {
     }
 
     @Override
+    public void requireWritersQuiet() {
+        try {
+            var counts = stub().getAllTasksCount(com.google.protobuf.Empty.getDefaultInstance());
+            if (counts.getDownloadCount() != 0 || counts.getUploadCount() != 0 || counts.getCopyTaskCount() != 0)
+                throw new CloudDrive2ClientException("CD2 写入/传输队列未结清");
+        } catch (StatusRuntimeException unavailable) {
+            throw new CloudDrive2ClientException("无法核实 CD2 写入队列，禁止恢复写入");
+        }
+    }
+
+    @Override
     public List<CloudDrive2FileEntry> list(String path, boolean forceRefresh) {
         ListSubFileRequest request = ListSubFileRequest.newBuilder()
                 .setPath(path)

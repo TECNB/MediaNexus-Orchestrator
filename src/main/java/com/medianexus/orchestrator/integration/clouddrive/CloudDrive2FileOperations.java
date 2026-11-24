@@ -4,6 +4,8 @@ import java.util.List;
 
 interface CloudDrive2FileOperations {
 
+    void requireWritersQuiet();
+
     List<CloudDrive2FileEntry> list(String path, boolean forceRefresh);
 
     void rename(List<CloudDrive2RenameOperation> operations);

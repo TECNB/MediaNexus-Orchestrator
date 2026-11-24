@@ -159,6 +159,22 @@ public class OpenListIngestTaskCenterController {
         return ApiResponse.success(taskCenterService.replaceManualMagnet(taskType, taskId, request));
     }
 
+    @PostMapping("/tasks/{taskType}/{taskId}/organization-recoveries")
+    @Operation(summary = "接管失败任务的文件整理", description = "仅接管已确认下载完成的电影或剧集；不重新下载、不删除源文件、不改写原失败历史。证据或队列未结清时拒绝写入。")
+    public ApiResponse<com.medianexus.orchestrator.service.OrganizationRecoveryJournal.RecoveryStatus> recoverOrganization(
+            @Pattern(regexp = "(?i)movie|series", message = "整理恢复仅支持电影和剧集") @PathVariable String taskType,
+            @PathVariable String taskId) {
+        return ApiResponse.success(taskCenterService.recoverOrganization(taskType, taskId));
+    }
+
+    @GetMapping("/tasks/{taskType}/{taskId}/organization-recoveries")
+    @Operation(summary = "读取持久整理恢复进度", description = "独立于原任务历史；无日志时返回 null，不返回文件身份、账号或受保护刷新配置。")
+    public ApiResponse<com.medianexus.orchestrator.service.OrganizationRecoveryJournal.RecoveryStatus> organizationRecoveryStatus(
+            @Pattern(regexp = "(?i)movie|series", message = "整理恢复仅支持电影和剧集") @PathVariable String taskType,
+            @PathVariable String taskId) {
+        return ApiResponse.success(taskCenterService.organizationRecoveryStatus(taskType, taskId));
+    }
+
     @PostMapping("/tasks/adult/{taskId}/batch-retries")
     @Operation(summary = "整批重新提交 Adult 下载链接", description = "仅支持可恢复终态的 Adult 任务；创建关联的新任务尝试，原任务保持不变。")
     public ApiResponse<OpenListManualMagnetRetryResponse> retryAdultBatch(

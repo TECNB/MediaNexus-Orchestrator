@@ -26,11 +26,14 @@ import java.util.function.BooleanSupplier;
 import org.springframework.stereotype.Component;
 
 @Component
-public class CloudDrive2LibraryOrganizer implements LibraryOrganizer {
+public class CloudDrive2LibraryOrganizer implements com.medianexus.orchestrator.service.organization.DurableLibraryOrganizer {
 
     private final IngestTargetRegistry targetRegistry;
     private final CloudDrive2FileOperations fileOperations;
     private final CloudDrive2Properties properties;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.medianexus.orchestrator.integration.openlist.OpenListClient openList;
 
     CloudDrive2LibraryOrganizer(
             CloudDrive2FileOperations fileOperations,
@@ -123,6 +126,170 @@ public class CloudDrive2LibraryOrganizer implements LibraryOrganizer {
         progressObserver.record("正在确认 CD2 整理结果完整可见", plan.targetDirectory());
         awaitTargetManifest(plan);
         progressObserver.record("CD2 整理结果已完整可见", plan.targetDirectory());
+    }
+
+    @Override
+    public void requireRecoveryWritersQuiet() {
+        fileOperations.requireWritersQuiet();
+    }
+
+    @Override
+    public Snapshot capture(LibraryOrganizationPlan plan) {
+        validatePlanMapping(plan);
+        fileOperations.requireWritersQuiet();
+        var account = openList.offlineDirectoryForPath(plan.targetDirectory());
+        if (account.account().equals("unknown") || account.rootId().isBlank()) throw blocked();
+        Map<String, String> originals = new LinkedHashMap<>();
+        Map<String, String> finals = new LinkedHashMap<>();
+        plan.renames().forEach(rename -> {
+            if (originals.put(rename.targetPath(), rename.sourcePath()) != null) throw blocked();
+        });
+        plan.moves().forEach(move -> {
+            if (finals.put(move.sourcePath(), join(move.targetDirectory(), fileName(move.sourcePath()))) != null) throw blocked();
+        });
+        Set<String> renamedPaths = new LinkedHashSet<>(originals.keySet());
+        renamedPaths.addAll(finals.keySet());
+        List<FileEvidence> evidence = new ArrayList<>();
+        Map<String, String> cloudPaths = new LinkedHashMap<>();
+        Set<String> finalNames = new java.util.HashSet<>();
+        Set<String> ids = new java.util.HashSet<>();
+        for (String renamed : renamedPaths) {
+            String original = originals.getOrDefault(renamed, renamed);
+            String target = finals.getOrDefault(renamed, renamed);
+            if (!parentPath(target).equals(normalizePath(plan.targetDirectory()))
+                    || !finalNames.add(fileName(target).toLowerCase(java.util.Locale.ROOT))) throw blocked();
+            for (String path : List.of(original, renamed, target)) cloudPaths.put(path, durableCloudPath(path));
+            var sourceAccount = openList.offlineDirectoryForPath(original);
+            if (!account.account().equals(sourceAccount.account()) || !account.rootId().equals(sourceAccount.rootId())) throw blocked();
+            CloudDrive2FileEntry source = durableEntry(original);
+            if (source == null || source.directory() || source.size() <= 0) throw blocked();
+            var identity = openList.readIdentity(original);
+            if (identity.bytes() != source.size() || !ids.add(identity.providerFileId())) throw blocked();
+            for (String path : new LinkedHashSet<>(List.of(renamed, target))) {
+                if (!path.equals(original) && (durableEntry(path) != null || openList.readIdentity(path) != null)) throw blocked();
+            }
+            evidence.add(new FileEvidence(original, renamed, target, identity.providerFileId(), identity.gcid(), source.size()));
+        }
+        for (String name : plan.expectedTargetNames()) {
+            String path = join(plan.targetDirectory(), name);
+            if (finalNames.contains(name.toLowerCase(java.util.Locale.ROOT))) continue;
+            cloudPaths.put(path, durableCloudPath(path));
+            CloudDrive2FileEntry entry = durableEntry(path);
+            if (entry == null || entry.directory() || entry.size() <= 0
+                    || !finalNames.add(name.toLowerCase(java.util.Locale.ROOT))) throw blocked();
+            var identity = openList.readIdentity(path);
+            if (identity.bytes() != entry.size() || !ids.add(identity.providerFileId())) throw blocked();
+            evidence.add(new FileEvidence(path, path, path, identity.providerFileId(), identity.gcid(), entry.size()));
+        }
+        if (evidence.isEmpty() || evidence.size() != plan.expectedTargetNames().size()) throw blocked();
+        return new Snapshot(plan, targetRegistry.organizationNamespaceProof(), cloudPaths, evidence);
+    }
+
+    @Override
+    public void resume(Snapshot snapshot, Map<String, ActionState> actions, Checkpoint checkpoint) {
+        validateDurableMapping(snapshot);
+        fileOperations.requireWritersQuiet();
+        // A previous RPC may still be running remotely. Settle every SENT before issuing any untouched action.
+        for (FileEvidence file : snapshot.files()) {
+            String location = durableLocation(file);
+            String renameKey = file.originalPath() + " -> " + file.renamedPath();
+            String moveKey = file.renamedPath() + " -> " + file.finalPath();
+            if (actions.get(renameKey) == ActionState.SENT && location.equals(file.originalPath())
+                    || actions.get(moveKey) == ActionState.SENT && !location.equals(file.finalPath())) throw blocked();
+        }
+        // No cleanup/deletion is replayed. Each file has at most one rename and one move intent.
+        for (FileEvidence file : snapshot.files()) {
+            if (!file.originalPath().equals(file.renamedPath())) {
+                durableAction(snapshot, file, file.originalPath(), file.renamedPath(), actions, checkpoint,
+                        () -> fileOperations.rename(List.of(new CloudDrive2RenameOperation(
+                                durableCloudPath(file.originalPath()), fileName(file.renamedPath())))));
+            }
+        }
+        for (FileEvidence file : snapshot.files()) {
+            if (!file.renamedPath().equals(file.finalPath())) {
+                durableAction(snapshot, file, file.renamedPath(), file.finalPath(), actions, checkpoint,
+                        () -> fileOperations.move(List.of(durableCloudPath(file.renamedPath())),
+                                durableCloudPath(parentPath(file.finalPath()))));
+            }
+        }
+        verifyFiles(snapshot);
+    }
+
+    private void durableAction(Snapshot snapshot, FileEvidence file, String source, String target,
+                               Map<String, ActionState> actions, Checkpoint checkpoint, Runnable write) {
+        validateDurableMapping(snapshot);
+        String key = source + " -> " + target;
+        String location = durableLocation(file);
+        if (location.equals(target) || location.equals(file.finalPath())) {
+            checkpoint.save(key, ActionState.DONE);
+            return;
+        }
+        fileOperations.requireWritersQuiet();
+        if (!location.equals(source) || actions.containsKey(key)) throw blocked();
+        checkpoint.save(key, ActionState.SENT);
+        // The committed SENT is deliberately not a retry permit, including crash-before-call.
+        write.run();
+        awaitCondition(() -> {
+            try { return durableLocation(file).equals(target); }
+            catch (RuntimeException notVisible) { return false; }
+        }, "持久整理结果尚不可确认", Set.of(target));
+        checkpoint.save(key, ActionState.DONE);
+    }
+
+    @Override
+    public void verifyFiles(Snapshot snapshot) {
+        validateDurableMapping(snapshot);
+        for (FileEvidence file : snapshot.files()) {
+            if (!durableLocation(file).equals(file.finalPath())) throw blocked();
+        }
+    }
+
+    private String durableLocation(FileEvidence evidence) {
+        String location = null;
+        for (String path : new LinkedHashSet<>(List.of(evidence.originalPath(), evidence.renamedPath(), evidence.finalPath()))) {
+            CloudDrive2FileEntry entry = durableEntry(path);
+            var identity = openList.readIdentity(path);
+            if (entry == null && identity == null) continue;
+            if (entry == null || identity == null || location != null || entry.directory() || entry.size() != evidence.bytes()) throw blocked();
+            if (identity.bytes() != evidence.bytes() || !evidence.providerFileId().equals(identity.providerFileId())
+                    || !evidence.gcid().equals(identity.gcid())) throw blocked();
+            var account = openList.offlineDirectoryForPath(path);
+            var targetAccount = openList.offlineDirectoryForPath(parentPath(evidence.finalPath()));
+            if (account.account().equals("unknown") || !account.account().equals(targetAccount.account())
+                    || !account.rootId().equals(targetAccount.rootId())) throw blocked();
+            location = path;
+        }
+        if (location == null) throw blocked();
+        return location;
+    }
+
+    private CloudDrive2FileEntry durableEntry(String path) {
+        String cloudPath = durableCloudPath(path);
+        Map<String, CloudDrive2FileEntry> entries;
+        try {
+            entries = entriesByName(fileOperations.list(parentPath(cloudPath), true));
+        } catch (CloudDrive2ClientException failure) {
+            if (failure.getStatusCode() == Status.Code.NOT_FOUND) return null;
+            throw failure;
+        }
+        CloudDrive2FileEntry entry = entryByName(entries, fileName(cloudPath));
+        if (entry != null && (!entry.name().equals(fileName(cloudPath)) || !cloudPath.equals(entry.fullPath()))) throw blocked();
+        return entry;
+    }
+
+    private String durableCloudPath(String path) {
+        if (!path.startsWith("/") || path.contains("\\") || java.util.Arrays.stream(path.split("/", -1))
+                .anyMatch(segment -> segment.equals("..") || segment.equals("."))) throw blocked();
+        return toCloudDrivePath(path);
+    }
+
+    private void validateDurableMapping(Snapshot snapshot) {
+        if (!snapshot.namespaceProof().equals(targetRegistry.organizationNamespaceProof())) throw blocked();
+        snapshot.cloudPaths().forEach((path, cloud) -> { if (!cloud.equals(durableCloudPath(path))) throw blocked(); });
+    }
+
+    private CloudDrive2ClientException blocked() {
+        return new CloudDrive2ClientException("整理证据冲突、身份缺失或写入结果未结清；仅允许只读核对，禁止重发");
     }
 
     /** 映射命名空间禁止重叠，因此共同祖先可映射才证明整个计划属于同一目标。 */
@@ -440,89 +607,12 @@ public class CloudDrive2LibraryOrganizer implements LibraryOrganizer {
 
     private void reconcileMoveFailure(List<MoveEvidence> evidence, CloudDrive2ClientException originalFailure,
                                       LibraryOrganizationProgressObserver progressObserver) {
-        Instant deadline = Instant.now().plus(properties.getVisibilityTimeout());
-        if (evidence.stream().anyMatch(move -> move.directory() || move.size() <= 0 || move.id().isBlank())) {
-            originalFailure.addSuppressed(new CloudDrive2ClientException("CD2 移动前缺少精确文件字节或稳定身份，禁止补发"));
-            throw originalFailure;
-        }
-        try {
-            while (true) {
-                MoveObservation observation = observeMoveEvidence(evidence);
-                progressObserver.record("CD2 移动失败后的只读核对", moveFailureEvidence(evidence, observation));
-                if (allMovesCompleted(evidence, observation)) return;
-                if (!Instant.now().isBefore(deadline)) {
-                    List<MoveEvidence> residual = positivelyProvenResiduals(evidence, observation);
-                    if (originalFailure.getStatusCode() != Status.Code.INTERNAL || residual.isEmpty()
-                            || residual.size() != incompleteMoveCount(evidence, observation)) {
-                        throw new CloudDrive2ClientException("CD2 移动失败后结果不确定，禁止补发: "
-                                + moveFailureEvidence(evidence, observation));
-                    }
-                    // 已接受的并行请求由客户端结清；再等待完整可见性窗口，避免把延迟结果当作残余。
-                    for (MoveEvidence move : residual) {
-                        MoveObservation fresh = observeMoveEvidence(evidence);
-                        if (allMovesCompleted(evidence, fresh)) return;
-                        if (!positivelyProvenResiduals(evidence, fresh).contains(move)
-                                || positivelyProvenResiduals(evidence, fresh).size() != incompleteMoveCount(evidence, fresh)) {
-                            throw new CloudDrive2ClientException("CD2 残余移动身份或目标发生变化，禁止补发");
-                        }
-                        progressObserver.record("CD2 正在安全补偿单个残余移动", move.toString());
-                        fileOperations.move(List.of(move.sourcePath()), move.targetDirectory());
-                        awaitMoveEvidenceFinal(List.of(move));
-                    }
-                    awaitMoveEvidenceFinal(evidence);
-                    return;
-                }
-                sleep(properties.getVisibilityPollInterval());
-            }
-        } catch (CloudDrive2ClientException verificationFailure) {
-            if (verificationFailure != originalFailure) originalFailure.addSuppressed(verificationFailure);
-            throw originalFailure;
-        }
+        // CD2 IDs encode paths. Neither a nonempty ID nor source-present/target-absent can settle
+        // an accepted legacy batch or authorize compensation. Movie/TV use the durable official identity path.
+        progressObserver.record("CD2 移动结果未知，保留文件和原始异常；禁止基于路径 ID 补发", "count=" + evidence.size());
+        throw originalFailure;
     }
 
-    private MoveObservation observeMoveEvidence(List<MoveEvidence> evidence) {
-        MoveEvidence first = evidence.get(0);
-        return new MoveObservation(
-                entriesByName(fileOperations.list(parentPath(first.sourcePath()), true)),
-                entriesByName(fileOperations.list(first.targetDirectory(), true)));
-    }
-
-    private void awaitMoveEvidenceFinal(List<MoveEvidence> evidence) {
-        if (evidence.isEmpty()) return;
-        Instant deadline = Instant.now().plus(properties.getVisibilityTimeout());
-        while (true) {
-            MoveObservation observation = observeMoveEvidence(evidence);
-            if (allMovesCompleted(evidence, observation)) return;
-            if (!Instant.now().isBefore(deadline)) {
-                throw new CloudDrive2ClientException("CD2 移动结果未达到源消失及目标字节校验: "
-                        + moveFailureEvidence(evidence, observation));
-            }
-            sleep(properties.getVisibilityPollInterval());
-        }
-    }
-
-    private List<MoveEvidence> positivelyProvenResiduals(List<MoveEvidence> evidence, MoveObservation observation) {
-        return evidence.stream()
-                .filter(move -> entryByName(observation.targets(), move.name()) == null)
-                .filter(move -> matchesEvidence(entryByName(observation.sources(), move.name()), move))
-                .filter(move -> !move.directory() && move.size() > 0 && !move.id().isBlank())
-                .toList();
-    }
-
-    private boolean allMovesCompleted(List<MoveEvidence> evidence, MoveObservation observation) {
-        return evidence.stream().allMatch(move -> entryByName(observation.sources(), move.name()) == null
-                && matchesEvidence(entryByName(observation.targets(), move.name()), move));
-    }
-
-    private long incompleteMoveCount(List<MoveEvidence> evidence, MoveObservation observation) {
-        return evidence.stream().filter(move -> !(entryByName(observation.sources(), move.name()) == null
-                && matchesEvidence(entryByName(observation.targets(), move.name()), move))).count();
-    }
-
-    private boolean matchesEvidence(CloudDrive2FileEntry entry, MoveEvidence evidence) {
-        return entry != null && !entry.directory() && entry.size() == evidence.size()
-                && evidence.id().equals(entry.id()) && evidence.name().equals(entry.name());
-    }
 
     // 大小写别名、重复项或路径不一致的上游目录不能作为残余写入的证据。
     private Map<String, CloudDrive2FileEntry> entriesByName(List<CloudDrive2FileEntry> entries) {

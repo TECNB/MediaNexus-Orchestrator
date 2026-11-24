@@ -131,6 +131,9 @@ public class MagnetIngestService {
     private ReleaseSubmissionSafety submissionSafety;
 
     @Autowired
+    private OrganizationRecoveryJournal organizationJournal;
+
+    @Autowired
     public MagnetIngestService(
             MovieMagnetIngestTaskMapper movieTaskMapper,
             MovieMagnetIngestTaskLogMapper movieTaskLogMapper,
@@ -324,7 +327,9 @@ public class MagnetIngestService {
                 .or().like(MovieMagnetIngestTask::getErrorMessage, "ORGANIZATION_UNRESOLVED"))) {
             if (!"ORGANIZING".equals(task.getStatus()) && (task.getErrorMessage() == null
                     || !task.getErrorMessage().contains("ORGANIZATION_UNRESOLVED"))) continue;
-            offlineScheduler.retainOrganizationRecovery(task.getSavePath(), task.getMagnetHash());
+            if (organizationJournal == null || organizationJournal.status("movie", task.getId()) == null)
+                offlineScheduler.retainOrganizationRecovery("movie:" + task.getId(), task.getSavePath(), task.getMagnetHash());
+            if (!"ORGANIZING".equals(task.getStatus())) continue;
             movieTaskMapper.update(new LambdaUpdateWrapper<MovieMagnetIngestTask>()
                     .eq(MovieMagnetIngestTask::getId, task.getId())
                     .set(MovieMagnetIngestTask::getStatus, "INTERRUPTED")
@@ -335,7 +340,9 @@ public class MagnetIngestService {
                 .or().like(SeriesMagnetIngestTask::getErrorMessage, "ORGANIZATION_UNRESOLVED"))) {
             if (!"ORGANIZING".equals(task.getStatus()) && (task.getErrorMessage() == null
                     || !task.getErrorMessage().contains("ORGANIZATION_UNRESOLVED"))) continue;
-            offlineScheduler.retainOrganizationRecovery(task.getSavePath(), task.getMagnetHash());
+            if (organizationJournal == null || organizationJournal.status("series", task.getId()) == null)
+                offlineScheduler.retainOrganizationRecovery("series:" + task.getId(), task.getSavePath(), task.getMagnetHash());
+            if (!"ORGANIZING".equals(task.getStatus())) continue;
             seriesTaskMapper.update(new LambdaUpdateWrapper<SeriesMagnetIngestTask>()
                     .eq(SeriesMagnetIngestTask::getId, task.getId())
                     .set(SeriesMagnetIngestTask::getStatus, "INTERRUPTED")
@@ -351,7 +358,7 @@ public class MagnetIngestService {
             var snapshot = stoppedRestartSnapshot(task.getOpenlistTaskId(), task.getErrorMessage());
             if (snapshot == null) continue;
             if (Integer.valueOf(2).equals(snapshot.state()) && Integer.valueOf(100).equals(snapshot.progress())) {
-                offlineScheduler.retainOrganizationRecovery(task.getSavePath(), task.getMagnetHash());
+                offlineScheduler.retainOrganizationRecovery("movie:" + task.getId(), task.getSavePath(), task.getMagnetHash());
                 settleMovieCancellation(task.getId(), snapshot);
             } else {
                 markMovieFailed(task.getId(), stoppedRestartFailure(snapshot));
@@ -363,7 +370,7 @@ public class MagnetIngestService {
             var snapshot = stoppedRestartSnapshot(task.getOpenlistTaskId(), task.getErrorMessage());
             if (snapshot == null) continue;
             if (Integer.valueOf(2).equals(snapshot.state()) && Integer.valueOf(100).equals(snapshot.progress())) {
-                offlineScheduler.retainOrganizationRecovery(task.getSavePath(), task.getMagnetHash());
+                offlineScheduler.retainOrganizationRecovery("series:" + task.getId(), task.getSavePath(), task.getMagnetHash());
                 settleSeriesCancellation(task.getId(), snapshot);
             } else {
                 markSeriesFailed(task.getId(), stoppedRestartFailure(snapshot));
@@ -807,6 +814,159 @@ public class MagnetIngestService {
         );
     }
 
+    public OrganizationRecoveryJournal.RecoveryStatus organizationRecoveryStatus(String type, String id) {
+        return organizationJournal.status(type, id);
+    }
+
+    /** Authenticated task-center owns access checks; this operation never changes historical task state. */
+    public OrganizationRecoveryJournal.RecoveryStatus recoverOrganization(String type, String id) {
+        var existing = organizationJournal.status(type, id);
+        if (existing != null) return existing;
+        String path;
+        String hash;
+        Runnable adoption;
+        if ("movie".equals(type)) {
+            var task = getExistingMovieTask(id);
+            requireRecoverableOrganization(task.getStatus(), movieLibraryOrganizer);
+            boolean completed = movieTaskLogMapper.selectCount(new LambdaQueryWrapper<MovieMagnetIngestTaskLog>()
+                    .eq(MovieMagnetIngestTaskLog::getTaskId, id)
+                    .eq(MovieMagnetIngestTaskLog::getMessage, "离线下载完成，开始整理文件")) > 0;
+            requireCompletedDownload(completed, task.getOpenlistTaskId());
+            path = task.getSavePath(); hash = task.getMagnetHash();
+            adoption = () -> {
+                validateLegacyMovie(task);
+                organizeMovieFiles(task);
+                writeMovieLog(id, "INFO", "organization_recovery", "已接管文件整理；原失败历史保持不变", null);
+            };
+        } else if ("series".equals(type)) {
+            var task = getExistingSeriesTask(id);
+            if (ANIME_PRODUCT_TYPE.equals(task.getTaskProductType())) throw new IllegalStateException("首版不接管动漫");
+            requireRecoverableOrganization(task.getStatus(), seriesLibraryOrganizer);
+            boolean completed = seriesTaskLogMapper.selectCount(new LambdaQueryWrapper<SeriesMagnetIngestTaskLog>()
+                    .eq(SeriesMagnetIngestTaskLog::getTaskId, id)
+                    .eq(SeriesMagnetIngestTaskLog::getMessage, "离线下载完成，开始整理文件")) > 0;
+            requireCompletedDownload(completed, task.getOpenlistTaskId());
+            path = task.getSavePath(); hash = task.getMagnetHash();
+            adoption = () -> {
+                validateLegacySeries(task);
+                organizeSeriesFiles(task);
+                writeSeriesLog(id, "INFO", "organization_recovery", "已接管文件整理；原失败历史保持不变", null);
+            };
+        } else throw new IllegalStateException("首版仅支持电影和剧集");
+        openListClient.requireOrganizationQueuesQuiet();
+        var admission = new java.util.concurrent.CompletableFuture<OrganizationRecoveryJournal.RecoveryStatus>();
+        offlineScheduler.enqueueOrganizationRecovery(type + ":" + id, id, path, hash, () -> {
+            try {
+                openListClient.requireOrganizationQueuesQuiet(); adoption.run();
+                admission.complete(organizationJournal.status(type, id));
+            } catch (RuntimeException failure) {
+                try {
+                    // A positively absent committed plan proves no durable file mutation was possible.
+                    var persisted = organizationJournal.status(type, id);
+                    if (persisted == null) offlineScheduler.refuseOrganizationAdmission(type + ":" + id, path, hash);
+                    if ("movie".equals(type)) writeMovieLog(id, "WARN", "organization_recovery", "整理接管未完成，未改写原任务", failure.getClass().getSimpleName());
+                    else writeSeriesLog(id, "WARN", "organization_recovery", "整理接管未完成，未改写原任务", failure.getClass().getSimpleName());
+                    if (persisted != null) { admission.complete(persisted); return; }
+                    admission.completeExceptionally(new BusinessException(ErrorCode.CONFLICT,
+                            "整理接管校验未通过；未接受整理计划，请查看原任务恢复日志", HttpStatus.CONFLICT));
+                } catch (RuntimeException unavailable) { admission.completeExceptionally(unavailable); }
+            }
+        });
+        try { return admission.join(); }
+        catch (java.util.concurrent.CompletionException refused) {
+            if (refused.getCause() instanceof RuntimeException failure) throw failure;
+            throw refused;
+        }
+    }
+
+    private void requireRecoverableOrganization(String status, LibraryOrganizer organizer) {
+        if (!Set.of("FAILED", "INTERRUPTED").contains(status)
+                || !(organizer instanceof com.medianexus.orchestrator.service.organization.DurableLibraryOrganizer))
+            throw new IllegalStateException("仅允许接管失败/中断的 CD2 整理，不会重下或回退 OpenList 写入");
+    }
+
+    private void requireCompletedDownload(boolean logged, String upstreamId) {
+        if (logged) return;
+        if (upstreamId == null || upstreamId.isBlank()) throw new IllegalStateException("缺少原下载完成证明");
+        var info = openListClient.offlineTaskInfo(upstreamId);
+        if (info == null || !upstreamId.equals(info.id()) || !Integer.valueOf(2).equals(info.state())
+                || !Integer.valueOf(100).equals(info.progress())) throw new IllegalStateException("原下载尚未证明完成");
+    }
+
+    private void validateLegacyMovie(MovieMagnetIngestTask task) {
+        targetRegistry.bindingForPath("MOVIE", task.getSavePath()).orElseThrow(() -> new IllegalStateException("目标绑定未登记"));
+        var metadata = new ReleaseIngestMetadata(task.getSourceType(), task.getReleaseTitle(), task.getReleaseIndexer(),
+                task.getReleaseSize(), task.getReleaseIndexerId(), task.getReleaseGuid(), List.of(), List.of());
+        String evidence = submissionSafety.checkMovie(task.getTmdbId(), task.getMagnet(),
+                ReleaseTarget.of(task.getTitle(), task.getOriginalTitle(), null, task.getYear(), null, null), metadata);
+        requireLegacyMovieCompleteness(task, evidence);
+        writeMovieLog(task.getId(), "INFO", "organization_recovery_evidence", "已复核原发布身份和完整文件表", evidence);
+    }
+
+    private void validateLegacySeries(SeriesMagnetIngestTask task) {
+        targetRegistry.bindingForPath("TV", task.getSavePath()).orElseThrow(() -> new IllegalStateException("目标绑定未登记"));
+        var metadata = new ReleaseIngestMetadata(task.getSourceType(), task.getReleaseTitle(), task.getReleaseIndexer(),
+                task.getReleaseSize(), task.getReleaseIndexerId(), task.getReleaseGuid(), List.of(), List.of());
+        String evidence = submissionSafety.checkSeries(task.getTmdbId(), task.getMagnet(),
+                ReleaseTarget.of(task.getTitle(), task.getOriginalTitle(), null, null, task.getSeasonNumber(), null), metadata);
+        requireLegacySeriesCompleteness(task, evidence);
+        writeSeriesLog(task.getId(), "INFO", "organization_recovery_evidence", "已复核原发布身份、季度和完整文件表", evidence);
+    }
+
+    private void requireLegacyMovieCompleteness(MovieMagnetIngestTask task, String evidence) {
+        String title = fileTitle(task.getTitle(), task.getOriginalTitle(), "电影标题不能为空");
+        var release = trustedReleaseVideos(evidence).stream().map(file -> new ReleaseVideoCorrespondence(file.original(),
+                renameService.movieVideo(file.original(), title, task.getYear()).fileName(), file.bytes())).toList();
+        requireReleaseCorrespondence(task.getTempPath(), release);
+    }
+
+    private void requireLegacySeriesCompleteness(SeriesMagnetIngestTask task, String evidence) {
+        var release = trustedReleaseVideos(evidence).stream().map(file -> new ReleaseVideoCorrespondence(file.original(),
+                renameService.seriesVideo(file.original(), seriesFileTitle(task), task.getSeasonNumber(), task.getTitle())
+                        .orElseThrow(() -> new OpenListClientException("可信文件表含未知集数或跨季文件")).fileName(), file.bytes())).toList();
+        requireReleaseCorrespondence(task.getTempPath(), release);
+    }
+
+    private record ReleaseVideoCorrespondence(String original, String canonical, long bytes) {}
+
+    private List<ReleaseVideoCorrespondence> trustedReleaseVideos(String evidence) {
+        var matcher = java.util.regex.Pattern.compile("(?m)^original_file=(.*); bytes=(\\d+); preview=").matcher(evidence);
+        List<ReleaseVideoCorrespondence> videos = new ArrayList<>();
+        while (matcher.find()) {
+            String path = matcher.group(1).replace('\\', '/');
+            if (java.util.Arrays.stream(path.split("/", -1)).anyMatch(p -> p.equals("..") || p.equals(".")))
+                throw new OpenListClientException("可信文件表路径无效");
+            String name = path.substring(path.lastIndexOf('/') + 1);
+            if (renameService.isVideo(name)) videos.add(new ReleaseVideoCorrespondence(name, "", Long.parseLong(matcher.group(2))));
+        }
+        if (videos.isEmpty()) throw new OpenListClientException("可信文件表缺少视频文件");
+        return videos;
+    }
+
+    private void requireReleaseCorrespondence(String source, List<ReleaseVideoCorrespondence> release) {
+        Set<String> canonical = new HashSet<>();
+        for (var file : release) {
+            if (file.bytes() <= 0 || !canonical.add(file.canonical().toLowerCase(java.util.Locale.ROOT)))
+                throw new OpenListClientException("可信文件表存在重复版本或目标文件歧义");
+        }
+        Set<ReleaseVideoCorrespondence> matched = new HashSet<>();
+        String root = openListClient.normalizePath(source);
+        if (!source.equals(root) || java.util.Arrays.stream(root.split("/", -1)).anyMatch(p -> p.equals(".") || p.equals("..")))
+            throw new OpenListClientException("原下载文件目录不是规范绝对路径");
+        for (var file : openListClient.findFiles(source, true)) {
+            if (!renameService.isVideo(file.name())) continue;
+            String parent = openListClient.normalizePath(file.path());
+            if (!file.path().equals(parent) || java.util.Arrays.stream(parent.split("/", -1)).anyMatch(p -> p.equals(".") || p.equals(".."))
+                    || !(parent.equals(root) || parent.startsWith(root + "/")) || file.name().contains("/") || file.name().contains("\\"))
+                throw new OpenListClientException("当前文件路径不属于原下载目录");
+            var candidates = release.stream().filter(expected -> java.util.Objects.equals(file.size(), expected.bytes())
+                    && (file.name().equals(expected.original()) || file.name().equals(expected.canonical()))).toList();
+            if (candidates.size() != 1 || !matched.add(candidates.get(0)))
+                throw new OpenListClientException("当前文件与可信发布名称、字节无法唯一对应，禁止接管");
+        }
+        if (matched.size() != release.size()) throw new OpenListClientException("当前文件缺失可信发布视频，禁止接管");
+    }
+
     public MovieMagnetIngestTaskResponse getMovieTask(String taskId) {
         User user = authService.requireCurrentUser();
         return toMovieResponse(getAccessibleMovieTask(taskId, user));
@@ -878,6 +1038,10 @@ public class MagnetIngestService {
                                 markMovieNoOrganizedFiles(taskId, id, result);
                                 return;
                             }
+                            if (movieLibraryOrganizer instanceof com.medianexus.orchestrator.service.organization.DurableLibraryOrganizer) {
+                                organizationJournal.refreshAfterOrganization("movie", taskId);
+                                return; // Journal owns strict success and retained acceptance claims, not this download callback.
+                            }
                             refreshMovieAutoSymlink(taskId);
                             markMovieSucceeded(task, id, result);
                         }
@@ -930,6 +1094,11 @@ public class MagnetIngestService {
                             }
                             if (result.videoCount() < 1) {
                                 markSeriesNoOrganizedFiles(taskId, id, result);
+                                return;
+                            }
+                            if (!ANIME_PRODUCT_TYPE.equals(task.getTaskProductType())
+                                    && seriesLibraryOrganizer instanceof com.medianexus.orchestrator.service.organization.DurableLibraryOrganizer) {
+                                organizationJournal.refreshAfterOrganization("series", taskId);
                                 return;
                             }
                             if (ANIME_PRODUCT_TYPE.equals(task.getTaskProductType())) refreshAnimeAutoSymlink(taskId);
@@ -1051,6 +1220,10 @@ public class MagnetIngestService {
     }
 
     private void refreshMovieAutoSymlink(String taskId) {
+        if (movieLibraryOrganizer instanceof com.medianexus.orchestrator.service.organization.DurableLibraryOrganizer) {
+            organizationJournal.refreshAfterOrganization("movie", taskId);
+            return;
+        }
         refreshAutoSymlink(
                 taskId,
                 "Movie",
@@ -1060,6 +1233,10 @@ public class MagnetIngestService {
     }
 
     private void refreshSeriesAutoSymlink(String taskId) {
+        if (seriesLibraryOrganizer instanceof com.medianexus.orchestrator.service.organization.DurableLibraryOrganizer) {
+            organizationJournal.refreshAfterOrganization("series", taskId);
+            return;
+        }
         refreshAutoSymlink(
                 taskId,
                 "Series",
@@ -1187,6 +1364,11 @@ public class MagnetIngestService {
         for (MovieVideoCandidate candidate : videoSelection.videos()) {
             OpenListFileInfo file = candidate.file();
             MovieSeriesFileRenameService.RenameResult rename = candidate.rename();
+            if (movieLibraryOrganizer instanceof com.medianexus.orchestrator.service.organization.DurableLibraryOrganizer
+                    && targetNames.contains(rename.fileName())
+                    && !(openListClient.normalizePath(file.path()).equals(openListClient.normalizePath(task.getSavePath()))
+                    && file.name().equals(rename.fileName())))
+                throw new OpenListClientException("电影目标文件名冲突，持久整理禁止自动选副本");
             boolean accepted = planFile(taskLogWriter, task.getSavePath(), targetNames, plan, file, rename.fileName());
             if (accepted) {
                 organized++;
@@ -1239,7 +1421,8 @@ public class MagnetIngestService {
             }
         }
 
-        executeOrganizationPlan(movieLibraryOrganizer, taskLogWriter, task.getSavePath(), plan, organized, skipped, Set.of());
+        executeOrganizationPlan(movieLibraryOrganizer, taskLogWriter, task.getSavePath(), plan, organized, skipped, Set.of(),
+                new OrganizationTask("movie", task.getId(), task.getMagnetHash(), videoCount, task.getTmdbId(), null));
         return new OrganizeResult(organized, skipped, videoCount);
     }
 
@@ -1285,6 +1468,8 @@ public class MagnetIngestService {
                 continue;
             }
 
+            if (movieLibraryOrganizer instanceof com.medianexus.orchestrator.service.organization.DurableLibraryOrganizer)
+                throw new OpenListClientException("同一电影版本存在多份文件；持久整理禁止自动选副本或删除");
             skipped++;
             if (compareMovieVideoCandidates(candidate, retained) > 0) {
                 skipFile(taskLogWriter, plan, retained.file(), "跳过同一电影版本的较小重复视频");
@@ -1438,7 +1623,8 @@ public class MagnetIngestService {
                     plan,
                     organized,
                     skipped,
-                    Set.of()
+                    Set.of(), new OrganizationTask("series", task.getId(), task.getMagnetHash(), videoCount,
+                            task.getTmdbId(), task.getSeasonNumber())
             );
         }
         return new OrganizeResult(organized, skipped, videoCount);
@@ -1695,6 +1881,36 @@ public class MagnetIngestService {
             int skipped,
             Set<String> cleanupExcludedDirectories
     ) {
+        executeOrganizationPlan(libraryOrganizer, taskLogWriter, savePath, plan, organized, skipped, cleanupExcludedDirectories, null);
+    }
+
+    private OrganizationRecoveryJournal.FrozenTaskEvidence frozenOrganizationEvidence(OrganizationTask context) {
+        if (context.type().equals("movie")) {
+            var task = getExistingMovieTask(context.id());
+            String evidence = movieTaskLogMapper.selectList(new LambdaQueryWrapper<MovieMagnetIngestTaskLog>()
+                    .eq(MovieMagnetIngestTaskLog::getTaskId, task.getId())
+                    .in(MovieMagnetIngestTaskLog::getStage, List.of("submission_safety", "organization_recovery_evidence"))
+                    .orderByDesc(MovieMagnetIngestTaskLog::getId)).stream().map(MovieMagnetIngestTaskLog::getDetail)
+                    .filter(java.util.Objects::nonNull).findFirst().orElse("");
+            return new OrganizationRecoveryJournal.FrozenTaskEvidence(task.getTitle(), task.getOriginalTitle(), task.getYear(),
+                    task.getTmdbId(), null, task.getReleaseTitle(), evidence, task.getStatus());
+        }
+        var task = getExistingSeriesTask(context.id());
+        String evidence = seriesTaskLogMapper.selectList(new LambdaQueryWrapper<SeriesMagnetIngestTaskLog>()
+                .eq(SeriesMagnetIngestTaskLog::getTaskId, task.getId())
+                .in(SeriesMagnetIngestTaskLog::getStage, List.of("submission_safety", "organization_recovery_evidence"))
+                .orderByDesc(SeriesMagnetIngestTaskLog::getId)).stream().map(SeriesMagnetIngestTaskLog::getDetail)
+                .filter(java.util.Objects::nonNull).findFirst().orElse("");
+        return new OrganizationRecoveryJournal.FrozenTaskEvidence(task.getTitle(), task.getOriginalTitle(), null,
+                task.getTmdbId(), task.getSeasonNumber(), task.getReleaseTitle(), evidence, task.getStatus());
+    }
+
+    private record OrganizationTask(String type, String id, String hash, int videos, Integer tmdbId, Integer season) {}
+
+    private void executeOrganizationPlan(
+            LibraryOrganizer libraryOrganizer, TaskLogWriter taskLogWriter, String savePath, OrganizationPlan plan,
+            int organized, int skipped, Set<String> cleanupExcludedDirectories, OrganizationTask task
+    ) {
         int renameCount = countRenameOperations(plan.renameByDir());
         int moveCount = countFileOperations(plan.moveByDir());
         int deleteCount = countFileOperations(plan.deleteByDir());
@@ -1718,6 +1934,11 @@ public class MagnetIngestService {
                 .filter(file -> renameService.isSubtitle(file.name()))
                 .map(file -> openListClient.joinPath(file.path(), file.name()))
                 .collect(java.util.stream.Collectors.toSet()));
+        if (task != null && libraryOrganizer instanceof com.medianexus.orchestrator.service.organization.DurableLibraryOrganizer) {
+            organizationJournal.organize(task.type(), task.id(), organizationPlan, organized, skipped,
+                    task.videos(), task.tmdbId(), task.season(), task.hash(), frozenOrganizationEvidence(task));
+            return;
+        }
         libraryOrganizer.organize(
                 organizationPlan,
                 (message, detail) -> taskLogWriter.write("INFO", "organizing", message, detail)

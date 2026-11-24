@@ -221,6 +221,15 @@ public class OpenListClient {
         return count;
     }
 
+    /** Includes every OpenList writer queue, not only download capacity. */
+    public void requireOrganizationQueuesQuiet() {
+        for (String manager : List.of("offline_download", "offline_download_transfer", "move", "copy", "upload")) {
+            JsonNode root = getRoot("task/" + manager + "/undone");
+            if (!isSuccess(root) || !root.path("data").isArray() || !root.path("data").isEmpty())
+                throw new OpenListClientException("上游写入队列未结清，禁止整理恢复写入");
+        }
+    }
+
     /**
      * 查询 OpenList 离线下载任务状态。
      *
@@ -481,6 +490,72 @@ public class OpenListClient {
                 .map(segment -> "/" + segment)
                 .orElse("/");
         ensureDirectoryReady(normalizedFullPath, storageRoot);
+    }
+
+    /** Only official PikPak identity leaves this boundary; signed download URLs never do. */
+    public record FileIdentity(String providerFileId, String gcid, long bytes, String path) { }
+
+    /** Null means positively absent, never malformed identity or failed observation. */
+    public FileIdentity readIdentity(String path) {
+        if (path == null || !path.equals(normalizePath(path)) || path.contains("\\")
+                || Arrays.stream(path.split("/", -1)).anyMatch(part -> part.equals(".") || part.equals("..")))
+            throw new OpenListClientException("文件身份路径无效");
+        // Do not use post(), whose generic upstream error can include signed URLs.
+        JsonNode root;
+        try {
+            validateConfiguration();
+            HttpRequest request = requestBuilder("fs/get").header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(writeJson(Map.of("path", path, "refresh", true)))).build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() != 200) throw new OpenListClientException("文件身份读取失败");
+            root = objectMapper.readTree(response.body());
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new OpenListClientException("文件身份读取中断");
+        } catch (IOException | RuntimeException unavailable) {
+            throw new OpenListClientException("文件身份读取失败");
+        }
+        if (!isSuccess(root)) {
+            String error = message(root).toLowerCase(java.util.Locale.ROOT);
+            if (root != null && (root.path("code").asInt() == 404
+                    || root.path("code").asInt() == 500 && error.contains("failed get")
+                    && (error.contains("object not found") || error.contains("file not found")))) return null;
+            throw new OpenListClientException("文件身份读取失败");
+        }
+        return parseIdentity(path, root.path("data"));
+    }
+
+    static FileIdentity parseIdentity(String path, JsonNode data) {
+        try {
+            String name = path.substring(path.lastIndexOf('/') + 1);
+            if (name.isEmpty() || !name.equals(data.path("name").asText())
+                    || (data.has("path") && !path.equals(data.path("path").asText()))
+                    || !data.path("is_dir").isBoolean() || data.path("is_dir").booleanValue()
+                    || !data.path("size").isIntegralNumber() || !data.path("size").canConvertToLong()
+                    || data.path("size").longValue() <= 0) throw new IllegalArgumentException();
+            String gcid = data.path("hash_info").path("gcid").asText("");
+            if (!gcid.matches("[a-fA-F0-9]{40}")) throw new IllegalArgumentException();
+            URI url = URI.create(data.path("raw_url").asText(""));
+            String host = url.getHost() == null ? "" : url.getHost().toLowerCase(java.util.Locale.ROOT);
+            if (!"https".equalsIgnoreCase(url.getScheme()) || url.getRawUserInfo() != null
+                    || (url.getPort() != -1 && url.getPort() != 443) || url.getRawFragment() != null
+                    || !(host.endsWith(".mypikpak.net") || host.endsWith(".mypikpak.com")))
+                throw new IllegalArgumentException();
+            String id = null;
+            for (String parameter : (url.getRawQuery() == null ? "" : url.getRawQuery()).split("&", -1)) {
+                String[] pair = parameter.split("=", 2);
+                String key = java.net.URLDecoder.decode(pair[0], StandardCharsets.UTF_8);
+                if (!key.equals("fileid")) continue;
+                if (id != null || pair.length != 2) throw new IllegalArgumentException();
+                id = java.net.URLDecoder.decode(pair[1], StandardCharsets.UTF_8);
+                if (!id.matches("[A-Za-z0-9_-]{1,256}")) throw new IllegalArgumentException();
+            }
+            if (id == null) throw new IllegalArgumentException();
+            return new FileIdentity(id, gcid.toLowerCase(java.util.Locale.ROOT), data.path("size").longValue(), path);
+        } catch (RuntimeException invalid) {
+            // Neither the raw URL, parser exception nor response body may enter logs or the journal.
+            throw new OpenListClientException("缺少可信 PikPak 文件身份");
+        }
     }
 
     /**

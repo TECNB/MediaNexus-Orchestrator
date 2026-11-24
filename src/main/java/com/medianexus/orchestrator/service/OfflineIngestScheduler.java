@@ -12,7 +12,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
@@ -30,12 +29,14 @@ public class OfflineIngestScheduler implements AutoCloseable {
     private final ExecutorService submissions = Executors.newFixedThreadPool(2, threads("offline-submit"));
     private final ExecutorService queries = Executors.newFixedThreadPool(2, threads("offline-query"));
     private final ExecutorService organizations = Executors.newSingleThreadExecutor(threads("offline-organize"));
-    private final ScheduledExecutorService timer = Executors.newSingleThreadScheduledExecutor(threads("offline-timer"));
+    private final java.util.concurrent.ScheduledThreadPoolExecutor timer = new java.util.concurrent.ScheduledThreadPoolExecutor(1, threads("offline-timer"));
     private final List<Job> waiting = new ArrayList<>();
     private final List<Job> claimed = new ArrayList<>();
     private final List<RecoveryClaim> organizationRecoveryClaims = new ArrayList<>();
 
-    private record RecoveryClaim(String hash, OpenListClient.OfflineDirectory directory) {}
+    private record RecoveryClaim(String owner, String hash, OpenListClient.OfflineDirectory directory) {}
+    private final java.util.Set<String> recoveryWorkers = new java.util.HashSet<>();
+    private final java.util.Set<RecoveryClaim> newRecoveryAdmissions = new java.util.HashSet<>();
     private int activeDownloads;
     private boolean upstreamChecked;
     private boolean checking;
@@ -65,6 +66,8 @@ public class OfflineIngestScheduler implements AutoCloseable {
 
     public OfflineIngestScheduler(OpenListClient client) {
         this.client = client;
+        timer.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
+        timer.setContinueExistingPeriodicTasksAfterShutdownPolicy(false);
     }
 
     public CompletableFuture<Void> enqueue(String path, String hash, Duration timeout,
@@ -127,10 +130,88 @@ public class OfflineIngestScheduler implements AutoCloseable {
 
     /** Retains a stopped process's organization exclusions without claiming a download slot or replaying writes. */
     public void retainOrganizationRecovery(String path, String hash) {
+        retainOrganizationRecovery("", path, hash);
+    }
+
+    public void retainOrganizationRecovery(String owner, String path, String hash) {
         var directory = client.offlineDirectoryForPath(normalizePath(path));
+        retainOrganizationRecovery(owner, directory, hash);
+    }
+
+    public void retainOrganizationRecovery(String owner, OpenListClient.OfflineDirectory directory, String hash) {
         synchronized (this) {
-            var claim = new RecoveryClaim(hash == null ? "" : hash.toLowerCase(Locale.ROOT), directory);
+            var claim = new RecoveryClaim(owner, hash == null ? "" : hash.toLowerCase(Locale.ROOT), directory);
+            newRecoveryAdmissions.remove(claim);
             if (!organizationRecoveryClaims.contains(claim)) organizationRecoveryClaims.add(claim);
+        }
+    }
+
+    /** Recovery consumes only the single organization lane, and never ignores a global UNKNOWN pause. */
+    public void enqueueOrganizationRecovery(String owner, String task, String path, String hash, Runnable recovery) {
+        var directory = client.offlineDirectoryForPath(normalizePath(path));
+        String normalizedHash = hash == null ? "" : hash.toLowerCase(Locale.ROOT);
+        synchronized (this) {
+            if (closed || restartBlock != null || recoveryWorkers.size() >= 8 || recoveryWorkers.contains(owner))
+                throw new RejectedExecutionException("整理恢复暂停、已排队或队列已满");
+            if (directory.account().equals("unknown") || directory.rootId().isBlank())
+                throw new RejectedExecutionException("整理恢复目标账号或根身份未知");
+            if (java.util.stream.Stream.concat(waiting.stream(), claimed.stream()).anyMatch(job ->
+                    !(owner.equals(jobOwner(job)) && job.organizationStarted && job.completion.isDone() && !job.failureCheckpointPending)
+                            && (job.directory == null || !normalizedHash.isBlank() && normalizedHash.equals(job.hash)
+                            || directoriesConflict(directory, job.directory)))
+                    || organizationRecoveryClaims.stream().anyMatch(claim -> !claim.owner().equals(owner)
+                    && (!normalizedHash.isBlank() && normalizedHash.equals(claim.hash())
+                            || directoriesConflict(directory, claim.directory()))))
+                throw new RejectedExecutionException("整理恢复与活动或等待任务认领冲突");
+            var exact = new RecoveryClaim(owner, normalizedHash, directory);
+            if (!organizationRecoveryClaims.contains(exact)) {
+                organizationRecoveryClaims.add(exact);
+                newRecoveryAdmissions.add(exact);
+            }
+            recoveryWorkers.add(owner);
+            try {
+                organizations.execute(() -> {
+                    try {
+                        synchronized (OfflineIngestScheduler.this) {
+                            if (closed || restartBlock != null) return;
+                        }
+                        recovery.run();
+                    } finally {
+                        synchronized (OfflineIngestScheduler.this) { recoveryWorkers.remove(owner); }
+                    }
+                });
+            } catch (RuntimeException failure) { recoveryWorkers.remove(owner); throw failure; }
+        }
+    }
+
+    /** Only a newly admitted, still-unjournaled exclusion may be discarded after a proven pre-write refusal. */
+    public void refuseOrganizationAdmission(String owner, String path, String hash) {
+        var claim = new RecoveryClaim(owner, hash == null ? "" : hash.toLowerCase(Locale.ROOT),
+                client.offlineDirectoryForPath(normalizePath(path)));
+        synchronized (this) {
+            if (newRecoveryAdmissions.remove(claim)) organizationRecoveryClaims.remove(claim);
+            drain();
+        }
+    }
+
+    /** Only the exact completed claim can be released; unresolved other owners remain exclusions. */
+    public void completeOrganizationRecovery(String owner, String path, String hash) {
+        var directory = client.offlineDirectoryForPath(normalizePath(path));
+        completeOrganizationRecovery(owner, directory, hash);
+    }
+
+    public void completeOrganizationRecovery(String owner, OpenListClient.OfflineDirectory directory, String hash) {
+        synchronized (this) {
+            organizationRecoveryClaims.remove(new RecoveryClaim(owner,
+                    hash == null ? "" : hash.toLowerCase(Locale.ROOT), directory));
+            for (Job job : List.copyOf(claimed)) {
+                if (owner.equals(jobOwner(job)) && job.organizationStarted && job.completion.isDone()
+                        && !job.failureCheckpointPending) {
+                    job.unresolved = false;
+                    release(job);
+                }
+            }
+            drain();
         }
     }
 
@@ -372,13 +453,17 @@ public class OfflineIngestScheduler implements AutoCloseable {
         if (Integer.valueOf(2).equals(snapshot.state()) && Integer.valueOf(100).equals(snapshot.progress())) {
             synchronized (this) {
                 // Reuse the resolved directory; no upstream calls while holding scheduler capacity locks.
-                var claim = new RecoveryClaim(job.hash, job.directory);
+                var claim = new RecoveryClaim(jobOwner(job), job.hash, job.directory);
                 if (!organizationRecoveryClaims.contains(claim)) organizationRecoveryClaims.add(claim);
             }
         }
         job.download.cancellationSettled(snapshot);
         synchronized (this) { job.unresolved = false; }
         release(job);
+    }
+
+    private String jobOwner(Job job) {
+        return job.timingContext == null ? "" : job.timingContext.taskType().toLowerCase(Locale.ROOT) + ":" + job.timingContext.taskId();
     }
 
     private void organize(Job job) {
@@ -401,7 +486,7 @@ public class OfflineIngestScheduler implements AutoCloseable {
     private void holdOrganization(Job job, RuntimeException cause) {
         synchronized (this) {
             job.unresolved = true;
-            var claim = new RecoveryClaim(job.hash, job.directory);
+            var claim = new RecoveryClaim(jobOwner(job), job.hash, job.directory);
             if (!organizationRecoveryClaims.contains(claim)) organizationRecoveryClaims.add(claim);
         }
         fail(job, new OpenListClientException("[ORGANIZATION_UNRESOLVED] 整理结果未结清；保留目录/hash，禁止自动重放整理或下载", cause));
@@ -452,7 +537,7 @@ public class OfflineIngestScheduler implements AutoCloseable {
             if (job.organizationStarted && !job.unresolved) {
                 synchronized (this) {
                     job.unresolved = true;
-                    var claim = new RecoveryClaim(job.hash, job.directory);
+                    var claim = new RecoveryClaim(jobOwner(job), job.hash, job.directory);
                     if (!organizationRecoveryClaims.contains(claim)) organizationRecoveryClaims.add(claim);
                 }
                 failure = new OpenListClientException("[ORGANIZATION_UNRESOLVED] 整理失败且结清未持久化；保留目录/hash，禁止重放", failure);
@@ -505,14 +590,42 @@ public class OfflineIngestScheduler implements AutoCloseable {
         };
     }
 
+    /** Stops admission permanently; remote calls are never interrupted to manufacture retirement proof. */
+    public boolean quiesceOrganizationRecovery() {
+        synchronized (this) {
+            closed = true;
+            timer.shutdown();
+            submissions.shutdown();
+            queries.shutdown();
+        }
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        try {
+            boolean producersSettled = awaitShutdown(timer, deadline) && awaitShutdown(submissions, deadline)
+                    && awaitShutdown(queries, deadline);
+            // Producers cannot enqueue another organization after their executors have terminated.
+            organizations.shutdown();
+            boolean writersSettled = awaitShutdown(organizations, deadline);
+            synchronized (this) {
+                return producersSettled && writersSettled && activeDownloads == 0 && waiting.isEmpty()
+                        && recoveryWorkers.isEmpty() && claimed.stream().allMatch(job -> job.organizationStarted
+                        && job.completion.isDone() && !job.failureCheckpointPending);
+            }
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            organizations.shutdown();
+            return false;
+        }
+    }
+
+    private boolean awaitShutdown(ExecutorService executor, long deadline) throws InterruptedException {
+        return executor.isTerminated() || executor.awaitTermination(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
+    }
+
     @Override
     @PreDestroy
-    public synchronized void close() {
-        closed = true;
-        timer.shutdownNow();
-        submissions.shutdownNow();
-        queries.shutdownNow();
-        organizations.shutdownNow();
+    public void close() {
+        // A failed graceful drain is not permission to interrupt an accepted cloud write.
+        quiesceOrganizationRecovery();
     }
 
     private static final class Job {

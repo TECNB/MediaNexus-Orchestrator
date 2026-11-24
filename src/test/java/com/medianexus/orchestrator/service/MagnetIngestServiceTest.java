@@ -35,6 +35,104 @@ import org.springframework.test.util.ReflectionTestUtils;
 
 class MagnetIngestServiceTest {
 
+    @Test void refusedAdmissionReturnsConflictAndDiscardsOnlyNewPrewriteClaim() {
+        var client = mock(OpenListClient.class); stubPathHelpers(client);
+        var organizer = mock(com.medianexus.orchestrator.integration.clouddrive.CloudDrive2LibraryOrganizer.class);
+        var service = service(client, organizer);
+        var task = movieTask("/movie"); task.setStatus("FAILED");
+        var tasks = mock(MovieMagnetIngestTaskMapper.class); when(tasks.selectById(task.getId())).thenReturn(task);
+        var logs = mock(MovieMagnetIngestTaskLogMapper.class); when(logs.selectCount(org.mockito.ArgumentMatchers.any())).thenReturn(1L);
+        var journal = mock(OrganizationRecoveryJournal.class); var scheduler = mock(OfflineIngestScheduler.class);
+        ReflectionTestUtils.setField(service, "movieTaskMapper", tasks); ReflectionTestUtils.setField(service, "movieTaskLogMapper", logs);
+        ReflectionTestUtils.setField(service, "organizationJournal", journal); ReflectionTestUtils.setField(service, "offlineScheduler", scheduler);
+        org.mockito.Mockito.doAnswer(call -> { ((Runnable) call.getArgument(4)).run(); return null; }).when(scheduler)
+                .enqueueOrganizationRecovery(anyString(), anyString(), anyString(), org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.any());
+        assertThatThrownBy(() -> service.recoverOrganization("movie", task.getId())).hasMessageContaining("校验未通过");
+        verify(scheduler).refuseOrganizationAdmission(eq("movie:" + task.getId()), eq("/movie"), org.mockito.ArgumentMatchers.isNull());
+        verify(journal, never()).organize(anyString(), anyString(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyInt(),
+                org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.anyInt(),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+        org.mockito.Mockito.verifyNoInteractions(organizer);
+    }
+
+    @Test void legacyMovieSameBytesUnrelatedNameIsRejected() {
+        var client = mock(OpenListClient.class); stubPathHelpers(client);
+        var task = movieTask("/movie");
+        when(client.findFiles("/movie", true)).thenReturn(List.of(new OpenListFileInfo("unrelated.mp4", 3452436947L, false, "/movie")));
+        assertThatThrownBy(() -> ReflectionTestUtils.invokeMethod(service(client), "requireLegacyMovieCompleteness", task,
+                "original_file=release/Furious.7.2015.1080p.mp4; bytes=3452436947; preview=false"))
+                .hasMessageContaining("文件");
+    }
+
+    @Test void legacyOriginalMovieAndThirtyCanonicalEpisodesHaveUniqueReleaseCorrespondence() {
+        var client = mock(OpenListClient.class); stubPathHelpers(client);
+        var movie = movieTask("/movie"); movie.setTitle("洛杉矶劫案"); movie.setOriginalTitle("Crime 101"); movie.setYear(2026);
+        String original = "洛杉矶劫案.1080p.HD中英双字[最新电影www.5266ys.com].mp4";
+        when(client.findFiles("/movie", true)).thenReturn(List.of(new OpenListFileInfo(original, 3452436947L, false, "/movie")));
+        ReflectionTestUtils.invokeMethod(service(client), "requireLegacyMovieCompleteness", movie,
+                "original_file=release/" + original + "; bytes=3452436947; preview=false");
+        var series = animeSeriesTask(); series.setTitle("师兄太稳健"); series.setOriginalTitle("师兄太稳健"); series.setSeasonNumber(1);
+        List<OpenListFileInfo> current = new ArrayList<>(); StringBuilder evidence = new StringBuilder();
+        for (int episode = 1; episode <= 30; episode++) {
+            evidence.append("original_file=release/师兄太稳健.S01E%02d.1080p.mkv; bytes=%d; preview=false\n".formatted(episode, 900000000L + episode));
+            current.add(new OpenListFileInfo("师兄太稳健 - S01E%02d 1080p.mkv".formatted(episode), 900000000L + episode, false,
+                    series.getTempPath() + (java.util.Set.of(8,12,16,23).contains(episode) ? "/nested" : "")));
+        }
+        when(client.findFiles(series.getTempPath(), true)).thenReturn(current);
+        ReflectionTestUtils.invokeMethod(service(client), "requireLegacySeriesCompleteness", series, evidence.toString());
+    }
+
+    @Test void ambiguousReleaseCanonicalNamesCannotAdoptEvenWithDifferentBytes() {
+        var client = mock(OpenListClient.class); stubPathHelpers(client);
+        var task = animeSeriesTask();
+        when(client.findFiles(task.getTempPath(), true)).thenReturn(List.of(
+                new OpenListFileInfo("Show - S02E01 1080p.mp4", 100L, false, task.getTempPath()),
+                new OpenListFileInfo("Show.S02E01.1080p.mp4", 200L, false, task.getTempPath())));
+        assertThatThrownBy(() -> ReflectionTestUtils.invokeMethod(service(client), "requireLegacySeriesCompleteness", task,
+                "original_file=a/Show.S02E01.1080p.mp4; bytes=100; preview=false\noriginal_file=b/Show.S02E01.1080p.mp4; bytes=200; preview=false"))
+                .hasMessageContaining("文件");
+    }
+
+    @Test void durableBusinessPlanCountsThirtyWithOnlyFourMovesAndPreservesFailure() {
+        OpenListClient client = mock(OpenListClient.class); stubPathHelpers(client);
+        var task = animeSeriesTask(); task.setTaskProductType("SERIES"); task.setTmdbId(272938); task.setStatus("FAILED");
+        List<OpenListFileInfo> files = new ArrayList<>();
+        for (int episode = 1; episode <= 30; episode++) files.add(new OpenListFileInfo("Show - S02E%02d.mp4".formatted(episode),
+                900_000_000L + episode, false, task.getSavePath() + (java.util.Set.of(8, 12, 16, 23).contains(episode) ? "/nested" : "")));
+        when(client.findFiles(task.getTempPath())).thenReturn(files);
+        when(client.listFiles(task.getSavePath())).thenReturn(files.stream().filter(f -> f.path().equals(task.getSavePath())).toList());
+        var organizer = mock(com.medianexus.orchestrator.integration.clouddrive.CloudDrive2LibraryOrganizer.class);
+        var journal = mock(OrganizationRecoveryJournal.class);
+        var service = service(client, organizer);
+        ReflectionTestUtils.setField(service, "organizationJournal", journal);
+        var tasks = mock(SeriesMagnetIngestTaskMapper.class);
+        when(tasks.selectById(task.getId())).thenReturn(task);
+        ReflectionTestUtils.setField(service, "seriesTaskMapper", tasks);
+        Object result = ReflectionTestUtils.invokeMethod(service, "organizeSeriesFiles", task);
+        var plan = ArgumentCaptor.forClass(LibraryOrganizationPlan.class);
+        verify(journal).organize(eq("series"), eq(task.getId()), plan.capture(), eq(30), eq(0), eq(30), eq(272938), eq(2),
+                org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.any());
+        assertThat(plan.getValue().expectedTargetNames()).hasSize(30);
+        assertThat(plan.getValue().moves()).hasSize(4);
+        assertThat(plan.getValue().renames()).isEmpty();
+        assertThat(ReflectionTestUtils.getField(result, "videoCount")).isEqualTo(30);
+        assertThat(task.getStatus()).isEqualTo("FAILED");
+        verify(tasks, never()).update(org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test void twoIdenticalTwentyThreeEpisodeDirectoriesBlockBeforeJournalOrWrites() {
+        OpenListClient client = mock(OpenListClient.class); stubPathHelpers(client);
+        var task = animeSeriesTask(); task.setTaskProductType("SERIES");
+        List<OpenListFileInfo> files = new ArrayList<>();
+        for (String dir : List.of("copy-one", "copy-two")) for (int episode = 1; episode <= 23; episode++)
+            files.add(new OpenListFileInfo("Show S02E%02d.mp4".formatted(episode), 900_000_000L + episode, false, task.getSavePath() + "/" + dir));
+        when(client.findFiles(task.getTempPath())).thenReturn(files);
+        var organizer = mock(com.medianexus.orchestrator.integration.clouddrive.CloudDrive2LibraryOrganizer.class);
+        assertThatThrownBy(() -> ReflectionTestUtils.invokeMethod(service(client, organizer), "organizeSeriesFiles", task))
+                .hasMessageContaining("目标文件名冲突");
+        org.mockito.Mockito.verifyNoInteractions(organizer);
+    }
+
     @Test
     void animeUnknownRootVideoCannotBypassSafetyThroughDirectorySelection() {
         OpenListClient client = mock(OpenListClient.class);
