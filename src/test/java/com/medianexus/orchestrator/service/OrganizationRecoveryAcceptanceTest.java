@@ -18,8 +18,11 @@ class OrganizationRecoveryAcceptanceTest {
     final LocalStrmDeletion links = mock(LocalStrmDeletion.class);
     final OrganizationRecoveryAcceptance acceptance = new OrganizationRecoveryAcceptance(emby, targets, links,
             new CloudDrive2Properties(), mock(AutoSymlinkRefreshService.class), new MovieSeriesFileRenameService());
+    final OrganizationMediaReadability readability = mock(OrganizationMediaReadability.class);
     final OrganizationRecoveryJournal.Payload payload;
     OrganizationRecoveryAcceptanceTest() {
+        org.springframework.test.util.ReflectionTestUtils.setField(acceptance, "readability", readability);
+        when(targets.ownsMediaSourcePath(anyString(), anyString())).thenReturn(true);
         when(targets.bindingForPath("MOVIE", "/ingest/Movie")).thenReturn(Optional.of(new IngestTargetRegistry.CategoryBinding(
                 "target", "B", "MOVIE", "/ingest", "uuid", "{}", "/strm", "library")));
         when(targets.cloudMediaPaths(anyString(), anyString())).thenReturn(path -> "/source/video.mkv".equals(path) ? "/cloud/video.mkv" : null);
@@ -43,6 +46,11 @@ class OrganizationRecoveryAcceptanceTest {
         assertThatThrownBy(() -> acceptance.verify("movie", payload)).isInstanceOf(EmbyClientException.class);
         verify(emby, never()).refreshLibrary(anyString());
     }
+    @Test void zeroBytePlaybackReadCannotCompleteDespiteCorrectIndex() {
+        doThrow(new IllegalStateException("MEDIA_READ_NOT_READY")).when(readability).requireReadable("/source/video.mkv", 100);
+        assertThatThrownBy(() -> acceptance.verify("movie", payload)).hasMessage("MEDIA_READ_NOT_READY");
+    }
+
     OrganizationRecoveryJournal.Payload provenance(String status) {
         var evidence = new OrganizationRecoveryJournal.FrozenTaskEvidence("Movie", "Movie", 2026, 1171145, null, "release", "table", status);
         return new OrganizationRecoveryJournal.Payload(payload.snapshot(), payload.actions(), payload.hash(), payload.directory(),

@@ -46,6 +46,9 @@ public class OrganizationRecoveryAcceptance {
     @org.springframework.beans.factory.annotation.Autowired
     private IngestTaskNotifier notifier;
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private OrganizationMediaReadability readability;
+
     /** Original success commits before journal COMPLETE/claim release. Re-entry is idempotent after a lost journal checkpoint. */
     @org.springframework.transaction.annotation.Transactional
     public void recordCompletion(String type, String id, OrganizationRecoveryJournal.Payload payload) {
@@ -161,5 +164,15 @@ public class OrganizationRecoveryAcceptance {
             }
         }
         if (!embyPaths.equals(localPaths)) throw new IllegalStateException("Emby 身份、季度或文件对应关系尚未核实；禁止自动覆盖身份");
+        Map<String, Long> expectedBytes = new HashMap<>();
+        for (var file : payload.snapshot().files())
+            expectedBytes.put(payload.snapshot().cloudPaths().get(file.finalPath()), file.bytes());
+        for (String link : localPaths) {
+            String source = strm.resolveMediaSourcePath(link);
+            String cloud = map.apply(source);
+            if (!targets.ownsMediaSourcePath(source, properties.getMediaSourcePathPrefix()))
+                throw new IllegalStateException("MEDIA_READ_PATH_OUTSIDE_TARGET");
+            readability.requireReadable(source, expectedBytes.get(cloud));
+        }
     }
 }
