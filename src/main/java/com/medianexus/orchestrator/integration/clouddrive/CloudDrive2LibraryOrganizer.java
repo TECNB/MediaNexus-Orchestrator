@@ -149,6 +149,14 @@ public class CloudDrive2LibraryOrganizer implements com.medianexus.orchestrator.
         });
         Set<String> renamedPaths = new LinkedHashSet<>(originals.keySet());
         renamedPaths.addAll(finals.keySet());
+        // New download directories may not yet be known to CD2; only refresh/read, never replay file mutations.
+        Set<String> sources = new LinkedHashSet<>();
+        renamedPaths.forEach(path -> sources.add(originals.getOrDefault(path, path)));
+        Set<String> plannedFinals = new LinkedHashSet<>();
+        renamedPaths.forEach(path -> plannedFinals.add(finals.getOrDefault(path, path)));
+        plan.expectedTargetNames().stream().map(name -> join(plan.targetDirectory(), name))
+                .filter(path -> !plannedFinals.contains(path)).forEach(sources::add);
+        awaitPathsPresent(sources, "CD2 整理源证据可见性超时");
         List<FileEvidence> evidence = new ArrayList<>();
         Map<String, String> cloudPaths = new LinkedHashMap<>();
         Set<String> finalNames = new java.util.HashSet<>();

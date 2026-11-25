@@ -41,6 +41,46 @@ class CloudDrive2DurableOrganizationTest {
     }
     void source() { visible.put("/Cloud/movie/sub/old.mkv", new CloudDrive2FileEntry("old.mkv", "/Cloud/movie/sub/old.mkv", 100, false, "encoded-original-path")); }
 
+    @Test void captureWaitsForAJustDownloadedSourceToBecomeVisible() {
+        var organizer = organizer(); source();
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        when(files.list(anyString(), eq(true))).thenAnswer(call -> {
+            if (calls.getAndIncrement() == 0) return List.of();
+            return visible.values().stream().filter(file -> LibraryOrganizationPlan.parentPath(file.fullPath())
+                    .equals(call.getArgument(0, String.class))).toList();
+        });
+        var snapshot = organizer.capture(plan);
+        assertThat(snapshot.files()).hasSize(1);
+        verify(files, never()).rename(anyList()); verify(files, never()).move(anyList(), anyString());
+    }
+
+    @Test void captureRefreshesAncestorsForANewDirectoryWithoutMutatingFiles() {
+        var organizer = organizer(); source();
+        when(identities.offlineDirectoryForPath(anyString())).thenReturn(
+                new com.medianexus.orchestrator.integration.openlist.OpenListClient.OfflineDirectory("account", "/", "/movie"));
+        var first = new java.util.concurrent.atomic.AtomicBoolean(true);
+        when(files.list(anyString(), eq(true))).thenAnswer(call -> {
+            String parent = call.getArgument(0);
+            if (parent.equals("/Cloud/movie/sub") && first.getAndSet(false))
+                throw new CloudDrive2ClientException("new directory", io.grpc.Status.Code.NOT_FOUND, null);
+            return visible.values().stream().filter(file -> LibraryOrganizationPlan.parentPath(file.fullPath()).equals(parent)).toList();
+        });
+        assertThat(organizer.capture(plan).files()).hasSize(1);
+        verify(files, atLeastOnce()).list("/Cloud", true); verify(files, atLeastOnce()).list("/Cloud/movie", true);
+        verify(files, never()).rename(anyList()); verify(files, never()).move(anyList(), anyString());
+        verify(files, never()).delete(anyList());
+    }
+
+    @Test void captureVisibilityWaitIsBoundedAndNeverAuthorizesMissingSources() {
+        var organizer = organizer();
+        properties.setVisibilityTimeout(java.time.Duration.ofMillis(5));
+        properties.setVisibilityPollInterval(java.time.Duration.ofMillis(1));
+        assertThatThrownBy(() -> organizer.capture(plan)).isInstanceOf(CloudDrive2ClientException.class)
+                .hasMessageContaining("源证据可见性超时");
+        verify(identities, never()).readIdentity(anyString());
+        verify(files, never()).rename(anyList()); verify(files, never()).move(anyList(), anyString());
+    }
+
     @Test void databaseFailureBeforeIntentPermitsZeroWrites() {
         var organizer = organizer(); source();
         var snapshot = organizer.capture(plan);
