@@ -576,7 +576,8 @@ public class MagnetIngestService {
                         .eq(MovieMagnetIngestTask::getId, reference.attemptGroupId())));
         if (attempts.stream().anyMatch(task -> hash.equals(alternativeHash(task.getMagnet()))))
             throw badRequest("该 BTIH 已在尝试链中受理");
-        mediaLibraryPresenceService.requireMovieAbsent(original.getTmdbId());
+        requireAutomaticAlternativeAbsent(new BgmWishlistTaskGateway.Target("MOVIE", original.getTmdbId(), null,
+                original.getTitle(), original.getOriginalTitle(), original.getYear()));
         requireAlternativePath(original.getSavePath(), hash);
         var plan = new MovieTaskPlan(normalizeMagnet(magnet), hash, original.getTitle(), original.getOriginalTitle(),
                 original.getYear(), original.getTmdbId(), targetRegistry.rootForExistingPath("MOVIE", original.getSavePath(),
@@ -595,13 +596,19 @@ public class MagnetIngestService {
                         .eq(SeriesMagnetIngestTask::getId, reference.attemptGroupId())));
         if (attempts.stream().anyMatch(task -> hash.equals(alternativeHash(task.getMagnet()))))
             throw badRequest("该 BTIH 已在尝试链中受理");
-        mediaLibraryPresenceService.requireSeriesSeasonAbsent(original.getTmdbId(), original.getSeasonNumber());
+        requireAutomaticAlternativeAbsent(new BgmWishlistTaskGateway.Target("SERIES", original.getTmdbId(), original.getSeasonNumber(),
+                original.getTitle(), original.getOriginalTitle(), null));
         requireAlternativePath(original.getSavePath(), hash);
         if (ANIME_PRODUCT_TYPE.equals(original.getTaskProductType())) targetRegistry.bindingForPath("ANIME", original.getSavePath());
         else targetRegistry.rootForExistingPath("TV", original.getSavePath(), cleanConfigValue(openListProperties.getTvRootPath()));
         var plan = new SeriesTaskPlan(normalizeMagnet(magnet), hash, original.getTitle(), original.getOriginalTitle(),
                 original.getSeasonNumber(), original.getTmdbId(), original.getSeriesName(), original.getSeasonFolder(), original.getSavePath());
         return insertSeriesTask(owner, plan, metadata.withUnverifiedRisk(false), seriesTaskProductType(original), reference);
+    }
+
+    private void requireAutomaticAlternativeAbsent(BgmWishlistTaskGateway.Target target) {
+        var presence = mediaLibraryPresenceService.checkForAutomation(target);
+        if (!presence.checkAvailable() || presence.exists()) throw badRequest("自动替代在库检查不可用或目标已存在");
     }
 
     private void requireAlternativeOwner(User owner) {

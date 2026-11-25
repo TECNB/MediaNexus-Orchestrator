@@ -301,8 +301,10 @@ class DoubanChartRetryPolicyTest {
                 return query.getSqlSegment().contains("attempt_group_id") ? attempts.get(0) : null;
             });
             when(movies.insert(any(MovieMagnetIngestTask.class))).thenAnswer(call -> { MovieMagnetIngestTask task = call.getArgument(0); inserted.add(task); attempts.add(0, task); return 1; });
-            var presence = mock(MediaLibraryPresenceService.class);
-            when(presence.checkForAutomation(any())).thenReturn(new MediaLibraryPresenceService.AutomationPresence(true, false, true));
+            var deletion = mock(MediaLibraryDeletionWorkflow.class);
+            when(deletion.findBgmTargets(any())).thenReturn(List.of());
+            var presence = new MediaLibraryPresenceService(mock(com.medianexus.orchestrator.integration.emby.EmbyClient.class),
+                    mock(AnimeMagnetSearchService.class), auth, deletion);
             var registry = mock(IngestTargetRegistry.class);
             when(registry.rootForExistingPath(eq("MOVIE"), anyString(), nullable(String.class))).thenReturn("/movie");
             when(registry.rootForExistingPath(eq("TV"), anyString(), nullable(String.class))).thenReturn("/tv");
