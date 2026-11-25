@@ -43,6 +43,14 @@ public interface DoubanChartMapper {
     long operationCount(String chart);
 
     @Select("""
+        SELECT COUNT(*) FROM douban_chart_records WHERE kind='OPERATION' AND chart_id=#{chart}
+        AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.operation.triggerType'))='SCHEDULED'
+        AND SUBSTRING(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.operation.startedAt')),1,19)>=#{start}
+        AND SUBSTRING(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.operation.startedAt')),1,19)<#{end}
+        """)
+    long scheduledOperationCount(@Param("chart") String chart, @Param("start") String start, @Param("end") String end);
+
+    @Select("""
         SELECT payload FROM douban_chart_records WHERE kind='OPERATION'
         AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.operation.status')) IN ('QUEUED','RUNNING','STOPPING')
         ORDER BY created_at,id

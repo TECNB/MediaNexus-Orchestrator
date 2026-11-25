@@ -512,6 +512,27 @@ class DoubanChartServiceTest {
         assertEquals(0, f.store.operations(ChartId.movie_top250, 1, 10).total());
     }
 
+    @Test void legacyScheduledOutcomeBlocksReplayButManualWorkOnlyDefersIngestClaim() {
+        LocalDate today = LocalDate.of(2026, 1, 3);
+        f.service.automation(ChartId.tv_hot, new AutoInput(true));
+        when(f.mapper.scheduledOperationCount(eq("tv_hot"), anyString(), anyString())).thenReturn(1L);
+        assertNull(f.store.claimDailyWork(ChartId.tv_hot, today));
+        assertTrue(f.rows.containsKey("daily-ingest:2026-01-03:tv_hot"));
+        assertEquals(0, f.store.operations(ChartId.tv_hot, 1, 10).total());
+        verify(f.mapper).scheduledOperationCount("tv_hot", "2026-01-02T16:00:00", "2026-01-03T16:00:00");
+        f.service.automation(ChartId.movie_hot_gaia, new AutoInput(true));
+        var manual = f.store.submit(ChartId.movie_hot_gaia, 7L, "MANUAL", 20);
+        assertNull(f.store.claimDailyWork(ChartId.movie_hot_gaia, today));
+        assertFalse(f.rows.containsKey("daily-ingest:2026-01-03:movie_hot_gaia"));
+        f.store.updateRun(manual.operation().id(), old -> new Run(new Operation(old.operation().id(), old.operation().chartId(),
+                old.operation().chartLabel(), "MANUAL", 7L, old.operation().startedAt(), old.operation().updatedAt(),
+                "FAILED", List.of(), null, 20), List.of(), false, false));
+        var scheduled = f.store.claimDailyWork(ChartId.movie_hot_gaia, today);
+        assertNotNull(scheduled);
+        assertEquals("SCHEDULED", scheduled.run().operation().triggerType());
+        assertNull(f.store.claimDailyWork(ChartId.movie_hot_gaia, today));
+    }
+
     @Test void dailyRefreshRunsWithAutomationOffAndOnlyEnabledBoardCreatesWithPersistentAdmin() throws Exception {
         CountDownLatch refreshed = new CountDownLatch(ChartId.values().length);
         when(f.client.fetch(any())).thenAnswer(call -> { refreshed.countDown(); ChartId chart = call.getArgument(0);
@@ -520,7 +541,6 @@ class DoubanChartServiceTest {
         f.awaitBoardRefreshes();
         verify(f.tasks, never()).candidates(any(), anyString(), any());
         f.service.automation(ChartId.tv_hot, new AutoInput(true));
-        f.rows.keySet().removeIf(key -> key.startsWith("daily:"));
         f.service.daily();
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(6);
         while (f.store.operations(ChartId.tv_hot, 1, 10).items().isEmpty() && System.nanoTime() < deadline) Thread.sleep(10);

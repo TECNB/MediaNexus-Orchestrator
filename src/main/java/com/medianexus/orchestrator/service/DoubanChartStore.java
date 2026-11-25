@@ -179,13 +179,26 @@ public class DoubanChartStore {
     public boolean claimDaily(ChartId id, LocalDate date) {
         initialize(); return mapper.insert("daily:" + date + ":" + id, "DAILY", id.name(), "{}") == 1;
     }
-    /** 日认领与已启用榜单的持久操作同事务提交；崩溃后至少存在可恢复的 QUEUED 操作。 */
+    /** Refresh and ingest have separate daily claims; each ingest claim commits with its durable operation. */
     public DailyWork claimDailyWork(ChartId id, LocalDate date) {
         initialize();
         return transactions.execute(tx -> {
             BoardState state = decode(mapper.lock(boardKey(id)), BoardState.class);
-            if (!claimDaily(id, date)) return null;
-            Run run = state.board().autoEnabled() ? submit(id, state.board().ownerUserId(), "SCHEDULED", id.limit() > 0 ? 20 : null) : null;
+            if (!state.board().autoEnabled()) return claimDaily(id, date) ? new DailyWork(null) : null;
+            String claim = "daily-ingest:" + date + ":" + id;
+            if (mapper.select(claim) != null) return null;
+            // Old releases stored only the refresh claim. Any prior scheduled outcome, even failed/unknown, is not replay permission.
+            String start = date.atStartOfDay(ZONE).toInstant().toString().substring(0, 19);
+            String end = date.plusDays(1).atStartOfDay(ZONE).toInstant().toString().substring(0, 19);
+            if (mapper.scheduledOperationCount(id.name(), start, end) > 0) {
+                mapper.insert(claim, "DAILY_INGEST", id.name(), "{\"legacyScheduled\":true}");
+                return null;
+            }
+            if (state.activeOperationId() != null && active(run(state.activeOperationId()).operation().status())) return null;
+            if (mapper.insert(claim, "DAILY_INGEST", id.name(), "{}") != 1) return null;
+            Run run = submit(id, state.board().ownerUserId(), "SCHEDULED", id.limit() > 0 ? 20 : null);
+            mapper.update(claim, encode(Map.of("operationId", run.operation().id())));
+            claimDaily(id, date);
             return new DailyWork(run);
         });
     }
