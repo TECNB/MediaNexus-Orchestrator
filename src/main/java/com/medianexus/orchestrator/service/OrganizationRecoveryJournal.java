@@ -42,11 +42,22 @@ public class OrganizationRecoveryJournal {
 
     @PostConstruct void initialize() { mapper.createTable(); }
 
+    public record IdentityRepair(com.medianexus.orchestrator.integration.emby.EmbyMovieIdentitySnapshot previous,
+                                 Set<String> paths, int expectedTmdbId, String candidateId, String sentAt) {}
+
     public record Payload(Snapshot snapshot, Map<String, ActionState> actions, String hash,
                           OpenListClient.OfflineDirectory directory, int organized, int skipped, int videos,
-                          int tmdbId, Integer season, boolean refreshSent, FrozenTaskEvidence taskEvidence) {
+                          int tmdbId, Integer season, boolean refreshSent, FrozenTaskEvidence taskEvidence,
+                          IdentityRepair identityRepair) {
+        public Payload(Snapshot snapshot, Map<String, ActionState> actions, String hash, OpenListClient.OfflineDirectory directory,
+                       int organized, int skipped, int videos, int tmdbId, Integer season, boolean refreshSent, FrozenTaskEvidence evidence) {
+            this(snapshot, actions, hash, directory, organized, skipped, videos, tmdbId, season, refreshSent, evidence, null);
+        }
         Payload withRefreshSent(boolean sent) {
-            return new Payload(snapshot, actions, hash, directory, organized, skipped, videos, tmdbId, season, sent, taskEvidence);
+            return new Payload(snapshot, actions, hash, directory, organized, skipped, videos, tmdbId, season, sent, taskEvidence, identityRepair);
+        }
+        Payload withIdentityRepair(IdentityRepair repair) {
+            return new Payload(snapshot, actions, hash, directory, organized, skipped, videos, tmdbId, season, refreshSent, taskEvidence, repair);
         }
     }
     public record RecoveryStatus(String taskType, String taskId, String phase, String status,
@@ -110,6 +121,10 @@ public class OrganizationRecoveryJournal {
                 throw new IllegalStateException("持久整理需要已核实账号和根目录身份");
             Payload payload = new Payload(snapshot, new LinkedHashMap<>(), hash, directory,
                     organized, skipped, videos, tmdbId, season, false, taskEvidence);
+            if (taskEvidence != null && "SUCCEEDED".equals(taskEvidence.originalStatus())
+                    && (!type.equals("movie") || !plan.renames().isEmpty() || !plan.moves().isEmpty() || !plan.deletions().isEmpty()))
+                throw new IllegalStateException("历史成功任务仅允许零文件变更的身份验收");
+            acceptance.validateCapturedTarget(type, payload);
             if (mapper.insert(type, id, encode(payload), process) != 1) throw new IllegalStateException("整理计划未持久化");
             // Retain before mutation, including when a later error checkpoint cannot reach the database.
             scheduler.retainOrganizationRecovery(owner, directory, hash);
@@ -242,6 +257,7 @@ public class OrganizationRecoveryJournal {
             save("REFRESH", "WAITING", null);
         }
         void accept() {
+            if (Set.of("COMPLETE", "ISOLATED").contains(row.status())) return;
             if (!process.equals(row.ownerToken())) throw new IllegalStateException("刷新写权限不属于当前进程");
             if (!payload.directory().equals(openList.offlineDirectoryForPath(path())))
                 throw new IllegalStateException("目标账号映射已变化");
@@ -261,7 +277,26 @@ public class OrganizationRecoveryJournal {
                 save("VERIFY", "WAITING", null);
             }
             if (payload.refreshSent() && row.phase().equals("VERIFY")) {
-                acceptance.verify(row.taskType(), payload);
+                try { acceptance.verify(row.taskType(), payload); }
+                catch (OrganizationVerificationException mismatch) {
+                    if (!row.taskType().equals("movie") || !mismatch.reason().equals("EMBY_IDENTITY_MISMATCH")) throw mismatch;
+                    if (payload.identityRepair() != null)
+                        throw new OrganizationVerificationException("EMBY_REPAIR_OUTCOME_UNKNOWN", false);
+                    var candidate = acceptance.movieRepairCandidate(payload, mismatch.movie());
+                    payload = payload.withIdentityRepair(new IdentityRepair(mismatch.movie(), mismatch.paths(), payload.tmdbId(),
+                            candidate.candidateId(), java.time.Instant.now().toString()));
+                    save("VERIFY", "RUNNING", "EMBY_REPAIR_SENT");
+                    // Once intent commits, even a lost response only permits observation on re-entry.
+                    organizer.verifyFiles(payload.snapshot());
+                    openList.requireOrganizationQueuesQuiet();
+                    if (!payload.directory().equals(openList.offlineDirectoryForPath(path())))
+                        throw new OrganizationVerificationException("EMBY_REPAIR_MAPPING_CHANGED", true);
+                    try { acceptance.applyMovieRepair(payload, mismatch.movie(), mismatch.paths(), candidate); }
+                    catch (OrganizationVerificationException refused) { throw refused; }
+                    catch (RuntimeException unknown) { throw new OrganizationVerificationException("EMBY_REPAIR_OUTCOME_UNKNOWN", false); }
+                    save("VERIFY", "WAITING", "EMBY_REPAIR_APPLIED_PENDING_VERIFY");
+                    acceptance.verify(row.taskType(), payload);
+                }
                 acceptance.recordCompletion(row.taskType(), row.taskId(), payload);
                 save("COMPLETE", "COMPLETE", null);
                 scheduler.completeOrganizationRecovery(row.taskType() + ":" + row.taskId(), payload.directory(), payload.hash());
@@ -269,9 +304,13 @@ public class OrganizationRecoveryJournal {
         }
         void waiting(RuntimeException failure) {
             int attempt = row.attempt() + 1;
-            String status = attempt >= 12 ? "ISOLATED" : "WAITING";
-            // Preserve the first error; never serialize upstream messages containing URLs or tokens.
-            String error = row.lastError() == null ? failure.getClass().getSimpleName() : row.lastError();
+            var classified = failure instanceof OrganizationVerificationException known ? known : null;
+            String status = classified != null && classified.isolated() || attempt >= 12 ? "ISOLATED" : "WAITING";
+            // Only controlled codes leave this boundary; no upstream bodies or signed URLs.
+            String error = classified == null ? row.lastError() == null ? failure.getClass().getSimpleName() : row.lastError()
+                    : classified.reason();
+            if (status.equals("ISOLATED") && classified != null)
+                acceptance.recordIsolation(row.taskType(), row.taskId(), error);
             persist(row.phase(), status, attempt, error);
         }
         void save(String phase, String status, String error) { persist(phase, status, row.attempt(), error); }

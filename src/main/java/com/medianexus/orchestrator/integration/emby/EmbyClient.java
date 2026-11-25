@@ -352,6 +352,133 @@ public class EmbyClient {
         return items.get(0);
     }
 
+    /** 完整库扫描只按准确路径选取；错误的现有 TMDB 身份仍须可观察。 */
+    public List<EmbyMovieIdentitySnapshot> organizationMoviesAtPaths(String libraryId, Set<String> exactPaths) {
+        if (!StringUtils.hasText(libraryId) || exactPaths == null
+                || exactPaths.stream().anyMatch(path -> !StringUtils.hasText(path))) {
+            throw new EmbyClientException("Emby 电影库或准确路径无效");
+        }
+        Set<String> paths = Set.copyOf(exactPaths);
+        if (paths.isEmpty()) return List.of();
+        Map<String, String> params = new LinkedHashMap<>(Map.of(
+                "ParentId", libraryId, "Recursive", "true", "IncludeItemTypes", "Movie",
+                "Fields", "Type,Path", "GroupItemsIntoCollections", "false",
+                "SortBy", "Id", "SortOrder", "Ascending", "Limit", "1000"));
+        Map<String, String> selected = new LinkedHashMap<>();
+        Set<String> seenIds = new HashSet<>();
+        Integer expectedTotal = null;
+        int offset = 0;
+        while (true) {
+            params.put("StartIndex", Integer.toString(offset));
+            JsonNode response = get("/Items", params);
+            JsonNode items = response.path("Items");
+            JsonNode total = response.path("TotalRecordCount");
+            if (!items.isArray() || !total.isIntegralNumber() || !total.canConvertToInt()
+                    || total.intValue() < 0 || (expectedTotal != null && expectedTotal != total.intValue())
+                    || items.size() > 1000 || (long) offset + items.size() > total.intValue()
+                    || (items.isEmpty() && offset < total.intValue())) {
+                throw new EmbyClientException("Emby 电影库分页不完整或已变化");
+            }
+            expectedTotal = total.intValue();
+            for (JsonNode item : items) {
+                JsonNode id = item.path("Id");
+                JsonNode path = item.path("Path");
+                if (!id.isTextual() || id.asText().isBlank() || !seenIds.add(id.asText())
+                        || !"Movie".equals(item.path("Type").asText())
+                        || !path.isTextual() || path.asText().isBlank()) {
+                    throw new EmbyClientException("Emby 电影库条目重复或身份、路径未知");
+                }
+                if (paths.contains(path.asText())) selected.put(id.asText(), path.asText());
+            }
+            offset += items.size();
+            if (offset == expectedTotal) break;
+        }
+        List<EmbyMovieIdentitySnapshot> snapshots = new ArrayList<>();
+        selected.forEach((id, path) -> {
+            EmbyMovieIdentitySnapshot snapshot = organizationMovieIdentity(id);
+            if (!path.equals(snapshot.path())) throw new EmbyClientException("Emby 电影路径在扫描后变化");
+            snapshots.add(snapshot);
+        });
+        return List.copyOf(snapshots);
+    }
+
+    /** 精确单项只读快照；缺少锁、版本或媒体路径证明时仅允许观察，不授权修复。 */
+    public EmbyMovieIdentitySnapshot organizationMovieIdentity(String itemId) {
+        if (!StringUtils.hasText(itemId) || itemId.contains(",")) {
+            throw new EmbyClientException("Emby 单项 ID 无效");
+        }
+        JsonNode response = get("/Items", Map.of("Ids", itemId,
+                "Fields", "Type,ProviderIds,Path,MediaSources,Settings,IsLocked,LockData,LockedFields,DateLastSaved,Etag,ParentId,ProductionYear",
+                "GroupItemsIntoCollections", "false", "Limit", "2"));
+        JsonNode items = response.path("Items");
+        JsonNode total = response.path("TotalRecordCount");
+        if (!items.isArray() || items.size() != 1 || !items.get(0).path("Id").isTextual()
+                || !itemId.equals(items.get(0).path("Id").asText())
+                || (!total.isMissingNode() && (!total.isIntegralNumber() || !total.canConvertToInt() || total.intValue() != 1))) {
+            throw new EmbyClientException("Emby 单项身份读取未唯一匹配");
+        }
+        JsonNode item = items.get(0);
+        JsonNode path = item.path("Path");
+        if (!"Movie".equals(item.path("Type").asText()) || !path.isTextual() || path.asText().isBlank()) {
+            throw new EmbyClientException("Emby 电影类型或路径未知");
+        }
+        Set<String> mediaPaths = new HashSet<>();
+        JsonNode sources = item.path("MediaSources");
+        boolean completeSources = sources.isArray() && !sources.isEmpty();
+        if (sources.isArray()) {
+            for (JsonNode source : sources) {
+                JsonNode sourcePath = source.path("Path");
+                if (!sourcePath.isTextual() || sourcePath.asText().isBlank()) {
+                    completeSources = false;
+                } else {
+                    mediaPaths.add(sourcePath.asText());
+                }
+            }
+        }
+        String tmdbId = organizationTmdbId(item.path("ProviderIds"));
+        // 同时保留两种上游修订证据，避免 Etag 未变而 DateLastSaved 已变被遗漏。
+        Map<String, String> revision = new LinkedHashMap<>();
+        for (String field : List.of("Etag", "DateLastSaved")) {
+            JsonNode evidence = item.path(field);
+            if (evidence.isTextual() && !evidence.asText().isBlank()) revision.put(field, evidence.asText());
+        }
+        String revisionEvidence = revision.isEmpty() ? null : writeJson(revision);
+        JsonNode locked = item.path("IsLocked");
+        JsonNode lockData = item.path("LockData");
+        JsonNode lockedFields = item.path("LockedFields");
+        // Settings 可返回 LockData；缺失不是 false，任一显式锁定或畸形值均拒绝。
+        boolean explicitlyUnlocked = (locked.isBoolean() && !locked.booleanValue()
+                || lockData.isBoolean() && !lockData.booleanValue())
+                && (locked.isMissingNode() || locked.isBoolean() && !locked.booleanValue())
+                && (lockData.isMissingNode() || lockData.isBoolean() && !lockData.booleanValue());
+        boolean repairAllowed = explicitlyUnlocked
+                && lockedFields.isArray() && lockedFields.isEmpty()
+                && completeSources && tmdbId != null && revisionEvidence != null;
+        JsonNode year = item.path("ProductionYear");
+        return new EmbyMovieIdentitySnapshot(itemId, path.asText(), tmdbId,
+                year.isIntegralNumber() && year.canConvertToInt() ? year.intValue() : null,
+                mediaPaths, repairAllowed, revisionEvidence);
+    }
+
+    private String organizationTmdbId(JsonNode providerIds) {
+        JsonNode tmdb = providerIds.path("Tmdb");
+        return organizationProviderIdsConsistent(providerIds) && tmdb.isTextual() && tmdb.asText().matches("[0-9]+")
+                ? tmdb.asText() : null;
+    }
+
+    private boolean organizationProviderIdsConsistent(JsonNode providerIds) {
+        if (!providerIds.isObject()) return false;
+        Map<String, String> identities = new java.util.TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+        var fields = providerIds.fields();
+        while (fields.hasNext()) {
+            var field = fields.next();
+            if (!field.getValue().isTextual() || field.getValue().asText().isBlank()) return false;
+            String previous = identities.put(field.getKey(), field.getValue().asText());
+            if (previous != null && !previous.equals(field.getValue().asText())) return false;
+        }
+        return true;
+    }
+
     public List<EmbyCatalogItem> findMoviesByTmdbId(int tmdbId) {
         return catalogItems(Map.of(
                 "Recursive", "true",
@@ -592,6 +719,48 @@ public class EmbyClient {
                 Map.of(),
                 writeJson(request)
         );
+        return remoteMetadataCandidates(root);
+    }
+
+    /** 官方 Movie 远程搜索只接受唯一的准确 provider 身份，不以标题相似度替代。 */
+    public EmbyRemoteSearchCandidate findOrganizationMovieCandidate(
+            String itemId, int expectedTmdbId, String title, Integer year
+    ) {
+        if (!StringUtils.hasText(itemId) || itemId.contains(",") || expectedTmdbId <= 0 || !StringUtils.hasText(title)) {
+            throw new EmbyClientException("Emby 电影候选查询身份无效");
+        }
+        Map<String, Object> searchInfo = new LinkedHashMap<>();
+        searchInfo.put("Name", title);
+        searchInfo.put("MetadataLanguage", "zh-CN");
+        searchInfo.put("ProviderIds", Map.of("Tmdb", Integer.toString(expectedTmdbId)));
+        searchInfo.put("IsAutomated", false);
+        if (year != null) searchInfo.put("Year", year);
+        JsonNode root = postJson("/Items/RemoteSearch/Movie", Map.of(), writeJson(Map.of(
+                "SearchInfo", searchInfo, "ItemId", numericItemId(itemId), "IncludeDisabledProviders", false)));
+        if (!root.isArray()) throw new EmbyClientException("EMBY_REPAIR_CANDIDATE_INVALID_RESPONSE");
+        JsonNode exact = null;
+        for (JsonNode candidate : root) {
+            JsonNode providerIds = candidate.path("ProviderIds");
+            if (!organizationProviderIdsConsistent(providerIds)) {
+                throw new EmbyClientException("EMBY_REPAIR_CANDIDATE_PROVIDER_CONFLICT");
+            }
+            if (!Integer.toString(expectedTmdbId).equals(organizationTmdbId(providerIds))) continue;
+            JsonNode productionYear = candidate.path("ProductionYear");
+            if (year != null && (!productionYear.isIntegralNumber() || !productionYear.canConvertToInt()
+                    || year != productionYear.intValue())) {
+                throw new EmbyClientException("EMBY_REPAIR_CANDIDATE_YEAR_CONFLICT");
+            }
+            if (exact != null) throw new EmbyClientException("EMBY_REPAIR_CANDIDATE_AMBIGUOUS");
+            if (!candidate.path("Name").isTextual() || candidate.path("Name").asText().isBlank()) {
+                throw new EmbyClientException("EMBY_REPAIR_CANDIDATE_INVALID_RESPONSE");
+            }
+            exact = candidate;
+        }
+        if (exact == null) throw new EmbyClientException("EMBY_REPAIR_CANDIDATE_NOT_FOUND");
+        return remoteMetadataCandidates(objectMapper.createArrayNode().add(exact)).get(0);
+    }
+
+    private List<EmbyRemoteSearchCandidate> remoteMetadataCandidates(JsonNode root) {
         if (!root.isArray()) {
             throw new EmbyClientException("Emby remote metadata search response is incomplete");
         }

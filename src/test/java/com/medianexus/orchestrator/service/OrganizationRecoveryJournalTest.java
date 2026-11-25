@@ -44,6 +44,81 @@ class OrganizationRecoveryJournalTest {
     }
     void organize() { journal.organize("movie", "id", plan, 1, 0, 1, 1, null, "hash", evidence); }
 
+    @Test void movieRepairIntentCommitsBeforeApplyAndUnknownOutcomeIsNeverResent() {
+        organize();
+        when(acceptance.refresh(anyString(), anyString())).thenReturn(AutoSymlinkRefreshService.RefreshOutcome.submitted("accepted"));
+        var movie = new com.medianexus.orchestrator.integration.emby.EmbyMovieIdentitySnapshot(
+                "item", "/strm/video.strm", "999", 2014, Set.of("/strm/video.strm"), true, "revision");
+        var mismatch = new OrganizationVerificationException("EMBY_IDENTITY_MISMATCH", false, movie, movie.mediaPaths());
+        doThrow(mismatch).when(acceptance).verify(eq("movie"), any());
+        var candidate = mock(com.medianexus.orchestrator.integration.emby.EmbyRemoteSearchCandidate.class);
+        when(acceptance.movieRepairCandidate(any(), eq(movie))).thenReturn(candidate);
+        doAnswer(call -> {
+            assertThat(row.get().payload()).contains("identityRepair", "revision", "999");
+            throw new IllegalStateException("response lost");
+        }).when(acceptance).applyMovieRepair(any(), eq(movie), eq(movie.mediaPaths()), eq(candidate));
+        journal.refreshAfterOrganization("movie", "id");
+        assertThat(row.get().lastError()).isEqualTo("EMBY_REPAIR_OUTCOME_UNKNOWN");
+        journal.refreshAfterOrganization("movie", "id");
+        verify(acceptance, times(1)).applyMovieRepair(any(), any(), anySet(), any());
+        verify(acceptance, never()).recordCompletion(anyString(), anyString(), any());
+        verify(files, times(1)).resume(any(), anyMap(), any());
+    }
+
+    @Test void repairedIdentityMustVerifyBeforeCompletionAndTerminalEntryNeverWritesAgain() {
+        organize();
+        when(acceptance.refresh(anyString(), anyString())).thenReturn(AutoSymlinkRefreshService.RefreshOutcome.submitted("accepted"));
+        var movie = new com.medianexus.orchestrator.integration.emby.EmbyMovieIdentitySnapshot("item", "/strm/video.strm", "999", 2014,
+                Set.of("/strm/video.strm"), true, "revision");
+        doThrow(new OrganizationVerificationException("EMBY_IDENTITY_MISMATCH", false, movie, movie.mediaPaths())).doNothing()
+                .when(acceptance).verify(eq("movie"), any());
+        when(acceptance.movieRepairCandidate(any(), any())).thenReturn(mock(com.medianexus.orchestrator.integration.emby.EmbyRemoteSearchCandidate.class));
+        journal.refreshAfterOrganization("movie", "id");
+        assertThat(row.get().status()).isEqualTo("COMPLETE");
+        journal.refreshAfterOrganization("movie", "id");
+        verify(acceptance, times(1)).applyMovieRepair(any(), any(), anySet(), any());
+        verify(acceptance, times(2)).verify(eq("movie"), any());
+        verify(acceptance, times(1)).recordCompletion(eq("movie"), eq("id"), any());
+    }
+
+    @Test void identityIntentDatabaseFailureAuthorizesZeroApplyCalls() {
+        organize();
+        when(acceptance.refresh(anyString(), anyString())).thenReturn(AutoSymlinkRefreshService.RefreshOutcome.submitted("accepted"));
+        var movie = new com.medianexus.orchestrator.integration.emby.EmbyMovieIdentitySnapshot("item", "/strm/video.strm", "999", 2014,
+                Set.of("/strm/video.strm"), true, "revision");
+        doThrow(new OrganizationVerificationException("EMBY_IDENTITY_MISMATCH", false, movie, movie.mediaPaths()))
+                .when(acceptance).verify(eq("movie"), any());
+        when(acceptance.movieRepairCandidate(any(), any())).thenReturn(mock(com.medianexus.orchestrator.integration.emby.EmbyRemoteSearchCandidate.class));
+        doReturn(0).when(db).checkpoint(any(), anyString(), anyString(), anyString(), anyLong(), anyInt(), eq("EMBY_REPAIR_SENT"));
+        journal.refreshAfterOrganization("movie", "id");
+        verify(acceptance, never()).applyMovieRepair(any(), any(), anySet(), any());
+        verify(acceptance, never()).recordCompletion(anyString(), anyString(), any());
+    }
+
+    @Test void explicitConflictIsolatesOnceAndKeepsPerWorkProtection() {
+        organize();
+        when(acceptance.refresh(anyString(), anyString())).thenReturn(AutoSymlinkRefreshService.RefreshOutcome.submitted("accepted"));
+        doThrow(new OrganizationVerificationException("EMBY_MEDIA_SOURCES_CONFLICT", true)).when(acceptance).verify(anyString(), any());
+        journal.refreshAfterOrganization("movie", "id");
+        assertThat(row.get().status()).isEqualTo("ISOLATED");
+        assertThat(row.get().lastError()).isEqualTo("EMBY_MEDIA_SOURCES_CONFLICT");
+        journal.refreshAfterOrganization("movie", "id");
+        verify(acceptance).recordIsolation("movie", "id", "EMBY_MEDIA_SOURCES_CONFLICT");
+        verify(lane, never()).completeOrganizationRecovery(anyString(), any(OpenListClient.OfflineDirectory.class), anyString());
+        verify(acceptance, never()).applyMovieRepair(any(), any(), anySet(), any());
+    }
+
+    @Test void historicalSucceededMovieCannotAdoptFileMutations() {
+        var changes = new LibraryOrganizationPlan("/library", List.of(new LibraryOrganizationPlan.RenameOperation("/library/old.mkv", "video.mkv")),
+                List.of(), List.of(), Set.of("video.mkv"), Set.of());
+        when(files.capture(changes)).thenReturn(snapshot);
+        var historical = new OrganizationRecoveryJournal.FrozenTaskEvidence("title", "original", 2026, 1, null, "release", "table", "SUCCEEDED");
+        assertThatThrownBy(() -> journal.organize("movie", "id", changes, 1, 0, 1, 1, null, "hash", historical))
+                .hasMessageContaining("零文件变更");
+        verify(db, never()).insert(anyString(), anyString(), anyString(), anyString());
+        verify(files, never()).resume(any(), anyMap(), any());
+    }
+
     @Test void foreignFirstPageDoesNotStarveNinthOwnerAcrossTicks() {
         organize();
         Row own = row.get();

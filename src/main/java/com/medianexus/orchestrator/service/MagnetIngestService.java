@@ -827,7 +827,9 @@ public class MagnetIngestService {
         Runnable adoption;
         if ("movie".equals(type)) {
             var task = getExistingMovieTask(id);
-            requireRecoverableOrganization(task.getStatus(), movieLibraryOrganizer);
+            if (!"SUCCEEDED".equals(task.getStatus())) requireRecoverableOrganization(task.getStatus(), movieLibraryOrganizer);
+            else if (!(movieLibraryOrganizer instanceof com.medianexus.orchestrator.service.organization.DurableLibraryOrganizer))
+                throw new IllegalStateException("身份验收需要持久整理日志");
             boolean completed = movieTaskLogMapper.selectCount(new LambdaQueryWrapper<MovieMagnetIngestTaskLog>()
                     .eq(MovieMagnetIngestTaskLog::getTaskId, id)
                     .eq(MovieMagnetIngestTaskLog::getMessage, "离线下载完成，开始整理文件")) > 0;
