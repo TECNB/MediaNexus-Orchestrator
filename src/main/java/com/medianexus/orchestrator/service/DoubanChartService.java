@@ -221,10 +221,11 @@ public class DoubanChartService {
             store.updateRun(id, previous -> new Run(operation(previous.operation(), previous.stopRequested() ? "STOPPING" : "RUNNING",
                     previous.operation().entries(), null), previous.scope(), previous.scopeCaptured(), previous.stopRequested()));
             requireAdminIdentity(initial.operation().actorUserId());
-            Board fresh = refreshBoard(initial.operation().chartId());
+            Board fresh = "AUTO_RETRY".equals(initial.operation().triggerType()) ? store.board(initial.operation().chartId())
+                    : refreshBoard(initial.operation().chartId());
             Integer requestedLimit = initial.operation().candidateLimit();
             int candidateLimit = requestedLimit == null ? 20 : requestedLimit;
-            List<Candidate> candidates = fresh.candidates();
+            List<Candidate> candidates = "AUTO_RETRY".equals(initial.operation().triggerType()) ? initial.scope() : fresh.candidates();
             if (requestedLimit != null) candidates = candidates.stream()
                     .filter(candidate -> !candidate.current() ? "SCHEDULED".equals(initial.operation().triggerType())
                             : candidate.subject().rank() != null && candidate.subject().rank() <= candidateLimit)
@@ -306,13 +307,26 @@ public class DoubanChartService {
             if (!targets.add(targetKey(target))) { outcome(id, subjectId, "SKIPPED", reason("DUPLICATE_TARGET", "本轮已检查同一目录目标")); return; }
             ActiveTask existing;
             try (var timing = IngestStageTiming.start("task_lookup", "target-ledger/tasks", null)) {
-                existing = store.recordedTask(targetKey(target));
-                if (existing == null) existing = tasks.previousTask(target);
+                existing = tasks.previousTask(target);
+                if (existing == null) {
+                    existing = store.recordedTask(targetKey(target));
+                    if (existing != null) {
+                        ActiveTask current = tasks.task(existing.taskType(), existing.taskId());
+                        if (current != null) existing = current;
+                    }
+                }
                 if (existing == null) existing = tasks.activeTask(target);
                 timing.finish("SUCCEEDED", existing == null ? "NO_TASK; not a library absence check"
                         : "taskId=" + existing.taskId() + ";status=" + existing.status() + ";not media proof");
             }
-            if (existing != null) { associate(id, subjectId, existing, "ASSOCIATED", BgmWishlistTaskGateway.previousTaskReason(existing.status())); return; }
+            ActiveTask retry = existing != null && !store.targetUncertain(targetKey(target)) && tasks.canRetryChart(existing) ? existing : null;
+            if (existing != null && retry == null) { associate(id, subjectId, existing, "ASSOCIATED", BgmWishlistTaskGateway.previousTaskReason(existing.status())); return; }
+            if (store.targetUncertain(targetKey(target))) {
+                outcome(id, subjectId, "INTERRUPTED", reason("CREATE_UNCERTAIN", "目标存在未核实创建，禁止自动重放")); return;
+            }
+            if ("AUTO_RETRY".equals(store.run(id).operation().triggerType()) && retry == null) {
+                outcome(id, subjectId, "SKIPPED", reason("RETRY_BLOCKED", "原尝试不再允许自动替代")); return;
+            }
             if (!store.reserveCheck()) { outcome(id, subjectId, "SKIPPED", reason("DAILY_CHECK_LIMIT", "榜单共享每日检查数已达上限")); return; }
             updateEntry(id, subjectId, entry -> entry(entry, "SEARCHING", entry.reason()));
             List<ProwlarrReleaseItemResponse> releases;
@@ -330,7 +344,8 @@ public class DoubanChartService {
                         entry.startedAt(), entry.searches(), candidates, null, null, reason(exception.reasonCode(), exception.getMessage()), null)); return;
             }
             List<com.medianexus.orchestrator.dto.bgm.BgmWishlistOperationContract.Candidate> candidates = releaseCandidates(releases);
-            var selected = candidates.stream().filter(candidate -> safe(candidate.release()) && eligibility.completeRelease(assessment, candidate.release())).findFirst().orElse(null);
+            var selected = candidates.stream().filter(candidate -> safe(candidate.release()) && eligibility.completeRelease(assessment, candidate.release())
+                    && (retry == null || tasks.unattemptedChartRelease(retry, candidate.release()))).findFirst().orElse(null);
             updateEntry(id, subjectId, entry -> new Entry(entry.item(), selected == null ? candidates.isEmpty() ? "WAITING_RESOURCE" : "WAITING_CONFIRMATION" : "SELECTED",
                     entry.startedAt(), entry.searches(), candidates, selected, null, selected == null ? reason(candidates.isEmpty() ? "NO_RELEASE" : "REVIEW_REQUIRED",
                             candidates.isEmpty() ? "未找到资源，留待下一轮重搜" : "发布安全或整季覆盖证据不足，未创建任务") : entry.reason(), null));
@@ -369,7 +384,8 @@ public class DoubanChartService {
             }
             try (var timing = IngestStageTiming.start("task_create", target.mediaType(), null)) {
                 try {
-                ActiveTask created = "SERIES".equals(target.mediaType()) ? tasks.createChartSeries(target, selected.release(), owner)
+                ActiveTask created = retry != null ? tasks.retryChart(target, retry, selected.release(), owner)
+                        : "SERIES".equals(target.mediaType()) ? tasks.createChartSeries(target, selected.release(), owner)
                         : tasks.createChartMovie(target, selected.release(), owner);
                 timing.finish("ACCEPTED", "taskId=" + created.taskId() + ";status=" + created.status() + ";not ingestion complete");
                 store.recordTask(targetKey(target), created);
@@ -449,6 +465,7 @@ public class DoubanChartService {
     public void catchUpDaily() {
         ZonedDateTime now = ZonedDateTime.now(clock);
         if (!now.toLocalTime().isBefore(RUN_TIME)) dispatchDaily(now.toLocalDate());
+        pollAlternatives();
     }
 
     private void dispatchDaily(LocalDate date) {
@@ -475,6 +492,46 @@ public class DoubanChartService {
             log.warn("豆瓣每日刷新未入队：执行器繁忙，留待补查");
         }
     }
+    private final java.util.concurrent.atomic.AtomicBoolean alternativesEnqueued = new java.util.concurrent.atomic.AtomicBoolean();
+
+    /** Poll completed chart attempts independently of the once-daily refresh/ingest claims. */
+    void pollAlternatives() {
+        if (!alternativesEnqueued.compareAndSet(false, true)) return;
+        try { executor.execute(() -> {
+            try {
+                for (ChartId chart : ChartId.values()) {
+                    try {
+                    Board board = store.board(chart);
+                    if (!board.autoEnabled()) continue;
+                    requireAdminIdentity(board.ownerUserId());
+                    for (Candidate candidate : board.candidates()) {
+                        try {
+                        if (candidate.excluded()) continue;
+                        Identity identity = store.identity(candidate.subject().id());
+                        if (identity == null) identity = candidate.identity();
+                        if (identity == null) continue;
+                        Target target = target(identity);
+                        ActiveTask recorded = store.recordedTask(targetKey(target));
+                        if (recorded == null || store.targetUncertain(targetKey(target))) continue;
+                        ActiveTask current = tasks.previousTask(target);
+                        if (current == null || !tasks.canRetryChart(current)) continue;
+                        Run claimed = store.claimAlternative(chart, candidate, current);
+                        if (claimed == null) continue;
+                        locks.withLock("douban-run:" + claimed.operation().id(), Busy::new, () -> {
+                            run(claimed.operation().id()); return null;
+                        });
+                        } catch (RuntimeException failure) {
+                            log.warn("榜单替代发布候选检查暂停 chart={} subject={}，继续其他候选", chart, candidate.subject().id(), failure);
+                        }
+                    }
+                    } catch (RuntimeException failure) {
+                        log.warn("榜单替代发布检查暂停 chart={}，继续其他榜单", chart, failure);
+                    }
+                }
+            } finally { alternativesEnqueued.set(false); }
+        }); } catch (RejectedExecutionException failure) { alternativesEnqueued.set(false); }
+    }
+
     @EventListener(ApplicationReadyEvent.class)
     public void recover() {
         try {

@@ -306,6 +306,36 @@ public class ProwlarrReleaseIngestService {
                         .withUnverifiedRisk(request.acceptUnverifiedRisk()), owner);
     }
 
+    TaskRetryReference automaticAlternative(String type, String id) {
+        return magnetIngestService.automaticAlternative(type, id);
+    }
+
+    boolean unattemptedAlternative(String type, String id, ProwlarrReleaseItemResponse release) {
+        requireAutomaticAlternativeRelease(release);
+        return magnetIngestService.unattemptedAlternative(type, id,
+                resolveMagnet(release.indexerId(), release.downloadRef(), release.title()));
+    }
+
+    com.medianexus.orchestrator.service.BgmWishlistTaskGateway.ActiveTask ingestAlternativeForOwner(
+            String type, String id, ProwlarrReleaseItemResponse release, User owner) {
+        requireAutomaticAlternativeRelease(release);
+        String magnet = resolveMagnet(release.indexerId(), release.downloadRef(), release.title());
+        var metadata = requestMetadata(release.title(), release.indexer(), release.size(), release.indexerId(),
+                release.downloadRef(), release.resolutionTags(), release.dynamicRangeTags());
+        if ("MOVIE".equals(type)) {
+            var task = magnetIngestService.createMovieAlternativeForOwner(id, magnet, metadata, owner);
+            return new BgmWishlistTaskGateway.ActiveTask(type, task.id(), task.status());
+        }
+        var task = magnetIngestService.createSeriesAlternativeForOwner(id, magnet, metadata, owner);
+        return new BgmWishlistTaskGateway.ActiveTask(type, task.id(), task.status());
+    }
+
+    private void requireAutomaticAlternativeRelease(ProwlarrReleaseItemResponse release) {
+        if (release.evidence() == null || !"RECOMMENDABLE".equals(release.evidence().status()) || release.evidence().camera()
+                || release.indexerId() != null && (release.seeders() == null || release.seeders() <= 0))
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "替代发布缺少自动受理安全或正做种证据");
+    }
+
 
     public MovieMagnetIngestTaskResponse ingestSelectedMovieRetry(
             MovieMagnetIngestTask originalTask,

@@ -169,6 +169,21 @@ public class DoubanChartStore {
         initialize(); return mapper.insert("uncertain:" + target, "UNCERTAIN", null, encode(operationId)) == 1;
     }
     public void resolveTarget(String target) { mapper.delete("uncertain:" + target); }
+    public boolean targetUncertain(String target) { initialize(); return mapper.select("uncertain:" + target) != null; }
+
+    /** Retry scans are durable and bounded to one search per task/day, independently of the daily chart claim. */
+    public Run claimAlternative(ChartId chart, Candidate candidate, BgmWishlistTaskGateway.ActiveTask task) {
+        initialize();
+        return transactions.execute(tx -> {
+            BoardState state = decode(mapper.lock(boardKey(chart)), BoardState.class);
+            if (!state.board().autoEnabled() || state.activeOperationId() != null
+                    && active(run(state.activeOperationId()).operation().status())) return null;
+            String claim = "alternative:" + LocalDate.now(ZONE) + ":" + task.taskType() + ":" + task.taskId();
+            if (mapper.insert(claim, "ALTERNATIVE", chart.name(), "{}") != 1) return null;
+            Run run = submit(chart, state.board().ownerUserId(), "AUTO_RETRY", null);
+            return updateRun(run.operation().id(), old -> new Run(old.operation(), List.of(candidate), true, false));
+        });
+    }
 
     public void releaseCreate(String day) {
         transactions.executeWithoutResult(tx -> {

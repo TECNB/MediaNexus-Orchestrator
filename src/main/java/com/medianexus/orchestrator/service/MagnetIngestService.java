@@ -523,6 +523,123 @@ public class MagnetIngestService {
         return insertMovieTask(user, plan, releaseMetadata, retryReference);
     }
 
+    /** A read-only admission check; FAILED alone is never evidence that upstream writes stopped. */
+    TaskRetryReference automaticAlternative(String type, String id) {
+        if ("MOVIE".equals(type)) {
+            var task = movieTaskMapper.selectById(id);
+            if (task == null) return null;
+            String group = StringUtils.hasText(task.getAttemptGroupId()) ? task.getAttemptGroupId() : id;
+            var attempts = movieTaskMapper.selectList(new LambdaQueryWrapper<MovieMagnetIngestTask>()
+                    .and(q -> q.eq(MovieMagnetIngestTask::getAttemptGroupId, group).or().eq(MovieMagnetIngestTask::getId, group))
+                    .orderByDesc(MovieMagnetIngestTask::getCreatedAt).orderByDesc(MovieMagnetIngestTask::getId));
+            if (attempts.isEmpty() || attempts.size() >= 3 || !id.equals(attempts.get(0).getId())) return null;
+            for (var attempt : attempts) if (!alternativeStopped("movie", attempt.getId(), attempt.getStatus(),
+                    attempt.getErrorMessage(), attempt.getOpenlistTaskId(), attempt.getSavePath(), attempt.getMagnetHash())) return null;
+            return new TaskRetryReference(group, type, id);
+        }
+        if ("SERIES".equals(type)) {
+            var task = seriesTaskMapper.selectById(id);
+            if (task == null) return null;
+            String group = StringUtils.hasText(task.getAttemptGroupId()) ? task.getAttemptGroupId() : id;
+            var attempts = seriesTaskMapper.selectList(new LambdaQueryWrapper<SeriesMagnetIngestTask>()
+                    .and(q -> q.eq(SeriesMagnetIngestTask::getAttemptGroupId, group).or().eq(SeriesMagnetIngestTask::getId, group))
+                    .orderByDesc(SeriesMagnetIngestTask::getCreatedAt).orderByDesc(SeriesMagnetIngestTask::getId));
+            if (attempts.isEmpty() || attempts.size() >= 3 || !id.equals(attempts.get(0).getId())) return null;
+            for (var attempt : attempts) if (!alternativeStopped("series", attempt.getId(), attempt.getStatus(),
+                    attempt.getErrorMessage(), attempt.getOpenlistTaskId(), attempt.getSavePath(), attempt.getMagnetHash())) return null;
+            return new TaskRetryReference(group, type, id);
+        }
+        return null;
+    }
+
+    private boolean alternativeStopped(String type, String id, String status, String error, String upstream, String path, String hash) {
+        if (!"FAILED".equals(status) || error == null || !StringUtils.hasText(upstream) || !StringUtils.hasText(hash)
+                || !error.startsWith("已核实取消后上游停止；")
+                || organizationJournal.status(type, id) != null || !offlineScheduler.alternativeReleaseAvailable(path, hash)) return false;
+        var snapshot = openListClient.offlineTaskInfo(upstream);
+        // Tache cancellation can finish as canceled (4) or done (2) before 100%.
+        // Only the durable cancellation checkpoint for this exact observation permits an alternative.
+        return snapshot != null && upstream.equals(snapshot.id())
+                && (Integer.valueOf(4).equals(snapshot.state()) || Integer.valueOf(2).equals(snapshot.state())
+                        && snapshot.progress() != null && snapshot.progress() >= 0 && snapshot.progress() < 100)
+                && error.contains("upstream=" + upstream + ";state=" + snapshot.state() + ";progress=" + snapshot.progress());
+    }
+
+    MovieMagnetIngestTaskResponse createMovieAlternativeForOwner(String id, String magnet, ReleaseIngestMetadata metadata, User owner) {
+        requireAlternativeOwner(owner);
+        var reference = automaticAlternative("MOVIE", id);
+        if (reference == null) throw badRequest("原任务取消尚未结清或已达尝试上限");
+        var original = movieTaskMapper.selectById(id);
+        String hash = alternativeHash(magnet);
+        var attempts = movieTaskMapper.selectList(new LambdaQueryWrapper<MovieMagnetIngestTask>()
+                .and(q -> q.eq(MovieMagnetIngestTask::getAttemptGroupId, reference.attemptGroupId()).or()
+                        .eq(MovieMagnetIngestTask::getId, reference.attemptGroupId())));
+        if (attempts.stream().anyMatch(task -> hash.equals(alternativeHash(task.getMagnet()))))
+            throw badRequest("该 BTIH 已在尝试链中受理");
+        mediaLibraryPresenceService.requireMovieAbsent(original.getTmdbId());
+        requireAlternativePath(original.getSavePath(), hash);
+        var plan = new MovieTaskPlan(normalizeMagnet(magnet), hash, original.getTitle(), original.getOriginalTitle(),
+                original.getYear(), original.getTmdbId(), targetRegistry.rootForExistingPath("MOVIE", original.getSavePath(),
+                cleanConfigValue(openListProperties.getMovieRootPath())), original.getSavePath());
+        return insertMovieTask(owner, plan, metadata.withUnverifiedRisk(false), reference);
+    }
+
+    SeriesMagnetIngestTaskResponse createSeriesAlternativeForOwner(String id, String magnet, ReleaseIngestMetadata metadata, User owner) {
+        requireAlternativeOwner(owner);
+        var reference = automaticAlternative("SERIES", id);
+        if (reference == null) throw badRequest("原任务取消尚未结清或已达尝试上限");
+        var original = seriesTaskMapper.selectById(id);
+        String hash = alternativeHash(magnet);
+        var attempts = seriesTaskMapper.selectList(new LambdaQueryWrapper<SeriesMagnetIngestTask>()
+                .and(q -> q.eq(SeriesMagnetIngestTask::getAttemptGroupId, reference.attemptGroupId()).or()
+                        .eq(SeriesMagnetIngestTask::getId, reference.attemptGroupId())));
+        if (attempts.stream().anyMatch(task -> hash.equals(alternativeHash(task.getMagnet()))))
+            throw badRequest("该 BTIH 已在尝试链中受理");
+        mediaLibraryPresenceService.requireSeriesSeasonAbsent(original.getTmdbId(), original.getSeasonNumber());
+        requireAlternativePath(original.getSavePath(), hash);
+        if (ANIME_PRODUCT_TYPE.equals(original.getTaskProductType())) targetRegistry.bindingForPath("ANIME", original.getSavePath());
+        else targetRegistry.rootForExistingPath("TV", original.getSavePath(), cleanConfigValue(openListProperties.getTvRootPath()));
+        var plan = new SeriesTaskPlan(normalizeMagnet(magnet), hash, original.getTitle(), original.getOriginalTitle(),
+                original.getSeasonNumber(), original.getTmdbId(), original.getSeriesName(), original.getSeasonFolder(), original.getSavePath());
+        return insertSeriesTask(owner, plan, metadata.withUnverifiedRisk(false), seriesTaskProductType(original), reference);
+    }
+
+    private void requireAlternativeOwner(User owner) {
+        if (owner == null || owner.getId() == null || !ADMIN_ROLE.equals(owner.getRole()))
+            throw badRequest("自动替代发布需要明确的管理员执行身份");
+    }
+
+    private String alternativeHash(String magnet) {
+        return com.medianexus.orchestrator.integration.pansou.PanSouMagnetIdentity.fromUrl(magnet)
+                .orElseThrow(() -> badRequest("磁力缺少唯一有效 BTIH")).btih();
+    }
+
+    private void requireAlternativePath(String path, String hash) {
+        if (!offlineScheduler.alternativeReleaseAvailable(path, hash)
+                || movieTaskMapper.selectCount(new LambdaQueryWrapper<MovieMagnetIngestTask>()
+                        .eq(MovieMagnetIngestTask::getMagnetHash, hash).in(MovieMagnetIngestTask::getStatus, ACTIVE_STATUSES)) > 0
+                || seriesTaskMapper.selectCount(new LambdaQueryWrapper<SeriesMagnetIngestTask>()
+                        .eq(SeriesMagnetIngestTask::getMagnetHash, hash).in(SeriesMagnetIngestTask::getStatus, ACTIVE_STATUSES)) > 0)
+            throw badRequest("替代发布目标存在文件或未结清认领，禁止覆盖或自动重放");
+        openListClient.requireEmptyAlternativeTarget(path);
+    }
+
+    boolean unattemptedAlternative(String type, String id, String magnet) {
+        String hash = alternativeHash(magnet);
+        if ("MOVIE".equals(type)) {
+            var task = movieTaskMapper.selectById(id);
+            String group = StringUtils.hasText(task.getAttemptGroupId()) ? task.getAttemptGroupId() : id;
+            return movieTaskMapper.selectList(new LambdaQueryWrapper<MovieMagnetIngestTask>()
+                    .and(q -> q.eq(MovieMagnetIngestTask::getAttemptGroupId, group).or().eq(MovieMagnetIngestTask::getId, group)))
+                    .stream().noneMatch(attempt -> hash.equals(alternativeHash(attempt.getMagnet())));
+        }
+        var task = seriesTaskMapper.selectById(id);
+        String group = StringUtils.hasText(task.getAttemptGroupId()) ? task.getAttemptGroupId() : id;
+        return seriesTaskMapper.selectList(new LambdaQueryWrapper<SeriesMagnetIngestTask>()
+                .and(q -> q.eq(SeriesMagnetIngestTask::getAttemptGroupId, group).or().eq(SeriesMagnetIngestTask::getId, group)))
+                .stream().noneMatch(attempt -> hash.equals(alternativeHash(attempt.getMagnet())));
+    }
+
     private MovieMagnetIngestTaskResponse insertMovieTask(
             User user,
             MovieTaskPlan plan,
@@ -1131,9 +1248,11 @@ public class MagnetIngestService {
         }
     }
 
+
     private void prepareMovieDownloadRoot(MovieMagnetIngestTask task) {
         writeMovieLog(task.getId(), "INFO", "created", "正在准备 OpenList 保存目录", task.getSavePath());
         try {
+            if (StringUtils.hasText(task.getRetryOfTaskId())) openListClient.requireEmptyAlternativeTarget(task.getSavePath());
             openListClient.ensureDirectoryReady(task.getSavePath(), targetRegistry.rootForExistingPath("MOVIE", task.getSavePath(), cleanConfigValue(openListProperties.getMovieRootPath())));
         } catch (OpenListDirectoryPrepareException exception) {
             throw mapDirectoryPrepareException(exception, "OpenList 电影基础路径不存在");
@@ -1144,6 +1263,7 @@ public class MagnetIngestService {
     private void prepareTelevisionSeriesDownloadRoot(SeriesMagnetIngestTask task) {
         writeSeriesLog(task.getId(), "INFO", "created", "正在准备 OpenList 保存目录", task.getSavePath());
         try {
+            if (StringUtils.hasText(task.getRetryOfTaskId())) openListClient.requireEmptyAlternativeTarget(task.getSavePath());
             openListClient.ensureDirectoryReady(task.getSavePath(), targetRegistry.rootForExistingPath("TV", task.getSavePath(), cleanConfigValue(openListProperties.getTvRootPath())));
         } catch (OpenListDirectoryPrepareException exception) {
             throw mapDirectoryPrepareException(exception, "OpenList 剧集基础路径不存在");
@@ -1153,6 +1273,7 @@ public class MagnetIngestService {
 
     private void prepareAnimeSeasonDownloadRoot(SeriesMagnetIngestTask task) {
         writeSeriesLog(task.getId(), "INFO", "created", "正在准备 OpenList 动漫保存目录", task.getSavePath());
+        if (StringUtils.hasText(task.getRetryOfTaskId())) openListClient.requireEmptyAlternativeTarget(task.getSavePath());
         var binding = targetRegistry.bindingForPath("ANIME", task.getSavePath());
         if (binding.isPresent()) {
             openListClient.ensureDirectoryReady(task.getSavePath(), binding.get().rootPath());

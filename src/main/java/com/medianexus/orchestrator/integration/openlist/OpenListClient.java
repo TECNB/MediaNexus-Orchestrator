@@ -559,6 +559,17 @@ public class OpenListClient {
         }
     }
 
+    /** Alternative releases require a fresh, complete empty target; malformed listings are unknown. */
+    public void requireEmptyAlternativeTarget(String path) {
+        if (!pathExists(path)) return;
+        JsonNode data = post("fs/list", Map.of("path", normalizePath(path), "page", 1, "per_page", 0, "refresh", true));
+        JsonNode total = data.path("total");
+        JsonNode content = data.path("content");
+        if (total.isIntegralNumber() && total.canConvertToLong() && total.longValue() == 0
+                && data.has("content") && (content.isNull() || content.isArray() && content.isEmpty())) return;
+        throw new OpenListClientException("替代发布目录非空或响应不可确认，禁止覆盖或重放");
+    }
+
     /**
      * 判断路径是否存在。OpenList 以非 200 业务码表示不存在时返回 false。
      */

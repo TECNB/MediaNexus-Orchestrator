@@ -128,6 +128,18 @@ public class OfflineIngestScheduler implements AutoCloseable {
 
     public synchronized String submissionPauseReason() { return restartBlock; }
 
+    /** Automatic alternatives must wait until every lifecycle/checkpoint claim has been released. */
+    public boolean alternativeReleaseAvailable(String path, String hash) {
+        var directory = client.offlineDirectoryForPath(normalizePath(path));
+        synchronized (this) {
+            return !closed && restartBlock == null && !directory.account().equals("unknown") && !directory.rootId().isBlank()
+                    && java.util.stream.Stream.concat(waiting.stream(), claimed.stream()).noneMatch(job ->
+                            job.directory == null || hash.equalsIgnoreCase(job.hash) || directoriesConflict(directory, job.directory))
+                    && organizationRecoveryClaims.stream().noneMatch(claim -> hash.equalsIgnoreCase(claim.hash())
+                            || directoriesConflict(directory, claim.directory()));
+        }
+    }
+
     /** Retains a stopped process's organization exclusions without claiming a download slot or replaying writes. */
     public void retainOrganizationRecovery(String path, String hash) {
         retainOrganizationRecovery("", path, hash);

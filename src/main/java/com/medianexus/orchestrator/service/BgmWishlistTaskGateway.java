@@ -147,7 +147,7 @@ public class BgmWishlistTaskGateway {
                 if (StringUtils.hasText(task.getAttemptGroupId())) {
                     var latest = movies.selectOne(new LambdaQueryWrapper<MovieMagnetIngestTask>()
                             .eq(MovieMagnetIngestTask::getAttemptGroupId, task.getAttemptGroupId())
-                            .orderByDesc(MovieMagnetIngestTask::getUpdatedAt, MovieMagnetIngestTask::getCreatedAt)
+                            .orderByDesc(MovieMagnetIngestTask::getCreatedAt)
                             .orderByAsc(MovieMagnetIngestTask::getId).last("LIMIT 1"));
                     if (latest != null) task = latest;
                 }
@@ -160,7 +160,7 @@ public class BgmWishlistTaskGateway {
                 if (StringUtils.hasText(task.getAttemptGroupId())) {
                     var latest = series.selectOne(new LambdaQueryWrapper<SeriesMagnetIngestTask>()
                             .eq(SeriesMagnetIngestTask::getAttemptGroupId, task.getAttemptGroupId())
-                            .orderByDesc(SeriesMagnetIngestTask::getUpdatedAt, SeriesMagnetIngestTask::getCreatedAt)
+                            .orderByDesc(SeriesMagnetIngestTask::getCreatedAt)
                             .orderByAsc(SeriesMagnetIngestTask::getId).last("LIMIT 1"));
                     if (latest != null) task = latest;
                 }
@@ -173,7 +173,7 @@ public class BgmWishlistTaskGateway {
                 if (StringUtils.hasText(task.getAttemptGroupId())) {
                     var latest = anime.selectOne(new LambdaQueryWrapper<AnimeMagnetIngestTask>()
                             .eq(AnimeMagnetIngestTask::getAttemptGroupId, task.getAttemptGroupId())
-                            .orderByDesc(AnimeMagnetIngestTask::getUpdatedAt, AnimeMagnetIngestTask::getCreatedAt)
+                            .orderByDesc(AnimeMagnetIngestTask::getCreatedAt)
                             .orderByAsc(AnimeMagnetIngestTask::getId).last("LIMIT 1"));
                     if (latest != null) task = latest;
                 }
@@ -226,6 +226,37 @@ public class BgmWishlistTaskGateway {
             reserveChartTarget(target);
             var task = releases.ingestSelectedSeriesForOwner(seriesRequest(target, release, "SERIES"), owner);
             return new ActiveTask("SERIES", task.id(), task.status());
+        });
+    }
+
+    public boolean canRetryChart(ActiveTask previous) {
+        return previous != null && "FAILED".equals(previous.status())
+                && releases.automaticAlternative(previous.taskType(), previous.taskId()) != null;
+    }
+
+    public boolean unattemptedChartRelease(ActiveTask previous, ProwlarrReleaseItemResponse release) {
+        return releases.unattemptedAlternative(previous.taskType(), previous.taskId(), release);
+    }
+
+    /** Same target lock and unknown ledger as initial acceptance; no permission is inferred from FAILED. */
+    public ActiveTask retryChart(Target target, ActiveTask expected, ProwlarrReleaseItemResponse release, User owner) {
+        return locks.withLock("bgm-target:" + targetKey(target),
+                () -> new EligibilityRefusal(new Reason("TARGET_BUSY", "同一目录目标正在提交"), null, null), () -> {
+            ActiveTask current = previousTask(target);
+            var deletion = latestDeletion(target);
+            if (!expected.equals(current) || !canRetryChart(current) || activeTask(target) != null
+                    || deletion != null && !deletion.succeeded())
+                throw new EligibilityRefusal(new Reason("RETRY_BLOCKED", "原任务、删除或取消结清状态已变化"), null, current);
+            var check = presence.checkForAutomation(target);
+            if (!check.checkAvailable() || check.exists())
+                throw new EligibilityRefusal(new Reason("LIBRARY_UNKNOWN_OR_PRESENT", "在库检查不可用或已存在"), null, current);
+            if (!unattemptedChartRelease(current, release))
+                throw new EligibilityRefusal(new Reason("ATTEMPTED_RELEASE", "该 BTIH 已尝试"), null, current);
+            reserveChartTarget(target);
+            ActiveTask created = releases.ingestAlternativeForOwner(current.taskType(), current.taskId(), release, owner);
+            try { previousTasks.replace(targetKey(target), created); }
+            catch (RuntimeException failure) { throw new CreatedTaskRecordException(created, failure); }
+            return created;
         });
     }
 

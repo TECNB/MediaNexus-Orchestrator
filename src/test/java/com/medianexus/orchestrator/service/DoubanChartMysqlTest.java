@@ -58,6 +58,29 @@ class DoubanChartMysqlTest {
                 assertEquals(1,claimed);assertEquals(1,b.operations(ChartId.tv_hot,1,10).total());
                 assertEquals(1,mapper.scheduledOperationCount("tv_hot","0000-01-01T00:00:00","9999-01-01T00:00:00"));
                 assertEquals(0,mapper.scheduledOperationCount("tv_hot","2000-01-01T00:00:00","2000-01-02T00:00:00"));
+                for (var chart : List.of(ChartId.movie_hot_gaia, ChartId.movie_weekly_best)) {
+                    a.updateBoard(chart, old -> new Board(old.id(), old.label(), true, 1L, old.refreshStatus(),
+                            old.refreshError(), old.lastAttemptAt(), old.lastSuccessAt(), old.nextRunAt(), old.candidates()));
+                    for (var operation : a.operations(chart, 1, 20).items())
+                        a.updateRun(operation.id(), old -> new DoubanChartStore.Run(new Operation(operation.id(), chart,
+                                operation.chartLabel(), operation.triggerType(), operation.actorUserId(), operation.startedAt(), operation.updatedAt(),
+                                "SUCCEEDED", operation.entries(), operation.reason(), operation.candidateLimit()), old.scope(), true, false));
+                }
+                var subject = new Subject(999L, "Title", "Original", null, 2020, "MOVIE", null, null, 1, null, java.time.Instant.now());
+                var candidate = new Candidate(subject, true, subject.observedAt(), subject.observedAt(), 1, false, List.of(), null, null);
+                List<Future<DoubanChartStore.Run>> alternatives = new ArrayList<>();
+                for (int i=0;i<8;i++) {
+                    var store = i%2==0?a:b; var chart = i%2==0?ChartId.movie_hot_gaia:ChartId.movie_weekly_best;
+                    alternatives.add(pool.submit(() -> store.claimAlternative(chart, candidate,
+                            new BgmWishlistTaskGateway.ActiveTask("MOVIE", "same-failed-task", "FAILED"))));
+                }
+                int alternativesClaimed=0;
+                for (var future : alternatives) { var work=future.get(90,TimeUnit.SECONDS); if (work!=null) {
+                    alternativesClaimed++; assertEquals("AUTO_RETRY", b.run(work.operation().id()).operation().triggerType());
+                    assertEquals(999L, b.run(work.operation().id()).scope().get(0).subject().id());
+                }}
+                assertEquals(1, alternativesClaimed);
+                assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM douban_chart_records WHERE kind='ALTERNATIVE'", Integer.class));
             } finally {pool.shutdownNow();}
         } finally {jdbc.execute("DROP TABLE IF EXISTS douban_chart_records");}
     }
