@@ -408,6 +408,110 @@ class DoubanChartServiceTest {
         verify(f.tasks, times(1)).createChartSeries(any(), any(), any());
     }
 
+    @Test void dailyHotBoardsIncludeDroppedHistoryButKeepCurrentTopTwenty() throws Exception {
+        when(f.client.fetch(any())).thenReturn(List.of());
+        when(f.tasks.candidates(any(), anyString(), any())).thenReturn(List.of());
+        for (ChartId chart : List.of(ChartId.movie_hot_gaia, ChartId.tv_hot)) {
+            when(f.client.fetch(chart)).thenReturn(List.of(f.subject(999, chart.mediaType())));
+            f.refresh(chart);
+            when(f.client.fetch(chart)).thenReturn(List.of(f.subject(1, chart.mediaType()), f.subject(21, chart.mediaType())));
+            f.service.automation(chart, new AutoInput(true));
+        }
+        f.service.daily();
+        for (ChartId chart : List.of(ChartId.movie_hot_gaia, ChartId.tv_hot)) {
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(6);
+            while (f.store.operations(chart, 1, 10).items().isEmpty() && System.nanoTime() < deadline) Thread.sleep(10);
+            Operation done = f.await(f.store.operations(chart, 1, 10).items().get(0).id());
+            assertEquals(Set.of(1L, 999L), done.entries().stream().map(entry -> entry.item().subjectId())
+                    .collect(java.util.stream.Collectors.toSet()));
+            assertEquals("HISTORICAL_CANDIDATE", done.entries().stream().filter(entry -> entry.item().subjectId() == 999)
+                    .findFirst().orElseThrow().item().reasons().get(0).code());
+            assertEquals(20, done.candidateLimit());
+        }
+        verify(f.tasks, never()).createChartMovie(any(), any(), any());
+        verify(f.tasks, never()).createChartSeries(any(), any(), any());
+    }
+
+    @Test void missedDailyWorkCatchesUpAfterNineOnlyOnceAndNeverBackfillsPastDays() throws Exception {
+        when(f.client.fetch(any())).thenReturn(List.of());
+        when(f.clock.instant()).thenReturn(Instant.parse("2026-01-03T00:59:00Z"));
+        f.service.catchUpDaily();
+        assertTrue(f.rows.isEmpty());
+        when(f.clock.instant()).thenReturn(Instant.parse("2026-01-03T01:00:00Z"));
+        f.service.catchUpDaily();
+        f.awaitBoardRefreshes();
+        for (int i = 0; i < 12; i++) f.service.catchUpDaily();
+        f.refresh(ChartId.movie_top250);
+        assertEquals(ChartId.values().length, f.rows.keySet().stream().filter(key -> key.startsWith("daily:2026-01-03:")).count());
+        assertTrue(f.rows.keySet().stream().noneMatch(key -> key.startsWith("daily:2026-01-02:")));
+        verify(f.client, times(ChartId.values().length + 1)).fetch(any());
+        verifyNoInteractions(f.tasks);
+    }
+
+    @Test void queuedDailyWorkExpiresAtMidnightWithoutClaimingYesterday() throws Exception {
+        when(f.clock.instant()).thenReturn(Instant.parse("2026-01-03T15:59:00Z"));
+        when(f.client.fetch(ChartId.movie_hot_gaia)).thenAnswer(call -> {
+            f.entered.countDown(); assertTrue(f.release.await(5, TimeUnit.SECONDS)); return List.of();
+        });
+        f.service.refresh(ChartId.movie_hot_gaia);
+        assertTrue(f.entered.await(5, TimeUnit.SECONDS));
+        f.service.catchUpDaily();
+        when(f.clock.instant()).thenReturn(Instant.parse("2026-01-03T16:01:00Z"));
+        f.release.countDown();
+        f.refresh(ChartId.movie_top250);
+        assertTrue(f.rows.keySet().stream().noneMatch(key -> key.startsWith("daily:")));
+        verify(f.client, times(1)).fetch(ChartId.movie_hot_gaia);
+        verifyNoInteractions(f.tasks);
+    }
+
+    @Test void fiveDailyBoardsShareTasksAndDuplicateDispatchNeverCreatesAgain() throws Exception {
+        List<ChartId> enabled = List.of(ChartId.movie_hot_gaia, ChartId.tv_hot, ChartId.movie_weekly_best,
+                ChartId.tv_chinese_best_weekly, ChartId.tv_global_best_weekly);
+        when(f.client.fetch(any())).thenAnswer(call -> {
+            ChartId chart = call.getArgument(0);
+            return List.of(f.subject("MOVIE".equals(chart.mediaType()) ? 1 : 2, chart.mediaType()));
+        });
+        for (ChartId chart : enabled) f.service.automation(chart, new AutoInput(true));
+        f.service.daily();
+        for (ChartId chart : enabled) {
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(6);
+            while (f.store.operations(chart, 1, 10).items().isEmpty() && System.nanoTime() < deadline) Thread.sleep(10);
+            Operation done = f.await(f.store.operations(chart, 1, 10).items().get(0).id());
+            assertEquals("SCHEDULED", done.triggerType());
+            assertEquals(7L, done.actorUserId());
+            assertEquals("MOVIE".equals(chart.mediaType()) ? "movie-task" : "series-task", done.entries().get(0).task().taskId());
+        }
+        f.service.daily();
+        f.refresh(ChartId.movie_top250);
+        for (ChartId chart : enabled) assertEquals(1, f.store.operations(chart, 1, 10).total());
+        assertEquals(0, f.store.operations(ChartId.movie_top250, 1, 10).total());
+        assertFalse(f.store.board(ChartId.movie_top250).autoEnabled());
+        verify(f.tasks, times(1)).createChartMovie(any(), any(), eq(f.admin));
+        verify(f.tasks, times(1)).createChartSeries(any(), any(), eq(f.admin));
+        verify(f.tasks, times(2)).candidates(any(), anyString(), any());
+    }
+
+    @Test void firstDailyBoardSourceFailureDoesNotPreventRemainingFourBoards() throws Exception {
+        when(f.client.fetch(any())).thenAnswer(call -> {
+            ChartId chart = call.getArgument(0);
+            if (chart == ChartId.movie_hot_gaia) throw new IllegalStateException("isolated source failure");
+            return List.of(f.subject(chart.ordinal() + 1, chart.mediaType()));
+        });
+        List<ChartId> enabled = List.of(ChartId.movie_hot_gaia, ChartId.tv_hot, ChartId.movie_weekly_best,
+                ChartId.tv_chinese_best_weekly, ChartId.tv_global_best_weekly);
+        for (ChartId chart : enabled) f.service.automation(chart, new AutoInput(true));
+        f.service.daily();
+        for (ChartId chart : enabled) {
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(6);
+            while (f.store.operations(chart, 1, 10).items().isEmpty() && System.nanoTime() < deadline) Thread.sleep(10);
+            Operation done = f.await(f.store.operations(chart, 1, 10).items().get(0).id());
+            assertEquals(chart == ChartId.movie_hot_gaia ? "FAILED" : "SUCCEEDED", done.status());
+        }
+        verify(f.tasks, times(1)).createChartMovie(any(), any(), any());
+        verify(f.tasks, times(3)).createChartSeries(any(), any(), any());
+        assertEquals(0, f.store.operations(ChartId.movie_top250, 1, 10).total());
+    }
+
     @Test void dailyRefreshRunsWithAutomationOffAndOnlyEnabledBoardCreatesWithPersistentAdmin() throws Exception {
         CountDownLatch refreshed = new CountDownLatch(ChartId.values().length);
         when(f.client.fetch(any())).thenAnswer(call -> { refreshed.countDown(); ChartId chart = call.getArgument(0);
@@ -540,10 +644,13 @@ class DoubanChartServiceTest {
         final OfflineIngestScheduler downloads = mock(OfflineIngestScheduler.class);
         final CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
         final User admin = new User();
+        final Clock clock = mock(Clock.class);
         final DoubanChartStore store;
         final DoubanChartService service;
         Fixture() {
             admin.setId(7L); admin.setRole("ADMIN");
+            when(clock.getZone()).thenReturn(DoubanChartStore.ZONE);
+            when(clock.instant()).thenReturn(Instant.parse("2026-01-03T02:00:00Z"));
             when(auth.requireCurrentUser()).thenReturn(admin); when(auth.requireAdminUser()).thenReturn(admin);
             when(users.selectById(7L)).thenReturn(admin);
             when(transactions.getTransaction(any())).thenAnswer(call -> new SimpleTransactionStatus());
@@ -574,7 +681,7 @@ class DoubanChartServiceTest {
             when(tasks.createChartMovie(any(), any(), any())).thenReturn(new BgmWishlistTaskGateway.ActiveTask("MOVIE", "movie-task", "PENDING"));
             when(tasks.createChartSeries(any(), any(), any())).thenReturn(new BgmWishlistTaskGateway.ActiveTask("SERIES", "series-task", "PENDING"));
             store = new DoubanChartStore(mapper, json, transactions);
-            service = new DoubanChartService(store, client, eligibility, tasks, locks, auth, users, downloads);
+            service = new DoubanChartService(store, client, eligibility, tasks, locks, auth, users, downloads, clock);
         }
         void useMovieCatalog() throws Exception {
             var real = new DoubanChartEligibility(tmdb, mock(ReleaseFileTables.class), new MovieSeriesFileRenameService());

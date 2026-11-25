@@ -45,6 +45,16 @@ class DoubanChartMysqlTest {
                 List<Future<Boolean>> checks=new ArrayList<>();for(int i=0;i<8;i++){var store=i%2==0?a:b;checks.add(pool.submit(store::reserveCheck));}
                 int admitted=0;for(var future:checks)if(future.get(90,TimeUnit.SECONDS))admitted++;
                 assertEquals(1,admitted);assertEquals(1,b.counts().checked());
+                a.updateBoard(ChartId.tv_hot, old -> new Board(old.id(), old.label(), true, 1L, old.refreshStatus(),
+                        old.refreshError(), old.lastAttemptAt(), old.lastSuccessAt(), old.nextRunAt(), old.candidates()));
+                List<Future<DoubanChartStore.DailyWork>> daily=new ArrayList<>();
+                for(int i=0;i<8;i++){var store=i%2==0?a:b;daily.add(pool.submit(()->store.claimDailyWork(ChartId.tv_hot,java.time.LocalDate.of(2026,1,3))));}
+                int claimed=0;
+                for(var future:daily){var work=future.get(90,TimeUnit.SECONDS);if(work!=null){claimed++;
+                    var persisted=b.run(work.run().operation().id()).operation();
+                    assertEquals("QUEUED",persisted.status());assertEquals("SCHEDULED",persisted.triggerType());
+                    assertEquals(1L,persisted.actorUserId());assertEquals(20,persisted.candidateLimit());}}
+                assertEquals(1,claimed);assertEquals(1,b.operations(ChartId.tv_hot,1,10).total());
             } finally {pool.shutdownNow();}
         } finally {jdbc.execute("DROP TABLE IF EXISTS douban_chart_records");}
     }

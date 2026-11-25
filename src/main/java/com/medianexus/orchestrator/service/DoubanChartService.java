@@ -40,18 +40,27 @@ public class DoubanChartService {
     private final AuthService auth;
     private final UserMapper users;
     private final OfflineIngestScheduler downloads;
+    private final Clock clock;
     private final ThreadPoolExecutor executor = new ThreadPoolExecutor(1, 1, 0, TimeUnit.SECONDS,
             new ArrayBlockingQueue<>(8), runnable -> {
                 Thread thread = new Thread(runnable, "douban-chart-ingest"); thread.setDaemon(true); return thread;
             }, new ThreadPoolExecutor.AbortPolicy());
     private final Set<String> enqueued = ConcurrentHashMap.newKeySet();
+    private final java.util.concurrent.atomic.AtomicBoolean dailyEnqueued = new java.util.concurrent.atomic.AtomicBoolean();
 
+    @org.springframework.beans.factory.annotation.Autowired
     public DoubanChartService(DoubanChartStore store, DoubanChartClient client, DoubanChartEligibility eligibility,
                               BgmWishlistTaskGateway tasks, BgmWishlistSessionLocks locks, AuthService auth, UserMapper users,
                               OfflineIngestScheduler downloads) {
+        this(store, client, eligibility, tasks, locks, auth, users, downloads, Clock.system(DoubanChartStore.ZONE));
+    }
+
+    DoubanChartService(DoubanChartStore store, DoubanChartClient client, DoubanChartEligibility eligibility,
+                       BgmWishlistTaskGateway tasks, BgmWishlistSessionLocks locks, AuthService auth, UserMapper users,
+                       OfflineIngestScheduler downloads, Clock clock) {
         this.store = store; this.client = client; this.eligibility = eligibility;
         this.tasks = tasks; this.locks = locks; this.auth = auth; this.users = users;
-        this.downloads = downloads;
+        this.downloads = downloads; this.clock = clock;
     }
 
     public Overview overview() {
@@ -217,8 +226,10 @@ public class DoubanChartService {
             int candidateLimit = requestedLimit == null ? 20 : requestedLimit;
             List<Candidate> candidates = fresh.candidates();
             if (requestedLimit != null) candidates = candidates.stream()
-                    .filter(candidate -> candidate.current() && candidate.subject().rank() != null && candidate.subject().rank() <= candidateLimit)
-                    .sorted(Comparator.comparing(candidate -> candidate.subject().rank())).toList();
+                    .filter(candidate -> !candidate.current() ? "SCHEDULED".equals(initial.operation().triggerType())
+                            : candidate.subject().rank() != null && candidate.subject().rank() <= candidateLimit)
+                    .sorted(Comparator.comparing((Candidate candidate) -> !candidate.current())
+                            .thenComparing(candidate -> candidate.subject().rank(), Comparator.nullsLast(Comparator.naturalOrder()))).toList();
             else if (initial.operation().chartId().limit() > 0) candidates = candidates.stream()
                     .filter(candidate -> !candidate.current() || candidate.subject().rank() != null && candidate.subject().rank() <= 20).toList();
             List<Candidate> scope = candidates.stream().map(candidate -> candidate(candidate, candidate.subject(), candidate.current(),
@@ -431,11 +442,23 @@ public class DoubanChartService {
 
     /** 每日认领是数据库唯一记录，重复实例/重启不重复当天同榜定时动作。 */
     @Scheduled(cron = "0 0 9 * * *", zone = "Asia/Shanghai")
-    public void daily() {
+    public void daily() { dispatchDaily(LocalDate.now(clock)); }
+
+    /** 只补今天尚未认领的工作；已认领的中断/未知副作用继续走原恢复，不重放。 */
+    @Scheduled(fixedDelay = 60000, initialDelay = 60000)
+    public void catchUpDaily() {
+        ZonedDateTime now = ZonedDateTime.now(clock);
+        if (!now.toLocalTime().isBefore(RUN_TIME)) dispatchDaily(now.toLocalDate());
+    }
+
+    private void dispatchDaily(LocalDate date) {
+        if (!dailyEnqueued.compareAndSet(false, true)) return;
         try { executor.execute(() -> {
+            try {
             for (ChartId id : ChartId.values()) {
                 try {
-                    var work = store.claimDailyWork(id, LocalDate.now(DoubanChartStore.ZONE));
+                    if (!date.equals(LocalDate.now(clock))) return;
+                    var work = store.claimDailyWork(id, date);
                     if (work == null) continue;
                     if (work.run() == null) { refreshBoard(id); continue; }
                     Run run = work.run();
@@ -446,7 +469,11 @@ public class DoubanChartService {
                     });
                 } catch (RuntimeException exception) { log.warn("豆瓣榜单每日操作暂停 chart={}", id, exception); }
             }
-        }); } catch (RejectedExecutionException exception) { log.warn("豆瓣每日刷新未入队：执行器繁忙"); }
+            } finally { dailyEnqueued.set(false); }
+        }); } catch (RejectedExecutionException exception) {
+            dailyEnqueued.set(false);
+            log.warn("豆瓣每日刷新未入队：执行器繁忙，留待补查");
+        }
     }
     @EventListener(ApplicationReadyEvent.class)
     public void recover() {
@@ -461,6 +488,7 @@ public class DoubanChartService {
                     catch (Busy ignored) { /* 另一实例仍执行，不干扰其状态。 */ }
                 }
             }
+            catchUpDaily();
             executor.execute(() -> {
                 for (ChartId chart : ChartId.values()) {
                     try {
