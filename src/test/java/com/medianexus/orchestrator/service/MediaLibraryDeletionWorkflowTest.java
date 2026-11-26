@@ -52,6 +52,25 @@ class MediaLibraryDeletionWorkflowTest {
     );
 
     @Test
+    void quarantinedTaskCannotExecuteOrRetryAndOriginalRecordIsUntouched() {
+        MediaDeletionTask task = new MediaDeletionTask();
+        task.setId("isolated"); task.setStatus("RUNNING"); task.setStage("DELETING_CLOUD");
+        when(taskMapper.findNextActive()).thenReturn(task);
+        when(taskMapper.selectById("isolated")).thenReturn(task);
+        when(taskMapper.countQuarantine("isolated")).thenReturn(1);
+        workflow.executeNext();
+        assertThat(task.getStatus()).isEqualTo("RUNNING");
+        assertThat(task.getStage()).isEqualTo("DELETING_CLOUD");
+        verify(taskMapper, never()).updateById(org.mockito.ArgumentMatchers.any(MediaDeletionTask.class));
+        verifyNoInteractions(storage, mediaSourceDeletion, localStrmDeletion, embyClient);
+        assertThatThrownBy(() -> workflow.retry("isolated")).isInstanceOf(BusinessException.class)
+                .hasMessageContaining("隔离");
+        task.setStatus("FAILED");
+        assertThatThrownBy(() -> workflow.retry("isolated")).isInstanceOf(BusinessException.class)
+                .hasMessageContaining("隔离");
+    }
+
+    @Test
     void deletesUnindexedAdultFileThroughTheTaskQueue() {
         var request = new AdminAdultStorageDeletionRequest("adult-jav", "/disk/Adult/JAV/file.mp4", false, "fid", 10L);
         var target = new Entry(request.path(), false, "fid", 10);

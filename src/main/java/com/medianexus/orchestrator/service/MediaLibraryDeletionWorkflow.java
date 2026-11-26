@@ -84,6 +84,11 @@ public class MediaLibraryDeletionWorkflow {
         this.capacities = capacities;
     }
 
+    @jakarta.annotation.PostConstruct
+    void ensureQuarantineTable() {
+        taskMapper.createQuarantineTable();
+    }
+
     public List<AdminMediaSeasonResponse> listSeasons(String itemId, String library) {
         authService.requireAdminUser();
         AdminMediaLibraryScope scope = AdminMediaLibraryScope.fromRequest(library);
@@ -275,6 +280,9 @@ public class MediaLibraryDeletionWorkflow {
     public synchronized AdminMediaDeletionTaskResponse retry(String taskId) {
         authService.requireAdminUser();
         MediaDeletionTask task = requireTask(taskId);
+        if (taskMapper.countQuarantine(taskId) > 0) {
+            throw conflict("删除任务已隔离，需核实原写入结果，禁止重试");
+        }
         if (!"FAILED".equals(task.getStatus())) {
             throw new BusinessException(ErrorCode.CONFLICT, "只有失败的删除任务可以重试", HttpStatus.CONFLICT);
         }
@@ -299,7 +307,7 @@ public class MediaLibraryDeletionWorkflow {
         }
         try {
             MediaDeletionTask task = taskMapper.findNextActive();
-            if (task != null) {
+            if (task != null && taskMapper.countQuarantine(task.getId()) == 0) {
                 execute(task);
             }
         } finally {
