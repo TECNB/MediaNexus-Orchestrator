@@ -127,7 +127,7 @@ medianexus:
     dav-username: ${MEDIANEXUS_OPENLIST_DAV_USERNAME:}
     dav-password: ${MEDIANEXUS_OPENLIST_DAV_PASSWORD:}
     offline-tool: ${MEDIANEXUS_OPENLIST_OFFLINE_TOOL:PikPak}
-    ed2k-offline-tool: ${MEDIANEXUS_OPENLIST_ED2K_OFFLINE_TOOL:Thunder}
+    ed2k-offline-tool: ${MEDIANEXUS_OPENLIST_ED2K_OFFLINE_TOOL:PikPak}
     delete-policy: ${MEDIANEXUS_OPENLIST_DELETE_POLICY:delete_on_upload_succeed}
     anime-path-template: ${MEDIANEXUS_ANIME_PATH_TEMPLATE:/pikpak/Media/Anime/{themoviedbName}/Season {season}}
     movie-root-path: ${MEDIANEXUS_OPENLIST_MOVIE_ROOT_PATH:}

@@ -293,7 +293,7 @@ public class JavdbAutomationService {
                 request.minimumReviewCount() == null ? DEFAULT_MINIMUM_REVIEW_COUNT : request.minimumReviewCount(),
                 request.limitPerRanking() == null ? DEFAULT_LIMIT : request.limitPerRanking(),
                 StringUtils.hasText(request.scheduleTime()) ? request.scheduleTime() : DEFAULT_SCHEDULE_TIME,
-                TIMEZONE, "STANDARD", Year.now().getValue(), DEFAULT_TOP_LIMIT, followedActorSnapshot()
+                TIMEZONE, "STANDARD", Year.now().getValue(), DEFAULT_TOP_LIMIT, followedActorSnapshot(), "LTX_ED2K_V1"
         );
         validateConfig(config);
         if (config.enabled()) {
@@ -373,7 +373,7 @@ public class JavdbAutomationService {
                 request.limitPerRanking(), request.scheduleTime(), TIMEZONE,
                 StringUtils.hasText(request.rankingSource()) ? request.rankingSource().trim().toUpperCase(Locale.ROOT) : "STANDARD",
                 request.topYear() == null ? Year.now().getValue() : request.topYear(),
-                request.topLimit() == null ? DEFAULT_TOP_LIMIT : request.topLimit(), followedActorSnapshot()
+                request.topLimit() == null ? DEFAULT_TOP_LIMIT : request.topLimit(), followedActorSnapshot(), "LTX_ED2K_V1"
         );
     }
 
@@ -1033,6 +1033,9 @@ public class JavdbAutomationService {
     }
 
     private int magnetPriority(JavdbMagnet magnet) {
+        if (com.medianexus.orchestrator.integration.javdb.JavdbEdition.isLtx(magnet.originalName())) {
+            return 5;
+        }
         if (magnet.isCracked() && magnet.hasSubtitle()) {
             return 4;
         }
@@ -1046,10 +1049,11 @@ public class JavdbAutomationService {
     }
 
     private String selectionReason(JavdbMagnet magnet) {
-        String label = magnet.isCracked() && magnet.hasSubtitle()
+        String label = com.medianexus.orchestrator.integration.javdb.JavdbEdition.isLtx(magnet.originalName())
+                ? "LTX" : magnet.isCracked() && magnet.hasSubtitle()
                 ? "破解+中文字幕"
                 : magnet.hasSubtitle() ? "中文字幕" : magnet.isCracked() ? "破解" : "普通";
-        return "按优先级选择「" + label + "」；同级取 JAVDB 页面第一条；识别来源 filename_rule";
+        return "按优先级选择「" + label + "」；同级按体积从大到小，体积相同按 JAVDB 页面顺序；识别来源 filename_rule";
     }
 
     private String reasonFor(MergedMovie movie) {
@@ -1700,7 +1704,7 @@ public class JavdbAutomationService {
                     legacyConfig ? DEFAULT_LIMIT
                             : node.path("limitPerRanking").asInt(node.path("limit_per_ranking").asInt(DEFAULT_LIMIT)),
                     node.path("scheduleTime").asText(node.path("schedule_time").asText(DEFAULT_SCHEDULE_TIME)),
-                    TIMEZONE, "STANDARD", Year.now().getValue(), DEFAULT_TOP_LIMIT, followedActorSnapshot()
+                    TIMEZONE, "STANDARD", Year.now().getValue(), DEFAULT_TOP_LIMIT, followedActorSnapshot(), "LTX_ED2K_V1"
             );
         } catch (JsonProcessingException exception) {
             log.warn("Invalid JAVDB automation config, using defaults");
@@ -1712,7 +1716,7 @@ public class JavdbAutomationService {
         return new Config(false, true, true, true, false, false, DEFAULT_EXCLUDED_TAGS,
                 DEFAULT_MINIMUM_RATING, DEFAULT_MINIMUM_REVIEW_COUNT,
                 DEFAULT_LIMIT, DEFAULT_SCHEDULE_TIME, TIMEZONE,
-                "STANDARD", Year.now().getValue(), DEFAULT_TOP_LIMIT, followedActorSnapshot());
+                "STANDARD", Year.now().getValue(), DEFAULT_TOP_LIMIT, followedActorSnapshot(), "LTX_ED2K_V1");
     }
 
     private Config readConfigSnapshot(String raw) {
@@ -1812,7 +1816,7 @@ public class JavdbAutomationService {
                 config.excludedTags(), config.minimumRating(),
                 config.minimumReviewCount(),
                 config.limitPerRanking(), config.scheduleTime(), TIMEZONE,
-                "STANDARD", Year.now().getValue(), DEFAULT_TOP_LIMIT, config.followedActors()));
+                "STANDARD", Year.now().getValue(), DEFAULT_TOP_LIMIT, config.followedActors(), "LTX_ED2K_V1"));
     }
 
     private void ensureCanEnable() {
@@ -1870,6 +1874,11 @@ public class JavdbAutomationService {
     private void addCodes(Set<String> codes, String value) {
         if (!StringUtils.hasText(value)) {
             return;
+        }
+        if (value.regionMatches(true, 0, "ed2k://", 0, 7)) {
+            var link = com.medianexus.orchestrator.integration.openlist.Ed2kFileLink.parse(value);
+            if (link.isEmpty()) return;
+            value = link.get().filename();
         }
         Matcher matcher = CODE_PATTERN.matcher(Normalizer.normalize(value, Normalizer.Form.NFKC).toUpperCase(Locale.ROOT));
         while (matcher.find()) {
@@ -1967,7 +1976,8 @@ public class JavdbAutomationService {
             String rankingSource,
             int topYear,
             int topLimit,
-            Map<String, List<String>> followedActors
+            Map<String, List<String>> followedActors,
+            String linkSelectionPolicy
     ) {
         private Config {
             // Historical snapshots predate actor selection and must not be reused as the current policy.

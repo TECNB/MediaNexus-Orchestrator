@@ -13,6 +13,7 @@ import com.medianexus.orchestrator.dto.magnet.response.AdultMagnetIngestTaskLogL
 import com.medianexus.orchestrator.dto.magnet.response.AdultMagnetIngestTaskLogResponse;
 import com.medianexus.orchestrator.dto.magnet.response.AdultMagnetIngestTaskResponse;
 import com.medianexus.orchestrator.dto.magnet.response.AdultMagnetFailureResponse;
+import com.medianexus.orchestrator.integration.openlist.Ed2kFileLink;
 import com.medianexus.orchestrator.integration.openlist.OpenListClient;
 import com.medianexus.orchestrator.integration.openlist.OpenListClientException;
 import com.medianexus.orchestrator.integration.openlist.OpenListDirectoryPrepareException;
@@ -27,9 +28,6 @@ import com.medianexus.orchestrator.model.User;
 import com.medianexus.orchestrator.service.organization.LibraryOrganizer;
 import com.medianexus.orchestrator.service.organization.LibraryOrganizationPlan;
 import com.medianexus.orchestrator.service.settings.targets.IngestTargetRegistry;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -64,8 +62,6 @@ public class AdultMagnetIngestService {
     private static final Logger log = LoggerFactory.getLogger(AdultMagnetIngestService.class);
     private static final Pattern MAGNET_HASH_PATTERN =
             Pattern.compile("xt=urn:btih:([a-zA-Z0-9]+)", Pattern.CASE_INSENSITIVE);
-    private static final Pattern ED2K_FILE_HASH_PATTERN =
-            Pattern.compile("^ed2k://\\|file\\|[^|]+\\|\\d+\\|([a-fA-F0-9]{32})\\|", Pattern.CASE_INSENSITIVE);
     private static final Pattern DUPLICATE_NAME_SUFFIX_PATTERN = Pattern.compile("\\(\\d+\\)$");
     private static final Pattern ADULT_NUMBER_PATTERN = Pattern.compile("(?i)([A-Z0-9]{2,12}-\\d{2,10}(?:-[A-Z0-9]+)?)");
     private static final DateTimeFormatter DATE_FOLDER_FORMATTER = DateTimeFormatter.ofPattern("M.d");
@@ -570,6 +566,13 @@ public class AdultMagnetIngestService {
 
     private AdultPreparedItem prepareTempDirectory(String taskId, AdultMagnetItem item) {
         List<OpenListFileInfo> files = openListClient.findFiles(item.tempPath(), true);
+        if (isEd2kDownloadLink(item.magnet())) {
+            var declared = Ed2kFileLink.parse(item.magnet()).orElseThrow(() -> badRequest("ED2K 文件链接格式无效"));
+            if (files.size() != 1 || !declared.filename().equals(files.get(0).name())
+                    || !java.util.Objects.equals(declared.sizeBytes(), files.get(0).size())) {
+                throw badRequest("ED2K 文件名或精确字节数与声明不一致，保留现场，未执行整理");
+            }
+        }
         List<OpenListFileInfo> qualifiedFiles = new ArrayList<>();
         Map<String, List<String>> deleteNamesByPath = new LinkedHashMap<>();
         for (OpenListFileInfo file : files) {
@@ -918,6 +921,9 @@ public class AdultMagnetIngestService {
         if (!lowerCaseLink.startsWith("magnet:?") && !lowerCaseLink.startsWith("ed2k://")) {
             throw badRequest("Adult 下载链接需以 magnet:? 或 ed2k:// 开头");
         }
+        if (isEd2kDownloadLink(normalized) && Ed2kFileLink.parse(normalized).isEmpty()) {
+            throw badRequest("ED2K 文件链接格式无效");
+        }
         return normalized;
     }
 
@@ -929,11 +935,7 @@ public class AdultMagnetIngestService {
 
     private String extractAdultDownloadKey(String link) {
         if (isEd2kDownloadLink(link)) {
-            Matcher matcher = ED2K_FILE_HASH_PATTERN.matcher(link);
-            if (matcher.find()) {
-                return "ed2k:" + matcher.group(1).toLowerCase(Locale.ROOT);
-            }
-            return "ed2k:" + sha256Hex(link.toLowerCase(Locale.ROOT));
+            return Ed2kFileLink.parse(link).orElseThrow(() -> badRequest("ED2K 文件链接格式无效")).downloadKey();
         }
 
         Matcher matcher = MAGNET_HASH_PATTERN.matcher(link);
@@ -953,20 +955,6 @@ public class AdultMagnetIngestService {
             return UUID.randomUUID().toString().replace("-", "").substring(0, 8);
         }
         return compact.substring(0, Math.min(8, compact.length()));
-    }
-
-    private String sha256Hex(String value) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] hash = digest.digest(value.getBytes(StandardCharsets.UTF_8));
-            StringBuilder builder = new StringBuilder(hash.length * 2);
-            for (byte item : hash) {
-                builder.append(String.format(Locale.ROOT, "%02x", item & 0xff));
-            }
-            return builder.toString();
-        } catch (NoSuchAlgorithmException exception) {
-            throw new IllegalStateException("SHA-256 is not available", exception);
-        }
     }
 
     private boolean isQualifiedVideo(OpenListFileInfo file) {

@@ -40,6 +40,16 @@ class JavdbEditionTest {
                 .contains(new JavdbEdition("DSVR-2009", true, true));
     }
 
+    @Test
+    void ed2kUsesOnlyDecodedFileNameForIdentityAndEdition() {
+        assertThat(JavdbEdition.parse("ed2k://|file|ABC-123-LTX%2B中字.mkv|11042905835|0123456789abcdef0123456789abcdef|/"))
+                .contains(new JavdbEdition("ABC-123", true, true));
+        assertThat(JavdbEdition.parse("ed2k://|file|ABC-123-LTX.mkv|11042905835|invalid|/"))
+                .isEmpty();
+        assertThat(JavdbEdition.parse("ed2k://|file|ABC-123%2FDEF-456.mkv|123|0123456789abcdef0123456789abcdef|/"))
+                .isEmpty();
+    }
+
     @ParameterizedTest
     @NullAndEmptySource
     @ValueSource(strings = {

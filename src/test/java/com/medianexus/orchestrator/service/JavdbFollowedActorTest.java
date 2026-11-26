@@ -192,6 +192,44 @@ class JavdbFollowedActorTest {
         verifyNoInteractions(client);
     }
 
+    @Test void ltxEd2kWinsOverLargerCrackedSubtitledMagnet() {
+        String ed2k = "ed2k://|file|ABC-123-LTX.mkv|11042905835|0123456789abcdef0123456789abcdef|/";
+        var ltx = new JavdbMagnet(ed2k, "ABC-123-LTX.mkv", "ed2k:0123456789abcdef0123456789abcdef", 11042905835L,
+                false, true, List.of("LTX", "破解"), "filename_rule");
+        var subtitled = new JavdbMagnet("magnet:?xt=urn:btih:abcdef&dn=ABC-123-UC", "ABC-123-UC", "abcdef", 20000000000L,
+                true, true, List.of("破解", "中文字幕"), "filename_rule");
+        when(client.detail("https://javdb.com/v/one", "ABC-123", "cookie"))
+                .thenReturn(new JavdbMovieDetail("ABC-123", "title", "https://javdb.com/v/one",
+                        List.of(subtitled, ltx), 4.8, 200, List.of(), List.of("彩月七緒")));
+        executeDryRun();
+        assertThat(saved).singleElement().satisfies(item -> {
+            assertThat(item.getSelectedMagnet()).isEqualTo(ed2k);
+            assertThat(item.getSelectedReason()).contains("LTX", "体积");
+        });
+        verifyNoInteractions(ingest);
+    }
+
+    @Test void oldDryRunWithoutLinkSelectionPolicyIsNotReused() throws Exception {
+        Object config = ReflectionTestUtils.invokeMethod(service, "loadConfig");
+        var oldPolicy = (com.fasterxml.jackson.databind.node.ObjectNode) json.valueToTree(config);
+        oldPolicy.remove("linkSelectionPolicy");
+        var old = new JavdbAutomationRun(); old.setId("old"); old.setConfigSnapshot(json.writeValueAsString(oldPolicy));
+        when(runs.selectOne(any())).thenReturn(old);
+        Boolean reused = ReflectionTestUtils.invokeMethod(service, "executeFromLatestDryRun", new JavdbAutomationRun(), config);
+        assertThat(reused).isFalse();
+        verify(items, never()).selectList(any());
+    }
+
+    @Test void encodedEd2kActiveTaskIsDeduplicatedBeforeFetchingDetail() {
+        var task = new AdultMagnetIngestTask();
+        task.setId("active-ed2k");
+        task.setDownloadLinksJson("[\"ed2k://|file|ABC%2D123-LTX.mkv|11042905835|0123456789abcdef0123456789abcdef|/\"]");
+        when(tasks.selectList(any())).thenReturn(List.of(task));
+        executeDryRun();
+        assertThat(saved).singleElement().extracting(JavdbAutomationRunItem::getStatus).isEqualTo("ADULT_IN_PROGRESS");
+        verify(client, never()).detail(anyString(), anyString(), anyString());
+    }
+
     private void detail(Double rating, int reviews, List<String> tags, List<String> names) {
         var magnet = new JavdbMagnet("magnet:?xt=urn:btih:abcdef&dn=ABC-123", "ABC-123", "abcdef", 1000L, false, false, List.of(), "filename_rule");
         when(client.detail("https://javdb.com/v/one", "ABC-123", "cookie"))

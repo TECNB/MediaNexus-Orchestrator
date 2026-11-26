@@ -1,5 +1,6 @@
 package com.medianexus.orchestrator.integration.javdb;
 
+import com.medianexus.orchestrator.integration.openlist.Ed2kFileLink;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URLDecoder;
@@ -91,7 +92,7 @@ public class JavdbClient {
             Pattern.CASE_INSENSITIVE
     );
     private static final Pattern CRACKED_PATTERN = Pattern.compile(
-            "(?:无码|無碼|流出|破解|解密版|uncensored|(?:^|[-_\\s])(?:uc|cu|u)(?:[-_.\\s]|$))",
+            "(?:无码|無碼|流出|破解|解密版|uncensored|(?<![a-z0-9])ltx(?![a-z0-9])|(?:^|[-_\\s])(?:uc|cu|u)(?:[-_.\\s]|$))",
             Pattern.CASE_INSENSITIVE
     );
     private static final Set<String> PERIODS = Set.of("daily", "weekly", "monthly");
@@ -373,8 +374,7 @@ public class JavdbClient {
     }
 
     private List<JavdbMagnet> parseMagnets(String body) {
-        int magnetsStart = body.toLowerCase(Locale.ROOT).indexOf("magnets-content");
-        String scope = magnetsStart < 0 ? body : body.substring(magnetsStart);
+        String scope = body;
         List<JavdbMagnet> magnets = new ArrayList<>();
         Set<String> seenHashes = new HashSet<>();
         Matcher matcher = GENERIC_ANCHOR_PATTERN.matcher(scope);
@@ -385,21 +385,26 @@ public class JavdbClient {
                 magnet = attribute(attributes, CLIPBOARD_PATTERN);
             }
             magnet = cleanAttribute(magnet);
-            if (!MAGNET_PATTERN.matcher(magnet).find()) {
+            var ed2k = Ed2kFileLink.parse(magnet);
+            if (ed2k.isEmpty() && !MAGNET_PATTERN.matcher(magnet).find()) {
                 continue;
             }
-            String infohash = extractInfohash(magnet);
+            String infohash = ed2k.isPresent() ? ed2k.get().downloadKey() : extractInfohash(magnet);
             if (!StringUtils.hasText(infohash) || !seenHashes.add(infohash)) {
                 continue;
             }
-            String originalName = magnetName(magnet);
+            String originalName = ed2k.isPresent() ? ed2k.get().filename() : magnetName(magnet);
             if (!StringUtils.hasText(originalName)) {
                 originalName = textFromHtml(matcher.group(2));
             }
-            boolean hasSubtitle = SUBTITLE_PATTERN.matcher(originalName).find();
-            boolean isCracked = CRACKED_PATTERN.matcher(originalName).find();
-            Long sizeBytes = magnetSizeBytes(scope, matcher.start());
+            var edition = JavdbEdition.parse(originalName);
+            boolean hasSubtitle = edition.isPresent() ? edition.get().chineseSubtitles() : SUBTITLE_PATTERN.matcher(originalName).find();
+            boolean isCracked = edition.isPresent() ? edition.get().cracked() : CRACKED_PATTERN.matcher(originalName).find();
+            Long sizeBytes = ed2k.isPresent() ? Long.valueOf(ed2k.get().sizeBytes()) : magnetSizeBytes(scope, matcher.start());
             List<String> labels = new ArrayList<>();
+            if (JavdbEdition.isLtx(originalName)) {
+                labels.add("LTX");
+            }
             if (isCracked) {
                 labels.add("破解");
             }

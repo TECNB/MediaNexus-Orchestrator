@@ -42,7 +42,7 @@ public class OpenListProperties {
     private String offlineTool;
 
     /**
-     * OpenList ed2k 离线下载工具名称。OpenList 的 PikPak 工具不支持 ed2k。
+     * OpenList ED2K 工具名称；部署需支持 PikPak 原生 ED2K，且目标位于 PikPak 挂载下。
      */
     @NotBlank
     private String ed2kOfflineTool;

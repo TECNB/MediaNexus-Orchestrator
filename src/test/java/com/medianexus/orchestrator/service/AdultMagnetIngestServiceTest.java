@@ -110,6 +110,14 @@ class AdultMagnetIngestServiceTest {
     }
 
     @Test
+    void rejectsMalformedEd2kBeforeCreatingTask() {
+        assertThatThrownBy(() -> service.createTask(new com.medianexus.orchestrator.dto.magnet.request.AdultMagnetIngestTaskCreateRequest(
+                "JAV", List.of("ed2k://|file|ABC-123-LTX.mkv|123|invalid|/"))))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("ED2K");
+        org.mockito.Mockito.verify(taskMapper, org.mockito.Mockito.never()).insert(any(AdultMagnetIngestTask.class));
+    }
+
+    @Test
     void createsAdultRetryAsNewLinkedAttemptAndPersistsNormalizedBatch() {
         AdultMagnetIngestTask original = new AdultMagnetIngestTask();
         original.setId("adult-1");
@@ -211,6 +219,25 @@ class AdultMagnetIngestServiceTest {
                 targetPath,
                 List.of("adult-task-batch-01", "adult-task-batch-02")
         );
+    }
+
+    @Test
+    void ed2kSizeMismatchPreservesFilesBeforeAnyOrganization() throws Exception {
+        OpenListClient client = mock(OpenListClient.class);
+        when(client.findFiles("/adult/temp", true)).thenReturn(List.of(
+                new OpenListFileInfo("ABC-123-LTX.mkv", 209715199L, false, "/adult/temp")));
+        LibraryOrganizer organizer = mock(LibraryOrganizer.class);
+        AdultMagnetIngestService worker = new AdultMagnetIngestService(taskMapper, taskLogMapper, client,
+                openListProperties, new MovieSeriesFileRenameService(), organizer, authService, null,
+                objectMapper, new ControlledExecutor(), new ControlledExecutor(), IngestTargetFixtures.legacy());
+        Class<?> itemType = Class.forName(AdultMagnetIngestService.class.getName() + "$AdultMagnetItem");
+        Constructor<?> constructor = itemType.getDeclaredConstructor(int.class, String.class, String.class, String.class, String.class);
+        constructor.setAccessible(true);
+        Object item = constructor.newInstance(1, "ed2k://|file|ABC-123-LTX.mkv|209715200|0123456789abcdef0123456789abcdef|/",
+                "ed2k:0123456789abcdef0123456789abcdef", "/adult", "/adult/temp");
+        assertThatThrownBy(() -> org.springframework.test.util.ReflectionTestUtils.invokeMethod(worker, "prepareTempDirectory", "task", item))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("精确字节数", "未执行整理");
+        org.mockito.Mockito.verifyNoInteractions(organizer);
     }
 
     @Test
@@ -463,8 +490,11 @@ class AdultMagnetIngestServiceTest {
         when(client.normalizePath(anyString())).thenAnswer(call -> call.getArgument(0));
         when(client.joinPath(anyString(), anyString())).thenAnswer(call -> call.getArgument(0) + "/" + call.getArgument(1));
         when(client.offlineDirectoryForPath(anyString())).thenReturn(new OpenListClient.OfflineDirectory("account", "root", "/day"));
+        String ed2k = "ed2k://|file|video.mkv|209715200|0123456789abcdef0123456789abcdef|/";
         when(client.addOfflineDownload(anyString(), anyString(), anyString())).thenAnswer(call -> {
             if (firstPath.equals(call.getArgument(0))) return "one";
+            assertThat((String) call.getArgument(1)).isEqualTo(ed2k);
+            assertThat((String) call.getArgument(2)).isEqualTo("PikPak");
             assertThat(firstSaved.await(2, TimeUnit.SECONDS)).isTrue();
             assertThat(task.getSubmittedCount()).isEqualTo(1);
             return "two";
@@ -476,6 +506,7 @@ class AdultMagnetIngestServiceTest {
         when(client.listFiles(anyString(), any(Boolean.class))).thenAnswer(call -> target.equals(call.getArgument(0))
                 ? List.of() : List.of(new OpenListFileInfo("video.mkv", 200L * 1024 * 1024, false, call.getArgument(0))));
         openListProperties.setOfflineTool("PikPak");
+        openListProperties.setEd2kOfflineTool("PikPak");
         openListProperties.setAdultOfflineTimeout(Duration.ofSeconds(3));
         openListProperties.setPollInterval(Duration.ofMillis(5));
         List<LibraryOrganizationPlan> plans = new java.util.concurrent.CopyOnWriteArrayList<>();
@@ -489,12 +520,12 @@ class AdultMagnetIngestServiceTest {
         Constructor<?> constructor = itemType.getDeclaredConstructor(int.class, String.class, String.class, String.class, String.class);
         constructor.setAccessible(true);
         Object first = constructor.newInstance(1, "magnet:?xt=urn:btih:one", "a", target, firstPath);
-        Object second = constructor.newInstance(2, "magnet:?xt=urn:btih:two", "b", target, secondPath);
+        Object second = constructor.newInstance(2, ed2k, "ed2k:0123456789abcdef0123456789abcdef", target, secondPath);
         try (OfflineIngestScheduler scheduler = new OfflineIngestScheduler(client)) {
             org.springframework.test.util.ReflectionTestUtils.setField(worker, "offlineScheduler", scheduler);
             org.springframework.test.util.ReflectionTestUtils.invokeMethod(worker, "runTask", "batch", List.of(first, second), "/adult");
             assertThat(finished.await(3, TimeUnit.SECONDS)).isTrue();
-            assertThat(task.getOpenlistTaskIds()).contains("a=one", "b=two");
+            assertThat(task.getOpenlistTaskIds()).contains("a=one", "ed2k:0123456789abcdef0123456789abcdef=two");
             assertThat(task.getSubmittedCount()).isEqualTo(2);
             assertThat(task.getSucceededCount()).isEqualTo(2);
             assertThat(task.getFailedCount()).isZero();

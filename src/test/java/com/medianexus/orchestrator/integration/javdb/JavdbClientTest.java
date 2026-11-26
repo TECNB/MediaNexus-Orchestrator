@@ -92,6 +92,38 @@ class JavdbClientTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void detailIncludesLtxEd2kWithExactBytesAndProtocolSpecificDeduplication() throws Exception {
+        HttpClient http = mock(HttpClient.class);
+        HttpResponse<String> response = mock(HttpResponse.class);
+        when(http.<String>send(any(), any())).thenReturn(response);
+        when(response.uri()).thenReturn(URI.create("https://javdb.com/v/one"));
+        when(response.statusCode()).thenReturn(200);
+        String ed2k = "ed2k://|file|ABC-123-LTX%2BUC.mkv|11042905835|0123456789ABCDEF0123456789ABCDEF|/";
+        when(response.body()).thenReturn("""
+                <div class="panel-block"><strong>番號:</strong><span class="value">ABC-123</span></div>
+                <a href="%s">LTX 下载</a>
+                <section id="magnets-content">
+                  <a href="magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef&amp;dn=ABC-123">原版</a>
+                  <a data-clipboard-text="%s">重复</a>
+                  <a href="ed2k://|file|bad.mkv|0|0123456789abcdef0123456789abcdef|/">无效大小</a>
+                  <a href="ed2k://|file|bad.mkv|123|invalid|/">无效哈希</a>
+                </section>
+                """.formatted(ed2k, ed2k));
+
+        var candidates = new JavdbClient(http).detail("https://javdb.com/v/one", "ABC-123", "cookie").magnets();
+        assertThat(candidates).hasSize(2);
+        var ltx = candidates.get(0);
+        assertThat(ltx.magnet()).isEqualTo(ed2k);
+        assertThat(ltx.originalName()).isEqualTo("ABC-123-LTX+UC.mkv");
+        assertThat(ltx.infohash()).isEqualTo("ed2k:0123456789abcdef0123456789abcdef");
+        assertThat(ltx.sizeBytes()).isEqualTo(11042905835L);
+        assertThat(ltx.isCracked()).isTrue();
+        assertThat(ltx.hasSubtitle()).isTrue();
+        assertThat(ltx.labels()).contains("LTX", "破解", "中文字幕");
+    }
+
+    @Test
     void parsesAndDeduplicatesMagnetsWhileKeepingFilenameLabels() {
         String html = """
                 <section id="magnets-content">

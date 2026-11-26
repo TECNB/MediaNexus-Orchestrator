@@ -1,5 +1,6 @@
 package com.medianexus.orchestrator.integration.javdb;
 
+import com.medianexus.orchestrator.integration.openlist.Ed2kFileLink;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.text.Normalizer;
@@ -22,6 +23,11 @@ public record JavdbEdition(String code, boolean chineseSubtitles, boolean cracke
             "(?:中文|中字|字幕|(?<![A-Z0-9])(?:C|CH|CHS|CHT|ZH|UC|CU)(?![A-Z0-9]))");
     private static final Pattern CRACKED = Pattern.compile(
             "(?:无码|無碼|流出|破解|解密|UNCENSORED|(?<![A-Z0-9])(?:CRACKED|UC|CU|U|LTX)(?![A-Z0-9]))");
+    private static final Pattern LTX = Pattern.compile("(?<![A-Z0-9])LTX(?![A-Z0-9])", Pattern.CASE_INSENSITIVE);
+
+    public static boolean isLtx(String filename) {
+        return filename != null && LTX.matcher(Normalizer.normalize(filename, Normalizer.Form.NFKC)).find();
+    }
 
     public static Optional<JavdbEdition> parse(String magnetOrFilename) {
         if (magnetOrFilename == null || magnetOrFilename.isBlank()) {
@@ -47,6 +53,10 @@ public record JavdbEdition(String code, boolean chineseSubtitles, boolean cracke
                 return Optional.empty();
             }
             name = displayNames.iterator().next();
+        } else if (name.regionMatches(true, 0, "ed2k://", 0, 7)) {
+            var ed2k = Ed2kFileLink.parse(name);
+            if (ed2k.isEmpty()) return Optional.empty();
+            name = ed2k.get().filename();
         } else if (name.contains("://")) {
             return Optional.empty();
         }
