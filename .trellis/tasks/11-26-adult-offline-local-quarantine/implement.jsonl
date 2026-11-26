@@ -1,0 +1,2 @@
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Java 17、最小修改、定向测试"}
+{"file":".trellis/spec/backend/external-integrations.md","reason":"保留未知写入、禁止重放外部操作"}

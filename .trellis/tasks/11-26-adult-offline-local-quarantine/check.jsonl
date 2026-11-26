@@ -1,0 +1,2 @@
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"检查单文件业务差异和隔离回归"}
+{"file":".trellis/tasks/11-26-adult-offline-local-quarantine/prd.md","reason":"仅局部隔离，不含解封或LTX替换"}
