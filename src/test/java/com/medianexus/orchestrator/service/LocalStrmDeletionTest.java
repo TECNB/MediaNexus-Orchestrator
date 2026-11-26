@@ -64,5 +64,9 @@ class LocalStrmDeletionTest {
         Path link = root.resolve("linked.strm");
         Files.createSymbolicLink(link, video);
         assertThat(deletion.resolveMediaSourcePath(link.toString())).isNull();
+        Path real = Files.createDirectories(root.resolve("real"));
+        Files.writeString(real.resolve("movie.strm"), "/media/movie.mp4");
+        Files.createSymbolicLink(root.resolve("alias"), real);
+        assertThat(deletion.resolveMediaSourcePath(root.resolve("alias/movie.strm").toString())).isNull();
     }
 }

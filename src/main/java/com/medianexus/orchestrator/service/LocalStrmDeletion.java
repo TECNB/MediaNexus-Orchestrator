@@ -75,6 +75,10 @@ public class LocalStrmDeletion {
                 || !value.endsWith(".strm") || !Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
             return false;
         }
+        for (Path component = path; component.startsWith(root); component = component.getParent()) {
+            if (Files.isSymbolicLink(component)) return false;
+            if (component.equals(root)) break;
+        }
         try {
             return path.toRealPath().startsWith(root.toRealPath());
         } catch (IOException exception) {
