@@ -46,4 +46,23 @@ class LocalStrmDeletionTest {
                 .isEqualTo("http://example.test/video.mp4");
         assertThat(deletion.resolveMediaSourcePath(root.resolve("missing.strm").toString())).isNull();
     }
+
+    @Test
+    void neverReadsVideoAsTextAndRejectsOversizedOrLinkedStrm() throws Exception {
+        Path root = temporaryDirectory.resolve("STRM");
+        Files.createDirectories(root);
+        CloudDrive2Properties properties = new CloudDrive2Properties();
+        properties.setStrmPathPrefix(root.toString());
+        LocalStrmDeletion deletion = new LocalStrmDeletion(properties);
+        Path video = root.resolve("movie.mp4");
+        Files.writeString(video, "not a media-source pointer");
+        assertThat(deletion.resolveMediaSourcePath(video.toString())).isEqualTo(video.toString());
+        Path oversized = root.resolve("oversized.strm");
+        Files.writeString(oversized, "/media/movie.mp4\n" + "x".repeat(32_768));
+        assertThatThrownBy(() -> deletion.resolveMediaSourcePath(oversized.toString()))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("STRM");
+        Path link = root.resolve("linked.strm");
+        Files.createSymbolicLink(link, video);
+        assertThat(deletion.resolveMediaSourcePath(link.toString())).isNull();
+    }
 }

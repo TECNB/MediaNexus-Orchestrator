@@ -29,17 +29,18 @@ public class LocalStrmDeletion {
         if (value == null || !value.startsWith(root.toString())) {
             return value;
         }
-        Path path = Path.of(value).toAbsolutePath().normalize();
-        if (!path.startsWith(root) || !Files.isRegularFile(path)) {
-            return null;
-        }
-        try {
-            String content = Files.readString(path).lines()
+        if (!value.endsWith(".strm")) return value;
+        if (!isLocalStrm(value)) return null;
+        Path path = Path.of(value);
+        try (var input = Files.newInputStream(path, LinkOption.NOFOLLOW_LINKS)) {
+            // Read one byte beyond the limit to reject oversized pointers without loading media into the heap.
+            byte[] bytes = input.readNBytes(16_385);
+            if (bytes.length > 16_384) throw new IllegalStateException("STRM 内容超过 16 KiB，停止解析");
+            return new String(bytes, java.nio.charset.StandardCharsets.UTF_8).lines()
                     .map(String::trim)
                     .filter(line -> !line.isEmpty())
                     .findFirst()
                     .orElse(null);
-            return content;
         } catch (IOException exception) {
             return null;
         }
