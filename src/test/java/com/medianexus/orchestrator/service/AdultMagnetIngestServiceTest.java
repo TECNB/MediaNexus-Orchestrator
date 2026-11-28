@@ -222,11 +222,14 @@ class AdultMagnetIngestServiceTest {
     }
 
     @Test
-    void ed2kSizeMismatchPreservesFilesBeforeAnyOrganization() throws Exception {
+    void ed2kUsesNormalCleanupWithAdditionalFilesAndDifferentDeclaredNameOrSize() throws Exception {
         OpenListClient client = mock(OpenListClient.class);
-        when(client.findFiles("/adult/temp", true)).thenReturn(List.of(
-                new OpenListFileInfo("ABC-123-LTX.mkv", 209715199L, false, "/adult/temp")));
-        LibraryOrganizer organizer = mock(LibraryOrganizer.class);
+        var video = new OpenListFileInfo("ABC-123-LTX-restored.mkv", 209715199L, false, "/adult/temp");
+        var attachment = new OpenListFileInfo("advertisement.txt", 100L, false, "/adult/temp");
+        when(client.findFiles("/adult/temp", true)).thenReturn(List.of(video, attachment));
+        when(client.listFiles("/adult/temp", true)).thenReturn(List.of(video, attachment));
+        when(client.normalizePath(anyString())).thenAnswer(call -> call.getArgument(0));
+        var organizer = new RecordingLibraryOrganizer();
         AdultMagnetIngestService worker = new AdultMagnetIngestService(taskMapper, taskLogMapper, client,
                 openListProperties, new MovieSeriesFileRenameService(), organizer, authService, null,
                 objectMapper, new ControlledExecutor(), new ControlledExecutor(), IngestTargetFixtures.legacy());
@@ -235,9 +238,11 @@ class AdultMagnetIngestServiceTest {
         constructor.setAccessible(true);
         Object item = constructor.newInstance(1, "ed2k://|file|ABC-123-LTX.mkv|209715200|0123456789abcdef0123456789abcdef|/",
                 "ed2k:0123456789abcdef0123456789abcdef", "/adult", "/adult/temp");
-        assertThatThrownBy(() -> org.springframework.test.util.ReflectionTestUtils.invokeMethod(worker, "prepareTempDirectory", "task", item))
-                .isInstanceOf(BusinessException.class).hasMessageContaining("精确字节数", "未执行整理");
-        org.mockito.Mockito.verifyNoInteractions(organizer);
+        Object prepared = org.springframework.test.util.ReflectionTestUtils.invokeMethod(worker, "prepareTempDirectory", "task", item);
+        assertThat(prepared).isNotNull();
+        assertThat(organizer.plans).hasSize(1);
+        assertThat(organizer.plans.get(0).deletions()).extracting(LibraryOrganizationPlan.DeleteOperation::path)
+                .containsExactly("/adult/temp/advertisement.txt");
     }
 
     @Test

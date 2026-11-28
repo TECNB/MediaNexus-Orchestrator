@@ -582,13 +582,6 @@ public class AdultMagnetIngestService {
 
     private AdultPreparedItem prepareTempDirectory(String taskId, AdultMagnetItem item) {
         List<OpenListFileInfo> files = openListClient.findFiles(item.tempPath(), true);
-        if (isEd2kDownloadLink(item.magnet())) {
-            var declared = Ed2kFileLink.parse(item.magnet()).orElseThrow(() -> badRequest("ED2K 文件链接格式无效"));
-            if (files.size() != 1 || !declared.filename().equals(files.get(0).name())
-                    || !java.util.Objects.equals(declared.sizeBytes(), files.get(0).size())) {
-                throw badRequest("ED2K 文件名或精确字节数与声明不一致，保留现场，未执行整理");
-            }
-        }
         List<OpenListFileInfo> qualifiedFiles = new ArrayList<>();
         Map<String, List<String>> deleteNamesByPath = new LinkedHashMap<>();
         for (OpenListFileInfo file : files) {
