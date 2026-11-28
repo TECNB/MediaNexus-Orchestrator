@@ -69,4 +69,19 @@ class LocalStrmDeletionTest {
         Files.createSymbolicLink(root.resolve("alias"), real);
         assertThat(deletion.resolveMediaSourcePath(root.resolve("alias/movie.strm").toString())).isNull();
     }
+    @Test void organizationReadAcceptsOwnedAccountAliasButRejectsOutsideAndLinkedPointers() throws Exception {
+        Path root = Files.createDirectory(temporaryDirectory.resolve("owned")).toRealPath();
+        Path real = Files.createDirectories(root.resolve("accounts/media-b/MOVIE"));
+        Files.writeString(real.resolve("movie.strm"), "/media/movie.mp4");
+        Path alias = Files.createSymbolicLink(root.resolve("accounts/uuid"), real.getParent());
+        var properties = new CloudDrive2Properties(); properties.setStrmPathPrefix(root.toString());
+        var links = new LocalStrmDeletion(properties);
+        assertThat(links.resolveOwnedMediaSourcePath(alias.resolve("MOVIE/movie.strm").toString())).isEqualTo("/media/movie.mp4");
+        Path outside = Files.createDirectory(temporaryDirectory.resolve("outside"));
+        Files.writeString(outside.resolve("movie.strm"), "/media/other.mp4");
+        Path escape = Files.createSymbolicLink(root.resolve("escape"), outside);
+        assertThat(links.resolveOwnedMediaSourcePath(escape.resolve("movie.strm").toString())).isNull();
+        Path linked = Files.createSymbolicLink(real.resolve("linked.strm"), real.resolve("movie.strm"));
+        assertThat(links.resolveOwnedMediaSourcePath(linked.toString())).isNull();
+    }
 }

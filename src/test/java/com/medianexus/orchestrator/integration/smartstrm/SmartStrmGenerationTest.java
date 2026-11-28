@@ -203,4 +203,20 @@ class SmartStrmGenerationTest {
             assertThat(schedule.zone()).isEqualTo("${medianexus.smartstrm.sync-zone}");
         }
     }
+    @Test void allowsAccountAliasInsidePermittedRootAndNotifiesOriginalPath() throws Exception {
+        try (var f = new Fixture()) {
+            Path alias = Files.createSymbolicLink(f.root.resolve("account-uuid"), f.output);
+            f.form.put("symlink_dir", alias.toString());
+            when(f.outputs.verify(uuid, alias.toString())).thenReturn(alias);
+            doAnswer(call -> {
+                f.runs.incrementAndGet();
+                Files.createDirectories(f.output.resolve("Film"));
+                Files.writeString(f.output.resolve("Film/film.strm"), "/mount/Movies/Film/film.mp4");
+                return null;
+            }).when(f.client).run(any(ObjectNode.class));
+            f.generation.submit(uuid, f.request().put("media_dir", "/mount/Movies/Film"));
+            verify(f.emby, timeout(1000)).notifyMediaCreated(List.of(alias.resolve("Film/film.strm").toString()));
+            verify(f.client, times(1)).run(any(ObjectNode.class));
+        }
+    }
 }

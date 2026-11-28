@@ -46,6 +46,18 @@ public class LocalStrmDeletion {
         }
     }
 
+    /** 整理验收只读解析：允许根内账号目录别名，仍拒绝根外目标和指针文件符号链接。 */
+    String resolveOwnedMediaSourcePath(String value) {
+        Path path = Path.of(value);
+        if (!path.isAbsolute() || !path.equals(path.normalize()) || !path.startsWith(root)
+                || !value.endsWith(".strm") || !Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) return null;
+        try {
+            Path actual = path.toRealPath();
+            if (!actual.startsWith(root.toRealPath())) return null;
+            return resolveMediaSourcePath(actual.toString());
+        } catch (IOException unavailable) { return null; }
+    }
+
     /** A scan never follows directory symlinks or leaves the configured STRM tree. */
     List<String> strmFiles(Path directory) {
         if (!directory.startsWith(root) || !Files.isDirectory(directory, LinkOption.NOFOLLOW_LINKS)) {

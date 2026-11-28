@@ -192,8 +192,8 @@ public class SmartStrmGeneration {
             Path permitted = Path.of(properties.getPermittedOutputRoot()).toRealPath();
             Path existing = output;
             while (!Files.exists(existing, LinkOption.NOFOLLOW_LINKS)) existing = existing.getParent();
-            if (!existing.toRealPath().startsWith(permitted) || !existing.toRealPath().equals(existing))
-                throw SmartStrmClient.failure("SmartStrm 完成观察路径越界或包含符号链接");
+            if (!existing.toRealPath().startsWith(permitted))
+                throw SmartStrmClient.failure("SmartStrm 完成观察路径越界");
             if (!Files.exists(output, LinkOption.NOFOLLOW_LINKS)) return files;
             try (var walk = Files.walk(output, 32)) {
                 var entries = walk.limit(10001).toList();

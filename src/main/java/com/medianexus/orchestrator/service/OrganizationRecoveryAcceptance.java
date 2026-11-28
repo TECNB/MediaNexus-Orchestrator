@@ -185,7 +185,7 @@ public class OrganizationRecoveryAcceptance {
         Set<String> covered = new HashSet<>();
         Set<String> localPaths = new HashSet<>();
         for (String link : strm.strmFiles(local)) {
-            String cloud = map.apply(strm.resolveMediaSourcePath(link));
+            String cloud = map.apply(strm.resolveOwnedMediaSourcePath(link));
             if (expected.contains(cloud)) {
                 if (!covered.add(cloud)) throw new IllegalStateException("STRM 文件重复映射");
                 localPaths.add(link);
@@ -196,7 +196,7 @@ public class OrganizationRecoveryAcceptance {
         for (var file : payload.snapshot().files())
             expectedBytes.put(payload.snapshot().cloudPaths().get(file.finalPath()), file.bytes());
         for (String link : localPaths) {
-            String source = strm.resolveMediaSourcePath(link);
+            String source = strm.resolveOwnedMediaSourcePath(link);
             String cloud = map.apply(source);
             if (!targets.ownsMediaSourcePath(source, properties.getMediaSourcePathPrefix()))
                 throw new IllegalStateException("MEDIA_READ_PATH_OUTSIDE_TARGET");
@@ -246,7 +246,7 @@ public class OrganizationRecoveryAcceptance {
         Set<String> cloud = new HashSet<>();
         var map = targets.cloudMediaPaths(properties.getMediaSourcePathPrefix(), properties.getCloudDrivePathPrefix());
         for (String source : movie.mediaPaths()) {
-            if (paths.localPaths().contains(source)) source = strm.resolveMediaSourcePath(source);
+            if (paths.localPaths().contains(source)) source = strm.resolveOwnedMediaSourcePath(source);
             if (!targets.ownsMediaSourcePath(source, properties.getMediaSourcePathPrefix()) || !cloud.add(map.apply(source)))
                 throw new OrganizationVerificationException("EMBY_MEDIA_SOURCES_CONFLICT", true);
         }

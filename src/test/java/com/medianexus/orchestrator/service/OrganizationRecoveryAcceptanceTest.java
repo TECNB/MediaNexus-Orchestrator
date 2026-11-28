@@ -27,7 +27,7 @@ class OrganizationRecoveryAcceptanceTest {
                 "target", "B", "MOVIE", "/ingest", "uuid", "{}", "/strm", "library")));
         when(targets.cloudMediaPaths(anyString(), anyString())).thenReturn(path -> "/source/video.mkv".equals(path) ? "/cloud/video.mkv" : null);
         when(links.strmFiles(Path.of("/strm/Movie"))).thenReturn(List.of("/strm/Movie/video.strm"));
-        when(links.resolveMediaSourcePath("/strm/Movie/video.strm")).thenReturn("/source/video.mkv");
+        when(links.resolveOwnedMediaSourcePath("/strm/Movie/video.strm")).thenReturn("/source/video.mkv");
         var plan = new LibraryOrganizationPlan("/ingest/Movie", List.of(), List.of(), List.of(), Set.of("video.mkv"), Set.of());
         var snapshot = new Snapshot(plan, "mapping", Map.of("/ingest/Movie/video.mkv", "/cloud/video.mkv"),
                 List.of(new FileEvidence("/ingest/Movie/video.mkv", "/ingest/Movie/video.mkv", "/ingest/Movie/video.mkv", "official", "a".repeat(40), 100)));
@@ -52,7 +52,7 @@ class OrganizationRecoveryAcceptanceTest {
     @Test void requiresExactStrmContentAndProviderProof() {
         acceptance.verify("movie", payload);
         verify(emby).requireOrganizationIdentity("id", 1171145, null);
-        when(links.resolveMediaSourcePath(anyString())).thenReturn("/source/unrelated.mkv");
+        when(links.resolveOwnedMediaSourcePath(anyString())).thenReturn("/source/unrelated.mkv");
         assertThatThrownBy(() -> acceptance.verify("movie", payload)).hasMessageContaining("STRM");
     }
     @Test void wrongEmbyIdentityCannotCompleteOrAutoOverride() {
