@@ -112,3 +112,10 @@
 ### 7. Wrong vs Correct
 - Wrong: return the first title-qualified item and call unresolved metadata `0/12`.
 - Correct: preserve full-queue progress and unknown counts; bounded comparison may pause, but unresolved alternatives do not invalidate a separately verified current choice. Missing configuration/authentication, search failures and time/request limits have distinct outcomes.
+
+## Adult download timeout discard
+
+- Adult uses the shared scheduler's `DiscardableDownload` contract: at the configured deadline, cancel once, remove only that item's direct `adult-task-*` temporary directory, persist failure/cleanup results, then release local claims. No held-task polling or automatic replay follows this timeout path.
+- Cleanup uses a five-second total HTTP budget (cancel at most two seconds); acknowledgement is recorded as acknowledgement, not proof that every remote effect has stopped. Failure reasons remain visible. Never delete the shared date directory or already promoted successful files.
+- Movie/TV retain their existing cancellation reconciliation and organization recovery. Adult terminal historical error strings no longer rebuild directory/hash claims at startup; interrupted active writes still require separate reconciliation.
+- Adult failure checkpoint recovery recomputes the batch failed count from item states rather than incrementing again; database response loss must not repeat cleanup or double-count failures.

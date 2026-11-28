@@ -240,6 +240,42 @@ public class OpenListClient {
         return objectMapper.convertValue(data, OpenListOfflineTaskInfo.class);
     }
 
+    public OpenListOfflineTaskInfo offlineTaskInfo(String taskId, Duration requestTimeout) {
+        JsonNode data = post("task/offline_download/info?tid=" + encode(taskId), Map.of(), requestTimeout);
+        return objectMapper.convertValue(data, OpenListOfflineTaskInfo.class);
+    }
+
+    /** One cancel and one staging-directory removal; no retry or remote-stop inference. */
+    public String discardTimedOutDownload(String taskId, String targetPath, String tempPath) {
+        String parent = normalizePath(targetPath);
+        String staging = normalizePath(tempPath);
+        String name = staging.substring(staging.lastIndexOf('/') + 1);
+        if (!staging.equals(joinPath(parent, name))
+                || !name.matches("adult-task-[0-9a-f]{8}-[0-9]{2,}-[a-zA-Z0-9]{1,8}"))
+            throw new OpenListClientException("拒绝清理非下载项专属临时目录");
+        long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+        String cancel;
+        try {
+            post("task/offline_download/cancel?tid=" + encode(taskId), Map.of(), Duration.ofSeconds(2));
+            cancel = "cancel=ACKNOWLEDGED";
+        } catch (RuntimeException failure) {
+            cancel = "cancel=FAILED(" + discardFailure(failure) + ")";
+        }
+        try {
+            long remaining = deadline - System.nanoTime();
+            if (remaining <= 0) return cancel + "; cleanup=FAILED(budget exhausted); path=" + staging;
+            post("fs/remove", Map.of("dir", parent, "names", List.of(name)), Duration.ofNanos(remaining));
+            return cancel + "; cleanup=ACKNOWLEDGED; path=" + staging;
+        } catch (RuntimeException failure) {
+            return cancel + "; cleanup=FAILED(" + discardFailure(failure) + "); path=" + staging;
+        }
+    }
+
+    private String discardFailure(RuntimeException failure) {
+        String message = failure.getMessage() == null ? failure.getClass().getSimpleName() : failure.getMessage();
+        return message.replaceAll("[\\r\\n\\t]", " ").substring(0, Math.min(message.length(), 240));
+    }
+
     /**
      * 触发 OpenList 对离线下载任务执行重试。
      */
@@ -714,7 +750,11 @@ public class OpenListClient {
     }
 
     private JsonNode post(String action, Object body) {
-        JsonNode root = postRoot(action, body);
+        return post(action, body, timeout());
+    }
+
+    private JsonNode post(String action, Object body, Duration requestTimeout) {
+        JsonNode root = postRoot(action, body, requestTimeout);
         if (!isSuccess(root)) {
             log.warn(
                     "OpenList returned non-success payload action={} code={} message={}",
@@ -751,8 +791,12 @@ public class OpenListClient {
     }
 
     private JsonNode postRoot(String action, Object body) {
+        return postRoot(action, body, timeout());
+    }
+
+    private JsonNode postRoot(String action, Object body, Duration requestTimeout) {
         validateConfiguration();
-        HttpRequest request = requestBuilder(action)
+        HttpRequest request = requestBuilder(action).timeout(requestTimeout)
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(writeJson(body)))
                 .build();
@@ -801,8 +845,8 @@ public class OpenListClient {
             return objectMapper.readTree(response.body());
         } catch (HttpTimeoutException exception) {
             throw new OpenListClientException(
-                    "OpenList 请求超时: " + action + " 超过 " + timeoutHint()
-                            + "；长耗时的 PikPak/OpenList 操作可能已被客户端取消，请检查目录是否已部分完成后再重试",
+                    "OpenList 请求超时: " + action + " 超过 " + request.timeout().orElse(timeout())
+                            + "；操作结果未确认",
                     exception
             );
         } catch (IOException exception) {

@@ -64,6 +64,11 @@ public class OfflineIngestScheduler implements AutoCloseable {
         }
     }
 
+    /** A download whose isolated staging content may be discarded once its deadline expires. */
+    public interface DiscardableDownload extends Download {
+        String discard(String upstreamId);
+    }
+
     public OfflineIngestScheduler(OpenListClient client) {
         this.client = client;
         timer.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
@@ -337,7 +342,10 @@ public class OfflineIngestScheduler implements AutoCloseable {
 
     private synchronized void scheduleQuery(Job job) {
         if (!closed) {
-            timer.schedule(() -> dispatchQuery(job), job.interval.toNanos(), TimeUnit.NANOSECONDS);
+            long delay = job.interval.toNanos();
+            if (job.download instanceof DiscardableDownload)
+                delay = Math.max(0, Math.min(delay, job.timeout.toNanos() - (System.nanoTime() - job.startedAt)));
+            timer.schedule(() -> dispatchQuery(job), delay, TimeUnit.NANOSECONDS);
         }
     }
 
@@ -346,10 +354,17 @@ public class OfflineIngestScheduler implements AutoCloseable {
     }
 
     private void query(Job job) {
+        if (job.download instanceof DiscardableDownload && System.nanoTime() - job.startedAt >= job.timeout.toNanos()) {
+            cancelTimedOut(job);
+            return;
+        }
         OpenListOfflineTaskInfo snapshot;
         try (var binding = IngestStageTiming.bind(job.timingContext);
              var timing = IngestStageTiming.start("download_poll", "OpenList", null)) {
-            snapshot = client.offlineTaskInfo(job.upstreamId);
+            snapshot = job.download instanceof DiscardableDownload
+                    ? client.offlineTaskInfo(job.upstreamId, Duration.ofNanos(Math.max(1,
+                            Math.min(TimeUnit.SECONDS.toNanos(5), job.timeout.toNanos() - (System.nanoTime() - job.startedAt)))))
+                    : client.offlineTaskInfo(job.upstreamId);
             if (!job.upstreamId.equals(snapshot.id())) throw new OpenListClientException("上游任务 ID 不匹配");
             timing.finish("OBSERVED", "upstreamId=" + job.upstreamId + ";state=" + snapshot.state()
                     + ";progress=" + snapshot.progress() + ";totalBytes=" + snapshot.totalBytes()
@@ -360,6 +375,10 @@ public class OfflineIngestScheduler implements AutoCloseable {
                 log.warn("Offline query failed; retrying query only id={}", job.upstreamId);
                 scheduleQuery(job);
             }
+            return;
+        }
+        if (job.download instanceof DiscardableDownload && System.nanoTime() - job.startedAt >= job.timeout.toNanos()) {
+            cancelTimedOut(job);
             return;
         }
         Integer state = snapshot.state();
@@ -404,6 +423,13 @@ public class OfflineIngestScheduler implements AutoCloseable {
     }
 
     private void cancelTimedOut(Job job) {
+        if (job.download instanceof DiscardableDownload discardable) {
+            String result;
+            try { result = discardable.discard(job.upstreamId); }
+            catch (RuntimeException failure) { result = "cleanup=FAILED; " + failure.getMessage(); }
+            fail(job, new OpenListClientException("[DOWNLOAD_TIMEOUT] 下载超时，已结束本次尝试；" + result));
+            return;
+        }
         job.cancelRequested = true;
         try {
             client.cancelOfflineTask(job.upstreamId);

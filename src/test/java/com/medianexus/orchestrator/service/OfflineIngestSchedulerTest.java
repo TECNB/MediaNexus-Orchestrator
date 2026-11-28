@@ -323,6 +323,43 @@ class OfflineIngestSchedulerTest {
         } finally { blocked.countDown(); }
     }
 
+    @Test void discardedTimeoutReleasesBatchWithoutPollingCancellationOrReplayingCleanup() throws Exception {
+        var client = mappedClient();
+        when(client.offlineTaskInfo(eq("upstream"), any(Duration.class))).thenReturn(snapshot("upstream", 1));
+        var discarded = new java.util.concurrent.atomic.AtomicInteger();
+        var failed = new java.util.concurrent.atomic.AtomicInteger();
+        try (var scheduler = new OfflineIngestScheduler(client)) {
+            var download = new OfflineIngestScheduler.DiscardableDownload() {
+                public void prepare() { }
+                public String submit() { return "upstream"; }
+                public void submitted(String id) { }
+                public void progress(OpenListOfflineTaskInfo snapshot) { }
+                public void organize(String id) { throw new AssertionError("timed out item must not organize"); }
+                public void failed(RuntimeException failure) {
+                    failed.incrementAndGet();
+                    assertThat(failure.getMessage()).contains("DOWNLOAD_TIMEOUT", "cleanup=FAILED");
+                }
+                public void stage(String message) { }
+                public String discard(String id) {
+                    assertThat(id).isEqualTo("upstream");
+                    discarded.incrementAndGet();
+                    return "cancel=ACKNOWLEDGED; cleanup=FAILED";
+                }
+            };
+            assertThatThrownBy(() -> scheduler.enqueue("/same", "first", Duration.ofMillis(30),
+                    Duration.ofSeconds(10), download).get(2, TimeUnit.SECONDS))
+                    .hasCauseInstanceOf(com.medianexus.orchestrator.integration.openlist.OpenListClientException.class);
+            assertThat(discarded.get()).isEqualTo(1);
+            assertThat(failed.get()).isEqualTo(1);
+            assertThat(scheduler.alternativeReleaseAvailable("/same", "first")).isTrue();
+            when(client.offlineTaskInfo("next")).thenReturn(snapshot("next", 2));
+            scheduler.enqueue("/same", "next", Duration.ofSeconds(2), Duration.ofMillis(5),
+                    new DownloadStub() { public String submit() { return "next"; } }).get(2, TimeUnit.SECONDS);
+            verify(client, never()).offlineTaskInfo("upstream");
+            verify(client, never()).cancelOfflineTask(anyString());
+        }
+    }
+
     @Test
     void confirmedCancellationReleasesCapacityAndOrganizationFailureDoesNotStallQueue() throws Exception {
         OpenListClient client = mappedClient();

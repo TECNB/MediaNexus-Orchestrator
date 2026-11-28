@@ -448,8 +448,9 @@ class AdultMagnetIngestServiceTest {
         assertThat(plan.expectedTargetNames()).containsExactly("Same-Release");
     }
 
-    @Test
-    void sharedSchedulerPersistsEachIdBeforeBatchEndsAndProtectsSiblingTempDirectories() throws Exception {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void sharedSchedulerPersistsEachIdBeforeBatchEndsAndProtectsSiblingTempDirectories(boolean timeoutFirst) throws Exception {
         com.baomidou.mybatisplus.core.metadata.TableInfoHelper.initTableInfo(new org.apache.ibatis.builder.MapperBuilderAssistant(
                 new com.baomidou.mybatisplus.core.MybatisConfiguration(), ""), AdultMagnetIngestTask.class);
         String target = "/adult/JAV/day";
@@ -461,6 +462,7 @@ class AdultMagnetIngestServiceTest {
         task.setKeptCount(0); task.setDeletedCount(0);
         insertedTask.set(task);
         java.util.concurrent.CountDownLatch firstSaved = new java.util.concurrent.CountDownLatch(1);
+        var failureResponseLost = new java.util.concurrent.atomic.AtomicBoolean();
         java.util.concurrent.CountDownLatch finished = new java.util.concurrent.CountDownLatch(1);
         when(taskMapper.update(any())).thenAnswer(call -> {
             com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<?> update = call.getArgument(0);
@@ -481,6 +483,9 @@ class AdultMagnetIngestServiceTest {
                     default -> null;
                 };
                 if (property != null) org.springframework.test.util.ReflectionTestUtils.setField(task, property, value);
+            if (timeoutFirst && task.getErrorMessage() != null && task.getErrorMessage().startsWith("[DOWNLOAD_TIMEOUT]")
+                    && failureResponseLost.compareAndSet(false, true))
+                throw new org.springframework.jdbc.CannotGetJdbcConnectionException("response lost after failure saved");
             }
             if (task.getOpenlistTaskIds().contains("one")) firstSaved.countDown();
             if (List.of("SUCCEEDED", "FAILED", "PARTIAL_SUCCESS").contains(task.getStatus())) finished.countDown();
@@ -499,15 +504,17 @@ class AdultMagnetIngestServiceTest {
             assertThat(task.getSubmittedCount()).isEqualTo(1);
             return "two";
         });
-        when(client.offlineTaskInfo(anyString())).thenAnswer(call -> new com.medianexus.orchestrator.integration.openlist.OpenListOfflineTaskInfo(
-                call.getArgument(0), 2, "done", 100, 0L, null));
+        when(client.offlineTaskInfo(anyString(), any(Duration.class))).thenAnswer(call -> new com.medianexus.orchestrator.integration.openlist.OpenListOfflineTaskInfo(
+                call.getArgument(0), timeoutFirst && "one".equals(call.getArgument(0)) ? 1 : 2, "done", 100, 0L, null));
+        when(client.discardTimedOutDownload("one", target, firstPath))
+                .thenReturn("cancel=ACKNOWLEDGED; cleanup=ACKNOWLEDGED; path=" + firstPath);
         when(client.findFiles(anyString(), any(Boolean.class))).thenAnswer(call -> List.of(
                 new OpenListFileInfo("video.mkv", 200L * 1024 * 1024, false, call.getArgument(0))));
         when(client.listFiles(anyString(), any(Boolean.class))).thenAnswer(call -> target.equals(call.getArgument(0))
                 ? List.of() : List.of(new OpenListFileInfo("video.mkv", 200L * 1024 * 1024, false, call.getArgument(0))));
         openListProperties.setOfflineTool("PikPak");
         openListProperties.setEd2kOfflineTool("PikPak");
-        openListProperties.setAdultOfflineTimeout(Duration.ofSeconds(3));
+        openListProperties.setAdultOfflineTimeout(timeoutFirst ? Duration.ofMillis(200) : Duration.ofSeconds(3));
         openListProperties.setPollInterval(Duration.ofMillis(5));
         List<LibraryOrganizationPlan> plans = new java.util.concurrent.CopyOnWriteArrayList<>();
         LibraryOrganizer organizer = (plan, observer) -> plans.add(plan);
@@ -527,11 +534,17 @@ class AdultMagnetIngestServiceTest {
             assertThat(finished.await(3, TimeUnit.SECONDS)).isTrue();
             assertThat(task.getOpenlistTaskIds()).contains("a=one", "ed2k:0123456789abcdef0123456789abcdef=two");
             assertThat(task.getSubmittedCount()).isEqualTo(2);
-            assertThat(task.getSucceededCount()).isEqualTo(2);
-            assertThat(task.getFailedCount()).isZero();
-            assertThat(task.getStatus()).isEqualTo("SUCCEEDED");
+            assertThat(task.getSucceededCount()).isEqualTo(timeoutFirst ? 1 : 2);
+            assertThat(task.getFailedCount()).isEqualTo(timeoutFirst ? 1 : 0);
+            assertThat(task.getStatus()).isEqualTo(timeoutFirst ? "PARTIAL_SUCCESS" : "SUCCEEDED");
             assertThat(plans.stream().filter(plan -> plan.targetDirectory().equals(target)).toList())
-                    .hasSize(2).allSatisfy(plan -> assertThat(plan.cleanupExcludedDirectories()).contains(firstPath, secondPath));
+                    .hasSize(timeoutFirst ? 1 : 2).allSatisfy(plan -> assertThat(plan.cleanupExcludedDirectories()).contains(firstPath, secondPath));
+            if (timeoutFirst) {
+                assertThat(task.getErrorMessage()).contains("DOWNLOAD_TIMEOUT", "cleanup=ACKNOWLEDGED");
+                verify(client).discardTimedOutDownload("one", target, firstPath);
+                org.mockito.Mockito.verify(client, org.mockito.Mockito.never()).discardTimedOutDownload("two", target, secondPath);
+                assertThat(scheduler.alternativeReleaseAvailable(target, "a")).isTrue();
+            }
         }
     }
 

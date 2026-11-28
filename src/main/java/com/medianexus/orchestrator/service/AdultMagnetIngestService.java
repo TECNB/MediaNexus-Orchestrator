@@ -208,11 +208,7 @@ public class AdultMagnetIngestService {
         ensureTablesReady();
         boolean unresolved = taskMapper.selectCount(new LambdaQueryWrapper<AdultMagnetIngestTask>()
                 .in(AdultMagnetIngestTask::getStatus, List.of("SUBMITTED", "DOWNLOADING", "ORGANIZING"))) > 0;
-        for (AdultMagnetIngestTask task : taskMapper.selectList(new LambdaQueryWrapper<AdultMagnetIngestTask>()
-                .like(AdultMagnetIngestTask::getErrorMessage, "OFFLINE_UNRESOLVED"))) {
-            if (!retainFailedDownloadClaims(task)) unresolved = true;
-        }
-        if (unresolved) offlineScheduler.blockUnresolvedRestart("Adult 存在活动写入或无法确定隔离范围的任务，需先核实云端状态");
+        if (unresolved) offlineScheduler.blockUnresolvedRestart("Adult 存在重启中断的活动写入，需先核实云端状态");
         int interruptedCount = taskMapper.update(new LambdaUpdateWrapper<AdultMagnetIngestTask>()
                 .in(AdultMagnetIngestTask::getStatus, UNFINISHED_STATUSES)
                 .set(AdultMagnetIngestTask::getStatus, "INTERRUPTED")
@@ -224,35 +220,6 @@ public class AdultMagnetIngestService {
         }
     }
 
-    /** Historical failures remain unchanged; local exclusions are rebuilt from persisted identity on every start. */
-    private boolean retainFailedDownloadClaims(AdultMagnetIngestTask task) {
-        if (task.getStatus() == null || !TERMINAL_STATUSES.contains(task.getStatus()) || !StringUtils.hasText(task.getId())
-                || !StringUtils.hasText(task.getTargetPath()) || !StringUtils.hasText(task.getMagnetHashes())
-                || !StringUtils.hasText(task.getFailedMagnetsJson()) || safeInt(task.getFailedCount()) <= 0
-                || safeInt(task.getSubmittedCount()) != safeInt(task.getMagnetCount())
-                || safeInt(task.getSucceededCount()) + safeInt(task.getFailedCount()) != safeInt(task.getMagnetCount())) return false;
-        try {
-            List<AdultMagnetFailureResponse> failures = objectMapper.readValue(task.getFailedMagnetsJson(),
-                    objectMapper.getTypeFactory().constructCollectionType(List.class, AdultMagnetFailureResponse.class));
-            if (failures.size() != task.getFailedCount()) return false;
-            Set<String> declared = new HashSet<>(task.getMagnetHashes().toLowerCase(Locale.ROOT).lines().toList());
-            Set<String> hashes = new HashSet<>();
-            for (AdultMagnetFailureResponse failure : failures) {
-                String hash = extractAdultDownloadKey(normalizeAdultDownloadLink(failure.magnet()));
-                if (!hash.matches("(?i)([0-9a-f]{40}|ed2k:[0-9a-f]{32})")
-                        || !declared.contains(hash) || !hashes.add(hash)) return false;
-            }
-            var directory = openListClient.offlineDirectoryForPath(task.getTargetPath());
-            if (directory.account().equals("unknown") || directory.rootId().isBlank()) return false;
-            for (String hash : hashes) {
-                offlineScheduler.retainOrganizationRecovery("adult-offline:" + task.getId(), directory, hash);
-            }
-            return true;
-        } catch (RuntimeException | JsonProcessingException exception) {
-            log.warn("Adult unresolved task cannot be locally isolated taskId={}", task.getId());
-            return false;
-        }
-    }
 
     public AdultMagnetIngestTaskResponse createTask(AdultMagnetIngestTaskCreateRequest request) {
         ensureTablesReady();
@@ -467,7 +434,7 @@ public class AdultMagnetIngestService {
             List<OfflineIngestScheduler.DownloadRequest> requests = items.stream().map(item ->
                     new OfflineIngestScheduler.DownloadRequest(task.getTargetPath(), item.magnetHash(),
                             openListProperties.getAdultOfflineTimeout(), openListProperties.getPollInterval(),
-                            new OfflineIngestScheduler.Download() {
+                            new OfflineIngestScheduler.DiscardableDownload() {
                                 public void prepare() {
                                     prepareTargetDirectories(task, List.of(item), rootPath);
                                     updateStatus(taskId, "SUBMITTED", "submitted", null);
@@ -488,13 +455,15 @@ public class AdultMagnetIngestService {
                                     prepareCompletedItemSafely(taskId, item);
                                     promotePreparedItems(taskId, List.of(item));
                                 }
+                                public String discard(String id) {
+                                    return openListClient.discardTimedOutDownload(id, task.getTargetPath(), item.tempPath());
+                                }
                                 public void failed(RuntimeException failure) {
-                                    item.markFailed();
-                                    incrementFailed(taskId);
-                                    if (safeMessage(failure).contains("OFFLINE_UNRESOLVED")) {
-                                        updateStatus(taskId, "DOWNLOADING", "downloading", safeMessage(failure));
-                                    }
+                                    persistDownloadFailure(taskId, items, item, failure);
                                     writeLog(taskId, "ERROR", "failed", "Adult 下载链接未完成", safeMessage(failure));
+                                }
+                                public void recoverFailureCheckpoint(RuntimeException failure) {
+                                    persistDownloadFailure(taskId, items, item, failure);
                                 }
                                 public void stage(String message) { writeLog(taskId, "INFO", "scheduling", message, "index=" + item.index()); }
                             })).toList();
@@ -505,6 +474,21 @@ public class AdultMagnetIngestService {
             items.forEach(AdultMagnetItem::markFailed);
             persistFailedMagnets(taskId, items);
             markFinished(taskId, "FAILED", "failed", safeMessage(exception));
+        }
+    }
+
+    private void persistDownloadFailure(String taskId, List<AdultMagnetItem> items,
+                                        AdultMagnetItem item, RuntimeException failure) {
+        synchronized (countLock) {
+            item.markFailed();
+            var update = new LambdaUpdateWrapper<AdultMagnetIngestTask>()
+                    .eq(AdultMagnetIngestTask::getId, taskId)
+                    .set(AdultMagnetIngestTask::getFailedCount, (int) items.stream().filter(AdultMagnetItem::failed).count());
+            String message = safeMessage(failure);
+            if (message.contains("OFFLINE_UNRESOLVED") || message.startsWith("[DOWNLOAD_TIMEOUT]"))
+                update.set(AdultMagnetIngestTask::getErrorMessage, truncate(message, 1000));
+            if (taskMapper.update(update) != 1)
+                throw new IllegalStateException("Adult 下载失败检查点未保存");
         }
     }
 
@@ -1103,7 +1087,8 @@ public class AdultMagnetIngestService {
 
     private void markFinished(String taskId, String status, String stage, String errorMessage) {
         String existingError = getExistingTask(taskId).getErrorMessage();
-        if (existingError != null && existingError.contains("OFFLINE_UNRESOLVED")) errorMessage = existingError;
+        if (existingError != null && (existingError.contains("OFFLINE_UNRESOLVED")
+                || existingError.startsWith("[DOWNLOAD_TIMEOUT]"))) errorMessage = existingError;
         writeLog(
                 taskId,
                 TERMINAL_STATUSES.contains(status) && "FAILED".equals(status) ? "ERROR" : "INFO",
