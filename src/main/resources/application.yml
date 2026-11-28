@@ -59,6 +59,19 @@ medianexus:
     base-url: ${MEDIANEXUS_ANI_RSS_BASE_URL:http://example.invalid:7789}
     api-key: ${MEDIANEXUS_ANI_RSS_API_KEY:}
     timeout: ${MEDIANEXUS_ANI_RSS_TIMEOUT:10s}
+  smartstrm:
+    enabled: ${MEDIANEXUS_SMARTSTRM_ENABLED:false}
+    base-url: ${MEDIANEXUS_SMARTSTRM_BASE_URL:}
+    username: ${MEDIANEXUS_SMARTSTRM_USERNAME:}
+    password: ${MEDIANEXUS_SMARTSTRM_PASSWORD:}
+    timeout: ${MEDIANEXUS_SMARTSTRM_TIMEOUT:15s}
+    output-alias-root: ${MEDIANEXUS_SMARTSTRM_OUTPUT_ALIAS_ROOT:/srv/media/STRM/SmartStrm}
+    permitted-output-root: ${MEDIANEXUS_SMARTSTRM_PERMITTED_OUTPUT_ROOT:/srv/media/STRM}
+    completion-timeout: ${MEDIANEXUS_SMARTSTRM_COMPLETION_TIMEOUT:5m}
+    poll-interval: ${MEDIANEXUS_SMARTSTRM_POLL_INTERVAL:2s}
+    # Spring cron 含秒；每天上海时间 02:30，同步删除仅由 Java 调度。
+    sync-cron: ${MEDIANEXUS_SMARTSTRM_SYNC_CRON:0 30 2 * * *}
+    sync-zone: ${MEDIANEXUS_SMARTSTRM_SYNC_ZONE:Asia/Shanghai}
   autosymlink:
     disabled: ${MEDIANEXUS_AUTOSYMLINK_DISABLED:false}
     new-account-scan-parameters-json: ${MEDIANEXUS_AUTOSYMLINK_NEW_ACCOUNT_SCAN_PARAMETERS_JSON:}

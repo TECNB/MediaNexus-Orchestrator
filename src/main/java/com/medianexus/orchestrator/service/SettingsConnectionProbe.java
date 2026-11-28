@@ -30,11 +30,15 @@ import org.springframework.util.StringUtils;
 @Component
 public class SettingsConnectionProbe {
     private final ObjectMapper json;
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.medianexus.orchestrator.integration.smartstrm.SmartStrmAccountClient smartStrm;
+    private boolean smartEnabled() { return smartStrm != null && smartStrm.isEnabled(); }
+
     public SettingsConnectionProbe(ObjectMapper json) { this.json = json; }
 
     public Probe check(String id, Object candidate, String source) {
         try {
-            if ((candidate instanceof AutoSymlinkProperties as && as.isDisabled())
+            if ((candidate instanceof AutoSymlinkProperties as && as.isDisabled() && !smartEnabled())
                     || (candidate instanceof ProwlarrProperties prowlarr && prowlarr.isDisabled())
                     || (candidate instanceof PanSouProperties pansou && pansou.isDisabled())) {
                 return result("NOT_CONFIGURED", "此集成已明确停用，已有凭据保留", source, List.of());
@@ -194,9 +198,9 @@ public class SettingsConnectionProbe {
     }
 
     private Probe autosymlink(AutoSymlinkProperties p, String source) {
-        configured(p.getBaseUrl(), p.getCookie());
+        if (!smartEnabled()) configured(p.getBaseUrl(), p.getCookie());
         try {
-            List<Resource> resources = new AutoSymlinkAccountClient(json).readTasks(p).stream()
+            List<Resource> resources = (smartEnabled() ? smartStrm.readTasks() : new AutoSymlinkAccountClient(json).readTasks(p)).stream()
                     .map(task -> new Resource(task.uuid(), task.taskName(), Map.of("uuid", task.uuid(),
                             "taskName", task.taskName(), "source", task.mediaDir(), "output", task.symlinkDir())))
                     .toList();

@@ -212,7 +212,7 @@ class SubtitleUploadServiceTest {
                 "",
                 List.of(new PlannedSubtitleFile(entry, "Movie.ass"))
         ));
-        when(autoSymlinkRefreshService.refreshForPath("MOVIE", "/movies/Movie (2024)")).thenReturn(RefreshOutcome.submitted("task=movie, attempt=1"));
+        when(autoSymlinkRefreshService.refreshAfterSubtitleUpload("MOVIE", "/movies/Movie (2024)")).thenReturn(RefreshOutcome.submitted("task=movie, attempt=1"));
 
         uploadMovieSubtitle();
         executor.runNext();
@@ -222,7 +222,7 @@ class SubtitleUploadServiceTest {
                 eq("/movies/Movie (2024)/Movie.ass"),
                 eq(false)
         );
-        verify(autoSymlinkRefreshService).refreshForPath("MOVIE", "/movies/Movie (2024)");
+        verify(autoSymlinkRefreshService).refreshAfterSubtitleUpload("MOVIE", "/movies/Movie (2024)");
         assertThat(logs).extracting(SubtitleUploadLog::getMessage)
                 .containsSubsequence(
                         "字幕文件上传完成",
@@ -275,7 +275,7 @@ class SubtitleUploadServiceTest {
                 "",
                 List.of(new PlannedSubtitleFile(entry, "Show S01E01.ass"))
         ));
-        when(autoSymlinkRefreshService.refreshForPath("TV", "/tv/Show/Season 1")).thenReturn(
+        when(autoSymlinkRefreshService.refreshAfterSubtitleUpload("TV", "/tv/Show/Season 1")).thenReturn(
                 RefreshOutcome.submitted("task=tv, attempt=1")
         );
 
@@ -290,7 +290,7 @@ class SubtitleUploadServiceTest {
         );
         executor.runNext();
 
-        verify(autoSymlinkRefreshService).refreshForPath("TV", "/tv/Show/Season 1");
+        verify(autoSymlinkRefreshService).refreshAfterSubtitleUpload("TV", "/tv/Show/Season 1");
         verify(autoSymlinkRefreshService, never()).refreshMovie();
     }
 
