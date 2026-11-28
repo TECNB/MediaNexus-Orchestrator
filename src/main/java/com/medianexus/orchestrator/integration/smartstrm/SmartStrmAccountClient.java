@@ -126,7 +126,10 @@ public class SmartStrmAccountClient {
         ObjectNode form = (ObjectNode) config.path("legacy_form");
         ObjectNode expected = taskConfiguration(uuid, form);
         expected.fields().forEachRemaining(field -> {
-            if (!field.getValue().equals(config.get(field.getKey()))) throw SmartStrmClient.failure("SmartStrm 实际任务配置已偏离迁移表单");
+            // HTTP JSON 往返会把小整数解析成 IntNode，不能把同值 LongNode 误判为配置漂移。
+            if (!field.getValue().equals((left, right) -> left.isIntegralNumber() && right.isIntegralNumber()
+                    ? left.bigIntegerValue().compareTo(right.bigIntegerValue()) : left.equals(right) ? 0 : 1,
+                    config.get(field.getKey()))) throw SmartStrmClient.failure("SmartStrm 实际任务配置已偏离迁移表单");
         });
         JsonNode storage = storageEntries(client.storages()).stream().filter(item -> item.path("name").asText().equals(uuid))
                 .findFirst().orElseThrow(() -> SmartStrmClient.failure("SmartStrm 本地存储不存在"));

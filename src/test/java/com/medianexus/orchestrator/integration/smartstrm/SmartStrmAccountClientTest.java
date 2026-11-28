@@ -27,7 +27,7 @@ class SmartStrmAccountClientTest {
         outputs.prepare(uuid, form.path("symlink_dir").asText());
         var http = mock(SmartStrmClient.class); when(http.isEnabled()).thenReturn(true);
         var accounts = new SmartStrmAccountClient(http, outputs, json);
-        ObjectNode config = accounts.taskConfiguration(uuid, form);
+        ObjectNode config = (ObjectNode) json.readTree(json.writeValueAsString(accounts.taskConfiguration(uuid, form)));
         ObjectNode tasks = json.createObjectNode(); tasks.putObject(uuid).set("config", config);
         tasks.putObject("Quark-TV").putObject("config").put("storage", "quark");
         when(http.tasks()).thenReturn(tasks);
@@ -47,6 +47,9 @@ class SmartStrmAccountClientTest {
         assertThat(config.path("watchdog").asBoolean()).isFalse();
         assertThat(config.path("crontab").asText()).isEmpty();
         assertThat(accounts.migratedTaskIds()).containsExactly(uuid);
+        ((ObjectNode) config.path("plugins").path("scan_filter")).put("media_size_min", 101);
+        assertThatThrownBy(() -> accounts.readConfiguration(uuid)).hasMessageContaining("实际任务配置");
+        ((ObjectNode) config.path("plugins").path("scan_filter")).put("media_size_min", 100);
         config.put("storage_path", "/Different");
         assertThatThrownBy(() -> accounts.readConfiguration(uuid)).hasMessageContaining("实际任务配置");
         assertThatThrownBy(() -> legacy.readConfiguration(disabled, uuid))
