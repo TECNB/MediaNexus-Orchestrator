@@ -1124,6 +1124,8 @@ public class EmbyClient {
                     String sourcePath = text(mediaSource, "Path", "path");
                     if (StringUtils.hasText(sourcePath)) {
                         sourcePaths.add(sourcePath);
+                    } else if (params.getOrDefault("Fields", "").contains("MediaSources")) {
+                        throw new EmbyClientException("Emby 媒体源路径不完整");
                     }
                 }
             }

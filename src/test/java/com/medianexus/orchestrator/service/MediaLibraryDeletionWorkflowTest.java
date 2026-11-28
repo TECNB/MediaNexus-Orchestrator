@@ -39,6 +39,7 @@ class MediaLibraryDeletionWorkflowTest {
     private final LocalStrmDeletion localStrmDeletion = mock(LocalStrmDeletion.class);
     private final MediaDeletionTaskMapper taskMapper = mock(MediaDeletionTaskMapper.class);
     private final CloudDrive2MediaStorage storage = mock(CloudDrive2MediaStorage.class);
+    private final MediaCapacityIndex capacities = mock(MediaCapacityIndex.class);
     private final MediaLibraryDeletionWorkflow workflow = new MediaLibraryDeletionWorkflow(
             authService,
             catalogService,
@@ -48,8 +49,66 @@ class MediaLibraryDeletionWorkflowTest {
             taskMapper,
             new ObjectMapper(),
             storage,
-            mock(MediaCapacityIndex.class)
+            capacities
     );
+    @Test
+    void historicalStrmOnlyPlanFailsWithoutReadingOrDeletingFiles() {
+        var task = new MediaDeletionTask();
+        task.setId("historical"); task.setLibrary("movies"); task.setTargetLabel("整部作品");
+        task.setSourcePaths("[\"/srv/media/STRM/Movie/film.strm\"]");
+        when(taskMapper.findNextActive()).thenReturn(task);
+        workflow.executeNext();
+        assertThat(task.getStatus()).isEqualTo("FAILED");
+        assertThat(task.getErrorMessage()).contains("媒体源");
+        verifyNoInteractions(localStrmDeletion, mediaSourceDeletion, embyClient);
+    }
+
+
+    @Test
+    void deletesExactEmbySourcesWithoutReadingStrmOrInferringCloudFolder() throws Exception {
+        String link = "/srv/media/STRM/Movie/Film/Film.strm";
+        List<String> sources = List.of("/srv/media/CloudNAS/PikPak/Media/Movie/Film/Film.mkv",
+                "/srv/media/CloudNAS/PikPak-Media-B-Play/Media/Movie/Film/Film.mp4");
+        movieWithSources(link, sources);
+
+        workflow.start("movie", "movies", null);
+        var capture = ArgumentCaptor.forClass(MediaDeletionTask.class);
+        verify(taskMapper).insert(capture.capture());
+        var task = capture.getValue();
+        assertThat(new ObjectMapper().readValue(task.getSourcePaths(), String[].class))
+                .containsExactlyElementsOf(sources);
+        when(taskMapper.findNextActive()).thenReturn(task);
+        workflow.executeNext();
+
+        verify(mediaSourceDeletion).delete(sources, null);
+        verify(localStrmDeletion).delete(List.of(link));
+        verify(localStrmDeletion, never()).resolveMediaSourcePath(org.mockito.ArgumentMatchers.anyString());
+        verifyNoInteractions(capacities);
+        verify(embyClient).notifyMediaDeleted(List.of(link));
+        assertThat(task.getStatus()).isEqualTo("SUCCEEDED");
+    }
+
+    @Test
+    void refusesMissingBlankOrStrmOnlySourcesBeforeQueueing() {
+        String link = "/srv/media/STRM/Movie/Film/Film.strm";
+        for (List<String> sources : List.of(List.<String>of(), List.of(" "), List.of(link),
+                List.of("/srv/media/CloudNAS/PikPak/Media/Movie/Film.mkv", link))) {
+            movieWithSources(link, sources);
+            assertThatThrownBy(() -> workflow.start("movie", "movies", null))
+                    .isInstanceOf(BusinessException.class).hasMessageContaining("媒体源");
+        }
+        verify(taskMapper, never()).insert(org.mockito.ArgumentMatchers.any(MediaDeletionTask.class));
+        verifyNoInteractions(localStrmDeletion, mediaSourceDeletion);
+    }
+
+    private void movieWithSources(String link, List<String> sources) {
+        var library = new EmbyLibrary("movies", "Movies", List.of("/srv/media/STRM/Movie"));
+        when(catalogService.resolveLibrary(AdminMediaLibraryScope.MOVIES)).thenReturn(library);
+        when(catalogService.requireDeletableItem("movie", AdminMediaLibraryScope.MOVIES, library))
+                .thenReturn(new EmbyMediaLibraryItem("movie", "Film", "Film", "Movie", null, null, null, null));
+        when(embyClient.getMediaItemForDeletion("movies", "Movie", "movie"))
+                .thenReturn(new EmbyDeletionItem("movie", "Film", "Movie", link, null, null, sources));
+    }
 
     @Test
     void deletesUnindexedAdultFileThroughTheTaskQueue() {
@@ -107,7 +166,7 @@ class MediaLibraryDeletionWorkflowTest {
     }
 
     @Test
-    void deletesAnAdultOtherCollectionByItsSharedDirectory() throws Exception {
+    void deletesAnAdultOtherCollectionsExactEmbySources() throws Exception {
         when(storage.sourcePathMapping()).thenReturn(source -> source);
         EmbyLibrary library = new EmbyLibrary(
                 "adult-other-id", "Adult - Other", List.of("/srv/media/STRM/Adult/Other")
@@ -150,8 +209,9 @@ class MediaLibraryDeletionWorkflowTest {
         workflow.executeNext();
 
         verify(mediaSourceDeletion).delete(
-                List.of("/srv/media/CloudNAS/PikPak/Media/Adult/Other/Creator collection"),
-                "Creator collection"
+                List.of("/srv/media/CloudNAS/PikPak/Media/Adult/Other/Creator collection/one.mp4",
+                        "/srv/media/CloudNAS/PikPak/Media/Adult/Other/Creator collection/two.mp4"),
+                null
         );
         verify(localStrmDeletion).delete(List.of(
                 "/srv/media/STRM/Adult/Other/Creator collection"
@@ -161,6 +221,7 @@ class MediaLibraryDeletionWorkflowTest {
                 "/srv/media/STRM/Adult/Other/Creator collection/two.strm"
         ));
         assertThat(task.getStatus()).isEqualTo("SUCCEEDED");
+        verify(localStrmDeletion, never()).resolveMediaSourcePath(org.mockito.ArgumentMatchers.anyString());
     }
 
     @Test
@@ -214,6 +275,11 @@ class MediaLibraryDeletionWorkflowTest {
         ArgumentCaptor<MediaDeletionTask> taskCaptor = ArgumentCaptor.forClass(MediaDeletionTask.class);
         verify(taskMapper).insert(taskCaptor.capture());
         assertThat(taskCaptor.getValue().getSeasonNumber()).isEqualTo(1);
+        when(taskMapper.findNextActive()).thenReturn(taskCaptor.getValue());
+        workflow.executeNext();
+        verify(mediaSourceDeletion).delete(episode.mediaSourcePaths(), null);
+        verify(localStrmDeletion, never()).resolveMediaSourcePath(org.mockito.ArgumentMatchers.anyString());
+        assertThat(taskCaptor.getValue().getStatus()).isEqualTo("SUCCEEDED");
     }
 
     @Test

@@ -33,6 +33,29 @@ class EmbyClientTest {
         server.stop(0);
     }
 
+    @Test
+    void deletionLookupPreservesExactSourcesAndRejectsAnIncompleteVersion() {
+        AtomicReference<String> sources = new AtomicReference<>(
+                "[{\"Path\":\"/cloud/account-a/Movie/film.mkv\"},{\"Path\":\"/cloud/account-b/Movie/film.mp4\"}]");
+        server.createContext("/Items", exchange -> {
+            byte[] body = ("{\"Items\":[{\"Id\":\"movie\",\"Type\":\"Movie\",\"Path\":\"/strm/film.strm\",\"MediaSources\":"
+                    + sources.get() + "}]}").getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body); exchange.close();
+        });
+        server.start();
+        var properties = new EmbyProperties();
+        properties.setBaseUrl("http://127.0.0.1:" + server.getAddress().getPort());
+        properties.setApiKey("test"); properties.setTimeout(Duration.ofSeconds(2));
+        var client = new EmbyClient(properties, new ObjectMapper());
+        assertThat(client.getMediaItemForDeletion("library", "Movie", "movie").mediaSourcePaths())
+                .containsExactly("/cloud/account-a/Movie/film.mkv", "/cloud/account-b/Movie/film.mp4");
+        sources.set("[{\"Path\":\"/cloud/account-a/Movie/film.mkv\"},{}]");
+        org.assertj.core.api.Assertions.assertThatThrownBy(
+                () -> client.getMediaItemForDeletion("library", "Movie", "movie"))
+                .isInstanceOf(EmbyClientException.class).hasMessageContaining("媒体源");
+    }
+
     @Test void organizationIdentityUsesItemsIdsContractAndRejectsWrongProvider() {
         AtomicReference<String> provider = new AtomicReference<>("1171145");
         server.createContext("/Items", exchange -> {

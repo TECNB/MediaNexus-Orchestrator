@@ -12,7 +12,6 @@ import com.medianexus.orchestrator.integration.clouddrive.CloudDrive2ClientExcep
 import com.medianexus.orchestrator.integration.clouddrive.CloudDrive2MediaStorage;
 import com.medianexus.orchestrator.integration.clouddrive.CloudDrive2MediaStorage.Entry;
 import com.medianexus.orchestrator.integration.emby.EmbyClient;
-import com.medianexus.orchestrator.integration.emby.EmbyClientException;
 import com.medianexus.orchestrator.integration.emby.EmbyDeletionItem;
 import com.medianexus.orchestrator.integration.emby.EmbyLibrary;
 import com.medianexus.orchestrator.integration.emby.EmbyMediaLibraryItem;
@@ -331,31 +330,18 @@ public class MediaLibraryDeletionWorkflow {
 
     private void executeEmbyTask(MediaDeletionTask task) {
         saveStage(task, "DELETING_CLOUD");
-        List<String> sourcePaths = resolveMediaSourcePaths(read(task.getSourcePaths()));
+        List<String> sourcePaths = read(task.getSourcePaths());
+        if (!sourcePaths.isEmpty()) sourcePaths = embyMediaSourcePaths(sourcePaths);
         List<String> strmPaths = read(task.getStrmPaths());
-        List<String> sourceDeletionTargets = sourcePaths;
         List<String> strmDeletionTargets = strmPaths;
         if (isCollectionTask(task)) {
-            sourceDeletionTargets = collectionDeletionTargets(task.getTitle(), sourcePaths);
             strmDeletionTargets = collectionDeletionTargets(task.getTitle(), strmPaths);
         }
         AdminMediaLibraryScope scope = AdminMediaLibraryScope.fromRequest(task.getLibrary());
-        boolean wholeWork = task.getSeasonId() == null
-                && scope != AdminMediaLibraryScope.ADULT_OTHER && scope != AdminMediaLibraryScope.ADULT_JAV;
-        if (wholeWork && !sourcePaths.isEmpty() && !strmPaths.isEmpty()) {
-            try {
-                EmbyLibrary library = catalogService.resolveLibrary(scope);
-                String folder = capacities.confirmedWorkFolder(scope, library, strmPaths.get(strmPaths.size() - 1),
-                        sourcePaths, strmPaths);
-                if (folder != null) sourceDeletionTargets = List.of(folder);
-            } catch (EmbyClientException ignored) {
-                // The stored exact files are still valid when the library cannot confirm a folder.
-            }
-        }
-        mediaSourceDeletion.delete(sourceDeletionTargets, wholeWork ? null : sourceDirectoryName(task));
+        mediaSourceDeletion.delete(sourcePaths, null);
         if (scope == AdminMediaLibraryScope.ADULT_OTHER || scope == AdminMediaLibraryScope.ADULT_JAV) {
             Function<String, String> mapping = storage.sourcePathMapping();
-            capacities.invalidate(sourceDeletionTargets.stream().map(mapping).filter(java.util.Objects::nonNull).toList());
+            capacities.invalidate(sourcePaths.stream().map(mapping).filter(java.util.Objects::nonNull).toList());
         }
 
         saveStage(task, "CLEANING_STRM");
@@ -471,7 +457,7 @@ public class MediaLibraryDeletionWorkflow {
             throw new BusinessException(ErrorCode.NOT_FOUND, "未找到可删除的媒体文件", HttpStatus.NOT_FOUND);
         }
         requireBelowLibraryRoot(deletionItem.path(), library);
-            List<String> sources = resolveMediaSourcePaths(deletionItem.mediaSourcePaths());
+            List<String> sources = embyMediaSourcePaths(deletionItem.mediaSourcePaths());
             requirePaths(sources, List.of(deletionItem.path()));
             return new DeletionPlan(
                 null, null, "整部作品",
@@ -500,11 +486,11 @@ public class MediaLibraryDeletionWorkflow {
         for (EmbyDeletionItem member : members) {
             requireBelowLibraryRoot(member.path(), library);
             requirePaths(member.mediaSourcePaths(), List.of(member.path()));
-            sources.addAll(member.mediaSourcePaths());
+            sources.addAll(embyMediaSourcePaths(member.mediaSourcePaths()));
             strmPaths.add(member.path());
             embyIds.add(member.id());
         }
-            List<String> resolvedSources = resolveMediaSourcePaths(List.copyOf(sources));
+            List<String> resolvedSources = List.copyOf(sources);
             requirePaths(resolvedSources, List.copyOf(strmPaths));
             return new DeletionPlan(
                 null, null, COLLECTION_TARGET_LABEL,
@@ -581,7 +567,7 @@ public class MediaLibraryDeletionWorkflow {
             embyIds.add(season.id());
             for (EmbyDeletionItem episode : episodes) {
                 requireBelow(episode.path(), seasonPath, "剧集 STRM 路径不在季度目录内");
-                sources.addAll(resolveMediaSourcePaths(episode.mediaSourcePaths()));
+                sources.addAll(embyMediaSourcePaths(episode.mediaSourcePaths()));
                 strmPaths.add(episode.path());
                 embyIds.add(episode.id());
             }
@@ -590,7 +576,7 @@ public class MediaLibraryDeletionWorkflow {
             strmPaths.add(seriesItem.path());
             embyIds.add(series.id());
         }
-        List<String> resolvedSources = resolveMediaSourcePaths(List.copyOf(sources));
+        List<String> resolvedSources = List.copyOf(sources);
         requirePaths(resolvedSources, List.copyOf(strmPaths));
         EmbyDeletionItem selectedSeason = StringUtils.hasText(seasonId) ? targets.get(0) : null;
         return new DeletionPlan(
@@ -619,6 +605,15 @@ public class MediaLibraryDeletionWorkflow {
             }
             throw new BusinessException(ErrorCode.CONFLICT, "无法隔离目标季度文件，未创建删除任务", HttpStatus.CONFLICT);
         }
+    }
+
+    /** Emby already exposes the real source; local STRM files are cleanup targets, never source pointers here. */
+    private List<String> embyMediaSourcePaths(List<String> paths) {
+        if (paths == null || paths.isEmpty() || paths.stream().anyMatch(path -> !StringUtils.hasText(path)
+                || path.startsWith("/") && path.toLowerCase(java.util.Locale.ROOT).endsWith(".strm"))) {
+            throw conflict("Emby 未返回完整的真实媒体源路径，无法创建或执行删除任务");
+        }
+        return paths.stream().distinct().toList();
     }
 
     private List<String> resolveMediaSourcePaths(List<String> paths) {
@@ -671,13 +666,6 @@ public class MediaLibraryDeletionWorkflow {
     private boolean isCollectionTask(MediaDeletionTask task) {
         return AdminMediaLibraryScope.ADULT_OTHER.requestValue().equals(task.getLibrary())
                 && COLLECTION_TARGET_LABEL.equals(task.getTargetLabel());
-    }
-
-    private String sourceDirectoryName(MediaDeletionTask task) {
-        if (task.getBgmTargetKey() != null) return null;
-        return task.getSeasonNumber() == null
-                ? task.getTitle()
-                : "Season %02d".formatted(task.getSeasonNumber());
     }
 
     private void saveStage(MediaDeletionTask task, String stage) {

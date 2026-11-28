@@ -14,6 +14,19 @@ import org.springframework.beans.factory.ObjectProvider;
 class MediaSourceDeletionTest {
 
     @Test
+    void routesQuarkSourcesWithoutRequestingTheirParentDirectoryDeletion() {
+        @SuppressWarnings("unchecked")
+        ObjectProvider<CloudDrive2MediaDeletion> cloudDrive = mock(ObjectProvider.class);
+        QuarkMediaDeletion quark = mock(QuarkMediaDeletion.class);
+        MediaSourceDeletion deletion = new MediaSourceDeletion(cloudDrive, quark);
+        String source = "http://host/smartstrm_fid/QuarkTV/8a98133a4d99445096bf722f8c628dd1/TV/01.mp4";
+        when(quark.supports(source)).thenReturn(true);
+        deletion.delete(List.of(source), null);
+        verify(quark).deleteMediaSourcePaths(List.of(source), null);
+        verify(cloudDrive, never()).getIfAvailable();
+    }
+
+    @Test
     void routesSmartStrmQuarkSourcesWithoutCallingCloudDrive() {
         @SuppressWarnings("unchecked")
         ObjectProvider<CloudDrive2MediaDeletion> cloudDrive = mock(ObjectProvider.class);
