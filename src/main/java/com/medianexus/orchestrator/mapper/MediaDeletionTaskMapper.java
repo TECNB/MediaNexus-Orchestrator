@@ -39,18 +39,6 @@ public interface MediaDeletionTaskMapper extends BaseMapper<MediaDeletionTask> {
             """)
     void createTableIfNotExists();
 
-    @Update("""
-            CREATE TABLE IF NOT EXISTS media_deletion_quarantine (
-                task_id VARCHAR(36) NOT NULL PRIMARY KEY,
-                reason VARCHAR(1024) NOT NULL,
-                original_task_json LONGTEXT NOT NULL,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            """)
-    void createQuarantineTable();
-
-    @Select("SELECT COUNT(*) FROM media_deletion_quarantine WHERE task_id=#{taskId}")
-    int countQuarantine(@Param("taskId") String taskId);
     @Select("""
             SELECT COUNT(*) FROM information_schema.columns
             WHERE table_schema = DATABASE() AND table_name = 'media_deletion_tasks' AND column_name = 'bgm_target_key'
@@ -78,27 +66,20 @@ public interface MediaDeletionTaskMapper extends BaseMapper<MediaDeletionTask> {
     List<MediaDeletionTask> listRecent();
 
     @Select("""
-            SELECT t.* FROM media_deletion_tasks t
-            WHERE t.status IN ('PENDING', 'RUNNING')
-              AND NOT EXISTS (SELECT 1 FROM media_deletion_quarantine q WHERE q.task_id=t.id)
-            ORDER BY t.created_at ASC
+            SELECT * FROM media_deletion_tasks
+            WHERE status IN ('PENDING', 'RUNNING')
+            ORDER BY created_at ASC
             LIMIT 1
             """)
     MediaDeletionTask findNextActive();
 
-    // Quarantined tasks retain their path exclusions even though they are never dispatched.
-    @Select("""
-            SELECT t.* FROM media_deletion_tasks t
-            WHERE t.status IN ('PENDING', 'RUNNING')
-               OR EXISTS (SELECT 1 FROM media_deletion_quarantine q WHERE q.task_id=t.id)
-            """)
+    @Select("SELECT * FROM media_deletion_tasks WHERE status IN ('PENDING', 'RUNNING')")
     List<MediaDeletionTask> listActive();
 
     @Select("""
             SELECT COUNT(*) FROM media_deletion_tasks
             WHERE (item_id = #{itemId} OR season_id = #{itemId})
-              AND (status IN ('PENDING', 'RUNNING')
-                   OR EXISTS (SELECT 1 FROM media_deletion_quarantine q WHERE q.task_id=media_deletion_tasks.id))
+              AND status IN ('PENDING', 'RUNNING')
             """)
     int countActiveTarget(@Param("itemId") String itemId);
 
