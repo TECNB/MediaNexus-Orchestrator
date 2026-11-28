@@ -36,6 +36,17 @@ public class AutoSymlinkAccountClient {
             "backup_scheduled", "cloud_checker");
     private final ObjectMapper json;
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.medianexus.orchestrator.integration.smartstrm.SmartStrmAccountClient smartStrm;
+    public boolean isSmartStrmEnabled() { return smartStrm != null && smartStrm.isEnabled(); }
+
+    private <T> T smartAccountOperation(java.util.function.Supplier<T> operation) {
+        try { return operation.get(); }
+        catch (com.medianexus.orchestrator.integration.autosymlink.AutoSymlinkClientException failure) {
+            throw OnboardingHttp.failure(failure.getMessage());
+        }
+    }
+
     public AutoSymlinkAccountClient(ObjectMapper json) { this.json = json; }
 
     public record TaskView(String uuid, String taskName, String mediaDir, String symlinkDir) {}
@@ -62,6 +73,7 @@ public class AutoSymlinkAccountClient {
     }
 
     public List<TaskView> readTasks(AutoSymlinkProperties connection) {
+        if (isSmartStrmEnabled()) return smartAccountOperation(smartStrm::readTasks);
         OnboardingHttp http = http(connection);
         List<TaskView> tasks = new ArrayList<>();
         for (String uuid : taskIds(http.readText("/"))) {
@@ -73,6 +85,7 @@ public class AutoSymlinkAccountClient {
 
     /** 目录选择器在 AS 命名空间读取父目录和目录自身，不能用后端 Files.exists 代替。 */
     public void verifyReadableDirectory(AutoSymlinkProperties connection, String path) {
+        if (isSmartStrmEnabled()) { smartAccountOperation(() -> { smartStrm.verifyReadableDirectory(path); return null; }); return; }
         OnboardingHttp http = http(connection);
         String parent = path.substring(0, path.lastIndexOf('/'));
         JsonNode siblings = directoryChildren(http, parent.isEmpty() ? "/" : parent);
@@ -96,11 +109,13 @@ public class AutoSymlinkAccountClient {
 
     /** 仅在服务端使用；完整配置可能含 cloud_url/sign_file_url，禁止直接作为管理响应。 */
     public ObjectNode readConfiguration(AutoSymlinkProperties connection, String uuid) {
+        if (isSmartStrmEnabled()) return smartAccountOperation(() -> smartStrm.readConfiguration(uuid));
         requireUuid(uuid);
         return readConfiguration(http(connection), uuid);
     }
 
     public String createAndReadUuid(AutoSymlinkProperties connection, ObjectNode protectedConfiguration) {
+        if (isSmartStrmEnabled()) return smartAccountOperation(() -> smartStrm.createAndReadUuid(configurationFields(protectedConfiguration)));
         OnboardingHttp http = http(connection);
         JsonNode required = http.read("/openapi.json").path("components").path("schemas").path("SyncConfigFormData").path("required");
         Set<String> actualRequired = new LinkedHashSet<>();
@@ -121,6 +136,7 @@ public class AutoSymlinkAccountClient {
     }
 
     public Optional<String> findCreatedUuid(AutoSymlinkProperties connection, ObjectNode protectedConfiguration) {
+        if (isSmartStrmEnabled()) return smartAccountOperation(() -> smartStrm.findCreatedUuid(configurationFields(protectedConfiguration)));
         return find(http(connection), configurationFields(protectedConfiguration));
     }
 

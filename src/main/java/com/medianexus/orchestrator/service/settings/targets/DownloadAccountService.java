@@ -133,7 +133,7 @@ public class DownloadAccountService {
 
     /** 显式部署映射是既有职责契约；读回只确认该映射与现有资源一致，不按显示名推断。 */
     private AdoptionInspection inspectExistingTarget(String id, String name, Connections c) {
-        if (c.as().isDisabled()) throw conflict("AutoSymlink 已停用，无法核对主号任务");
+        if (c.as().isDisabled() && !as.isSmartStrmEnabled()) throw conflict("AutoSymlink 已停用，无法核对主号任务");
         String ingest = IngestTargetRegistry.normalizePath(c.cd2().getIngestPathPrefix());
         String cloud = IngestTargetRegistry.normalizePath(c.cd2().getCloudDrivePathPrefix());
         String source = IngestTargetRegistry.normalizePath(c.cd2().getMediaSourcePathPrefix());
@@ -270,7 +270,7 @@ public class DownloadAccountService {
             if (cloud.substring(1).contains("/")) {
                 throw invalid("CD2 云盘映射必须是直接根目录；媒体子目录请在类别路径中设置");
             }
-            if (c.as().isDisabled()) { issues.add(new Issue("AS_DISABLED", "AS_BINDINGS", null, "AutoSymlink 已停用，请启用并生效后重新预览")); }
+            if (c.as().isDisabled() && !as.isSmartStrmEnabled()) { issues.add(new Issue("AS_DISABLED", "AS_BINDINGS", null, "AutoSymlink 已停用，请启用并生效后重新预览")); }
             if (!org.springframework.util.StringUtils.hasText(c.openList().getDavUsername())
                     || !org.springframework.util.StringUtils.hasText(c.openList().getDavPassword())) {
                 issues.add(new Issue("DAV_AUTHENTICATION_REQUIRED", "CD2_CLOUD", null, "请配置独立 DAV 用户名和密码；不使用管理 Token 代替"));

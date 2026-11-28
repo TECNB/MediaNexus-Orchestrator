@@ -545,7 +545,7 @@ public class SubtitleUploadService {
     private void refreshAutoSymlink(String uploadId, MediaSubtitlePlan mediaPlan) {
         try {
             writeLog(uploadId, "INFO", "refreshing_as", "正在触发 AutoSymlink 刷新", null);
-            AutoSymlinkRefreshService.RefreshOutcome outcome = autoSymlinkRefreshService.refreshForPath(
+            AutoSymlinkRefreshService.RefreshOutcome outcome = autoSymlinkRefreshService.refreshAfterSubtitleUpload(
                     "SERIES".equals(mediaPlan.mediaType()) ? "TV" : "MOVIE", mediaPlan.targetPath());
             String level = outcome.status() == AutoSymlinkRefreshService.Status.SUBMITTED ? "INFO" : "WARN";
             writeLog(uploadId, level, "refreshing_as", outcome.message(), outcome.detail());

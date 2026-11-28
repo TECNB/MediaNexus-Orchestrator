@@ -101,7 +101,7 @@ public class OnboardingExecutor implements AutoCloseable {
                 if(payload.hasNonNull("playbackCloudPath") && !payload.path("nativeDav").isObject()){
                     throw conflict("请先补齐 PikPak 官方 WebDAV 授权");
                 }
-                if(symlink.isDisabled()){throw conflict("AutoSymlink 已停用，不能执行接入");}
+                if(symlink.isDisabled() && !as.isSmartStrmEnabled()){throw conflict("AutoSymlink 已停用，不能执行接入");}
                 perform("OPENLIST_STORAGE",null,() -> {
                     storage=openList.createAndRead(ol,plan.targetId(),object("openListStorage"));
                     return awaitHealthyStorage();

@@ -123,7 +123,60 @@ class AutoSymlinkRefreshServiceTest {
                 .refreshMountedDirectory(connection, "/mount/old/Movies/Other (2026)");
         assertThat(service.refreshForPath("MOVIE", "/old/Movies/Other (2026)").status())
                 .isEqualTo(AutoSymlinkRefreshService.Status.FAILED);
+        org.mockito.Mockito.verify(client, org.mockito.Mockito.atLeastOnce()).isSmartStrmEnabled();
         org.mockito.Mockito.verifyNoMoreInteractions(client);
+    }
+
+    @Test void smartRefreshUsesLocalSubdirectoryWithoutAsCredentialsAndDoesNotReplayUnknownWrite() {
+        var properties = completeProperties(); properties.setBaseUrl(""); properties.setCookie(""); properties.setDisabled(true); properties.setMaxAttempts(3);
+        var client = org.mockito.Mockito.mock(AutoSymlinkClient.class);
+        org.mockito.Mockito.when(client.isSmartStrmEnabled()).thenReturn(true);
+        var targets = new IngestTargetFixtures(); targets.useDefault("old");
+        var service = new AutoSymlinkRefreshService(properties, client, objectMapper, targets.registry);
+        var body = org.mockito.ArgumentCaptor.forClass(JsonNode.class);
+        org.mockito.Mockito.doThrow(new AutoSymlinkClientException("unknown")).when(client).submitSyncTask(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any());
+        assertThat(service.refreshForPath("MOVIE", "/old/Movies/Film (2026)").status()).isEqualTo(AutoSymlinkRefreshService.Status.FAILED);
+        org.mockito.Mockito.verify(client, org.mockito.Mockito.times(1)).submitSyncTask(org.mockito.ArgumentMatchers.eq("old-MOVIE"), body.capture());
+        assertThat(body.getValue().path("media_dir").asText()).isEqualTo("/mount/old/Movies/Film (2026)");
+        assertThat(service.refreshMovie().status()).isEqualTo(AutoSymlinkRefreshService.Status.FAILED);
+        org.mockito.Mockito.verify(client, org.mockito.Mockito.times(1)).submitSyncTask(org.mockito.ArgumentMatchers.eq("movie-task"), org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test void smartOrganizationRefreshKeepsOneShotAndUsesResolvedSubdirectory() {
+        var properties = completeProperties(); properties.setBaseUrl(""); properties.setCookie("");
+        var client = org.mockito.Mockito.mock(AutoSymlinkClient.class);
+        org.mockito.Mockito.when(client.isSmartStrmEnabled()).thenReturn(true);
+        var cloud = org.mockito.Mockito.mock(com.medianexus.orchestrator.integration.onboarding.CloudDriveAccountClient.class);
+        var connection = new com.medianexus.orchestrator.config.CloudDrive2Properties(); connection.setOrganizationEnabled(true);
+        var targets = new IngestTargetFixtures(); targets.useDefault("old");
+        var service = new AutoSymlinkRefreshService(properties, client, objectMapper, targets.registry);
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "cloudDrive", cloud);
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "cloudDriveProperties", connection);
+        org.mockito.Mockito.doThrow(new AutoSymlinkClientException("unknown")).when(client).submitSyncTask(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any());
+        assertThat(service.submitOrganizationRefresh("MOVIE", "/old/Movies/Film (2026)").status()).isEqualTo(AutoSymlinkRefreshService.Status.FAILED);
+        var body = org.mockito.ArgumentCaptor.forClass(JsonNode.class);
+        org.mockito.Mockito.verify(client, org.mockito.Mockito.times(1)).submitSyncTask(org.mockito.ArgumentMatchers.eq("old-MOVIE"), body.capture());
+        assertThat(body.getValue().path("media_dir").asText()).isEqualTo("/mount/old/Movies/Film (2026)");
+        org.mockito.Mockito.verify(cloud).refreshMountedDirectory(connection, "/mount/old/Movies/Film (2026)");
+    }
+
+    @Test void subtitleUploadEnablesPerRunCopyAndDisabledSmartKeepsLegacyBody() {
+        var properties = completeProperties();
+        var client = org.mockito.Mockito.mock(AutoSymlinkClient.class);
+        org.mockito.Mockito.when(client.isSmartStrmEnabled()).thenReturn(true);
+        var targets = new IngestTargetFixtures(); targets.useDefault("old");
+        var service = new AutoSymlinkRefreshService(properties, client, objectMapper, targets.registry);
+        assertThat(service.refreshAfterSubtitleUpload("MOVIE", "/old/Movies/Film").status()).isEqualTo(AutoSymlinkRefreshService.Status.SUBMITTED);
+        var body = org.mockito.ArgumentCaptor.forClass(JsonNode.class);
+        org.mockito.Mockito.verify(client).submitSyncTask(org.mockito.ArgumentMatchers.eq("old-MOVIE"), body.capture());
+        assertThat(body.getValue().path("metadata_copyer").asBoolean()).isTrue();
+        assertThat(body.getValue().path("metadata_ext").asText()).isEqualTo(".ass,.srt,.sup");
+        assertThat(body.getValue().path("media_dir").asText()).isEqualTo("/mount/old/Movies/Film");
+        var legacy = new RecordingAutoSymlinkClient(properties, objectMapper);
+        var oldService = new AutoSymlinkRefreshService(properties, legacy, objectMapper, targets.registry);
+        oldService.refreshAfterSubtitleUpload("MOVIE", "/old/Movies/Film");
+        assertThat(legacy.calls().get(0).requestBody().path("metadata_ext").asText()).isEqualTo(".nfo");
+        assertThat(legacy.calls().get(0).requestBody().path("media_dir").asText()).isEqualTo("/mount/old/Movies");
     }
 
     private AutoSymlinkProperties completeProperties() {

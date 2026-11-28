@@ -576,6 +576,18 @@ public class EmbyClient {
                 .anyMatch(item -> itemId.equals(item.id()));
     }
 
+    /** SmartStrm 已实际生成的精确播放路径，不触发全库扫描。 */
+    public void notifyMediaCreated(Collection<String> paths) {
+        List<Map<String, String>> updates = paths.stream()
+                .filter(StringUtils::hasText)
+                .distinct()
+                .map(path -> Map.of("Path", path, "UpdateType", "Created"))
+                .toList();
+        if (!updates.isEmpty()) {
+            postJson("/Library/Media/Updated", Map.of(), writeJson(Map.of("Updates", updates)));
+        }
+    }
+
     public void notifyMediaDeleted(Collection<String> paths) {
         List<Map<String, String>> updates = paths.stream()
                 .filter(StringUtils::hasText)

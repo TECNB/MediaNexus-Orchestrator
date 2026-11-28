@@ -86,6 +86,27 @@ public class AutoSymlinkRefreshService {
         };
     }
 
+    /** 上传字幕必须触发单次辅助文件复制，即使任务平时关闭元数据复制。 */
+    public RefreshOutcome refreshAfterSubtitleUpload(String category, String savePath) {
+        if (!autoSymlinkClient.isSmartStrmEnabled()) return refreshForPath(category, savePath);
+        var binding = targetRegistry.bindingForPath(category, savePath)
+                .orElseThrow(() -> new IllegalStateException("SmartStrm 字幕刷新需要登记的目标绑定"));
+        try {
+            var body = (com.fasterxml.jackson.databind.node.ObjectNode) objectMapper.readTree(binding.asRequestBodyJson());
+            String relative = savePath.substring(binding.rootPath().length());
+            String media = body.path("media_dir").asText().replaceAll("/+$", "") + relative;
+            if (cloudDriveProperties != null && cloudDriveProperties.isOrganizationEnabled())
+                cloudDrive.refreshMountedDirectory(cloudDriveProperties, media);
+            body.put("media_dir", media).put("metadata_copyer", true).put("metadata_ext", ".ass,.srt,.sup");
+            autoSymlinkClient.submitSyncTask(binding.asUuid(), body);
+            return new RefreshOutcome(Status.SUBMITTED, "SmartStrm 字幕刷新任务已提交", null);
+        } catch (JsonProcessingException invalid) {
+            return RefreshOutcome.skipped("SmartStrm 字幕刷新配置无效，未提交");
+        } catch (RuntimeException unavailable) {
+            return RefreshOutcome.failed("SmartStrm 字幕刷新未确认，未重复提交");
+        }
+    }
+
     /** One POST only. FAILED means outcome unknown; SKIPPED proves no POST was issued. */
     public RefreshOutcome submitOrganizationRefresh(String category, String savePath) {
         var binding = targetRegistry.bindingForPath(category, savePath)
@@ -103,6 +124,9 @@ public class AutoSymlinkRefreshService {
             if (!media.startsWith("/") || java.util.Arrays.stream(relative.split("/")).anyMatch(p -> p.equals("..")))
                 return RefreshOutcome.skipped("播放路径无效，未提交");
             cloudDrive.refreshMountedDirectory(cloudDriveProperties, media.replaceAll("/+$", "") + relative);
+            if (autoSymlinkClient.isSmartStrmEnabled()) {
+                ((com.fasterxml.jackson.databind.node.ObjectNode) body).put("media_dir", media.replaceAll("/+$", "") + relative);
+            }
         } catch (RuntimeException | JsonProcessingException unavailable) {
             return RefreshOutcome.skipped("刷新准备不可用，未提交");
         }
@@ -139,6 +163,21 @@ public class AutoSymlinkRefreshService {
                 return RefreshOutcome.failed("播放挂载目录刷新失败，尚未提交 AutoSymlink 刷新");
             }
         }
+        if (autoSymlinkClient.isSmartStrmEnabled()) {
+            try {
+                JsonNode body = objectMapper.readTree(task.getRequestBodyJson());
+                if (!body.isObject() || !body.path("media_dir").asText().startsWith("/")
+                        || java.util.Arrays.stream(relative.split("/")).anyMatch(part -> part.equals("..") || part.equals(".")))
+                    return RefreshOutcome.skipped("播放路径无效，未提交");
+                ((com.fasterxml.jackson.databind.node.ObjectNode) body).put("media_dir", body.path("media_dir").asText().replaceAll("/+$", "") + relative);
+                autoSymlinkClient.submitSyncTask(task.getUuid(), body);
+                return new RefreshOutcome(Status.SUBMITTED, "SmartStrm 刷新任务已提交", "SmartStrm 子目录刷新已提交");
+            } catch (JsonProcessingException invalid) {
+                return RefreshOutcome.skipped("刷新配置无效，未提交");
+            } catch (AutoSymlinkClientException unknown) {
+                return RefreshOutcome.failed("SmartStrm 刷新结果未知，未重复提交");
+            }
+        }
         return refresh(taskKey, task);
     }
 
@@ -159,11 +198,13 @@ public class AutoSymlinkRefreshService {
             return RefreshOutcome.skipped("AutoSymlink 刷新请求体必须是 JSON 对象，已跳过");
         }
 
-        int maxAttempts = properties.getMaxAttempts();
+        int maxAttempts = autoSymlinkClient.isSmartStrmEnabled() ? 1 : properties.getMaxAttempts();
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
                 autoSymlinkClient.submitSyncTask(task.getUuid(), requestBody);
-                return RefreshOutcome.submitted("task=" + taskKey + ", attempt=" + attempt);
+                return autoSymlinkClient.isSmartStrmEnabled()
+                        ? new RefreshOutcome(Status.SUBMITTED, "SmartStrm 刷新任务已提交", "task=" + taskKey)
+                        : RefreshOutcome.submitted("task=" + taskKey + ", attempt=" + attempt);
             } catch (AutoSymlinkClientException exception) {
                 if (attempt >= maxAttempts) {
                     log.warn(
@@ -173,7 +214,8 @@ public class AutoSymlinkRefreshService {
                             maxAttempts,
                             exception
                     );
-                    return RefreshOutcome.failed("AutoSymlink 刷新任务提交失败，已跳过");
+                    return RefreshOutcome.failed(autoSymlinkClient.isSmartStrmEnabled()
+                            ? "SmartStrm 刷新结果未知，未重复提交" : "AutoSymlink 刷新任务提交失败，已跳过");
                 }
                 log.warn("AutoSymlink refresh attempt failed taskKey={} attempt={}", taskKey, attempt, exception);
                 if (!sleep(retryInterval())) {
@@ -185,8 +227,8 @@ public class AutoSymlinkRefreshService {
     }
 
     private String incompleteConfigurationMessage(String taskKey, AutoSymlinkProperties.SyncTask task) {
-        if (!StringUtils.hasText(properties.getBaseUrl())
-                || !StringUtils.hasText(properties.getCookie())) {
+        if (!autoSymlinkClient.isSmartStrmEnabled() && (!StringUtils.hasText(properties.getBaseUrl())
+                || !StringUtils.hasText(properties.getCookie()))) {
             return "AutoSymlink 刷新未配置，已跳过";
         }
         if (task == null

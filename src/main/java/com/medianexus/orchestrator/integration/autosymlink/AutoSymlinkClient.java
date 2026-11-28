@@ -30,6 +30,11 @@ public class AutoSymlinkClient {
     private final ObjectMapper objectMapper;
     private final HttpClient httpClient;
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.medianexus.orchestrator.integration.smartstrm.SmartStrmGeneration smartStrm;
+
+    public boolean isSmartStrmEnabled() { return smartStrm != null && smartStrm.isEnabled(); }
+
     public AutoSymlinkClient(AutoSymlinkProperties properties, ObjectMapper objectMapper) {
         this.properties = properties;
         this.objectMapper = objectMapper;
@@ -44,6 +49,7 @@ public class AutoSymlinkClient {
      * @throws AutoSymlinkClientException when configuration or input is invalid, transport fails, or AS returns non-2xx
      */
     public void submitSyncTask(String uuid, JsonNode requestBody) {
+        if (isSmartStrmEnabled()) { smartStrm.submit(uuid, requestBody); return; }
         validateConfiguration();
         if (!StringUtils.hasText(uuid)) {
             throw new AutoSymlinkClientException("AutoSymlink task uuid is missing");
