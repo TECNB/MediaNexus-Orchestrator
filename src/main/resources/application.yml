@@ -140,6 +140,12 @@ medianexus:
     offline-timeout: ${MEDIANEXUS_OPENLIST_OFFLINE_TIMEOUT:10m}
     adult-offline-timeout: ${MEDIANEXUS_ADULT_OPENLIST_OFFLINE_TIMEOUT:2m}
     retry-limit: ${MEDIANEXUS_OPENLIST_RETRY_LIMIT:5}
+  pikpak-pat:
+    api-base: ${MEDIANEXUS_PIKPAK_PAT_API_BASE:https://api-drive.mypikpak.com}
+    media-b-prefix: ${MEDIANEXUS_PIKPAK_PAT_MEDIA_B_PREFIX:}
+    media-b-token: ${MEDIANEXUS_PIKPAK_PAT_MEDIA_B_TOKEN:}
+    adult-prefix: ${MEDIANEXUS_PIKPAK_PAT_ADULT_PREFIX:}
+    adult-token: ${MEDIANEXUS_PIKPAK_PAT_ADULT_TOKEN:}
   clouddrive2:
     organization-enabled: ${MEDIANEXUS_CLOUDDRIVE2_ORGANIZATION_ENABLED:false}
     anime-organization-enabled: ${MEDIANEXUS_CLOUDDRIVE2_ANIME_ORGANIZATION_ENABLED:false}

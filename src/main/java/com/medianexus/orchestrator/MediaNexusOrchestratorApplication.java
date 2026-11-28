@@ -8,6 +8,7 @@ import com.medianexus.orchestrator.config.CloudDrive2Properties;
 import com.medianexus.orchestrator.config.DatabaseSshTunnelProperties;
 import com.medianexus.orchestrator.config.EmbyProperties;
 import com.medianexus.orchestrator.config.OpenListProperties;
+import com.medianexus.orchestrator.config.PikPakPatProperties;
 import com.medianexus.orchestrator.config.PanSouProperties;
 import com.medianexus.orchestrator.config.ProwlarrProperties;
 import com.medianexus.orchestrator.config.QasProperties;
@@ -32,6 +33,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
         DatabaseSshTunnelProperties.class,
         EmbyProperties.class,
         OpenListProperties.class,
+        PikPakPatProperties.class,
         PanSouProperties.class,
         ProwlarrProperties.class,
         QasProperties.class,

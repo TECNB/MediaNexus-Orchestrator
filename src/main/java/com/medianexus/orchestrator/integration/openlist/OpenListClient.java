@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.medianexus.orchestrator.config.OpenListProperties;
+import com.medianexus.orchestrator.integration.pikpak.PikPakPatClient;
 import com.medianexus.orchestrator.integration.openlist.OpenListDirectoryPrepareException.Reason;
 import java.io.IOException;
 import java.net.URI;
@@ -30,6 +31,7 @@ import java.util.concurrent.Future;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.util.StringUtils;
 
 /**
@@ -58,10 +60,17 @@ public class OpenListClient {
     private final OpenListProperties properties;
     private final ObjectMapper objectMapper;
     private final HttpClient httpClient;
+    private final PikPakPatClient pikpakPat;
 
     public OpenListClient(OpenListProperties properties, ObjectMapper objectMapper) {
+        this(properties, objectMapper, null);
+    }
+
+    @Autowired
+    public OpenListClient(OpenListProperties properties, ObjectMapper objectMapper, PikPakPatClient pikpakPat) {
         this.properties = properties;
         this.objectMapper = objectMapper;
+        this.pikpakPat = pikpakPat;
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(timeout())
                 .build();
@@ -75,6 +84,12 @@ public class OpenListClient {
     }
 
     public String addOfflineDownload(String path, String magnet, String tool) {
+        if (pikpakPat != null) {
+            String submitted = pikpakPat.submit(path, magnet);
+            if (submitted != null) {
+                return submitted;
+            }
+        }
         JsonNode data = post("fs/add_offline_download", Map.of(
                 "path", normalizePath(path),
                 "urls", List.of(magnet),
@@ -102,6 +117,9 @@ public class OpenListClient {
 
     /** 容量按实际目标路径选择存储；禁用、未知或更具体的其它驱动不会回退另一账号。 */
     public OpenListStorageStatus storageStatusForPath(String path) {
+        if (pikpakPat != null && pikpakPat.matches(path)) {
+            return pikpakPat.storageStatus(path);
+        }
         JsonNode selected = storageForPath(path);
         if (selected == null || !"PikPak".equalsIgnoreCase(selected.path("driver").asText())) {
             throw new OpenListClientException("指定入库目标没有可确认的 PikPak 存储");
@@ -218,7 +236,7 @@ public class OpenListClient {
             }
             count += root.path("data").size();
         }
-        return count;
+        return pikpakPat == null ? count : count + pikpakPat.unfinishedCount();
     }
 
     /** Includes every OpenList writer queue, not only download capacity. */
@@ -236,11 +254,17 @@ public class OpenListClient {
      * state 的业务解释和进度打印留给任务编排层处理，本方法只保留上游原始任务快照。
      */
     public OpenListOfflineTaskInfo offlineTaskInfo(String taskId) {
+        if (patTask(taskId)) {
+            return pikpakPat.task(taskId);
+        }
         JsonNode data = post("task/offline_download/info?tid=" + encode(taskId), Map.of());
         return objectMapper.convertValue(data, OpenListOfflineTaskInfo.class);
     }
 
     public OpenListOfflineTaskInfo offlineTaskInfo(String taskId, Duration requestTimeout) {
+        if (patTask(taskId)) {
+            return pikpakPat.task(taskId);
+        }
         JsonNode data = post("task/offline_download/info?tid=" + encode(taskId), Map.of(), requestTimeout);
         return objectMapper.convertValue(data, OpenListOfflineTaskInfo.class);
     }
@@ -256,7 +280,11 @@ public class OpenListClient {
         long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
         String cancel;
         try {
-            post("task/offline_download/cancel?tid=" + encode(taskId), Map.of(), Duration.ofSeconds(2));
+            if (patTask(taskId)) {
+                pikpakPat.deleteTask(taskId);
+            } else {
+                post("task/offline_download/cancel?tid=" + encode(taskId), Map.of(), Duration.ofSeconds(2));
+            }
             cancel = "cancel=ACKNOWLEDGED";
         } catch (RuntimeException failure) {
             cancel = "cancel=FAILED(" + discardFailure(failure) + ")";
@@ -280,6 +308,10 @@ public class OpenListClient {
      * 触发 OpenList 对离线下载任务执行重试。
      */
     public void retryOfflineTask(String taskId) {
+        if (patTask(taskId)) {
+            pikpakPat.retry(taskId);
+            return;
+        }
         postForm("task/offline_download/retry", "tid=" + encode(taskId));
     }
 
@@ -287,6 +319,10 @@ public class OpenListClient {
      * Cancel the OpenList task and let the offline tool stop the upstream download.
      */
     public void cancelOfflineTask(String taskId) {
+        if (patTask(taskId)) {
+            pikpakPat.deleteTask(taskId);
+            return;
+        }
         post("task/offline_download/cancel?tid=" + encode(taskId), Map.of());
     }
 
@@ -294,7 +330,21 @@ public class OpenListClient {
      * 删除 OpenList 离线下载任务记录；不删除已经保存到文件系统的内容。
      */
     public void deleteOfflineTask(String taskId) {
+        if (patTask(taskId)) {
+            pikpakPat.deleteTask(taskId);
+            return;
+        }
         post("task/offline_download/delete_some", List.of(taskId));
+    }
+
+    private boolean patTask(String taskId) {
+        if (taskId == null || !taskId.startsWith("pat:")) {
+            return false;
+        }
+        if (pikpakPat == null) {
+            throw new OpenListClientException("PikPak PAT 未启用，无法处理任务");
+        }
+        return true;
     }
 
     /**
